@@ -1,0 +1,10 @@
+{
+  "name": "control-room-server",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.mjs",
+    "start": "node server.mjs"
+  }
+}

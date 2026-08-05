@@ -1,0 +1,44 @@
+const MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;
+const pad = n => String(n).padStart(2, '0');
+const DAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+
+export function formatCountdown(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+export function formatShort(ms) {
+  const total = Math.max(0, ms);
+  const d = Math.floor(total / DAY);
+  const h = Math.floor((total % DAY) / HOUR);
+  const m = Math.floor((total % HOUR) / MIN);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+export function formatRelative(ms) {
+  const total = Math.max(0, ms);
+  if (total < HOUR) return `${Math.floor(total / MIN)}m ago`;
+  if (total < DAY) return `${Math.floor(total / HOUR)}h ago`;
+  return `${Math.floor(total / DAY)}d ago`;
+}
+
+export function formatSchedule(cal, intervalSec) {
+  if (cal) {
+    const time = `${pad(cal.Hour ?? 0)}:${pad(cal.Minute ?? 0)}`;
+    return cal.Weekday === undefined ? `Every day, ${time}` : `${DAYS[cal.Weekday] ?? 'Weekly'}, ${time}`;
+  }
+  if (intervalSec) {
+    if (intervalSec % 3600 === 0) {
+      const h = intervalSec / 3600;
+      return h === 1 ? 'Every hour' : `Every ${h} hours`;
+    }
+    const m = Math.round(intervalSec / 60);
+    return m === 1 ? 'Every minute' : `Every ${m} minutes`;
+  }
+  return 'On demand';
+}
