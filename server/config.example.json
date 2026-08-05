@@ -1,0 +1,19 @@
+{
+  "warnThreshold": 85,
+  "showAlertBanner": true,
+  "plan": {
+    "name": "Max — 20×",
+    "price": "$200 / month",
+    "renews": "2026-08-21",
+    "seats": "1 · none"
+  },
+  "credits": {
+    "balance": 88.62,
+    "spent": 23.68,
+    "monthlyLimit": 20.00,
+    "resetsOn": "2026-09-01",
+    "promoAmount": 88.61,
+    "promoExpiresOn": "2026-09-19",
+    "updatedAt": "2026-08-05"
+  }
+}
