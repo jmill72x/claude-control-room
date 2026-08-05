@@ -3,10 +3,10 @@ import { heat } from '../lib/format.js';
 export function SessionRows({ sessions, threshold }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {sessions.map((s, i) => {
+      {sessions.map(s => {
         const color = heat(s.pct, threshold);
         return (
-          <div key={i} style={{
+          <div key={`${s.when}-${s.title}`} style={{
             display: 'grid', gridTemplateColumns: '48px 1fr auto', alignItems: 'center',
             gap: 10, padding: '7px 0', borderBottom: 'var(--rule-hair)'
           }}>

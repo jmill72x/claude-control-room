@@ -1,9 +1,14 @@
 const PALETTE = ['var(--ink)', 'var(--accent)', 'var(--n300)', 'var(--n500)'];
 const FG = ['var(--ground)', 'var(--a100)', 'var(--ink)', 'var(--ground)'];
 
+// A segment is drawable only if it is not flagged unmeasurable AND carries a real
+// number. Testing `measurable !== false` alone fails OPEN: a segment arriving without
+// the flag and without a pct would render as a phantom bar showing a bare '%'.
+const isDrawable = s => s.measurable !== false && typeof s.pct === 'number';
+
 export function StackedBar({ segments }) {
-  const measurable = segments.filter(s => s.measurable !== false);
-  const unmeasurable = segments.filter(s => s.measurable === false);
+  const measurable = segments.filter(isDrawable);
+  const unmeasurable = segments.filter(s => !isDrawable(s));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -13,7 +18,7 @@ export function StackedBar({ segments }) {
             flex: Math.max(s.pct, 1), background: PALETTE[i % PALETTE.length],
             display: 'flex', alignItems: 'center', paddingLeft: 6, overflow: 'hidden'
           }}>
-            <span style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
+            <span className="num" style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
               {s.pct}%
             </span>
           </div>

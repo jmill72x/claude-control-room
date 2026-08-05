@@ -18,7 +18,7 @@ export function CreditsPanel({ credits, threshold, now }) {
         <div style={{ fontSize: 12, color: 'var(--n700)', fontWeight: 600 }}>balance</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 700 }}>
+        <span className="num" style={{ fontSize: 13, fontWeight: 700 }}>
           {money(credits.spent)} of {money(credits.monthlyLimit)}
         </span>
         <span className="num" style={{ fontSize: 12, fontWeight: 700, color }}>{pct}%</span>
@@ -36,7 +36,7 @@ export function CreditsPanel({ credits, threshold, now }) {
           <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{credits.promoExpiresOn ?? '—'}</div>
         </div>
       </div>
-      <div style={{ fontSize: 10, color: aged ? 'var(--accent)' : 'var(--n600)', fontWeight: aged ? 700 : 500 }}>
+      <div className="num" style={{ fontSize: 10, color: aged ? 'var(--accent)' : 'var(--n600)', fontWeight: aged ? 700 : 500 }}>
         {ageDays === null ? 'never updated' : `updated ${ageDays} day${ageDays === 1 ? '' : 's'} ago`}
       </div>
     </div>

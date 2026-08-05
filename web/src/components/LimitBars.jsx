@@ -15,7 +15,7 @@ export function LimitBars({ limits, threshold, now }) {
             <div style={{ height: 10, background: 'var(--n300)', position: 'relative' }}>
               <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, l.pct)}%`, background: color }} />
             </div>
-            <div style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
+            <div className="num" style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
               {resetsAt ? `resets ${formatCountdown(resetsAt - now)}` : 'no reset time reported'}
             </div>
           </div>

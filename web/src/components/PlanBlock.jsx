@@ -13,7 +13,7 @@ export function PlanBlock({ plan }) {
         </div>
         <div style={{ padding: '8px 0 8px 12px' }}>
           <div className="section-label">Seats · Extra</div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{plan.seats}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{plan.seats}</div>
         </div>
       </div>
     </div>
