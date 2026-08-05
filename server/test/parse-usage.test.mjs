@@ -3,10 +3,21 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseUsage, UsageParseError } from '../lib/parse-usage.mjs';
 
+// resolveReset() only resolves a printed zone when it matches the host's
+// own zone (see lib/parse-usage.mjs); it returns null on any mismatch
+// rather than guess an offset. A fixture with a zone hardcoded to a single
+// literal (e.g. "America/New_York") therefore only exercises the resolved
+// path on that one host — everywhere else resetsAt comes back null and any
+// assertion that it's a populated ISO string fails for reasons unrelated to
+// what's under test. HOST_ZONE keeps the fixture's printed zone equal to
+// whatever zone the suite is actually running under, so the resolved path
+// is exercised on every host.
+const HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 const SAMPLE = `You are currently using your subscription to power your Claude Code usage
 
-Current session: 24% used · resets Aug 5 at 12:09pm (America/New_York)
-Current week (all models): 5% used · resets Aug 10 at 8pm (America/New_York)
+Current session: 24% used · resets Aug 5 at 12:09pm (${HOST_ZONE})
+Current week (all models): 5% used · resets Aug 10 at 8pm (${HOST_ZONE})
 Current week (Fable): 0% used
 
 What's contributing to your limits usage?
@@ -15,7 +26,14 @@ Last 24h · 1349 requests · 2 sessions
 Last 7d · 3338 requests · 9 sessions
 `;
 
-const NOW = new Date('2026-08-05T12:00:00-04:00');
+// Built via local wall-clock components, not a fixed UTC offset string.
+// resolveReset() constructs reset dates with `new Date(year, month, day,
+// hour, ...)`, which always uses the runtime's local offset — so NOW must
+// use the same construction to stay comparable across timezones. A fixed
+// '...-04:00' instant only sorts correctly relative to those wall-clock
+// dates on hosts near UTC-4; anywhere else (e.g. TZ=Asia/Tokyo) the
+// comparison silently inverts.
+const NOW = new Date(2026, 7, 5, 12, 0, 0); // Aug 5 2026, 12:00 local
 
 test('parses every limit line in order', () => {
   const { limits } = parseUsage(SAMPLE, NOW);
@@ -71,7 +89,7 @@ Current session: fifty% used
 test('a malformed limit line throws even when a good limit line is present', () => {
   const mixed = `You are currently using your subscription to power your Claude Code usage
 
-Current session: 24% used · resets Aug 5 at 12:09pm (America/New_York)
+Current session: 24% used · resets Aug 5 at 12:09pm (${HOST_ZONE})
 Current week (all models): garbled beyond recognition
 `;
   assert.throws(() => parseUsage(mixed, NOW), UsageParseError);
@@ -95,10 +113,9 @@ Current session: 118% used
 });
 
 test('reset with a zone matching the host resolves to an ISO string', () => {
-  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const sample = `You are currently using your subscription to power your Claude Code usage
 
-Current session: 10% used · resets Aug 5 at 3pm (${hostZone})
+Current session: 10% used · resets Aug 5 at 3pm (${HOST_ZONE})
 `;
   const { limits } = parseUsage(sample, NOW);
   assert.equal(typeof limits[0].resetsAt, 'string');
@@ -106,8 +123,7 @@ Current session: 10% used · resets Aug 5 at 3pm (${hostZone})
 });
 
 test('reset with a zone that does not match the host resolves to null', () => {
-  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const mismatchZone = hostZone === 'Europe/London' ? 'Asia/Tokyo' : 'Europe/London';
+  const mismatchZone = HOST_ZONE === 'Europe/London' ? 'Asia/Tokyo' : 'Europe/London';
   const sample = `You are currently using your subscription to power your Claude Code usage
 
 Current session: 10% used · resets Aug 5 at 3pm (${mismatchZone})
