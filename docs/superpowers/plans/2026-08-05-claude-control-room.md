@@ -272,7 +272,10 @@ The single most fragile component: it reads a CLI string that can change shape o
   `limits: [{ label: string, pct: number, resetsAt: string | null }]`,
   `requests: { last24h: number|null, last7d: number|null }`,
   `sessions: { last24h: number|null, last7d: number|null }`.
-  Throws `UsageParseError` when no limit line is found.
+  Throws `UsageParseError` when no limit line is found, **when a line that looks like a limit
+  line fails to parse fully** (format drift must not degrade silently to partial data), or when
+  a parsed percentage is implausible. Note percentages legitimately exceed 100 — the account's
+  credit spend reads 118% — so the bound is a garbled-digit guard, not a 0–100 clamp.
 
 - [ ] **Step 1: Capture the real fixture**
 
