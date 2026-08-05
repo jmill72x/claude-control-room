@@ -13,12 +13,23 @@ function prettyModel(id) {
 
 const pct = (part, whole) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
 
+// Day bucketing is by CALENDAR day, not elapsed milliseconds. An elapsed-hours
+// floor mislabels Mon 23:00 as "Yest" when read on Wed 01:00 — only ~26h have
+// passed, but it is two calendar days back.
+function calendarDaysBetween(ts, now) {
+  const a = new Date(ts), b = new Date(now);
+  const dayA = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+  const dayB = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((dayB - dayA) / (24 * 3600 * 1000));
+}
+
 function whenLabel(ts, now) {
-  const d = new Date(ts), n = new Date(now);
-  const sameDay = d.toDateString() === n.toDateString();
-  if (sameDay) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const diffDays = Math.floor((now - ts) / (24 * 3600 * 1000));
-  if (diffDays <= 1) return 'Yest';
+  const days = calendarDaysBetween(ts, now);
+  const d = new Date(ts);
+  if (days === 0) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  if (days === 1) return 'Yest';
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
 }
 
