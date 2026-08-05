@@ -3108,7 +3108,9 @@ Cover, in this order: what the dashboard is and a screenshot; the data-source ta
 
 ```bash
 cd server && npm test
-grep -rn "border-radius" web/src/ || echo "no radius — correct"
+# tokens.css intentionally carries `border-radius: 0` as the global reset;
+# any OTHER border-radius is a defect.
+grep -rn "border-radius" web/src/ | grep -v "border-radius: 0" || echo "no stray radius — correct"
 grep -rn "fonts.googleapis" web/ --include="*.html" --include="*.jsx" --include="*.css" || echo "no CDN font — correct"
 ```
 
