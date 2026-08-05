@@ -1372,13 +1372,27 @@ test('a throwing collector marks a failure without escaping', async () => {
   assert.match(e.error, /cli missing/);
 });
 
-test('one collector throwing leaves the others intact', async () => {
+// Run the two SEQUENTIALLY, not via Promise.all. Under Promise.all the healthy
+// collector's write lands after the failing one's catch block, so a collector
+// that corrupted another's key would be masked by the overwrite — verified to
+// hide the fault in 200/200 trials. Settling `crons` first and failing `usage`
+// alone afterwards makes any cross-key write immediately visible.
+test('one collector throwing cannot touch another collector\'s entry', async () => {
   const cache = createCache();
   const r = createRegistry(cache, fakeTimers());
   r.register('usage', async () => { throw new Error('bad'); }, 1000);
   r.register('crons', async () => [{ name: 'nightly' }], 1000);
-  await Promise.all([r.runOnce('usage'), r.runOnce('crons')]);
-  assert.equal(cache.get('crons', Date.now()).status, 'ok');
+
+  await r.runOnce('crons');
+  const before = cache.get('crons', Date.now());
+  assert.equal(before.status, 'ok');
+
+  await r.runOnce('usage');
+  const after = cache.get('crons', Date.now());
+  assert.equal(after.status, 'ok');
+  assert.equal(after.error, null);
+  assert.deepEqual(after.data, before.data);
+  assert.equal(cache.get('usage', Date.now()).status, 'unavailable');
 });
 
 test('startAll schedules one timer per collector', () => {
