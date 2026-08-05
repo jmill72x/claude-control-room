@@ -2593,7 +2593,7 @@ Handles the unmeasurable Chat segment explicitly — hatched, labeled, never a f
 const PALETTE = ['var(--ink)', 'var(--accent)', 'var(--n300)', 'var(--n500)'];
 const FG = ['var(--ground)', 'var(--a100)', 'var(--ink)', 'var(--ground)'];
 
-export function StackedBar({ segments, unit = 'tokens' }) {
+export function StackedBar({ segments }) {
   const measurable = segments.filter(s => s.measurable !== false);
   const unmeasurable = segments.filter(s => s.measurable === false);
 
@@ -2780,7 +2780,7 @@ Replace the column-01 `<section>` with:
 <section className="ccr-col ccr-col--ruled">
   <div className="ccr-col-head">
     <h2>01&nbsp;&nbsp;Usage</h2>
-    <span>{config?.plan?.renews ? `Renews ${config.plan.renews}` : ''}</span>
+    <span>{billingCycleNote(config?.plan?.renews, now)}</span>
   </div>
   <PlanBlock plan={config?.plan} />
   <Panel label="Credits">
@@ -2813,6 +2813,21 @@ Add near the top of the component body:
 ```jsx
 const config = payload?.config?.data;
 const threshold = config?.warnThreshold ?? 85;
+```
+
+And in `web/src/lib/format.js`, the header note the design spec calls for — "Billing cycle ·
+N days left", not a repeat of the renews date already shown in the plan block below it:
+
+```js
+// Returns '' rather than a guess when the renewal date is missing or unparseable:
+// an empty header note is honest, "0 days left" is not.
+export function billingCycleNote(renews, now = Date.now()) {
+  if (!renews) return '';
+  const at = Date.parse(renews);
+  if (!Number.isFinite(at)) return '';
+  const days = Math.max(0, Math.ceil((at - now) / 86400000));
+  return `Billing cycle · ${days} day${days === 1 ? '' : 's'} left`;
+}
 ```
 
 Add the imports for `Panel`, `PlanBlock`, `CreditsPanel`, `LimitBars`, `StackedBar`, `ModelRows`, `SessionRows` and `formatTokens`.
