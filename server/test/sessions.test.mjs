@@ -111,3 +111,66 @@ test('a readable root with one unreadable subdirectory keeps the readable sessio
     chmodSync(badSub, 0o700);
   }
 });
+
+test('a Cowork root with one unreadable subdirectory yields that path exactly once in unreadablePaths', async t => {
+  if (!(await permissionsAreEnforced())) {
+    return t.skip('chmod does not restrict readdir in this environment (e.g. running as root)');
+  }
+
+  // A Cowork surface walks the tree twice (once for .jsonl, once for
+  // local_*.json), sharing one `failures` array — an unreadable subdirectory
+  // is hit by readdir on both passes and must still be reported exactly once.
+  const readable = freshDir();
+  const badSub = join(readable, 'bad-project');
+  await mkdir(badSub);
+  chmodSync(badSub, 0o311);
+  try {
+    const out = await collectSessions({ roots: [{ root: readable, surface: 'Cowork' }] });
+    assert.deepEqual(out.unavailableRoots, []);
+    const occurrences = out.unreadablePaths.filter(p => p === badSub);
+    assert.equal(occurrences.length, 1,
+      `expected ${badSub} exactly once, got ${JSON.stringify(out.unreadablePaths)}`);
+  } finally {
+    chmodSync(badSub, 0o700);
+  }
+});
+
+test('an unreadable file amid readable ones costs only that file, not the whole panel', async t => {
+  if (!(await permissionsAreEnforced())) {
+    return t.skip('chmod does not restrict readdir in this environment (e.g. running as root)');
+  }
+
+  const readable = freshDir();
+  const record = JSON.stringify({
+    sessionId: 's1',
+    timestamp: '2026-08-05T12:00:00.000Z',
+    message: { model: 'claude-sonnet-4', usage: { input_tokens: 10, output_tokens: 5 } }
+  }) + '\n';
+  const goodFile = join(readable, 'good.jsonl');
+  const badFile = join(readable, 'bad.jsonl');
+  await writeFile(goodFile, record);
+  await writeFile(badFile, record);
+  chmodSync(badFile, 0o000); // stat() still succeeds; readFile() throws EACCES
+  try {
+    const out = await collectSessions({ roots: [{ root: readable, surface: 'Code' }] });
+    assert.deepEqual(out.unavailableRoots, []);
+    // The good transcript must survive even though a sibling file couldn't
+    // be read — that was the whole point of guarding readFile separately.
+    assert.equal(out.transcripts.length, 1);
+    assert.ok(out.unreadablePaths.includes(badFile));
+  } finally {
+    chmodSync(badFile, 0o600);
+  }
+});
+
+test('a tree nested deeper than MAX_DEPTH reports the truncation point instead of returning silently empty', async () => {
+  const readable = freshDir();
+  let deep = readable;
+  for (let i = 1; i <= 13; i++) deep = join(deep, `lvl${i}`);
+  await mkdir(deep, { recursive: true });
+
+  const out = await collectSessions({ roots: [{ root: readable, surface: 'Code' }] });
+  assert.deepEqual(out.unavailableRoots, []);
+  assert.ok(out.unreadablePaths.includes(deep),
+    `expected the truncation point ${deep} in ${JSON.stringify(out.unreadablePaths)}`);
+});
