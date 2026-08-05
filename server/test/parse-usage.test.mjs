@@ -56,6 +56,66 @@ test('throws on unrecognised output instead of returning zeros', () => {
   assert.throws(() => parseUsage(bad, NOW), UsageParseError);
 });
 
+test('a limit-looking line with a malformed percentage throws', () => {
+  const bad = `You are currently using your subscription to power your Claude Code usage
+
+Current session: fifty% used
+`;
+  assert.throws(() => parseUsage(bad, NOW), (err) => {
+    assert.ok(err instanceof UsageParseError);
+    assert.equal(err.name, 'UsageParseError');
+    return true;
+  });
+});
+
+test('a malformed limit line throws even when a good limit line is present', () => {
+  const mixed = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 24% used · resets Aug 5 at 12:09pm (America/New_York)
+Current week (all models): garbled beyond recognition
+`;
+  assert.throws(() => parseUsage(mixed, NOW), UsageParseError);
+});
+
+test('a garbled or concatenated percentage exceeding the plausibility bound throws', () => {
+  const bad = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 123456% used
+`;
+  assert.throws(() => parseUsage(bad, NOW), UsageParseError);
+});
+
+test('a legitimately high percentage under the plausibility bound is accepted', () => {
+  const overage = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 118% used
+`;
+  const { limits } = parseUsage(overage, NOW);
+  assert.equal(limits[0].pct, 118);
+});
+
+test('reset with a zone matching the host resolves to an ISO string', () => {
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const sample = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 10% used · resets Aug 5 at 3pm (${hostZone})
+`;
+  const { limits } = parseUsage(sample, NOW);
+  assert.equal(typeof limits[0].resetsAt, 'string');
+  assert.ok(new Date(limits[0].resetsAt) > NOW);
+});
+
+test('reset with a zone that does not match the host resolves to null', () => {
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const mismatchZone = hostZone === 'Europe/London' ? 'Asia/Tokyo' : 'Europe/London';
+  const sample = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 10% used · resets Aug 5 at 3pm (${mismatchZone})
+`;
+  const { limits } = parseUsage(sample, NOW);
+  assert.equal(limits[0].resetsAt, null);
+});
+
 test('parses the real captured fixture', () => {
   const real = readFileSync(new URL('./fixtures/usage-ok.txt', import.meta.url), 'utf8');
   const { limits } = parseUsage(real, new Date());
