@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#f3f2f2; color:#201e1d; font-family:"Archivo",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  a { color:#ae1800; text-decoration:none; }
+  a:hover { color:#ec3013; }
+  input { font-family:inherit; }
+  ::selection { background:#ffc4b8; }
+  *:focus-visible { outline:2px solid #ec3013; outline-offset:2px; }
+</style>
+</helmet>
+<div style="min-height:100vh; background:#f3f2f2; padding:0 0 64px 0">
+
+  <header style="display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:24px 32px 16px 32px; border-bottom:2px solid #201e1d">
+    <div style="display:flex; flex-direction:column; gap:4px">
+      <div style="font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#7d7979; font-weight:600">Anthropic account snapshot</div>
+      <h1 style="margin:0; font-size:34px; font-weight:800; letter-spacing:-0.02em; line-height:1">Control Room</h1>
+    </div>
+    <div style="display:flex; align-items:flex-end; gap:32px">
+      <div style="display:flex; flex-direction:column; gap:2px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Session resets in</div>
+        <div style="font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; color:#ec3013">{{ resetIn }}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:2px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Synced</div>
+        <div style="font-size:22px; font-weight:800; font-variant-numeric:tabular-nums">{{ syncedAt }}</div>
+      </div>
+    </div>
+  </header>
+
+  <sc-if value="{{ hasAlerts }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex; align-items:center; gap:16px; padding:10px 32px; background:#ec3013; color:#fff2ef; border-bottom:2px solid #201e1d">
+      <span style="font-size:10px; letter-spacing:0.14em; text-transform:uppercase; font-weight:800; padding:3px 8px; background:#201e1d">Attention</span>
+      <sc-for list="{{ alerts }}" as="a" hint-placeholder-count="1">
+        <span style="font-size:13px; font-weight:600">{{ a.text }}</span>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0; align-items:stretch">
+
+    <section data-screen-label="Usage" style="border-right:2px solid #201e1d; padding:20px 24px 32px 24px; display:flex; flex-direction:column; gap:20px">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:2px solid #201e1d; padding-bottom:8px">
+        <h2 style="margin:0; font-size:15px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase">01 &nbsp;Usage</h2>
+        <span style="font-size:11px; font-weight:700; color:#7d7979">{{ planCycle }}</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px">
+          <div style="font-size:20px; font-weight:800; letter-spacing:-0.01em">{{ plan.name }}</div>
+          <div style="font-size:12px; color:#605d5d; font-weight:600">{{ plan.price }}</div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; border-top:1px solid #d7d3d3">
+          <div style="padding:8px 12px 8px 0; border-right:1px solid #d7d3d3">
+            <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Renews</div>
+            <div style="font-size:14px; font-weight:700">{{ plan.renews }}</div>
+          </div>
+          <div style="padding:8px 0 8px 12px">
+            <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Seats · Extra</div>
+            <div style="font-size:14px; font-weight:700">{{ plan.seats }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Against limits now</div>
+          <sc-for list="{{ limits }}" as="l" hint-placeholder-count="3">
+            <div style="display:flex; flex-direction:column; gap:5px">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px">
+                <span style="font-size:13px; font-weight:700">{{ l.label }}</span>
+                <span style="font-size:12px; font-weight:700; font-variant-numeric:tabular-nums; color:{{ l.color }}">{{ l.pctLabel }}</span>
+              </div>
+              <div style="height:10px; background:#d7d3d3; position:relative">
+                <div style="position:absolute; inset:0 auto 0 0; width:{{ l.pct }}%; background:{{ l.color }}"></div>
+              </div>
+              <div style="font-size:11px; color:#7d7979; font-weight:500">{{ l.sub }}</div>
+            </div>
+          </sc-for>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">By surface · this week</div>
+        <div style="display:flex; height:26px; border:1px solid #201e1d">
+          <sc-for list="{{ tools }}" as="t" hint-placeholder-count="3">
+            <div style="flex:{{ t.pct }}; background:{{ t.color }}; display:flex; align-items:center; padding-left:6px; overflow:hidden">
+              <span style="font-size:10px; font-weight:800; color:{{ t.fg }}; letter-spacing:0.04em">{{ t.pctLabel }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap">
+          <sc-for list="{{ tools }}" as="t" hint-placeholder-count="3">
+            <div style="display:flex; align-items:center; gap:6px">
+              <span style="width:9px; height:9px; background:{{ t.color }}; display:block; border:1px solid #201e1d"></span>
+              <span style="font-size:11px; font-weight:600">{{ t.name }}</span>
+              <span style="font-size:11px; color:#7d7979">{{ t.hours }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">By model · this week</div>
+        <sc-for list="{{ models }}" as="m" hint-placeholder-count="4">
+          <div style="display:grid; grid-template-columns:70px 1fr 52px; align-items:center; gap:10px; padding:5px 0; border-bottom:1px solid #eae7e7">
+            <span style="font-size:12px; font-weight:700">{{ m.name }}</span>
+            <span style="height:6px; background:#d7d3d3; display:block; position:relative"><span style="position:absolute; inset:0 auto 0 0; width:{{ m.pct }}%; background:#201e1d; display:block"></span></span>
+            <span style="font-size:11px; font-weight:600; text-align:right; font-variant-numeric:tabular-nums; color:#605d5d">{{ m.tokens }}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#7d7979; font-weight:600">Recent sessions</div>
+        <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="5">
+          <div style="display:grid; grid-template-columns:48px 1fr auto; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid #eae7e7">
+            <span style="font-size:11px; font-weight:600; color:#7d7979; font-variant-numeric:tabular-nums">{{ s.when }}</span>
+            <span style="display:flex; flex-direction:column; gap:2px">
+              <span style="font-size:12px; font-weight:700">{{ s.label }}</span>
+              <span style="font-size:10px; color:#7d7979">{{ s.detail }}</span>
+            </span>
+            <span style="display:flex; align-items:center; gap:8px">
+              <span style="width:56px; height:6px; background:#d7d3d3; display:block; position:relative"><span style="position:absolute; inset:0 auto 0 0; width:{{ s.pct }}%; background:{{ s.color }}; display:block"></span></span>
+              <span style="font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; width:32px; text-align:right">{{ s.pctLabel }}</span>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section data-screen-label="Projects" style="border-right:2px solid #201e1d; padding:20px 24px 32px 24px; display:flex; flex-direction:column; gap:20px">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:2px solid #201e1d; padding-bottom:8px">
+        <h2 style="margin:0; font-size:15px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase">02 &nbsp;Projects</h2>
+        <span style="font-size:11px; font-weight:700; color:#7d7979">{{ projectSummary }}</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:0">
+        <sc-for list="{{ projects }}" as="p" hint-placeholder-count="6">
+          <div style="display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid #d7d3d3">
+            <span style="width:10px; height:10px; display:block; background:{{ p.dot }}; border:1px solid #201e1d"></span>
+            <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+              <span style="font-size:14px; font-weight:700; letter-spacing:-0.01em">{{ p.name }}</span>
+              <span style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                <span style="font-size:9px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase; padding:2px 6px; background:{{ p.toolBg }}; color:{{ p.toolFg }}">{{ p.tool }}</span>
+                <span style="font-size:11px; color:#7d7979; font-weight:500">{{ p.detail }}</span>
+              </span>
+            </span>
+            <span style="display:flex; flex-direction:column; align-items:flex-end; gap:3px">
+              <span style="font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:{{ p.dot }}">{{ p.status }}</span>
+              <span style="font-size:11px; color:#7d7979; font-variant-numeric:tabular-nums">{{ p.tasks }}</span>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:2px solid #201e1d; padding-bottom:8px; margin-top:4px">
+        <h3 style="margin:0; font-size:13px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase">Scheduled crons</h3>
+        <span style="font-size:11px; font-weight:700; color:#7d7979">{{ cronSummary }}</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:0">
+        <sc-for list="{{ crons }}" as="c" hint-placeholder-count="5">
+          <div style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:12px; padding:11px 10px 11px 12px; border-bottom:1px solid #d7d3d3; background:{{ c.rowBg }}; border-left:3px solid {{ c.edge }}">
+            <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+              <span style="font-size:13px; font-weight:700">{{ c.name }}</span>
+              <span style="font-size:11px; color:#605d5d; font-weight:500">{{ c.schedule }}</span>
+            </span>
+            <span style="display:flex; flex-direction:column; align-items:flex-end; gap:3px">
+              <span style="font-size:13px; font-weight:800; font-variant-numeric:tabular-nums">{{ c.next }}</span>
+              <span style="font-size:10px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; color:{{ c.edge }}">{{ c.last }}</span>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section data-screen-label="Ideas" style="padding:20px 24px 32px 24px; display:flex; flex-direction:column; gap:20px">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom:2px solid #201e1d; padding-bottom:8px">
+        <h2 style="margin:0; font-size:15px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase">03 &nbsp;Ideas &amp; to-dos</h2>
+        <span style="font-size:11px; font-weight:700; color:#7d7979">Saved on this device</span>
+      </div>
+
+      <sc-for list="{{ lanes }}" as="lane" hint-placeholder-count="3">
+        <div style="display:flex; flex-direction:column; gap:8px">
+          <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; border-bottom:1px solid #201e1d; padding-bottom:5px">
+            <span style="font-size:11px; font-weight:800; letter-spacing:0.12em; text-transform:uppercase">{{ lane.title }}</span>
+            <span style="font-size:11px; font-weight:700; color:#7d7979; font-variant-numeric:tabular-nums">{{ lane.count }}</span>
+          </div>
+          <sc-for list="{{ lane.items }}" as="it" hint-placeholder-count="2">
+            <div style="display:grid; grid-template-columns:auto 1fr auto; align-items:start; gap:10px; padding:9px 10px; background:#eae9e9; border-left:3px solid {{ it.edge }}">
+              <button onClick="{{ it.advance }}" title="{{ it.advanceTitle }}" style="font-family:inherit; cursor:pointer; width:16px; height:16px; margin-top:1px; padding:0; background:{{ it.boxBg }}; border:1.5px solid #201e1d; color:#f3f2f2; font-size:10px; font-weight:800; line-height:1">{{ it.mark }}</button>
+              <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+                <span style="font-size:13px; font-weight:600; line-height:1.35; text-wrap:pretty; color:{{ it.fg }}; text-decoration:{{ it.strike }}">{{ it.text }}</span>
+                <span style="font-size:9px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase; color:#7d7979">{{ it.tag }}</span>
+              </span>
+              <button onClick="{{ it.remove }}" title="Delete" style="font-family:inherit; cursor:pointer; background:transparent; border:0; padding:0 2px; font-size:14px; line-height:1; color:#9b9797" style-hover="color:#ec3013; ">&times;</button>
+            </div>
+          </sc-for>
+          <input type="text" data-lane="{{ lane.key }}" onKeyDown="{{ addOnEnter }}" placeholder="{{ lane.placeholder }}" style="font-size:12px; font-weight:500; padding:8px 10px; border:1px solid #d7d3d3; background:transparent; color:#201e1d; width:100%; box-sizing:border-box" style-focus="border-color:#201e1d">
+        </div>
+      </sc-for>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:980},&quot;showAlertBanner&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Dashboard&quot;},&quot;warnThreshold&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:85,&quot;min&quot;:50,&quot;max&quot;:100,&quot;step&quot;:5,&quot;unit&quot;:&quot;%&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Dashboard&quot;}}">
+const K = 'claude-control-room-todos-v1';
+const RED = '#ec3013', INK = '#201e1d', MUTE = '#9b9797';
+
+class Component extends DCLogic {
+  state = {
+    now: Date.now(),
+    todos: null,
+    drafts: { idea: '', doing: '', done: '' },
+    openCron: null
+  };
+
+  componentDidMount() {
+    let todos;
+    try { todos = JSON.parse(localStorage.getItem(K)); } catch (e) { todos = null; }
+    if (!Array.isArray(todos)) todos = this.seedTodos();
+    this.mountReset = Date.now() + 1000 * 60 * 108;
+    this.setState({ todos });
+    if (window.__ccrTimer) clearInterval(window.__ccrTimer);
+    window.__ccrTimer = this.timer = setInterval(() => this.setState({ now: Date.now() }), 1000);
+  }
+  componentWillUnmount() { clearInterval(this.timer); }
+
+  seedTodos() {
+    return [
+      { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
+      { id: 2, text: 'Cron: weekly digest of all Cowork project status', lane: 'idea', tag: 'Crons' },
+      { id: 3, text: 'Try Fable for the storyboard pass on the brand deck', lane: 'idea', tag: 'Models' },
+      { id: 4, text: 'Split the invoice parser repo out of the monolith', lane: 'doing', tag: 'Code' },
+      { id: 5, text: 'Rewrite the nightly-sync cron so it retries on 429', lane: 'doing', tag: 'Crons' },
+      { id: 6, text: 'Move design-review notes into a Cowork project', lane: 'done', tag: 'Cowork' }
+    ];
+  }
+  save(todos) { this.setState({ todos }); try { localStorage.setItem(K, JSON.stringify(todos)); } catch (e) {} }
+
+  fmt(ms) {
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const p = n => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + p(m) + ':' + p(sec) : p(m) + ':' + p(sec);
+  }
+  short(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d > 0) return d + 'd ' + h + 'h';
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm';
+  }
+  heat(pct) {
+    const hot = this.props.warnThreshold ?? 85;
+    return pct >= hot ? RED : pct >= hot * 0.7 ? '#605d5d' : INK;
+  }
+
+  renderVals() {
+    const now = this.state.now || Date.now();
+
+    const sessionReset = this.mountReset || now + 1000 * 60 * 108;
+
+    const limitDefs = [
+      { label: 'Current session', pct: 62, sub: 'resets ' + this.fmt(sessionReset - now), series: [12, 28, 33, 45, 51, 58, 62] },
+      { label: 'Weekly · all models', pct: 47, sub: '3d 6h left in window', series: [4, 11, 19, 26, 31, 40, 47] },
+      { label: 'Weekly · Opus', pct: 88, sub: 'throttle risk Thu', series: [9, 22, 38, 51, 66, 79, 88] }
+    ];
+    const limits = limitDefs.map(l => Object.assign({}, l, {
+      pctLabel: l.pct + '%', color: this.heat(l.pct)
+    }));
+
+    const tools = [
+      { name: 'Cowork', pct: 41, hours: '18h 20m', color: INK, fg: '#f3f2f2' },
+      { name: 'Code', pct: 34, hours: '15h 10m', color: RED, fg: '#fff2ef' },
+      { name: 'Chat', pct: 25, hours: '11h 05m', color: '#d7d3d3', fg: INK }
+    ].map(t => Object.assign({}, t, { pctLabel: t.pct + '%' }));
+
+    const models = [
+      { name: 'Sonnet', pct: 54, tokens: '41.2M' },
+      { name: 'Opus', pct: 33, tokens: '25.1M' },
+      { name: 'Haiku', pct: 8, tokens: '6.4M' },
+      { name: 'Fable', pct: 5, tokens: '3.8M' }
+    ];
+
+    const sessions = [
+      { when: '09:14', label: 'Invoice parser refactor', detail: 'Code · Opus', pct: 62 },
+      { when: 'Yest', label: 'Q3 board narrative', detail: 'Cowork · Sonnet', pct: 88 },
+      { when: 'Yest', label: 'Transcript cleanup batch', detail: 'Chat · Haiku', pct: 21 },
+      { when: 'Sun', label: 'Storyboard exploration', detail: 'Cowork · Fable', pct: 44 },
+      { when: 'Sat', label: 'Migration dry run', detail: 'Code · Sonnet', pct: 73 }
+    ].map(s => Object.assign({}, s, { pctLabel: s.pct + '%', color: this.heat(s.pct) }));
+
+    const projRaw = [
+      { name: 'Invoice parser rewrite', tool: 'Code', running: true, detail: 'edited 4m ago · main', tasks: '7 open' },
+      { name: 'Q3 board narrative', tool: 'Cowork', running: true, detail: 'edited 22m ago', tasks: '3 open' },
+      { name: 'Warehouse migration', tool: 'Code', running: false, detail: 'edited yesterday · feat/etl', tasks: '12 open' },
+      { name: 'Brand refresh workspace', tool: 'Cowork', running: false, detail: 'edited 2d ago', tasks: '5 open' },
+      { name: 'Support macro library', tool: 'Cowork', running: false, detail: 'edited 6d ago', tasks: 'none' },
+      { name: 'Internal docs site', tool: 'Code', running: false, detail: 'edited 11d ago · main', tasks: '2 open' }
+    ];
+    const projects = projRaw.map(p => Object.assign({}, p, {
+      dot: p.running ? RED : '#bab6b6',
+      status: p.running ? 'Running' : 'Idle',
+      toolBg: p.tool === 'Code' ? INK : '#d7d3d3',
+      toolFg: p.tool === 'Code' ? '#f3f2f2' : INK
+    }));
+
+    const cronRaw = [
+      { name: 'nightly-sync → warehouse', schedule: 'Every day, 02:00', inMs: 3.9e7, ok: false, last: 'Failed 02:00 · 429' },
+      { name: 'Support inbox triage', schedule: 'Weekdays, hourly', inMs: 1.4e6, ok: true, last: 'OK 08:00' },
+      { name: 'Weekly usage digest', schedule: 'Mondays, 07:00', inMs: 2.4e8, ok: true, last: 'OK Mon 07:00' },
+      { name: 'Repo dependency audit', schedule: 'Sundays, 23:00', inMs: 1.9e8, ok: true, last: 'OK Sun 23:00' },
+      { name: 'Competitor news brief', schedule: 'Every day, 06:30', inMs: 6.6e7, ok: true, last: 'OK 06:30' }
+    ];
+    const crons = cronRaw.slice().sort((a, b) => (a.ok === b.ok ? a.inMs - b.inMs : a.ok ? 1 : -1)).map(c => ({
+      name: c.name, schedule: c.schedule, last: c.last,
+      next: 'in ' + this.short(c.inMs),
+      edge: c.ok ? INK : RED,
+      rowBg: c.ok ? 'transparent' : '#fff2ef'
+    }));
+
+    const laneDefs = [
+      { key: 'idea', title: 'Idea', placeholder: '+ new idea', mark: '', next: 'doing', edge: '#bab6b6' },
+      { key: 'doing', title: 'Doing', placeholder: '+ start something', mark: '›', next: 'done', edge: INK },
+      { key: 'done', title: 'Done', placeholder: '+ log something done', mark: '✓', next: 'idea', edge: '#d7d3d3' }
+    ];
+    const todos = this.state.todos || [];
+    const lanes = laneDefs.map(L => ({
+      key: L.key, title: L.title, placeholder: L.placeholder,
+      count: todos.filter(t => t.lane === L.key).length,
+      items: todos.filter(t => t.lane === L.key).map(t => ({
+        text: t.text, tag: t.tag || 'Note', edge: L.edge, mark: L.mark,
+        boxBg: L.key === 'idea' ? 'transparent' : L.key === 'doing' ? '#9b9797' : INK,
+        fg: L.key === 'done' ? MUTE : INK,
+        strike: L.key === 'done' ? 'line-through' : 'none',
+        advanceTitle: 'Move to ' + L.next,
+        advance: () => this.save(todos.map(x => (x.id === t.id ? Object.assign({}, x, { lane: L.next }) : x))),
+        remove: () => this.save(todos.filter(x => x.id !== t.id))
+      }))
+    }));
+
+    return {
+      projects, crons, lanes,
+      projectSummary: projRaw.filter(p => p.running).length + ' running · ' + projRaw.length + ' total',
+      cronSummary: cronRaw.filter(c => !c.ok).length + ' failing · ' + cronRaw.length + ' scheduled',
+      addOnEnter: e => {
+        if (e.key !== 'Enter') return;
+        const v = e.target.value.trim();
+        if (!v) return;
+        const lane = e.target.dataset.lane;
+        this.save(todos.concat([{ id: Date.now(), text: v, lane, tag: 'Note' }]));
+        e.target.value = '';
+      },
+      plan: { name: 'Max — 20×', price: '$200 / month', renews: 'Aug 21, 2026', seats: '1 · none' },
+      resetIn: this.fmt(sessionReset - now),
+      syncedAt: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      hasAlerts: (this.props.showAlertBanner ?? true) && !this.state.alertsDismissed,
+      alerts: [{ text: 'Opus weekly limit at 88% · nightly-sync cron failed 02:00 (429)' }],
+      limits, tools, models, sessions,
+      planCycle: 'Billing cycle · 17 days left'
+    };
+  }
+}
+</script>
+</body>
+</html>

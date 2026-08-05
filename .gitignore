@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+dist/
+
+# Redundant with the extracted design_handoff_* folder
+Claude dashboard prototype.zip
+
+# Local runtime state — machine-specific, not source
+server/config.json
+server/todos.json
