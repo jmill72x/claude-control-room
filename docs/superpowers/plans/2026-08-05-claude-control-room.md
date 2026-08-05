@@ -2376,9 +2376,9 @@ export function Header({ usage, now }) {
     <header className="ccr-header">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div className="eyebrow">Anthropic account snapshot</div>
-        <h1 style={{ margin: 0, fontSize: 34, fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1 }}>
-          Control Room
-        </h1>
+        {/* Sizing lives in CSS, not inline: an inline font-size wins over the
+            phone breakpoint's media query and silently defeats it. */}
+        <h1>Control Room</h1>
       </div>
       <div className="ccr-header-stats">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -2433,6 +2433,9 @@ export function AlertBar({ alerts }) {
   border-bottom: var(--rule-strong);
 }
 .ccr-header-stats { display: flex; align-items: flex-end; gap: var(--s6); }
+.ccr-header h1 {
+  margin: 0; font-size: 34px; font-weight: 800; letter-spacing: -0.02em; line-height: 1;
+}
 
 .ccr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; align-items: stretch; }
 .ccr-col { padding: 20px var(--s5) var(--s6) var(--s5); display: flex; flex-direction: column; gap: 20px; }
