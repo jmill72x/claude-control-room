@@ -19,8 +19,7 @@ export function createCache({ budgets = {} } = {}) {
       store.set(key, {
         data: prev?.data ?? null,
         fetchedAt: prev?.fetchedAt ?? null,
-        error: String(error?.message ?? error),
-        failedAt: now
+        error: String(error?.message ?? error)
       });
     },
     get(key, now = Date.now()) {
