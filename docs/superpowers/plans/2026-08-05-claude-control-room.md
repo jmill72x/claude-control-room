@@ -827,19 +827,23 @@ export function aggregate(sessions, now = Date.now(), opts = {}) {
   const recentSessions = live
     .map(s => {
       const tokens = s.records.reduce((a, r) => a + r.tokens, 0);
-      const last = Math.max(...s.records.map(r => r.ts));
-      const model = prettyModel(s.records[s.records.length - 1].model);
+      // `when` and `model` must describe the SAME record. Picking the model by
+      // array index while picking the time by max ts lets them disagree whenever
+      // records are not in ascending order — which nothing guarantees.
+      const newest = s.records.reduce((a, r) => (r.ts > a.ts ? r : a), s.records[0]);
       return {
-        when: whenLabel(last, now),
+        when: whenLabel(newest.ts, now),
         title: s.title ?? (s.cwd ? basename(s.cwd) : 'Untitled'),
         surface: s.surface,
-        model,
+        model: prettyModel(newest.model),
         tokens,
         pct: pct(tokens, grandTotal),
-        ts: last
+        ts: newest.ts
       };
     })
     .sort((a, b) => b.ts - a.ts)
+    // `ts` is a sort key, not part of the contract — strip it before returning.
+    .map(({ ts, ...rest }) => rest)
     .slice(0, 5);
 
   return { byModel, bySurface, byProject, recentSessions };
