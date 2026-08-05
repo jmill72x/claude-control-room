@@ -25,6 +25,7 @@ the visual spec and `Claude Control Room.dc.html` as the structural reference.
 | "By surface" bar | Kept (Cowork + Code real, Chat labeled unmeasurable), plus a second by-project bar |
 | Credits | Config/ingest fed, with a visible staleness marker |
 | Remote access | In v1 — existing cloudflared tunnel + Cloudflare Access, plus a phone breakpoint |
+| Audience | Personal tool, public source — no portability work, but a real README (§11) |
 
 ## 2. Research findings
 
@@ -237,7 +238,28 @@ on a phone — the 30 s poll already accommodates this, but request failures mus
 - **Degradation is tested per panel** — ok, stale and unavailable each render.
 - **Heat thresholds** are tested at the boundaries (84 / 85 / 100 / over 100).
 
-## 11. Out of scope for v1
+## 11. Documentation
+
+The repository is public, but the software is a personal tool: it targets this machine and
+these paths, and makes no promise of running elsewhere. That is a stated position, not an
+omission, and the `README.md` says so plainly rather than implying broader support.
+
+The README is a deliverable, not an afterthought. It covers:
+
+- **What this is and what it reads** — the honest data-source table from §4, so a reader
+  immediately knows which numbers are real, which are hand-entered, and that Chat is
+  unmeasurable
+- **Why it shells out to the `claude` CLI** — there is no API for a consumer subscription; this
+  is the documented reason, so nobody "fixes" it into an API call later
+- **Running it** — prerequisites, the launchd plist, the tunnel and Access setup
+- **Configuration** — every field in `config.json`, and a checked-in `config.example.json`,
+  since the real file is gitignored
+- **The fragility warning** — this depends on undocumented file layouts and CLI output formats
+  that can change in any release; §2 of this spec is the re-verification procedure
+- **Adapting it** — what another person would have to change, without pretending that path is
+  supported
+
+## 12. Out of scope for v1
 
 - Chat surface usage — no local source exists, permanently (§2)
 - Browser automation to refresh credits automatically
