@@ -68,6 +68,21 @@ test('recentSessions are newest first with a share-of-week percentage', () => {
   assert.equal(recentSessions[0].surface, 'Code');
 });
 
+test('recentSessions entries expose exactly the contracted shape, with no leaked sort key', () => {
+  const { recentSessions } = aggregate(sessions, NOW);
+  const keys = Object.keys(recentSessions[0]).sort();
+  assert.deepEqual(keys, ['model', 'pct', 'surface', 'title', 'tokens', 'when'].sort());
+});
+
+test('recentSessions model comes from the same record as when, not from array order (session a stores newest-first)', () => {
+  const { recentSessions } = aggregate(sessions, NOW);
+  // Session 'a' (Invoice parser) lists its records newest-first: NOW-1h Sonnet, then
+  // NOW-2h Opus. The newest record is Sonnet, so model must report Sonnet — picking
+  // by array index (records[records.length - 1]) would wrongly report Opus.
+  assert.equal(recentSessions[0].title, 'Invoice parser');
+  assert.equal(recentSessions[0].model, 'Sonnet');
+});
+
 test('a session with no title falls back to its project name', () => {
   const untitled = [{ sessionId: 'x', title: null, surface: 'Code', cwd: '/Users/jeff/Projects/thing', gitBranch: 'main',
     records: [{ ts: NOW - HOUR, model: 'claude-opus-5', tokens: 10 }] }];
