@@ -8,3 +8,7 @@ Claude dashboard prototype.zip
 # Local runtime state — machine-specific, not source
 server/config.json
 server/todos.json
+
+# The real plist carries absolute paths; only the example is tracked
+deploy/*.plist
+!deploy/*.plist.example

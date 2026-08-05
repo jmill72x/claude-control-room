@@ -3065,7 +3065,15 @@ kill %1
 
 Expected: `200`
 
-- [ ] **Step 2: Write `deploy/net.milleradvisorypartners.control-room.plist`**
+- [ ] **Step 2: Write `deploy/control-room.plist.example`**
+
+The repo is public, so the **example** is what gets committed — with placeholder paths — and the
+real plist stays local and gitignored, the same pattern `config.json` already uses. Add
+`deploy/*.plist` (but not `*.plist.example`) to `.gitignore`. Substitute `__HOME__` and
+`__REPO__` when installing; the README documents that step.
+
+Use `__HOME__` in place of the home directory and `__REPO__` in place of the repo path
+throughout the file below:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
