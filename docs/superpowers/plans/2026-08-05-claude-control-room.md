@@ -1842,7 +1842,6 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
       unavailableRoots.push(root);
       continue;
     }
-    unreadablePaths.push(...failures);
     for (const file of jsonlFiles) {
       let info;
       try { info = await stat(file); } catch { continue; }
@@ -1858,6 +1857,9 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
         coworkSessions.push(parseCoworkSession(JSON.parse(await readFile(file, 'utf8'))));
       } catch { /* a malformed session file must not sink the collector */ }
     }
+    // Captured after BOTH walks for this root: spread copies values, so pushing
+    // before the Cowork walk would silently drop that walk's failures.
+    unreadablePaths.push(...failures);
   }
 
   if (roots.length > 0 && unavailableRoots.length === roots.length) {
