@@ -1,7 +1,7 @@
 const PALETTE = ['var(--ink)', 'var(--accent)', 'var(--n300)', 'var(--n500)'];
 const FG = ['var(--ground)', 'var(--a100)', 'var(--ink)', 'var(--ground)'];
 
-export function StackedBar({ segments, unit = 'tokens' }) {
+export function StackedBar({ segments }) {
   const measurable = segments.filter(s => s.measurable !== false);
   const unmeasurable = segments.filter(s => s.measurable === false);
 

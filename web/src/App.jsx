@@ -11,7 +11,7 @@ import { LimitBars } from './components/LimitBars.jsx';
 import { StackedBar } from './components/StackedBar.jsx';
 import { ModelRows } from './components/ModelRows.jsx';
 import { SessionRows } from './components/SessionRows.jsx';
-import { formatTokens } from './lib/format.js';
+import { formatTokens, billingCycleNote } from './lib/format.js';
 
 export default function App() {
   const { payload } = useDashboard();
@@ -27,7 +27,7 @@ export default function App() {
         <section className="ccr-col ccr-col--ruled">
           <div className="ccr-col-head">
             <h2>01&nbsp;&nbsp;Usage</h2>
-            <span>{config?.plan?.renews ? `Renews ${config.plan.renews}` : ''}</span>
+            <span>{billingCycleNote(config?.plan?.renews, now)}</span>
           </div>
           <PlanBlock plan={config?.plan} />
           <Panel label="Credits">

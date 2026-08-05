@@ -21,3 +21,13 @@ export function formatTokens(n) {
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(n);
 }
+
+// Returns '' rather than a guess when the renewal date is missing or unparseable:
+// an empty header note is honest, "0 days left" is not.
+export function billingCycleNote(renews, now = Date.now()) {
+  if (!renews) return '';
+  const at = Date.parse(renews);
+  if (!Number.isFinite(at)) return '';
+  const days = Math.max(0, Math.ceil((at - now) / 86400000));
+  return `Billing cycle · ${days} day${days === 1 ? '' : 's'} left`;
+}
