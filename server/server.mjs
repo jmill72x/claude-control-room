@@ -28,10 +28,11 @@ registry.register('usage', () => collectUsage(), 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
 registry.register('crons', () => collectCrons(), 60 * 1000);
 registry.register('sessions', async () => {
-  const { transcripts, coworkSessions } = await collectSessions();
+  const { transcripts, coworkSessions, unavailableRoots } = await collectSessions();
   const now = Date.now();
   return {
     ...aggregate(transcripts, now),
+    unavailableRoots,
     projects: buildProjects({
       agents: cache.get('agents', now).data ?? [],
       coworkSessions,

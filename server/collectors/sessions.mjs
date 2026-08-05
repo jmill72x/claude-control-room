@@ -19,8 +19,19 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
   const cutoff = Date.now() - maxAgeMs;
   const transcripts = [];
   const coworkSessions = [];
+  const unavailableRoots = [];
 
   for (const { root, surface } of roots) {
+    // A root that cannot be read is NOT the same as a root with no sessions.
+    // One missing root is legitimate (Cowork may not be installed); every root
+    // failing means a moved home directory or a permissions problem, and must
+    // surface as `unavailable` rather than as "you used Claude zero times".
+    try {
+      await stat(root);
+    } catch {
+      unavailableRoots.push(root);
+      continue;
+    }
     for (const file of await walk(root, n => n.endsWith('.jsonl'))) {
       let info;
       try { info = await stat(file); } catch { continue; }
@@ -37,5 +48,11 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
       } catch { /* a malformed session file must not sink the collector */ }
     }
   }
-  return { transcripts, coworkSessions };
+
+  if (unavailableRoots.length === roots.length) {
+    throw new Error(`no transcript root is readable: ${unavailableRoots.join(', ')}`);
+  }
+  // A partially-read set understates every total, so say so rather than
+  // presenting the remainder as complete.
+  return { transcripts, coworkSessions, unavailableRoots };
 }
