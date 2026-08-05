@@ -468,7 +468,9 @@ One parser serves both Claude Code and Cowork, because both write the identical 
   - `parseTranscript(text: string, surface: 'Code'|'Cowork') -> { sessionId, title, surface, cwd, gitBranch, records }`
     where `records: [{ ts: number, model: string, tokens: number }]`
   - `totalTokens(usage: object) -> number` — sums input, output, and both cache fields
-  - `TRANSCRIPT_ROOTS` — `[{ glob: string, surface: string }]` describing both roots
+  - `TRANSCRIPT_ROOTS` — `[{ root: string, surface: string }]` describing both roots, where
+    `root` is a directory path that gets walked (not a glob pattern). Task 8's `collectSessions`
+    destructures `{ root, surface }` and must match this.
 
 - [ ] **Step 1: Capture real fixtures (trimmed to keep the repo small)**
 
