@@ -82,3 +82,63 @@ test('a project with no known activity gets a truthful detail, never a fabricate
   assert.equal(p.detail, 'no recent activity');
   assert.equal(p.tasks, null);
 });
+
+// Fix-round test: among two running projects, the more recently active one
+// must come first. Both projects are busy (running === true) so the running
+// flag alone can't order them — only a recency tiebreak can.
+test('among running projects, the most recently active one sorts first', () => {
+  const twoRunning = {
+    agents: [
+      { pid: 1, cwd: '/Users/example/Projects/stale', status: 'busy', name: 'stale-a1' },
+      { pid: 2, cwd: '/Users/example/Projects/fresh', status: 'busy', name: 'fresh-b2' }
+    ],
+    coworkSessions: [],
+    transcripts: [
+      { cwd: '/Users/example/Projects/stale', gitBranch: 'main', lastTs: NOW - 60 * MIN },
+      { cwd: '/Users/example/Projects/fresh', gitBranch: 'main', lastTs: NOW - 1 * MIN }
+    ]
+  };
+  const names = buildProjects(twoRunning, NOW).map(p => p.name);
+  assert.deepEqual(names, ['fresh', 'stale']);
+});
+
+// Fix-round test: a Code project and a Cowork session that happen to share a
+// basename must not be merged. Without a tool-aware key, the Cowork session
+// (processed after agents/transcripts) is silently swallowed into the Code
+// project's row.
+test('a Code project and a Cowork session sharing a basename produce two separate rows', () => {
+  const collision = {
+    agents: [{ pid: 1, cwd: '/Users/example/Projects/docs', status: 'busy', name: 'docs-a1' }],
+    coworkSessions: [
+      { sessionId: 'c9', title: 'Docs rewrite', model: 'claude-opus-5', folder: '/Users/example/CoworkSpace/docs', lastActivityAt: NOW - 5 * MIN, archived: false }
+    ],
+    transcripts: []
+  };
+  const rows = buildProjects(collision, NOW).filter(p => p.name === 'docs');
+  assert.equal(rows.length, 2);
+  const tools = rows.map(r => r.tool).sort();
+  assert.deepEqual(tools, ['Code', 'Cowork']);
+});
+
+// Fix-round test: the first transcript touching a project has no lastTs. A
+// naive `p.lastTs === null` check gets poisoned to `undefined` and never
+// recovers, so a later transcript with a real timestamp must still win.
+test('a missing lastTs on first touch does not block a later real timestamp', () => {
+  const poisoned = {
+    agents: [],
+    coworkSessions: [],
+    transcripts: [
+      { cwd: '/Users/example/Projects/ledger', gitBranch: 'main', lastTs: undefined },
+      { cwd: '/Users/example/Projects/ledger', gitBranch: 'main', lastTs: NOW - 7 * MIN }
+    ]
+  };
+  const p = buildProjects(poisoned, NOW).find(x => x.name === 'ledger');
+  assert.equal(p.detail, 'edited 7m ago · main');
+});
+
+// Fix-round test: guard against a future `lastTs` (or any other internal
+// sort-key field) leaking through the public shape.
+test('returned project objects expose exactly the documented keys', () => {
+  const p = buildProjects(input, NOW).find(x => x.name === 'invoice');
+  assert.deepEqual(Object.keys(p).sort(), ['detail', 'name', 'running', 'tasks', 'tool']);
+});

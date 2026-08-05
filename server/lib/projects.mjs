@@ -4,11 +4,20 @@ import { formatRelative } from './humanize.mjs';
 export function buildProjects({ agents = [], coworkSessions = [], transcripts = [] }, now = Date.now()) {
   const projects = new Map();
 
+  // Keyed by tool AND name: /Projects/docs (Code) and /CoworkSpace/docs (Cowork)
+  // are different projects that happen to share a basename.
   const touch = (name, tool) => {
-    if (!projects.has(name)) {
-      projects.set(name, { name, tool, running: false, lastTs: null, branch: null, tasks: null });
+    const key = `${tool}:${name}`;
+    if (!projects.has(key)) {
+      projects.set(key, { name, tool, running: false, lastTs: null, branch: null, tasks: null });
     }
-    return projects.get(name);
+    return projects.get(key);
+  };
+
+  // A missing timestamp must never be written into lastTs.
+  const noteActivity = (p, ts) => {
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) return;
+    if (p.lastTs === null || ts > p.lastTs) p.lastTs = ts;
   };
 
   for (const a of agents) {
@@ -20,14 +29,14 @@ export function buildProjects({ agents = [], coworkSessions = [], transcripts = 
   for (const t of transcripts) {
     if (!t.cwd) continue;
     const p = touch(basename(t.cwd), 'Code');
-    if (p.lastTs === null || t.lastTs > p.lastTs) p.lastTs = t.lastTs;
+    noteActivity(p, t.lastTs);
     if (t.gitBranch) p.branch = t.gitBranch;
   }
 
   for (const s of coworkSessions) {
     if (s.archived || !s.folder) continue;
     const p = touch(basename(s.folder), 'Cowork');
-    if (p.lastTs === null || (s.lastActivityAt ?? 0) > p.lastTs) p.lastTs = s.lastActivityAt;
+    noteActivity(p, s.lastActivityAt);
   }
 
   return [...projects.values()]
@@ -38,8 +47,13 @@ export function buildProjects({ agents = [], coworkSessions = [], transcripts = 
         tool: p.tool,
         running: p.running,
         detail: p.branch ? `${edited} · ${p.branch}` : edited,
-        tasks: p.tasks
+        tasks: p.tasks,
+        lastTs: p.lastTs
       };
     })
-    .sort((a, b) => (a.running === b.running ? 0 : a.running ? -1 : 1));
+    .sort((a, b) => {
+      if (a.running !== b.running) return a.running ? -1 : 1;
+      return (b.lastTs ?? -Infinity) - (a.lastTs ?? -Infinity);
+    })
+    .map(({ lastTs, ...rest }) => rest);
 }
