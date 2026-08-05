@@ -1,0 +1,33 @@
+.ccr-header {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s5);
+  padding: var(--s5) var(--s6) var(--s4) var(--s6);
+  border-bottom: var(--rule-strong);
+}
+.ccr-header-stats { display: flex; align-items: flex-end; gap: var(--s6); }
+
+.ccr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; align-items: stretch; }
+.ccr-col { padding: 20px var(--s5) var(--s6) var(--s5); display: flex; flex-direction: column; gap: 20px; }
+.ccr-col--ruled { border-right: var(--rule-strong); }
+
+.ccr-col-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+  border-bottom: var(--rule-strong); padding-bottom: var(--s2);
+}
+.ccr-col-head h2 {
+  margin: 0; font-size: 15px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.ccr-col-head span { font-size: 11px; font-weight: 700; color: var(--n600); }
+
+/* iPad portrait and below: one column, rules dropped. */
+@media (max-width: 1024px) {
+  .ccr-grid { grid-template-columns: 1fr; }
+  .ccr-col--ruled { border-right: 0; border-bottom: var(--rule-strong); }
+}
+
+/* Phone: tighten padding and type, stats sit under the title. */
+@media (max-width: 600px) {
+  .ccr-header { flex-direction: column; align-items: flex-start; gap: var(--s3); padding: var(--s4); }
+  .ccr-header h1 { font-size: 26px; }
+  .ccr-header-stats { gap: var(--s5); }
+  .ccr-col { padding: var(--s4); }
+}

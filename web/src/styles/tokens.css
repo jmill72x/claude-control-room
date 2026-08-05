@@ -1,0 +1,47 @@
+@font-face {
+  font-family: 'Archivo';
+  src: url('../fonts/Archivo.woff2') format('woff2');
+  font-weight: 400 800;
+  font-display: swap;
+}
+
+:root {
+  --ground: #f3f2f2;
+  --surface: #eae9e9;
+  --ink: #201e1d;
+  --accent: #ec3013;
+
+  --n100: #f8f4f4; --n200: #eae7e7; --n300: #d7d3d3; --n400: #bab6b6;
+  --n500: #9b9797; --n600: #7d7979; --n700: #605d5d; --n800: #444141; --n900: #2d2b2b;
+
+  --a100: #fff2ef; --a200: #ffe0d9; --a300: #ffc4b8;
+  --a500: #ff563c; --a600: #dd2b0f; --a700: #ae1800; --a800: #7c1405;
+
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  --rule-strong: 2px solid var(--ink);
+  --rule-fine: 1px solid var(--n300);
+  --rule-hair: 1px solid var(--n200);
+}
+
+* { box-sizing: border-box; border-radius: 0; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: 'Archivo', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--a300); }
+*:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.num { font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--n600);
+}
+.section-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--n600);
+}
