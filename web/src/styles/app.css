@@ -4,6 +4,9 @@
   border-bottom: var(--rule-strong);
 }
 .ccr-header-stats { display: flex; align-items: flex-end; gap: var(--s6); }
+.ccr-header h1 {
+  margin: 0; font-size: 34px; font-weight: 800; letter-spacing: -0.02em; line-height: 1;
+}
 
 .ccr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; align-items: stretch; }
 .ccr-col { padding: 20px var(--s5) var(--s6) var(--s5); display: flex; flex-direction: column; gap: 20px; }

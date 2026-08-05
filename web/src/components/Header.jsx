@@ -7,9 +7,9 @@ export function Header({ usage, now }) {
     <header className="ccr-header">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div className="eyebrow">Anthropic account snapshot</div>
-        <h1 style={{ margin: 0, fontSize: 34, fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1 }}>
-          Control Room
-        </h1>
+        {/* Sizing lives in CSS, not inline: an inline font-size wins over the
+            phone breakpoint's media query and silently defeats it. */}
+        <h1>Control Room</h1>
       </div>
       <div className="ccr-header-stats">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
