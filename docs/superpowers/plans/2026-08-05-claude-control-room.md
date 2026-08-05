@@ -2574,7 +2574,7 @@ export function LimitBars({ limits, threshold, now }) {
             <div style={{ height: 10, background: 'var(--n300)', position: 'relative' }}>
               <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, l.pct)}%`, background: color }} />
             </div>
-            <div style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
+            <div className="num" style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
               {resetsAt ? `resets ${formatCountdown(resetsAt - now)}` : 'no reset time reported'}
             </div>
           </div>
@@ -2593,9 +2593,14 @@ Handles the unmeasurable Chat segment explicitly — hatched, labeled, never a f
 const PALETTE = ['var(--ink)', 'var(--accent)', 'var(--n300)', 'var(--n500)'];
 const FG = ['var(--ground)', 'var(--a100)', 'var(--ink)', 'var(--ground)'];
 
+// A segment is drawable only if it is not flagged unmeasurable AND carries a real
+// number. Testing `measurable !== false` alone fails OPEN: a segment arriving without
+// the flag and without a pct would render as a phantom bar showing a bare '%'.
+const isDrawable = s => s.measurable !== false && typeof s.pct === 'number';
+
 export function StackedBar({ segments }) {
-  const measurable = segments.filter(s => s.measurable !== false);
-  const unmeasurable = segments.filter(s => s.measurable === false);
+  const measurable = segments.filter(isDrawable);
+  const unmeasurable = segments.filter(s => !isDrawable(s));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2605,7 +2610,7 @@ export function StackedBar({ segments }) {
             flex: Math.max(s.pct, 1), background: PALETTE[i % PALETTE.length],
             display: 'flex', alignItems: 'center', paddingLeft: 6, overflow: 'hidden'
           }}>
-            <span style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
+            <span className="num" style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
               {s.pct}%
             </span>
           </div>
@@ -2653,7 +2658,7 @@ export function PlanBlock({ plan }) {
         </div>
         <div style={{ padding: '8px 0 8px 12px' }}>
           <div className="section-label">Seats · Extra</div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{plan.seats}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{plan.seats}</div>
         </div>
       </div>
     </div>
@@ -2684,7 +2689,7 @@ export function CreditsPanel({ credits, threshold, now }) {
         <div style={{ fontSize: 12, color: 'var(--n700)', fontWeight: 600 }}>balance</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 700 }}>
+        <span className="num" style={{ fontSize: 13, fontWeight: 700 }}>
           {money(credits.spent)} of {money(credits.monthlyLimit)}
         </span>
         <span className="num" style={{ fontSize: 12, fontWeight: 700, color }}>{pct}%</span>
@@ -2702,7 +2707,7 @@ export function CreditsPanel({ credits, threshold, now }) {
           <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{credits.promoExpiresOn ?? '—'}</div>
         </div>
       </div>
-      <div style={{ fontSize: 10, color: aged ? 'var(--accent)' : 'var(--n600)', fontWeight: aged ? 700 : 500 }}>
+      <div className="num" style={{ fontSize: 10, color: aged ? 'var(--accent)' : 'var(--n600)', fontWeight: aged ? 700 : 500 }}>
         {ageDays === null ? 'never updated' : `updated ${ageDays} day${ageDays === 1 ? '' : 's'} ago`}
       </div>
     </div>
