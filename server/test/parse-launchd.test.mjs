@@ -5,14 +5,14 @@ import { parseLaunchctlList, nextRun, buildCron } from '../lib/parse-launchd.mjs
 test('parses labels, pids and exit statuses', () => {
   const text = [
     'PID\tStatus\tLabel',
-    '30571\t0\tcom.cloudflare.cloudflared.mini',
-    '-\t0\tnet.milleradvisorypartners.linkedin-draft',
-    '31880\t-15\tnet.milleradvisorypartners.linkedin-review'
+    '30571\t0\tcom.example.tunnel.host',
+    '-\t0\tnet.example.nightly-draft',
+    '31880\t-15\tnet.example.review-server'
   ].join('\n');
   const map = parseLaunchctlList(text);
-  assert.equal(map.get('com.cloudflare.cloudflared.mini').pid, 30571);
-  assert.equal(map.get('net.milleradvisorypartners.linkedin-draft').pid, null);
-  assert.equal(map.get('net.milleradvisorypartners.linkedin-review').status, -15);
+  assert.equal(map.get('com.example.tunnel.host').pid, 30571);
+  assert.equal(map.get('net.example.nightly-draft').pid, null);
+  assert.equal(map.get('net.example.review-server').status, -15);
 });
 
 test('nextRun finds today when the time is still ahead', () => {
@@ -52,12 +52,12 @@ test('a non-zero exit status marks the cron failing', () => {
 
 test('a zero exit status is healthy and names the job readably', () => {
   const cron = buildCron({
-    label: 'net.milleradvisorypartners.linkedin-draft',
+    label: 'net.example.nightly-draft',
     plist: { StartCalendarInterval: { Hour: 12, Minute: 0, Weekday: 3 } },
     statusRow: { pid: null, status: 0 }
   }, Date.parse('2026-08-05T01:00:00'));
   assert.equal(cron.ok, true);
-  assert.equal(cron.name, 'linkedin-draft');
+  assert.equal(cron.name, 'nightly-draft');
   assert.equal(cron.last, 'OK');
 });
 

@@ -3,7 +3,7 @@
 -	0	com.apple.enhancedloggingd
 850	0	com.apple.cloudphotod
 -	-9	com.apple.MENotificationService
-30571	0	com.cloudflare.cloudflared.mini
+30571	0	com.example.tunnel.host
 701	0	com.apple.Finder
 656	0	com.apple.homed
 1328	0	com.apple.dataaccess.dataaccessd
@@ -22,13 +22,13 @@
 -	0	com.apple.UserPictureSyncAgent
 633	0	com.apple.nsurlsessiond
 1231	0	com.apple.devicecheckd
-693	0	application.com.openai.codex.867117.867798
+693	0	application.com.example.editor.867117.867798
 3421	0	com.apple.managedcorespotlightd.FD85E0F0-5727-8330-6179-E62584EE8190
 -	0	com.apple.syncservices.uihandler
 723	0	com.apple.iconservices.iconservicesagent
 -	-9	com.apple.diagnosticextensionsd
 2509	0	com.apple.intelligenceplatformd
--	0	net.milleradvisorypartners.linkedin-draft
--	0	net.milleradvisorypartners.linkedin-token-nag
--	0	net.milleradvisorypartners.linkedin-nag
-31880	-15	net.milleradvisorypartners.linkedin-review
+-	0	net.example.nightly-draft
+-	0	net.example.token-nag
+-	0	net.example.weekly-nag
+31880	-15	net.example.review-server

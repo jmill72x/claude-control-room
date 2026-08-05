@@ -6,14 +6,14 @@ const NOW = Date.parse('2026-08-05T12:00:00Z');
 const HOUR = 3600000, DAY = 24 * HOUR;
 
 const sessions = [
-  { sessionId: 'a', title: 'Invoice parser', surface: 'Code', cwd: '/Users/jeff/Projects/invoice', gitBranch: 'main',
+  { sessionId: 'a', title: 'Invoice parser', surface: 'Code', cwd: '/Users/example/Projects/invoice', gitBranch: 'main',
     records: [
       { ts: NOW - HOUR, model: 'claude-sonnet-5', tokens: 600 },
       { ts: NOW - 2 * HOUR, model: 'claude-opus-5', tokens: 400 }
     ] },
-  { sessionId: 'b', title: 'Board narrative', surface: 'Cowork', cwd: '/Users/jeff/CoworkSpace', gitBranch: null,
+  { sessionId: 'b', title: 'Board narrative', surface: 'Cowork', cwd: '/Users/example/CoworkSpace', gitBranch: null,
     records: [{ ts: NOW - 3 * HOUR, model: 'claude-sonnet-5', tokens: 1000 }] },
-  { sessionId: 'c', title: 'Ancient', surface: 'Code', cwd: '/Users/jeff/Projects/old', gitBranch: 'main',
+  { sessionId: 'c', title: 'Ancient', surface: 'Code', cwd: '/Users/example/Projects/old', gitBranch: 'main',
     records: [{ ts: NOW - 30 * DAY, model: 'claude-opus-5', tokens: 99999 }] }
 ];
 
@@ -50,7 +50,7 @@ test('surface percentages are computed over measurable surfaces only', () => {
 
 test('byProject uses the directory basename and collapses the tail into Other', () => {
   const many = [1, 2, 3, 4, 5].map(i => ({
-    sessionId: `p${i}`, title: `t${i}`, surface: 'Code', cwd: `/Users/jeff/Projects/proj${i}`, gitBranch: 'main',
+    sessionId: `p${i}`, title: `t${i}`, surface: 'Code', cwd: `/Users/example/Projects/proj${i}`, gitBranch: 'main',
     records: [{ ts: NOW - HOUR, model: 'claude-opus-5', tokens: 100 * (6 - i) }]
   }));
   const { byProject } = aggregate(many, NOW);
@@ -84,7 +84,7 @@ test('recentSessions model comes from the same record as when, not from array or
 });
 
 test('a session with no title falls back to its project name', () => {
-  const untitled = [{ sessionId: 'x', title: null, surface: 'Code', cwd: '/Users/jeff/Projects/thing', gitBranch: 'main',
+  const untitled = [{ sessionId: 'x', title: null, surface: 'Code', cwd: '/Users/example/Projects/thing', gitBranch: 'main',
     records: [{ ts: NOW - HOUR, model: 'claude-opus-5', tokens: 10 }] }];
   assert.equal(aggregate(untitled, NOW).recentSessions[0].title, 'thing');
 });
@@ -109,7 +109,7 @@ function localNoonToday() {
 
 test('when-label shows HH:MM for a session earlier today', () => {
   const base = localNoonToday();
-  const s = [{ sessionId: 'z', title: 'Today session', surface: 'Code', cwd: '/Users/jeff/Projects/z', gitBranch: 'main',
+  const s = [{ sessionId: 'z', title: 'Today session', surface: 'Code', cwd: '/Users/example/Projects/z', gitBranch: 'main',
     records: [{ ts: base - HOUR, model: 'claude-opus-5', tokens: 10 }] }];
   const { recentSessions } = aggregate(s, base);
   assert.equal(recentSessions[0].when, '11:00');
@@ -117,7 +117,7 @@ test('when-label shows HH:MM for a session earlier today', () => {
 
 test('when-label shows Yest for a session exactly one calendar day back', () => {
   const base = localNoonToday();
-  const s = [{ sessionId: 'z', title: 'Yesterday session', surface: 'Code', cwd: '/Users/jeff/Projects/z', gitBranch: 'main',
+  const s = [{ sessionId: 'z', title: 'Yesterday session', surface: 'Code', cwd: '/Users/example/Projects/z', gitBranch: 'main',
     records: [{ ts: base - DAY, model: 'claude-opus-5', tokens: 10 }] }];
   const { recentSessions } = aggregate(s, base);
   assert.equal(recentSessions[0].when, 'Yest');
@@ -126,7 +126,7 @@ test('when-label shows Yest for a session exactly one calendar day back', () => 
 test('when-label shows a weekday abbreviation for sessions further back', () => {
   const base = localNoonToday();
   const ts = base - 3 * DAY;
-  const s = [{ sessionId: 'z', title: 'Older session', surface: 'Code', cwd: '/Users/jeff/Projects/z', gitBranch: 'main',
+  const s = [{ sessionId: 'z', title: 'Older session', surface: 'Code', cwd: '/Users/example/Projects/z', gitBranch: 'main',
     records: [{ ts, model: 'claude-opus-5', tokens: 10 }] }];
   const { recentSessions } = aggregate(s, base);
   const expected = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(ts).getDay()];
@@ -146,7 +146,7 @@ function localTime(hh, mm = 0, dayOffset = 0) {
 }
 
 function sessionAt(ts) {
-  return [{ sessionId: 'z', title: 'Session', surface: 'Code', cwd: '/Users/jeff/Projects/z', gitBranch: 'main',
+  return [{ sessionId: 'z', title: 'Session', surface: 'Code', cwd: '/Users/example/Projects/z', gitBranch: 'main',
     records: [{ ts, model: 'claude-opus-5', tokens: 10 }] }];
 }
 
@@ -175,7 +175,7 @@ test('when-label shows Yest for an early-yesterday timestamp read late today (ne
 
 test('byProject omits Other entirely when there are three or fewer projects', () => {
   const few = [1, 2, 3].map(i => ({
-    sessionId: `p${i}`, title: `t${i}`, surface: 'Code', cwd: `/Users/jeff/Projects/proj${i}`, gitBranch: 'main',
+    sessionId: `p${i}`, title: `t${i}`, surface: 'Code', cwd: `/Users/example/Projects/proj${i}`, gitBranch: 'main',
     records: [{ ts: NOW - HOUR, model: 'claude-opus-5', tokens: 100 * i }]
   }));
   const { byProject } = aggregate(few, NOW);
