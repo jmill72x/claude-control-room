@@ -1,0 +1,25 @@
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 45% used · resets Aug 5 at 12:09pm (America/New_York)
+Current week (all models): 7% used · resets Aug 10 at 8pm (America/New_York)
+Current week (Fable): 0% used
+
+What's contributing to your limits usage?
+Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.
+
+Last 24h · 1537 requests · 2 sessions
+  100% of your usage came from subagent-heavy sessions
+  93% of your usage came from sessions active for 8+ hours
+  60% of your usage was at >150k context
+  Top skills: /superpowers:subagent-driven-development 2%, /superpowers:writing-plans 2%, /superpowers:brainstorming 1%
+  Top subagents: general-purpose 42%
+  Top plugins: superpowers 5%
+
+Last 7d · 3645 requests · 9 sessions
+  97% of your usage came from sessions active for 8+ hours
+  79% of your usage came from subagent-heavy sessions
+  76% of your usage was at >150k context
+  Top skills: /superpowers:subagent-driven-development 2%, /superpowers:writing-plans 2%, /claude-in-chrome 1%, /superpowers:finishing-a-development-branch 1%
+  Top subagents: general-purpose 19%
+  Top plugins: superpowers 5%, document-skills 1%
+  Top MCP servers: claude-in-chrome 11%
