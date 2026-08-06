@@ -4,8 +4,10 @@ import { useDashboard } from './hooks/useDashboard.js';
 import { useTick } from './hooks/useTick.js';
 import { Header } from './components/Header.jsx';
 import { AlertBar } from './components/AlertBar.jsx';
+import { ConnectionBar } from './components/ConnectionBar.jsx';
 import { Panel } from './components/Panel.jsx';
 import { StatusNote } from './components/StatusNote.jsx';
+import { IncompleteNote } from './components/IncompleteNote.jsx';
 import { PlanBlock } from './components/PlanBlock.jsx';
 import { CreditsPanel } from './components/CreditsPanel.jsx';
 import { LimitBars } from './components/LimitBars.jsx';
@@ -15,23 +17,108 @@ import { SessionRows } from './components/SessionRows.jsx';
 import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
 import { Lanes } from './components/Lanes.jsx';
-import { formatTokens, billingCycleNote, summaryOrDash } from './lib/format.js';
+import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf } from './lib/format.js';
+
+// Polling is every 30s. Three minutes of silence without a fetch error means the
+// tab was suspended or the machine slept — the numbers on screen are real but no
+// longer current, and the page must say so. Deliberately generous: this compares
+// a clock on the viewing device (an iPad, over the tunnel) against a clock on the
+// server, and a few seconds of skew must not trip a false alarm.
+const STALE_AFTER = 3 * 60 * 1000;
+
+// An ingest feed is expected to write an object. Anything else is a feed we
+// cannot read: never spread into the UI, never silently treated as empty.
+const objectFrom = envelope => {
+  const data = envelope?.data;
+  if (data === null || data === undefined) return { value: null, invalid: false };
+  if (typeof data === 'object' && !Array.isArray(data)) return { value: data, invalid: false };
+  return { value: null, invalid: true };
+};
 
 export default function App() {
-  const { payload } = useDashboard();
+  const { payload, error, receivedAt } = useDashboard();
   const now = useTick(1000);
-  const config = payload?.config?.data;
+
+  const configEnv = payload?.config;
+  const config = configEnv?.data;
   const threshold = config?.warnThreshold ?? 85;
-  const projects = payload?.sessions?.data?.projects ?? [];
-  const cronsUnavailable = payload?.crons?.status === 'unavailable';
-  const crons = [
-    ...(payload?.crons?.data ?? []),
-    ...(payload?.ingestCrons?.data ?? [])
-  ].sort((a, b) => (a.ok === b.ok ? (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) : a.ok ? 1 : -1));
+
+  // The payload is only as fresh as the moment the server built it. Take the
+  // worse of "how old the server said it was" and "how long since it arrived
+  // here", so neither a slept tab nor a cached response passes as live.
+  const ageMs = payload
+    ? Math.max(0, now - (payload.serverTime ?? receivedAt ?? now), now - (receivedAt ?? now))
+    : null;
+  const pageStale = !error && ageMs !== null && ageMs > STALE_AFTER;
+
+  const usageEnv = payload?.usage;
+  const limits = Array.isArray(usageEnv?.data?.limits) ? usageEnv.data.limits : [];
+
+  const sessionsEnv = payload?.sessions;
+  const sessionData = sessionsEnv?.data;
+  const incomplete = (
+    <IncompleteNote
+      roots={sessionData?.unavailableRoots}
+      paths={sessionData?.unreadablePaths}
+      what="these totals"
+    />
+  );
+
+  // Projects: session-derived plus anything ingested. `running` that is neither
+  // true nor false means the agents source could not be read — which is not the
+  // same fact as "idle", and must not be summarised as one.
+  const ingestProjects = arrayFrom(payload?.ingestProjects);
+  const sessionProjects = Array.isArray(sessionData?.projects) ? sessionData.projects : [];
+  const projects = [...sessionProjects, ...ingestProjects.items];
+  const runningUnknown = projects.some(p => p.running !== true && p.running !== false);
+  const projectSummary = runningUnknown
+    ? `${projects.length} total · running unknown`
+    : `${projects.filter(p => p.running).length} running · ${projects.length} total`;
+
+  const cronsEnv = payload?.crons;
+  const launchdCrons = arrayFrom(cronsEnv);
+  const ingestCrons = arrayFrom(payload?.ingestCrons);
+  const crons = [...launchdCrons.items, ...ingestCrons.items]
+    .sort((a, b) => (a.ok === b.ok ? (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) : a.ok ? 1 : -1));
+  // `!c.ok` counted a cron whose state is unknown as a confirmed failure.
+  const cronSummary = `${crons.filter(c => c.ok === false).length} failing · ${crons.length} scheduled`;
+
+  // Credits: ingest wins over config once it has actually reported. A feed that
+  // carries no updatedAt of its own is dated by when it arrived, so the
+  // staleness line is neither blank nor invented.
+  const ingestCredits = objectFrom(payload?.ingestCredits);
+  const credits = ingestCredits.value
+    ? {
+      updatedAt: payload?.ingestCredits?.fetchedAt
+        ? new Date(payload.ingestCredits.fetchedAt).toISOString().slice(0, 10)
+        : null,
+      ...ingestCredits.value
+    }
+    : (config?.credits ?? null);
+  const creditsEnv = ingestCredits.value
+    ? payload.ingestCredits
+    : (credits
+      ? configEnv
+      : (payload
+        ? {
+          status: 'unavailable',
+          fetchedAt: null,
+          error: configEnv?.error ?? 'no credits in config.json and nothing ingested'
+        }
+        : undefined));
+
+  const planReason = payload
+    ? (configEnv?.error ?? 'no plan details in config.json')
+    : 'no response from the server yet';
 
   return (
     <div style={{ minHeight: '100vh', paddingBottom: 64 }}>
-      <Header usage={payload?.usage} now={now} />
+      <Header usage={usageEnv} now={now} />
+      <ConnectionBar
+        error={error}
+        capturedAt={payload ? (payload.serverTime ?? receivedAt) : null}
+        ageMs={pageStale ? ageMs : null}
+      />
       <AlertBar alerts={payload?.alerts} />
       <div className="ccr-grid">
         <section className="ccr-col ccr-col--ruled">
@@ -39,46 +126,63 @@ export default function App() {
             <h2>01&nbsp;&nbsp;Usage</h2>
             <span>{billingCycleNote(config?.plan?.renews, now)}</span>
           </div>
-          <PlanBlock plan={config?.plan} />
-          <Panel label="Credits">
-            <CreditsPanel credits={config?.credits} threshold={threshold} now={now} />
+          {config?.plan
+            ? <PlanBlock plan={config.plan} />
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="section-label">Plan</div>
+                <StatusNote status="unavailable" error={planReason} fetchedAt={null} />
+              </div>
+            )}
+          <Panel label="Credits" envelope={creditsEnv}>
+            <CreditsPanel credits={credits} threshold={threshold} now={now} />
           </Panel>
-          <Panel label="Against limits now" envelope={payload?.usage}>
-            <LimitBars limits={payload?.usage?.data?.limits ?? []} threshold={threshold} now={now} />
+          <Panel label="Against limits now" envelope={usageEnv}>
+            <LimitBars limits={limits} threshold={threshold} now={now} />
           </Panel>
-          <Panel label="By surface · this week" envelope={payload?.sessions}>
-            <StackedBar segments={(payload?.sessions?.data?.bySurface ?? []).map(s => ({
+          <Panel label="By surface · this week" envelope={sessionsEnv} note={incomplete}>
+            <StackedBar segments={(sessionData?.bySurface ?? []).map(s => ({
               ...s, display: s.measurable ? formatTokens(s.tokens) : null
             }))} />
           </Panel>
-          <Panel label="By project · this week" envelope={payload?.sessions}>
-            <StackedBar segments={(payload?.sessions?.data?.byProject ?? []).map(p => ({
+          <Panel label="By project · this week" envelope={sessionsEnv} note={incomplete}>
+            <StackedBar segments={(sessionData?.byProject ?? []).map(p => ({
               ...p, display: formatTokens(p.tokens)
             }))} />
           </Panel>
-          <Panel label="By model · this week" envelope={payload?.sessions}>
-            <ModelRows models={payload?.sessions?.data?.byModel ?? []} />
+          <Panel label="By model · this week" envelope={sessionsEnv} note={incomplete}>
+            <ModelRows models={sessionData?.byModel ?? []} />
           </Panel>
-          <Panel label="Recent sessions" envelope={payload?.sessions}>
-            <SessionRows sessions={payload?.sessions?.data?.recentSessions ?? []} threshold={threshold} />
+          <Panel label="Recent sessions" envelope={sessionsEnv} note={incomplete}>
+            <SessionRows sessions={sessionData?.recentSessions ?? []} threshold={threshold} />
           </Panel>
         </section>
         <section className="ccr-col ccr-col--ruled">
           <div className="ccr-col-head">
             <h2>02&nbsp;&nbsp;Projects</h2>
-            <span className="num">
-              {summaryOrDash(payload?.sessions, `${projects.filter(p => p.running).length} running · ${projects.length} total`)}
-            </span>
+            <span className="num">{summaryOrDash(sessionsEnv, projectSummary)}</span>
           </div>
+          <StatusNote {...envelopeOf(sessionsEnv)} />
+          {incomplete}
+          {ingestProjects.invalid && (
+            <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
+              detail="the ingested projects feed is not a list" />
+          )}
+          {runningUnknown && projects.length > 0 && (
+            <StatusNote status="stale" fetchedAt={null} label="Running state unknown"
+              detail="the running agents could not be read, so no project below is claimed idle" />
+          )}
           <ProjectRows projects={projects} />
           <div className="ccr-subhead">
             <h3>Scheduled crons</h3>
-            <span className="num">
-              {summaryOrDash(payload?.crons, `${crons.filter(c => !c.ok).length} failing · ${crons.length} scheduled`)}
-            </span>
+            <span className="num">{summaryOrDash(cronsEnv, cronSummary)}</span>
           </div>
-          {payload?.crons && <StatusNote {...payload.crons} />}
-          {!cronsUnavailable && <CronRows crons={crons} now={now} />}
+          <StatusNote {...envelopeOf(cronsEnv)} />
+          {(launchdCrons.invalid || ingestCrons.invalid) && (
+            <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
+              detail="a cron feed is not a list" />
+          )}
+          {crons.length > 0 && <CronRows crons={crons} now={now} />}
         </section>
         <section className="ccr-col">
           <div className="ccr-col-head"><h2>03&nbsp;&nbsp;Ideas &amp; to-dos</h2><span>Saved on the mini</span></div>

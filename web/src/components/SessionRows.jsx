@@ -3,10 +3,15 @@ import { heat } from '../lib/format.js';
 export function SessionRows({ sessions, threshold }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {sessions.map(s => {
+      {sessions.map((s, i) => {
         const color = heat(s.pct, threshold);
+        // when+title collides for two untitled sessions in the same project in
+        // the same minute: React keeps one row and drops the other, so real
+        // usage silently vanishes from the list. The transcript's own sessionId
+        // is unique; the index is only a last resort for a row that arrived
+        // without one.
         return (
-          <div key={`${s.when}-${s.title}`} style={{
+          <div key={s.id ?? `${s.when}-${s.title}-${i}`} style={{
             display: 'grid', gridTemplateColumns: '48px 1fr auto', alignItems: 'center',
             gap: 10, padding: '7px 0', borderBottom: 'var(--rule-hair)'
           }}>

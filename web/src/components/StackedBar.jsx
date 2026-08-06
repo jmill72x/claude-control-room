@@ -6,9 +6,30 @@ const FG = ['var(--ground)', 'var(--a100)', 'var(--ink)', 'var(--ground)'];
 // the flag and without a pct would render as a phantom bar showing a bare '%'.
 const isDrawable = s => s.measurable !== false && typeof s.pct === 'number';
 
-export function StackedBar({ segments }) {
+const HATCH = 'repeating-linear-gradient(45deg, var(--n300) 0 2px, transparent 2px 4px)';
+
+export function StackedBar({ segments = [] }) {
   const measurable = segments.filter(isDrawable);
   const unmeasurable = segments.filter(s => !isDrawable(s));
+
+  // With nothing drawable the old code still drew the 26px bordered box: an
+  // empty bar reads as a real, measured zero. Say what is actually true instead.
+  if (measurable.length === 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{
+          height: 26, border: '1px solid var(--n400)', background: HATCH,
+          display: 'flex', alignItems: 'center', paddingLeft: 8
+        }}>
+          <span style={{
+            fontSize: 10, fontWeight: 800, letterSpacing: '0.1em',
+            textTransform: 'uppercase', color: 'var(--n600)'
+          }}>No figures to show</span>
+        </div>
+        <Legend unmeasurable={unmeasurable} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -34,17 +55,20 @@ export function StackedBar({ segments }) {
             <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{s.display ?? ''}</span>
           </div>
         ))}
-        {unmeasurable.map(s => (
-          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 9, height: 9, border: '1px solid var(--n400)',
-              background: 'repeating-linear-gradient(45deg, var(--n300) 0 2px, transparent 2px 4px)'
-            }} />
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--n500)' }}>{s.name}</span>
-            <span style={{ fontSize: 11, color: 'var(--n500)' }}>not measurable locally</span>
-          </div>
-        ))}
+        <Legend unmeasurable={unmeasurable} bare />
       </div>
     </div>
   );
+}
+
+function Legend({ unmeasurable, bare = false }) {
+  if (unmeasurable.length === 0) return null;
+  const rows = unmeasurable.map(s => (
+    <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 9, height: 9, border: '1px solid var(--n400)', background: HATCH }} />
+      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--n500)' }}>{s.name}</span>
+      <span style={{ fontSize: 11, color: 'var(--n500)' }}>not measurable locally</span>
+    </div>
+  ));
+  return bare ? rows : <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>{rows}</div>;
 }

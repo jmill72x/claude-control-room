@@ -52,7 +52,34 @@ export function billingCycleNote(renews, now = Date.now()) {
   return `Billing cycle · ${days} day${days === 1 ? '' : 's'} left`;
 }
 
+// Before the first poll lands — and for the whole time the server is down — there
+// is no envelope at all. A missing envelope is not "fine", it is the strongest
+// form of unavailable: we have not heard anything. Every consumer must treat the
+// two identically, so the normalisation lives here rather than at each call site.
+export const NO_ENVELOPE = Object.freeze({
+  data: null, fetchedAt: null, status: 'unavailable', error: 'no response from the server yet'
+});
+
+export function envelopeOf(envelope) {
+  return envelope && typeof envelope === 'object' && typeof envelope.status === 'string'
+    ? envelope
+    : NO_ENVELOPE;
+}
+
 // A count derived from missing data is a fabrication. Render an em dash instead.
+// `undefined` (no payload yet, or a dead server) must dash exactly like an
+// explicit 'unavailable' — the earlier `status === 'unavailable'` test let a
+// missing envelope through and printed "0 running · 0 total" as fact.
 export function summaryOrDash(envelope, text) {
-  return envelope?.status === 'unavailable' ? '—' : text;
+  return envelopeOf(envelope).status === 'unavailable' ? '—' : text;
+}
+
+// An ingest feed is written by whatever posted to it. A payload that is not the
+// array every consumer assumes must be ignored *visibly*, never spread (which
+// throws) and never silently dropped (which understates).
+export function arrayFrom(envelope) {
+  const data = envelope?.data;
+  if (data === null || data === undefined) return { items: [], invalid: false };
+  if (Array.isArray(data)) return { items: data, invalid: false };
+  return { items: [], invalid: true };
 }

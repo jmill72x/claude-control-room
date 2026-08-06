@@ -2,14 +2,24 @@ export function ProjectRows({ projects }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {projects.map(p => {
-        const dot = p.running ? 'var(--accent)' : 'var(--n400)';
+        // Three states, not two. `running: null/undefined` means the agents
+        // source could not be read — rendering that as "Idle" states as fact
+        // something we do not know, and does it for every project at once.
+        const known = p.running === true || p.running === false;
+        const state = !known ? 'Unknown' : p.running ? 'Running' : 'Idle';
+        const dot = p.running === true ? 'var(--accent)' : 'var(--n400)';
         const isCode = p.tool === 'Code';
         return (
           <div key={`${p.tool}-${p.name}`} style={{
             display: 'grid', gridTemplateColumns: 'auto 1fr auto', alignItems: 'center',
             gap: 12, padding: '11px 0', borderBottom: 'var(--rule-fine)'
           }}>
-            <span style={{ width: 10, height: 10, display: 'block', background: dot, border: '1px solid var(--ink)' }} />
+            <span style={{
+              width: 10, height: 10, display: 'block', border: '1px solid var(--ink)',
+              background: known
+                ? dot
+                : 'repeating-linear-gradient(45deg, var(--n400) 0 2px, transparent 2px 4px)'
+            }} />
             <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
               <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em' }}>{p.name}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -26,8 +36,8 @@ export function ProjectRows({ projects }) {
             <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
               <span style={{
                 fontSize: 11, fontWeight: 800, letterSpacing: '0.06em',
-                textTransform: 'uppercase', color: dot
-              }}>{p.running ? 'Running' : 'Idle'}</span>
+                textTransform: 'uppercase', color: known ? dot : 'var(--n500)'
+              }}>{state}</span>
               {/* tasks has no verified data source yet (always null server-side): omit the
                   line entirely rather than ever rendering a fabricated "0 open". null and 0
                   are different facts — null means no data source, 0 means a real known-empty

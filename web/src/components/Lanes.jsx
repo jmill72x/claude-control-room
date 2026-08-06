@@ -10,8 +10,26 @@ export function Lanes() {
   const [todos, setTodos] = useState([]);
   const [error, setError] = useState(null);
 
+  // `.then(r => r.json())` accepted any body the server sent, including a 500's
+  // `{error}` object, which then reached `todos.filter` and threw during render —
+  // taking the entire page down. Check the status, then check the shape.
   useEffect(() => {
-    fetch('/api/todos').then(r => r.json()).then(setTodos).catch(e => setError(String(e.message)));
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/todos');
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        const body = await res.json();
+        if (!Array.isArray(body)) throw new Error('the server did not return a list');
+        if (!cancelled) { setTodos(body); setError(null); }
+      } catch (e) {
+        if (!cancelled) setError(`could not load: ${e.message}`);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Returns true/false so callers (the Enter-to-add input) know whether the
@@ -43,7 +61,9 @@ export function Lanes() {
       try {
         const res = await fetch('/api/todos');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        setTodos(await res.json());
+        const body = await res.json();
+        if (!Array.isArray(body)) throw new Error('not a list');
+        setTodos(body);
       } catch {
         setTodos(previous); // server unreachable: no write landed, snapshot is correct
       }

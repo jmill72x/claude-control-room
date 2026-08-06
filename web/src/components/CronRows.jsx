@@ -11,16 +11,34 @@ const short = ms => {
   return `in ${m}m`;
 };
 
+// A cron that launchd has loaded but never run has no exit status at all. It is
+// not failing — but it has not succeeded either, and painting it with the same
+// "OK" every genuinely-successful job gets claims a run that never happened.
+// `state` comes from the server for launchd jobs; an ingested cron that only
+// reports `ok` is mapped here, and one that reports nothing stays unknown.
+const stateOf = c => {
+  if (c.state === 'ok' || c.state === 'failed' || c.state === 'never') return c.state;
+  if (c.ok === false) return 'failed';
+  if (c.ok === true) return 'ok';
+  return 'unknown';
+};
+
+const EDGE = { ok: 'var(--ink)', failed: 'var(--accent)', never: 'var(--n400)', unknown: 'var(--n400)' };
+const TEXT = { ok: 'var(--ink)', failed: 'var(--accent)', never: 'var(--n500)', unknown: 'var(--n500)' };
+const FALLBACK = { ok: 'OK', failed: 'Failed', never: 'Not yet run', unknown: 'Unknown' };
+
 export function CronRows({ crons, now }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {crons.map(c => {
-        const edge = c.ok ? 'var(--ink)' : 'var(--accent)';
+        const state = stateOf(c);
+        const edge = EDGE[state];
         return (
           <div key={c.label ?? c.name} style={{
             display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 12,
             padding: '11px 10px 11px 12px', borderBottom: 'var(--rule-fine)',
-            background: c.ok ? 'transparent' : 'var(--a100)', borderLeft: `3px solid ${edge}`
+            background: state === 'failed' ? 'var(--a100)' : 'transparent',
+            borderLeft: `3px solid ${edge}`
           }}>
             <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
               <span style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</span>
@@ -34,8 +52,8 @@ export function CronRows({ crons, now }) {
               </span>
               <span className="num" style={{
                 fontSize: 10, fontWeight: 800, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: edge
-              }}>{c.last}</span>
+                textTransform: 'uppercase', color: TEXT[state]
+              }}>{c.last ?? FALLBACK[state]}</span>
             </span>
           </div>
         );
