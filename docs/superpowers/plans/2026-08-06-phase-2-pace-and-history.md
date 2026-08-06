@@ -276,14 +276,19 @@ import { createHistory } from '../history.mjs';
 const dir = () => mkdtempSync(join(tmpdir(), 'ccr-hist-'));
 const rec = (t, pct) => ({ t, limits: [{ label: 'Current session', pct, resetsAt: null }] });
 
+// Tests using small synthetic timestamps must pin `now` too. The default
+// 30-day retention trims against the real clock, so a record at t=1000 is
+// always older than the cutoff and would be discarded the moment it landed.
+const PINNED = { now: () => 100_000 };
+
 test('append writes a JSONL line and recent reads it back', async () => {
-  const h = createHistory({ dir: dir() });
+  const h = createHistory({ dir: dir(), ...PINNED });
   await h.append(rec(1000, 5));
   assert.deepEqual(h.recent(0), [rec(1000, 5)]);
 });
 
 test('recent filters by cutoff', async () => {
-  const h = createHistory({ dir: dir() });
+  const h = createHistory({ dir: dir(), ...PINNED });
   await h.append(rec(1000, 5));
   await h.append(rec(5000, 9));
   assert.equal(h.recent(2000).length, 1);
@@ -340,7 +345,7 @@ test('the in-memory window is trimmed to the retention period', async () => {
 });
 
 test('records are returned in ascending timestamp order regardless of append order', async () => {
-  const h = createHistory({ dir: dir() });
+  const h = createHistory({ dir: dir(), ...PINNED });
   await h.append(rec(5000, 2));
   await h.append(rec(1000, 1));
   assert.deepEqual(h.recent(0).map(r => r.t), [1000, 5000]);
