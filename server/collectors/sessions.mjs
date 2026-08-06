@@ -60,6 +60,14 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
       const parsed = parseTranscript(text, surface);
       if (parsed.records.length === 0) continue;
       parsed.lastTs = Math.max(...parsed.records.map(r => r.ts));
+      // Claude Code writes one transcript FILE per parent session plus one
+      // more per sub-agent it spawns, and every one of those files carries
+      // the SAME sessionId. collectSessions emits one entry per file, so
+      // sessionId alone cannot key these entries uniquely downstream — the
+      // file path can: readdir never yields the same path twice in a walk,
+      // and it is stable across polls (same file, same path) so a session
+      // row does not needlessly remount while nothing about it changed.
+      parsed.filePath = file;
       transcripts.push(parsed);
     }
     if (surface === 'Cowork') {

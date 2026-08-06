@@ -7,9 +7,10 @@ export function SessionRows({ sessions, threshold }) {
         const color = heat(s.pct, threshold);
         // when+title collides for two untitled sessions in the same project in
         // the same minute: React keeps one row and drops the other, so real
-        // usage silently vanishes from the list. The transcript's own sessionId
-        // is unique; the index is only a last resort for a row that arrived
-        // without one.
+        // usage silently vanishes from the list. aggregate() derives s.id from
+        // the transcript's file path (unique per file, stable across polls),
+        // falling back to sessionId and then null only for producers that
+        // supply neither; the index here is a last resort for that null case.
         return (
           <div key={s.id ?? `${s.when}-${s.title}-${i}`} style={{
             display: 'grid', gridTemplateColumns: '48px 1fr auto', alignItems: 'center',

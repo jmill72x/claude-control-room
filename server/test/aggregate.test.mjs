@@ -206,3 +206,39 @@ test('a transcript with no sessionId yields an explicit null id rather than a fa
   );
   assert.equal(recentSessions[0].id, null);
 });
+
+// N1: Claude Code writes several transcript FILES sharing a single sessionId
+// (a parent transcript plus one per sub-agent). collectSessions emits one
+// aggregate-input entry per file, so keying recentSessions purely on
+// sessionId produces duplicate ids for genuinely distinct rows. React then
+// keys its row list on a value that is not unique, silently dropping or
+// duplicating a row on the next poll — a session appears on screen that is
+// not actually in the payload. The fix is to fold the file identity
+// (`filePath`, attached by collectSessions — one per file, so unique by
+// construction) into the id.
+test('recentSessions ids stay distinct across multiple transcripts sharing one sessionId (parent + sub-agent files) (N1)', () => {
+  const sharedSessionId = [
+    { sessionId: 'shared', filePath: '/logs/shared/parent.jsonl', title: 'Parent', surface: 'Code',
+      cwd: '/Users/example/Projects/shared',
+      records: [{ ts: NOW - HOUR, model: 'claude-sonnet-5', tokens: 10 }] },
+    { sessionId: 'shared', filePath: '/logs/shared/subagent-1.jsonl', title: 'Sub 1', surface: 'Code',
+      cwd: '/Users/example/Projects/shared',
+      records: [{ ts: NOW - 2 * HOUR, model: 'claude-sonnet-5', tokens: 10 }] },
+    { sessionId: 'shared', filePath: '/logs/shared/subagent-2.jsonl', title: 'Sub 2', surface: 'Code',
+      cwd: '/Users/example/Projects/shared',
+      records: [{ ts: NOW - 3 * HOUR, model: 'claude-sonnet-5', tokens: 10 }] }
+  ];
+  const { recentSessions } = aggregate(sharedSessionId, NOW);
+  assert.equal(recentSessions.length, 3, 'all three distinct files must survive into recentSessions');
+  const ids = recentSessions.map(s => s.id);
+  assert.equal(new Set(ids).size, 3, `expected 3 distinct ids, got ${JSON.stringify(ids)}`);
+});
+
+test('recentSessions id for a given file is stable across polls, so React does not needlessly remount the row (N1)', () => {
+  const one = [{ sessionId: 's', filePath: '/logs/a/session.jsonl', title: 'A', surface: 'Code',
+    cwd: '/Users/example/Projects/a',
+    records: [{ ts: NOW - HOUR, model: 'claude-sonnet-5', tokens: 10 }] }];
+  const firstPoll = aggregate(one, NOW).recentSessions[0].id;
+  const secondPoll = aggregate(one, NOW + 60000).recentSessions[0].id;
+  assert.equal(firstPoll, secondPoll);
+});

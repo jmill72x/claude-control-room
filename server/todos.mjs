@@ -1,7 +1,9 @@
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, unlink, readdir } from 'node:fs/promises';
 import { dirname, join, basename } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 const LANES = new Set(['idea', 'doing', 'done']);
+const asidePrefix = path => `${basename(path)}.corrupt-`;
 const SEED = [
   { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
   { id: 2, text: 'Cron: weekly digest of all Cowork project status', lane: 'idea', tag: 'Crons' },
@@ -21,6 +23,20 @@ export function createTodoStore(path) {
         // replacing it with three invented items that look exactly like real
         // ones.
         if (err.code === 'ENOENT') {
+          // A corrupt file that was just renamed aside also leaves nothing at
+          // `path` — indistinguishable from a genuine first run by ENOENT
+          // alone. Seeding here would bury the backlog we just went out of
+          // our way to preserve under three invented items, with nothing on
+          // screen ever saying so. Only seed when no aside is on record.
+          const siblings = await readdir(dirname(path)).catch(() => []);
+          const asides = siblings.filter(f => f.startsWith(asidePrefix(path))).sort();
+          if (asides.length > 0) {
+            const latest = asides[asides.length - 1];
+            throw new Error(
+              `the to-do list is missing, but a previously corrupted version was set aside as ${latest} — ` +
+              `nothing has replaced it, so the list is not being reseeded over it`
+            );
+          }
           await this.write(SEED);
           return SEED;
         }
@@ -33,11 +49,29 @@ export function createTodoStore(path) {
         if (!Array.isArray(parsed)) throw new Error('the file does not contain a list');
       } catch (err) {
         // Preserve the damaged file — it is the only copy of the backlog — and
-        // report the problem rather than papering over it.
-        const aside = join(dirname(path), `${basename(path)}.corrupt-${Date.now()}`);
-        try { await rename(path, aside); } catch { /* nothing more we can do */ }
+        // report the problem rather than papering over it. Date.now() alone is
+        // not collision-proof: two corruptions landing in the same millisecond
+        // produce the same aside name, and plain rename() silently replaces
+        // whatever already sits there — the second "preserve" destroying the
+        // first. A random suffix, written with an exclusive create (refuses to
+        // overwrite an existing file), makes the name unique and makes
+        // clobbering an already-preserved aside impossible rather than just
+        // unlikely.
+        let aside = null;
+        for (let attempt = 0; attempt < 5 && !aside; attempt++) {
+          const candidate = join(dirname(path), `${asidePrefix(path)}${Date.now()}-${randomBytes(4).toString('hex')}`);
+          try {
+            await writeFile(candidate, raw, { flag: 'wx' });
+            aside = candidate;
+          } catch (writeErr) {
+            if (writeErr.code !== 'EEXIST') break; // nothing more we can do
+          }
+        }
+        if (aside) await unlink(path).catch(() => {});
         throw new Error(
-          `the to-do list could not be parsed (${err.message}); the file has been kept as ${basename(aside)}`
+          aside
+            ? `the to-do list could not be parsed (${err.message}); the file has been kept as ${basename(aside)}`
+            : `the to-do list could not be parsed (${err.message}); it could not be preserved either`
         );
       }
       return parsed;

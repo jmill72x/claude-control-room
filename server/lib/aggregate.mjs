@@ -86,10 +86,14 @@ export function aggregate(sessions, now = Date.now(), opts = {}) {
       // records are not in ascending order — which nothing guarantees.
       const newest = s.records.reduce((a, r) => (r.ts > a.ts ? r : a), s.records[0]);
       return {
-        // The transcript's own sessionId: without it the client keys rows on
-        // when+title, which collides for two untitled sessions in the same
-        // project in the same minute and silently drops one of them.
-        id: s.sessionId ?? null,
+        // A parent transcript and each of its sub-agent transcripts all
+        // share one sessionId — Claude Code writes them as separate FILES —
+        // so sessionId alone is not unique per row here, one row per file.
+        // filePath (attached by collectSessions, one walk entry per file) is
+        // unique by construction and stable across polls, so prefer it; fall
+        // back to sessionId, and only to null, for callers (tests, or any
+        // future producer) that do not supply a filePath.
+        id: s.filePath ?? s.sessionId ?? null,
         when: whenLabel(newest.ts, now),
         title: s.title ?? (s.cwd ? basename(s.cwd) : 'Untitled'),
         surface: s.surface,
