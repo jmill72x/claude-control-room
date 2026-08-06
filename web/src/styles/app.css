@@ -21,6 +21,18 @@
 }
 .ccr-col-head span { font-size: 11px; font-weight: 700; color: var(--n600); }
 
+/* Crons sub-header inside column 02: same row shape as .ccr-col-head, one size
+   down, so its <h3> sizing lives here rather than as an inline style a future
+   breakpoint override would have to fight. */
+.ccr-subhead {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+  border-bottom: var(--rule-strong); padding-bottom: var(--s2); margin-top: 4px;
+}
+.ccr-subhead h3 {
+  margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.ccr-subhead span { font-size: 11px; font-weight: 700; color: var(--n600); }
+
 /* iPad portrait and below: one column, rules dropped. */
 @media (max-width: 1024px) {
   .ccr-grid { grid-template-columns: 1fr; }
