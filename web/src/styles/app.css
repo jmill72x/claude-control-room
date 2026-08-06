@@ -33,6 +33,12 @@
 }
 .ccr-subhead span { font-size: 11px; font-weight: 700; color: var(--n600); }
 
+/* Column 03 lane footer input and delete button: hover/focus states can't be
+   expressed as React inline styles, so they live here instead of a
+   nonexistent `style-focus` attribute. */
+.ccr-lane-input:focus { border-color: var(--ink); }
+.ccr-lane-delete:hover { color: var(--accent); }
+
 /* iPad portrait and below: one column, rules dropped. */
 @media (max-width: 1024px) {
   .ccr-grid { grid-template-columns: 1fr; }

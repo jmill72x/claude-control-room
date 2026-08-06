@@ -14,6 +14,7 @@ import { ModelRows } from './components/ModelRows.jsx';
 import { SessionRows } from './components/SessionRows.jsx';
 import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
+import { Lanes } from './components/Lanes.jsx';
 import { formatTokens, billingCycleNote, summaryOrDash } from './lib/format.js';
 
 export default function App() {
@@ -80,7 +81,8 @@ export default function App() {
           {!cronsUnavailable && <CronRows crons={crons} now={now} />}
         </section>
         <section className="ccr-col">
-          <div className="ccr-col-head"><h2>03&nbsp;&nbsp;Ideas &amp; to-dos</h2><span>Saved on this device</span></div>
+          <div className="ccr-col-head"><h2>03&nbsp;&nbsp;Ideas &amp; to-dos</h2><span>Saved on the mini</span></div>
+          <Lanes />
         </section>
       </div>
     </div>
