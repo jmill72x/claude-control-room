@@ -1,5 +1,6 @@
 import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
+import { nextRenewalDate } from './lib/renewal.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -94,8 +95,18 @@ export function createHandler({ cache, todos, config }) {
         // config.json the plan and credits panels rendered nothing at all under
         // their labels, with no marker saying why.
         const missing = config?.present === false;
+        // `plan.renews` in config is an anchor date, not necessarily the next
+        // real renewal — it can be (and today, is) in the future, or it can
+        // be a date that has since passed. The next-on-or-after date is
+        // computed once, here, server-side where it is unit-testable, and
+        // shipped as `plan.nextRenewal` so the client renders one
+        // already-resolved value instead of recomputing (and potentially
+        // re-deriving it wrong) on every device that opens the page.
+        const planData = config?.plan
+          ? { ...config.plan, nextRenewal: nextRenewalDate(config.plan.renews, config.plan.cycle, now) }
+          : null;
         payload.config = {
-          data: config,
+          data: { ...config, plan: planData },
           fetchedAt: now,
           status: missing ? 'unavailable' : 'ok',
           error: missing

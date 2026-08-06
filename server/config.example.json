@@ -4,6 +4,7 @@
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",
+    "cycle": "monthly",
     "seats": "1 · none"
   },
   "credits": {

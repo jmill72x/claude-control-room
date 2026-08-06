@@ -243,7 +243,8 @@ defaults shown below rather than failing to start).
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
-| `plan.renews` | ISO date string, optional | Drives the "Billing cycle · N days left" note in the column 01 header. Hand-entered — see note below. |
+| `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |
+| `plan.cycle` | `"monthly"` \| `"30d"`, default `"monthly"` | How the anchor rolls forward. `"monthly"` repeats on the same day-of-month (clamped at short months: a 31st anchor becomes the 30th in April, the 28th/29th in February) — this is how Anthropic actually bills. `"30d"` advances in fixed 30-day blocks instead. Change this in one place if the billing model turns out not to be monthly. |
 | `plan.seats` | string, optional | Free-text seats line (e.g. `"1 · none"`). Hand-entered — nothing exposes it. |
 | `credits.balance` | number | Current credit balance shown in the Credits panel. |
 | `credits.spent` | number | Amount spent this cycle; combined with `monthlyLimit` to drive the spend bar and its heat color. |
@@ -278,6 +279,18 @@ not fall back to a config value, and there isn't one to fall back to.
 all, and the code deliberately does not map tier → price, since Anthropic's pricing
 can change independently of this repo. `plan.renews` and `plan.seats` stay
 hand-entered too — nothing on this machine exposes a renewal date or a seat count.
+
+`plan.renews` is deliberately an anchor, not a value you have to keep updating by
+hand every cycle. `server/lib/renewal.mjs` rolls it forward to the next occurrence
+on or after "today" — server-side, so it's unit-tested and computed once rather
+than re-derived (and potentially re-derived wrong) in the browser — and ships the
+resolved date as `plan.nextRenewal` in the `/api/dashboard` payload; the client
+renders that value and never recomputes it. Set the anchor once (e.g. the date a
+subscription started or last renewed) and it keeps rolling forward correctly,
+including across month-end (a 31st-of-the-month anchor clamps to the last real day
+of a shorter month, it does not overflow into the next one). If `plan.renews` is
+absent or not a real calendar date, both the RENEWS cell and the billing-cycle note
+render as unknown rather than a guess.
 
 ## Fragility
 

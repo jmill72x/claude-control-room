@@ -127,14 +127,14 @@ export default function App() {
         <section className="ccr-col ccr-col--ruled">
           <div className="ccr-col-head">
             <h2>01&nbsp;&nbsp;Usage</h2>
-            <span>{billingCycleNote(config?.plan?.renews, now)}</span>
+            <span>{billingCycleNote(config?.plan?.nextRenewal, now)}</span>
           </div>
           {planEnv?.status === 'ok' && planTier
             ? (
               <PlanBlock
                 tier={planTier}
                 price={config?.plan?.price}
-                renews={config?.plan?.renews}
+                renews={config?.plan?.nextRenewal}
                 seats={config?.plan?.seats}
               />
             )
