@@ -41,6 +41,53 @@ function resolveReset(clause, now) {
   return d.toISOString();
 }
 
+const WINDOW_RE = /^Last\s+(24h|7d)\s*·\s*([\d,]+)\s+requests\s*·\s*([\d,]+)\s+sessions/;
+const BEHAVIOUR_RE = /^(\d+)%\s+of your usage\s+(?:came from|was at)\s+(.+?)\s*$/;
+const TOP_RE = /^Top\s+([^:]+):\s*(.+?)\s*$/;
+const ENTRY_RE = /^(.*?)\s+(\d+)%$/;
+
+const num = s => Number(String(s).replace(/,/g, ''));
+
+// Deliberately lenient, unlike the limit parsing above. The factors block is
+// supplementary; a format change here must never take down the primary numbers.
+// Anything unrecognised is skipped, and a block that yields nothing usable
+// returns null rather than an empty shape that would read as "no drivers".
+function parseFactors(text) {
+  const windows = {};
+  let current = null;
+
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+
+    const w = line.match(WINDOW_RE);
+    if (w) {
+      current = { requests: num(w[2]), sessions: num(w[3]), behaviours: [], top: [] };
+      windows[w[1]] = current;
+      continue;
+    }
+    if (!current) continue;
+
+    const b = line.match(BEHAVIOUR_RE);
+    if (b) {
+      current.behaviours.push({ pct: Number(b[1]), text: b[2] });
+      continue;
+    }
+
+    const t = line.match(TOP_RE);
+    if (t) {
+      const entries = [];
+      for (const part of t[2].split(',')) {
+        const e = part.trim().match(ENTRY_RE);
+        if (e) entries.push({ name: e[1].trim(), pct: Number(e[2]) });
+      }
+      if (entries.length > 0) current.top.push({ category: t[1].trim(), entries });
+    }
+  }
+
+  const usable = Object.values(windows).some(w => w.behaviours.length > 0 || w.top.length > 0);
+  return usable ? windows : null;
+}
+
 export function parseUsage(text, now = new Date()) {
   const limits = [];
   const requests = { last24h: null, last7d: null };
@@ -79,5 +126,15 @@ export function parseUsage(text, now = new Date()) {
   if (limits.length === 0) {
     throw new UsageParseError('no limit lines found in /usage output');
   }
-  return { limits, requests, sessions };
+
+  // Guarded twice over: parseFactors already skips what it cannot read, and a
+  // throw from it must still not sink the limits the caller actually needs.
+  let factors = null;
+  try {
+    factors = parseFactors(text);
+  } catch {
+    factors = null;
+  }
+
+  return { limits, requests, sessions, factors };
 }
