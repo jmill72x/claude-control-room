@@ -44,22 +44,30 @@ export function aggregate(sessions, now = Date.now(), opts = {}) {
   const grandTotal = live.reduce((sum, s) => sum + s.records.reduce((a, r) => a + r.tokens, 0), 0);
 
   const modelTotals = new Map();
+  const modelCacheReadTotals = new Map();
   const surfaceTotals = new Map();
   const projectTotals = new Map();
+  const projectCacheReadTotals = new Map();
 
   for (const s of live) {
     const sessionTokens = s.records.reduce((a, r) => a + r.tokens, 0);
+    const sessionCacheRead = s.records.reduce((a, r) => a + (r.cacheReadTokens ?? 0), 0);
     for (const r of s.records) {
       const m = prettyModel(r.model);
       modelTotals.set(m, (modelTotals.get(m) ?? 0) + r.tokens);
+      modelCacheReadTotals.set(m, (modelCacheReadTotals.get(m) ?? 0) + (r.cacheReadTokens ?? 0));
     }
     surfaceTotals.set(s.surface, (surfaceTotals.get(s.surface) ?? 0) + sessionTokens);
     const project = s.cwd ? basename(s.cwd) : 'unknown';
     projectTotals.set(project, (projectTotals.get(project) ?? 0) + sessionTokens);
+    projectCacheReadTotals.set(project, (projectCacheReadTotals.get(project) ?? 0) + sessionCacheRead);
   }
 
+  // cacheReadTokens rides alongside `tokens` here (not rendered in the UI yet,
+  // see parse-transcript.mjs) so the figure is preserved for later use instead
+  // of being discarded during aggregation.
   const byModel = [...modelTotals.entries()]
-    .map(([name, tokens]) => ({ name, tokens, pct: pct(tokens, grandTotal) }))
+    .map(([name, tokens]) => ({ name, tokens, pct: pct(tokens, grandTotal), cacheReadTokens: modelCacheReadTotals.get(name) ?? 0 }))
     .sort((a, b) => b.tokens - a.tokens);
 
   const measurableTotal = (surfaceTotals.get('Cowork') ?? 0) + (surfaceTotals.get('Code') ?? 0);
@@ -72,10 +80,11 @@ export function aggregate(sessions, now = Date.now(), opts = {}) {
   const ranked = [...projectTotals.entries()].sort((a, b) => b[1] - a[1]);
   const top = ranked.slice(0, 3);
   const rest = ranked.slice(3);
-  const byProject = top.map(([name, tokens]) => ({ name, tokens, pct: pct(tokens, grandTotal) }));
+  const byProject = top.map(([name, tokens]) => ({ name, tokens, pct: pct(tokens, grandTotal), cacheReadTokens: projectCacheReadTotals.get(name) ?? 0 }));
   if (rest.length > 0) {
     const tokens = rest.reduce((a, [, t]) => a + t, 0);
-    byProject.push({ name: 'Other', tokens, pct: pct(tokens, grandTotal) });
+    const cacheReadTokens = rest.reduce((a, [name]) => a + (projectCacheReadTotals.get(name) ?? 0), 0);
+    byProject.push({ name: 'Other', tokens, pct: pct(tokens, grandTotal), cacheReadTokens });
   }
 
   const recentSessions = live

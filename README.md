@@ -130,7 +130,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 176 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 187 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -239,9 +239,9 @@ defaults shown below rather than failing to start).
 |---|---|---|
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
-| `plan.name` | string | Plan label shown in column 01 (e.g. `"Max — 20×"`). No API exposes this — it's typed in by hand. |
-| `plan.price` | string | Plan price, shown as free text (e.g. `"$200 / month"`). |
-| `plan.renews` | ISO date string | Drives the "Billing cycle · N days left" note in the column 01 header. |
+| `plan.name` | string | Plan label shown in column 01 (e.g. `"Max — 20×"`). Hand-entered — see note below. |
+| `plan.price` | string | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — see note below. |
+| `plan.renews` | ISO date string | Drives the "Billing cycle · N days left" note in the column 01 header. Hand-entered — see note below. |
 | `plan.seats` | string | Free-text seats line (e.g. `"1 · none"`). |
 | `credits.balance` | number | Current credit balance shown in the Credits panel. |
 | `credits.spent` | number | Amount spent this cycle; combined with `monthlyLimit` to drive the spend bar and its heat color. |
@@ -255,6 +255,13 @@ Nothing in `config.json` is fetched automatically — every credits and plan fie
 either typed in by hand or pushed in via `POST /api/ingest/credits`. There is no
 browser automation or scraping step that keeps it current; that's a deliberate scope
 cut (see spec §12), not an oversight.
+
+`plan.name`, `plan.price`, and `plan.renews` specifically are hand-entered because no
+local source exposes them: `claude -p "/usage"` reports session/weekly limit
+percentages and a reset timestamp, but not the plan tier or renewal date, and
+`claude auth status --json` returns only a coarse `subscriptionType` field that does
+not distinguish between Max tiers (e.g. 5x vs 20x). Until a real source for these
+three fields exists, they stay hand-maintained rather than guessed at.
 
 ## Fragility
 

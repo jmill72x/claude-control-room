@@ -8,13 +8,13 @@ const HOUR = 3600000, DAY = 24 * HOUR;
 const sessions = [
   { sessionId: 'a', title: 'Invoice parser', surface: 'Code', cwd: '/Users/example/Projects/invoice', gitBranch: 'main',
     records: [
-      { ts: NOW - HOUR, model: 'claude-sonnet-5', tokens: 600 },
-      { ts: NOW - 2 * HOUR, model: 'claude-opus-5', tokens: 400 }
+      { ts: NOW - HOUR, model: 'claude-sonnet-5', tokens: 600, cacheReadTokens: 40000 },
+      { ts: NOW - 2 * HOUR, model: 'claude-opus-5', tokens: 400, cacheReadTokens: 15000 }
     ] },
   { sessionId: 'b', title: 'Board narrative', surface: 'Cowork', cwd: '/Users/example/CoworkSpace', gitBranch: null,
-    records: [{ ts: NOW - 3 * HOUR, model: 'claude-sonnet-5', tokens: 1000 }] },
+    records: [{ ts: NOW - 3 * HOUR, model: 'claude-sonnet-5', tokens: 1000, cacheReadTokens: 5000 }] },
   { sessionId: 'c', title: 'Ancient', surface: 'Code', cwd: '/Users/example/Projects/old', gitBranch: 'main',
-    records: [{ ts: NOW - 30 * DAY, model: 'claude-opus-5', tokens: 99999 }] }
+    records: [{ ts: NOW - 30 * DAY, model: 'claude-opus-5', tokens: 99999, cacheReadTokens: 99999 }] }
 ];
 
 test('ignores records outside the week window', () => {
@@ -30,6 +30,19 @@ test('byModel sums per model and sorts descending', () => {
   assert.equal(byModel[0].pct, 80);
   assert.equal(byModel[1].name, 'Opus');
   assert.equal(byModel[1].pct, 20);
+});
+
+// cache-read volume is preserved (not discarded) alongside the new-token
+// totals per model, so it stays available for a future panel, but it is a
+// separate field, not folded into `tokens`.
+test('byModel also sums cacheReadTokens per model, kept separate from tokens', () => {
+  const { byModel } = aggregate(sessions, NOW);
+  const sonnet = byModel.find(m => m.name === 'Sonnet');
+  const opus = byModel.find(m => m.name === 'Opus');
+  assert.equal(sonnet.cacheReadTokens, 45000);
+  assert.equal(opus.cacheReadTokens, 15000);
+  // Ancient's huge cache-read figure is outside the week window and must not leak in.
+  assert.ok(opus.cacheReadTokens < 99999);
 });
 
 test('bySurface splits Cowork and Code and marks Chat unmeasurable', () => {
@@ -60,6 +73,12 @@ test('byProject uses the directory basename and collapses the tail into Other', 
   assert.equal(byProject[3].tokens, 300);
 });
 
+test('byProject also sums cacheReadTokens per project, including the Other bucket', () => {
+  const { byProject } = aggregate(sessions, NOW);
+  const invoice = byProject.find(p => p.name === 'invoice');
+  assert.equal(invoice.cacheReadTokens, 55000);
+});
+
 test('recentSessions are newest first with a share-of-week percentage', () => {
   const { recentSessions } = aggregate(sessions, NOW);
   assert.equal(recentSessions[0].title, 'Invoice parser');
@@ -68,6 +87,10 @@ test('recentSessions are newest first with a share-of-week percentage', () => {
   assert.equal(recentSessions[0].surface, 'Code');
 });
 
+// Records now carry cacheReadTokens (see parse-transcript.mjs), and byModel/
+// byProject sum it. recentSessions deliberately does NOT: it is not rendered
+// anywhere yet, so this pins the contract closed rather than letting it leak
+// in incidentally the next time someone touches this function.
 test('recentSessions entries expose exactly the contracted shape, with no leaked sort key', () => {
   const { recentSessions } = aggregate(sessions, NOW);
   const keys = Object.keys(recentSessions[0]).sort();

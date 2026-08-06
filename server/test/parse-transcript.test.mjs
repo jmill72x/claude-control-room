@@ -1,22 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseTranscript, totalTokens } from '../lib/parse-transcript.mjs';
+import { parseTranscript, totalTokens, cacheReadTokens } from '../lib/parse-transcript.mjs';
 
 const read = name => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
 
-test('totalTokens sums input, output and both cache fields', () => {
+test('totalTokens sums input, output and cache-creation, excluding cache-read', () => {
   assert.equal(totalTokens({
     input_tokens: 2,
     output_tokens: 107,
     cache_creation_input_tokens: 27921,
     cache_read_input_tokens: 1000
-  }), 29030);
+  }), 28030);
 });
 
 test('totalTokens treats missing fields as zero', () => {
   assert.equal(totalTokens({ input_tokens: 5 }), 5);
   assert.equal(totalTokens({}), 0);
+});
+
+// Guards the exclusion itself, not just the arithmetic above: a huge cache-read
+// figure must not move the result at all, even when it dwarfs the new-token
+// fields. This is what actually prevents a regression back to summing all four
+// fields (which the old expectation of 29030 above encoded).
+test('totalTokens is unaffected by a large cache_read_input_tokens value', () => {
+  const withoutCacheRead = totalTokens({ input_tokens: 2, output_tokens: 107, cache_creation_input_tokens: 27921 });
+  const withHugeCacheRead = totalTokens({
+    input_tokens: 2,
+    output_tokens: 107,
+    cache_creation_input_tokens: 27921,
+    cache_read_input_tokens: 50_000_000
+  });
+  assert.equal(withHugeCacheRead, withoutCacheRead);
+  assert.equal(withHugeCacheRead, 28030);
+});
+
+test('cacheReadTokens reads only the cache-read field, defaulting missing to zero', () => {
+  assert.equal(cacheReadTokens({ cache_read_input_tokens: 1000 }), 1000);
+  assert.equal(cacheReadTokens({}), 0);
+  assert.equal(cacheReadTokens(null), 0);
 });
 
 test('extracts usage records from a Claude Code transcript', () => {
@@ -66,4 +88,25 @@ test('malformed lines are skipped, not fatal', () => {
 test('detached HEAD is normalised away', () => {
   const text = JSON.stringify({ type: 'assistant', timestamp: '2026-08-05T13:05:37.167Z', sessionId: 's4', gitBranch: 'HEAD', message: { model: 'm', usage: { input_tokens: 1 } } });
   assert.equal(parseTranscript(text, 'Code').gitBranch, null);
+});
+
+test('records carry cacheReadTokens alongside the new-token tokens field, kept but not folded in', () => {
+  const text = JSON.stringify({
+    type: 'assistant', timestamp: '2026-08-05T13:05:37.167Z', sessionId: 's5',
+    message: { model: 'claude-opus-5', usage: { input_tokens: 2, output_tokens: 3, cache_read_input_tokens: 900 } }
+  });
+  const [record] = parseTranscript(text, 'Code').records;
+  assert.equal(record.tokens, 5);
+  assert.equal(record.cacheReadTokens, 900);
+});
+
+test('a row with only cache-read usage (no new tokens) is still kept, not dropped by the tokens<=0 gate', () => {
+  const text = JSON.stringify({
+    type: 'assistant', timestamp: '2026-08-05T13:05:37.167Z', sessionId: 's6',
+    message: { model: 'claude-opus-5', usage: { cache_read_input_tokens: 5000 } }
+  });
+  const [record] = parseTranscript(text, 'Code').records;
+  assert.ok(record, 'expected the cache-read-only row to survive into records');
+  assert.equal(record.tokens, 0);
+  assert.equal(record.cacheReadTokens, 5000);
 });
