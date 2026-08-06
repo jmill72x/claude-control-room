@@ -107,9 +107,12 @@ export default function App() {
         }
         : undefined));
 
-  const planReason = payload
-    ? (configEnv?.error ?? 'no plan details in config.json')
-    : 'no response from the server yet';
+  // Tier comes from the `plan` envelope (the API), never from config — a
+  // stale-but-real tier beats a hand-typed guess. Price, by contrast, has no
+  // API source at all, so it stays config-fed and PlanBlock omits it
+  // entirely when config doesn't supply one.
+  const planEnv = payload?.plan;
+  const planTier = planEnv?.data?.tier;
 
   return (
     <div style={{ minHeight: '100vh', paddingBottom: 64 }}>
@@ -126,12 +129,19 @@ export default function App() {
             <h2>01&nbsp;&nbsp;Usage</h2>
             <span>{billingCycleNote(config?.plan?.renews, now)}</span>
           </div>
-          {config?.plan
-            ? <PlanBlock plan={config.plan} />
+          {planEnv?.status === 'ok' && planTier
+            ? (
+              <PlanBlock
+                tier={planTier}
+                price={config?.plan?.price}
+                renews={config?.plan?.renews}
+                seats={config?.plan?.seats}
+              />
+            )
             : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div className="section-label">Plan</div>
-                <StatusNote status="unavailable" error={planReason} fetchedAt={null} />
+                <StatusNote {...envelopeOf(planEnv)} />
               </div>
             )}
           <Panel label="Credits" envelope={creditsEnv}>

@@ -27,7 +27,8 @@ never a zero or an empty bar standing in for missing data.
 | Panel | Source | Reality |
 |---|---|---|
 | Header countdown | `claude -p "/usage"` reset timestamp | Real |
-| Plan block (name, price, renews, seats) | `config.json` | Static — no API exposes plan details |
+| Plan block — tier | `claude auth status --json` (`subscriptionType`) | Real, but coarse and can lag a plan change by days — see below |
+| Plan block — price, renews, seats | `config.json` | Static — no API exposes pricing, renewal date, or seat count |
 | Credits (balance, spend, resets, promo) | `config.json`, or the `/api/ingest/credits` feed | Hand-entered / manually updated, staleness-marked |
 | Three limit bars (session, weekly all-models, weekly per-model) | `claude -p "/usage"` | Real |
 | By surface · this week (Cowork / Code / Chat) | Session-log token sums under both transcript roots | Real for Cowork and Code; **Chat is permanently unmeasurable** — see below |
@@ -54,15 +55,16 @@ invent a number.
 usage/cost endpoints and the Admin API exist for Console organizations only; this
 account is a Max subscription with no Console org behind it. The only place this
 machine's actual usage percentages and reset timestamps exist is the text that
-`claude -p "/usage"` prints to a terminal, and the only place a live agent/session list
-exists is `claude agents --json`.
+`claude -p "/usage"` prints to a terminal, the only place a live agent/session list
+exists is `claude agents --json`, and the only place the plan tier exists at all —
+even a lagging, coarse version of it — is `claude auth status --json`.
 
-So the server runs those two commands non-interactively on a timer, parses the text
-output, and caches the result. This is deliberate and is the documented reason it works
-this way — **do not "fix" this into an API call.** If Anthropic ships a usage API for
-consumer accounts, that would be a real improvement; until then, shelling out to the
-CLI the user is already authenticated with is the only source that exists, and it is
-exactly why `usage` and `agents` are the two collectors that can go `unavailable` if
+So the server runs those commands non-interactively on a timer, parses the output, and
+caches the result. This is deliberate and is the documented reason it works this way —
+**do not "fix" this into an API call.** If Anthropic ships a usage API for consumer
+accounts, that would be a real improvement; until then, shelling out to the CLI the
+user is already authenticated with is the only source that exists, and it is exactly
+why `usage`, `agents`, and `plan` are the collectors that can go `unavailable` if
 `claude` isn't on the service's `PATH` (see [Running it](#running-it)).
 
 ## Architecture
@@ -89,6 +91,7 @@ not being reachable) leaves every other panel intact.
 | `sessions` | Claude Code and Cowork transcript roots (`~/.claude/projects` and the Cowork session directory), incremental by mtime | 60 s |
 | `agents` | `claude agents --json` | 30 s |
 | `crons` | `~/Library/LaunchAgents/*.plist` + `launchctl list` | 60 s |
+| `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 60 min |
 | `ingest` | inbound `POST` to `/api/ingest/{crons,projects,credits}`, no timer | — |
 
 The server holds no API key — there is nothing to hold. It shells out to the `claude`
@@ -239,10 +242,9 @@ defaults shown below rather than failing to start).
 |---|---|---|
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
-| `plan.name` | string | Plan label shown in column 01 (e.g. `"Max — 20×"`). Hand-entered — see note below. |
-| `plan.price` | string | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — see note below. |
-| `plan.renews` | ISO date string | Drives the "Billing cycle · N days left" note in the column 01 header. Hand-entered — see note below. |
-| `plan.seats` | string | Free-text seats line (e.g. `"1 · none"`). |
+| `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
+| `plan.renews` | ISO date string, optional | Drives the "Billing cycle · N days left" note in the column 01 header. Hand-entered — see note below. |
+| `plan.seats` | string, optional | Free-text seats line (e.g. `"1 · none"`). Hand-entered — nothing exposes it. |
 | `credits.balance` | number | Current credit balance shown in the Credits panel. |
 | `credits.spent` | number | Amount spent this cycle; combined with `monthlyLimit` to drive the spend bar and its heat color. |
 | `credits.monthlyLimit` | number | Denominator for the spend bar. The printed percent can exceed 100%; the bar fill itself clamps at 100%. |
@@ -251,17 +253,31 @@ defaults shown below rather than failing to start).
 | `credits.promoExpiresOn` | ISO date string | Drives an alert-bar line when within 30 days of expiring. |
 | `credits.updatedAt` | ISO date string | When the credits figures were last hand-updated. The staleness line switches to the accent color past 7 days old, and an alert fires past 14 days old. |
 
-Nothing in `config.json` is fetched automatically — every credits and plan field is
-either typed in by hand or pushed in via `POST /api/ingest/credits`. There is no
-browser automation or scraping step that keeps it current; that's a deliberate scope
-cut (see spec §12), not an oversight.
+Nothing in `config.json` is fetched automatically — every credits field, and every
+remaining plan field, is either typed in by hand or pushed in via
+`POST /api/ingest/credits`. There is no browser automation or scraping step that keeps
+it current; that's a deliberate scope cut (see spec §12), not an oversight.
 
-`plan.name`, `plan.price`, and `plan.renews` specifically are hand-entered because no
-local source exposes them: `claude -p "/usage"` reports session/weekly limit
-percentages and a reset timestamp, but not the plan tier or renewal date, and
-`claude auth status --json` returns only a coarse `subscriptionType` field that does
-not distinguish between Max tiers (e.g. 5x vs 20x). Until a real source for these
-three fields exists, they stay hand-maintained rather than guessed at.
+**The plan tier is no longer a config field — it's read from `claude auth status
+--json`'s `subscriptionType`, on an hourly timer (the `plan` collector,
+`server/collectors/plan.mjs`).** That command's output also carries the signed-in
+email, org id, and org name; only `subscriptionType` is extracted; the rest is
+discarded at the parse boundary and never cached, logged, or returned by the API.
+
+This is a real value, but a coarse and laggy one: `subscriptionType` is reported at
+the account level and does not distinguish between all tiers precisely (a Max
+subscription can read `"max_5x"`/`"max_20x"`, but has been observed to lag an actual
+plan change by at least a couple of days). The deliberate choice here is to show that
+lagging real value rather than a hand-typed guess — "Pro" that was true until
+recently is still more honest than a tier that was never true. If the `plan` panel is
+`unavailable` (`claude` unreachable, or a response with no `subscriptionType`), the
+plan block says so via the same status-note treatment every other panel uses; it does
+not fall back to a config value, and there isn't one to fall back to.
+
+`plan.price` stays hand-entered because no local or remote source exposes pricing at
+all, and the code deliberately does not map tier → price, since Anthropic's pricing
+can change independently of this repo. `plan.renews` and `plan.seats` stay
+hand-entered too — nothing on this machine exposes a renewal date or a seat count.
 
 ## Fragility
 
@@ -273,6 +289,8 @@ on:
   reworded or restructured output can still break the parser. A parse failure marks the
   `usage` panel `stale` rather than fabricating zeros, but it will still need a fix.
 - the JSON shape of `claude agents --json`
+- the JSON shape of `claude auth status --json`, specifically that `subscriptionType`
+  keeps existing and keeps meaning the plan tier
 - the on-disk layout of Claude Code and Cowork transcripts under `~/.claude/projects`
   and the Cowork session directory — none of which is a documented, versioned format
 - `launchctl list`'s column format and `plutil`'s JSON conversion of `.plist` files

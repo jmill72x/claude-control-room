@@ -6,6 +6,7 @@ import { createCache } from './cache.mjs';
 import { createRegistry } from './collectors/registry.mjs';
 import { collectUsage } from './collectors/usage.mjs';
 import { collectAgents } from './collectors/agents.mjs';
+import { collectPlan } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { createTodoStore } from './todos.mjs';
@@ -26,6 +27,9 @@ const registry = createRegistry(cache);
 registry.register('usage', () => collectUsage(), 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
 registry.register('crons', () => collectCrons(), 60 * 1000);
+// The subscription tier changes rarely — hourly is plenty, and it keeps
+// `claude auth status` off the CLI's back next to the 30s agents poll.
+registry.register('plan', () => collectPlan(), 60 * 60 * 1000);
 registry.register('sessions', async () => {
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths } = await collectSessions();
   const now = Date.now();

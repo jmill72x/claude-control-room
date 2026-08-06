@@ -53,6 +53,7 @@ test('GET /api/dashboard returns every panel envelope', async () => {
   const payload = JSON.parse(res.body);
   assert.equal(payload.usage.status, 'ok');
   assert.ok('crons' in payload);
+  assert.ok('plan' in payload);
   assert.ok('alerts' in payload);
 });
 

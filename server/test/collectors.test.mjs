@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectUsage } from '../collectors/usage.mjs';
 import { collectAgents } from '../collectors/agents.mjs';
+import { collectPlan } from '../collectors/plan.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 
 const USAGE_TEXT = `Current session: 24% used · resets Aug 5 at 12:09pm (America/New_York)
@@ -31,6 +32,41 @@ test('collectAgents rejects invalid JSON rather than returning empty', async () 
 
 test('collectAgents rejects valid JSON that is not an array', async () => {
   await assert.rejects(() => collectAgents({ run: async () => JSON.stringify({ pid: 1 }) }));
+});
+
+// `claude auth status --json` also returns an email, org id, and org name.
+// The injected fixture below includes them, matching the real command's
+// shape, specifically so this test can assert they never survive the parse.
+const AUTH_STATUS_JSON = JSON.stringify({
+  loggedIn: true,
+  authMethod: 'claude.ai',
+  apiProvider: 'firstParty',
+  email: 'someone@example.com',
+  orgId: '00000000-0000-0000-0000-000000000000',
+  orgName: "someone@example.com's Organization",
+  subscriptionType: 'pro'
+});
+
+test('collectPlan returns only the mapped tier, nothing else from the CLI output', async () => {
+  const out = await collectPlan({ run: async () => AUTH_STATUS_JSON });
+  assert.deepEqual(out, { tier: 'Pro' });
+  const keys = Object.keys(out);
+  assert.deepEqual(keys, ['tier']);
+});
+
+test('collectPlan never lets the email or org id past the parse boundary', async () => {
+  const out = await collectPlan({ run: async () => AUTH_STATUS_JSON });
+  const serialized = JSON.stringify(out);
+  assert.doesNotMatch(serialized, /example\.com/);
+  assert.doesNotMatch(serialized, /00000000-0000-0000-0000-000000000000/);
+});
+
+test('collectPlan rejects invalid JSON rather than returning a default tier', async () => {
+  await assert.rejects(() => collectPlan({ run: async () => 'not json' }));
+});
+
+test('collectPlan rejects JSON with no subscriptionType rather than returning a default tier', async () => {
+  await assert.rejects(() => collectPlan({ run: async () => JSON.stringify({ loggedIn: true }) }));
 });
 
 test('alerts fire for a failing cron', () => {

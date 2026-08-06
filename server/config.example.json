@@ -2,7 +2,6 @@
   "warnThreshold": 85,
   "showAlertBanner": true,
   "plan": {
-    "name": "Your plan",
     "price": "$0 / month",
     "renews": "2026-01-01",
     "seats": "1 · none"

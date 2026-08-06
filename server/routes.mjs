@@ -78,7 +78,7 @@ const guardWrite = req => {
   if (!isJson(req)) throw new HttpError(415, 'Content-Type must be application/json');
 };
 
-const PANELS = ['usage', 'sessions', 'agents', 'crons', 'ingestCrons', 'ingestProjects', 'ingestCredits'];
+const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'ingestCrons', 'ingestProjects', 'ingestCredits'];
 
 export function createHandler({ cache, todos, config }) {
   return async function handler(req, res) {
