@@ -28,7 +28,9 @@ export function buildProjects({ agents = [], coworkSessions = [], transcripts = 
 
   for (const t of transcripts) {
     if (!t.cwd) continue;
-    const p = touch(basename(t.cwd), 'Code');
+    // Use the transcript's OWN surface. Hardcoding 'Code' files every Cowork
+    // transcript under a Code project named after Cowork's internal directory.
+    const p = touch(basename(t.cwd), t.surface ?? 'Code');
     noteActivity(p, t.lastTs);
     if (t.gitBranch) p.branch = t.gitBranch;
   }

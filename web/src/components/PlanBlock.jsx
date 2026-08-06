@@ -1,3 +1,5 @@
+import { formatDate } from '../lib/format.js';
+
 export function PlanBlock({ plan }) {
   if (!plan) return null;
   return (
@@ -9,7 +11,7 @@ export function PlanBlock({ plan }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: 'var(--rule-fine)' }}>
         <div style={{ padding: '8px 12px 8px 0', borderRight: 'var(--rule-fine)' }}>
           <div className="section-label">Renews</div>
-          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{plan.renews}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{formatDate(plan.renews)}</div>
         </div>
         <div style={{ padding: '8px 0 8px 12px' }}>
           <div className="section-label">Seats · Extra</div>

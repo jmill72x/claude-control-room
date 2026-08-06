@@ -120,6 +120,22 @@ test('a Code project and a Cowork session sharing a basename produce two separat
   assert.deepEqual(tools, ['Code', 'Cowork']);
 });
 
+// Fix-round test: buildProjects must use the transcript's OWN surface field
+// rather than hardcoding 'Code'. Hardcoding 'Code' files every Cowork
+// transcript under a Code project named after Cowork's internal directory
+// (e.g. a project called 'outputs' on the live page).
+test('a transcript with surface Cowork produces a Cowork project, not Code', () => {
+  const coworkTranscript = {
+    agents: [],
+    coworkSessions: [],
+    transcripts: [
+      { cwd: '/Users/example/CoworkSpace/outputs', gitBranch: null, lastTs: NOW - 3 * MIN, surface: 'Cowork' }
+    ]
+  };
+  const p = buildProjects(coworkTranscript, NOW).find(x => x.name === 'outputs');
+  assert.equal(p.tool, 'Cowork');
+});
+
 // Fix-round test: the first transcript touching a project has no lastTs. A
 // naive `p.lastTs === null` check gets poisoned to `undefined` and never
 // recovers, so a later transcript with a real timestamp must still win.

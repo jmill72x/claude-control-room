@@ -15,6 +15,26 @@ export function formatCountdown(ms) {
   return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
 }
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// The design spec prints dates as 'Aug 21, 2026', not as the raw ISO the config holds.
+export function formatDate(value) {
+  if (!value) return '—';
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+// A weekly window is days away, and 'resets 118:15:50' is unreadable. Use the
+// clock format only where it is meaningful — under a day.
+export function formatUntil(ms) {
+  const total = Math.max(0, ms);
+  if (total < 24 * 3600 * 1000) return formatCountdown(total);
+  const d = Math.floor(total / (24 * 3600 * 1000));
+  const h = Math.floor((total % (24 * 3600 * 1000)) / 3600000);
+  return `${d}d ${h}h`;
+}
+
 export function formatTokens(n) {
   if (n === null || n === undefined) return '—';
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;

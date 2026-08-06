@@ -1,4 +1,4 @@
-import { heat, formatCountdown } from '../lib/format.js';
+import { heat, formatUntil } from '../lib/format.js';
 
 export function LimitBars({ limits, threshold, now }) {
   return (
@@ -16,7 +16,7 @@ export function LimitBars({ limits, threshold, now }) {
               <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, l.pct)}%`, background: color }} />
             </div>
             <div className="num" style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
-              {resetsAt ? `resets ${formatCountdown(resetsAt - now)}` : 'no reset time reported'}
+              {resetsAt ? `resets ${formatUntil(resetsAt - now)}` : 'no reset time reported'}
             </div>
           </div>
         );

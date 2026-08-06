@@ -18,8 +18,10 @@ export function StackedBar({ segments }) {
             flex: Math.max(s.pct, 1), background: PALETTE[i % PALETTE.length],
             display: 'flex', alignItems: 'center', paddingLeft: 6, overflow: 'hidden'
           }}>
+            {/* A 0% segment is one pixel wide; its label clips to a bare '0'
+                that reads as a truncated number. The legend already states it. */}
             <span className="num" style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
-              {s.pct}%
+              {s.pct > 0 ? `${s.pct}%` : ''}
             </span>
           </div>
         ))}
