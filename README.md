@@ -151,12 +151,18 @@ template with `__HOME__` and `__REPO__` placeholders — not a real plist with t
 machine's absolute paths. Generate the real one locally and keep it out of git (the
 `.gitignore` already excludes `deploy/*.plist` while keeping `*.plist.example`):
 
-```bash
-sed -e "s#__HOME__#$HOME#g" -e "s#__REPO__#$(pwd)#g" \
-  deploy/control-room.plist.example > deploy/net.milleradvisorypartners.control-room.plist
+The label in the example is `local.control-room`. It is arbitrary — any reverse-DNS
+label works, as long as the filename, the `Label` key and every `launchctl` command
+you run agree. Substitute your own below if you prefer.
 
-cp deploy/net.milleradvisorypartners.control-room.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/net.milleradvisorypartners.control-room.plist
+```bash
+LABEL=local.control-room
+
+sed -e "s#__HOME__#$HOME#g" -e "s#__REPO__#$(pwd)#g" \
+  deploy/control-room.plist.example > "deploy/$LABEL.plist"
+
+cp "deploy/$LABEL.plist" ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/"$LABEL".plist
 ```
 
 Give it a minute or two — the `usage` collector shells out to `claude` and that call
@@ -209,7 +215,8 @@ To expose the dashboard through Cloudflare Tunnel + Access:
 2. Restart the tunnel service so it picks up the new route:
 
    ```bash
-   launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared.mini
+   # substitute your own cloudflared service label — `launchctl list | grep cloudflared`
+   launchctl kickstart -k gui/$(id -u)/<your-cloudflared-label>
    ```
 
 3. **In the Cloudflare dashboard**, add a Zero Trust Access policy for that hostname
