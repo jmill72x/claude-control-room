@@ -1,7 +1,7 @@
 // Mirrors server/lib/humanize.mjs formatShort, but must live client-side: this
 // countdown re-renders every second off the live `now` tick, not off server data.
+// The only call site already guards null/undefined with `c.nextRunAt ? short(...) : '—'`.
 const short = ms => {
-  if (ms === null || ms === undefined) return '—';
   const total = Math.max(0, ms);
   const d = Math.floor(total / 86400000);
   const h = Math.floor((total % 86400000) / 3600000);

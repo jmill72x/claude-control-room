@@ -29,8 +29,13 @@ export function ProjectRows({ projects }) {
                 textTransform: 'uppercase', color: dot
               }}>{p.running ? 'Running' : 'Idle'}</span>
               {/* tasks has no verified data source yet (always null server-side): omit the
-                  line entirely rather than ever rendering a fabricated "0 open". */}
-              {p.tasks && <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{p.tasks}</span>}
+                  line entirely rather than ever rendering a fabricated "0 open".
+                  `p.tasks && <JSX>` would render a literal "0" when tasks is 0 — React
+                  prints that falsy number instead of skipping it, because `&&` short-
+                  circuits to the number itself rather than to `null`. A ternary that
+                  explicitly falls through to `null` omits the line for any falsy tasks
+                  value (missing data or a real zero) and only shows the span otherwise. */}
+              {p.tasks ? <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{p.tasks}</span> : null}
             </span>
           </div>
         );
