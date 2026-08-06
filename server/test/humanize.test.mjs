@@ -33,6 +33,16 @@ test('schedule renders calendar intervals', () => {
   assert.equal(formatSchedule({ Hour: 12, Minute: 0, Weekday: 3 }, null), 'Wednesdays, 12:00');
 });
 
+test('a partially specified calendar is not filled in with zeros (T1)', () => {
+  // launchd treats an omitted key as a wildcard: {Minute: 30} is hourly at :30.
+  // "Every day, 00:30" would state a schedule the job does not keep.
+  assert.equal(formatSchedule({ Minute: 30 }, null), 'Every hour at :30');
+  assert.equal(formatSchedule({ Minute: 5, Weekday: 1 }, null), 'Mondays, every hour at :05');
+  assert.equal(formatSchedule({ Hour: 3 }, null), 'Every day, 03:00–03:59, every minute');
+  assert.equal(formatSchedule({ Weekday: 2 }, null), 'Tuesdays, every minute');
+  assert.equal(formatSchedule({}, null), 'Every minute');
+});
+
 test('schedule renders second intervals', () => {
   assert.equal(formatSchedule(null, 3600), 'Every hour');
   assert.equal(formatSchedule(null, 300), 'Every 5 minutes');

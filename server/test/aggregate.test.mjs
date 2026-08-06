@@ -71,7 +71,7 @@ test('recentSessions are newest first with a share-of-week percentage', () => {
 test('recentSessions entries expose exactly the contracted shape, with no leaked sort key', () => {
   const { recentSessions } = aggregate(sessions, NOW);
   const keys = Object.keys(recentSessions[0]).sort();
-  assert.deepEqual(keys, ['model', 'pct', 'surface', 'title', 'tokens', 'when'].sort());
+  assert.deepEqual(keys, ['id', 'model', 'pct', 'surface', 'title', 'tokens', 'when'].sort());
 });
 
 test('recentSessions model comes from the same record as when, not from array order (session a stores newest-first)', () => {
@@ -181,4 +181,28 @@ test('byProject omits Other entirely when there are three or fewer projects', ()
   const { byProject } = aggregate(few, NOW);
   assert.equal(byProject.length, 3);
   assert.equal(byProject.some(p => p.name === 'Other'), false);
+});
+
+// T10: the client keyed rows on when+title. Two untitled sessions in the same
+// project in the same minute produce identical keys, and React drops one row —
+// real usage vanishing from the list with no marker at all.
+test('recentSessions carry the transcript sessionId so identical rows stay distinct', () => {
+  const minute = Date.parse('2026-08-05T11:30:00Z');
+  const twins = [
+    { sessionId: 'first', title: null, surface: 'Code', cwd: '/Users/example/Projects/twin', records: [{ ts: minute, model: 'claude-opus-5', tokens: 10 }] },
+    { sessionId: 'second', title: null, surface: 'Code', cwd: '/Users/example/Projects/twin', records: [{ ts: minute, model: 'claude-opus-5', tokens: 10 }] }
+  ];
+  const { recentSessions } = aggregate(twins, NOW);
+  assert.equal(recentSessions.length, 2);
+  assert.equal(recentSessions[0].when, recentSessions[1].when);
+  assert.equal(recentSessions[0].title, recentSessions[1].title);
+  assert.notEqual(recentSessions[0].id, recentSessions[1].id);
+});
+
+test('a transcript with no sessionId yields an explicit null id rather than a fabricated one', () => {
+  const { recentSessions } = aggregate(
+    [{ title: 'x', surface: 'Code', cwd: '/tmp/x', records: [{ ts: NOW - HOUR, model: 'claude-opus-5', tokens: 5 }] }],
+    NOW
+  );
+  assert.equal(recentSessions[0].id, null);
 });

@@ -15,21 +15,51 @@ export function parseLaunchctlList(text) {
   return map;
 }
 
-export function nextRun(cal, now) {
-  if (!cal) return null;
-  const hour = cal.Hour ?? 0;
-  const minute = cal.Minute ?? 0;
-  const base = new Date(now);
-  const candidate = new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour, minute, 0, 0);
+const has = v => Number.isInteger(v);
 
-  if (cal.Weekday === undefined) {
-    if (candidate.getTime() <= now) candidate.setDate(candidate.getDate() + 1);
-    return candidate.getTime();
+// launchd treats every OMITTED StartCalendarInterval key as a wildcard, so
+// `{Minute: 30}` means hourly at :30 — not "00:30 daily", which is what
+// defaulting Hour to 0 produced (and which made the countdown wrong by up to
+// 24 hours). Walk forward from now to the first moment matching every key that
+// IS specified, skipping whole months, days or hours that cannot match, so even
+// a once-a-year job costs a few hundred iterations rather than half a million.
+export function nextRun(cal, now) {
+  if (!cal || typeof cal !== 'object') return null;
+  const { Minute, Hour, Weekday, Day, Month } = cal;
+  if (![Minute, Hour, Weekday, Day, Month].some(has)) return null;
+
+  const d = new Date(now);
+  d.setSeconds(0, 0);
+  d.setMinutes(d.getMinutes() + 1); // never return a moment that has already passed
+  const limit = now + 400 * 24 * 3600 * 1000;
+
+  while (d.getTime() <= limit) {
+    if (has(Month) && d.getMonth() + 1 !== Month) {
+      d.setMonth(d.getMonth() + 1, 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (has(Day) && d.getDate() !== Day) {
+      d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (has(Weekday) && d.getDay() !== Weekday) {
+      d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (has(Hour) && d.getHours() !== Hour) {
+      d.setHours(d.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+    if (has(Minute) && d.getMinutes() !== Minute) {
+      d.setMinutes(d.getMinutes() + ((Minute - d.getMinutes() + 60) % 60), 0, 0);
+      continue;
+    }
+    return d.getTime();
   }
-  let delta = (cal.Weekday - candidate.getDay() + 7) % 7;
-  if (delta === 0 && candidate.getTime() <= now) delta = 7;
-  candidate.setDate(candidate.getDate() + delta);
-  return candidate.getTime();
+  return null;
 }
 
 function readableName(label) {
@@ -41,13 +71,19 @@ export function buildCron({ label, plist, statusRow }, now = Date.now()) {
   const cal = plist?.StartCalendarInterval ?? null;
   const interval = plist?.StartInterval ?? null;
   const status = statusRow?.status ?? null;
-  const ok = status === null || status === 0;
+  // No status row, or a row with no exit code, means launchd has never recorded
+  // a completed run: the job is loaded and pending. That is not a failure — but
+  // it is not the confirmed success that "OK" claims either, so it gets its own
+  // state and the panel renders it differently.
+  const neverRan = status === null;
+  const ok = neverRan || status === 0;
   return {
     name: readableName(label),
     label,
     schedule: formatSchedule(cal, interval),
     nextRunAt: nextRun(cal, now),
     ok,
-    last: ok ? 'OK' : `Failed · ${status}`
+    state: neverRan ? 'never' : ok ? 'ok' : 'failed',
+    last: neverRan ? 'Not yet run' : ok ? 'OK' : `Failed · ${status}`
   };
 }

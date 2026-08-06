@@ -86,6 +86,10 @@ export function aggregate(sessions, now = Date.now(), opts = {}) {
       // records are not in ascending order — which nothing guarantees.
       const newest = s.records.reduce((a, r) => (r.ts > a.ts ? r : a), s.records[0]);
       return {
+        // The transcript's own sessionId: without it the client keys rows on
+        // when+title, which collides for two untitled sessions in the same
+        // project in the same minute and silently drops one of them.
+        id: s.sessionId ?? null,
         when: whenLabel(newest.ts, now),
         title: s.title ?? (s.cwd ? basename(s.cwd) : 'Untitled'),
         surface: s.surface,

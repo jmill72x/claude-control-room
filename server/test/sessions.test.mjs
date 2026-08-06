@@ -174,3 +174,37 @@ test('a tree nested deeper than MAX_DEPTH reports the truncation point instead o
   assert.ok(out.unreadablePaths.includes(deep),
     `expected the truncation point ${deep} in ${JSON.stringify(out.unreadablePaths)}`);
 });
+
+// T8: the Cowork branch had one catch around readFile AND JSON.parse, so an
+// EACCES on a session file was swallowed as if it were malformed JSON and
+// reported nowhere — a project silently missing from the panel with the page
+// still claiming a complete picture.
+test('an unreadable Cowork session file is named in unreadablePaths, not swallowed', async t => {
+  if (!(await permissionsAreEnforced())) {
+    return t.skip('chmod does not restrict readdir in this environment (e.g. running as root)');
+  }
+
+  const readable = freshDir();
+  const good = join(readable, 'local_good.json');
+  const bad = join(readable, 'local_bad.json');
+  await writeFile(good, JSON.stringify({ sessionId: 'c1', cwd: '/Users/example/CoworkSpace/live', lastActivityAt: Date.now() }));
+  await writeFile(bad, JSON.stringify({ sessionId: 'c2', cwd: '/Users/example/CoworkSpace/hidden' }));
+  chmodSync(bad, 0o000);
+  try {
+    const out = await collectSessions({ roots: [{ root: readable, surface: 'Cowork' }] });
+    assert.equal(out.coworkSessions.length, 1, 'the readable session must survive');
+    assert.ok(out.unreadablePaths.includes(bad),
+      `expected ${bad} in ${JSON.stringify(out.unreadablePaths)}`);
+  } finally {
+    chmodSync(bad, 0o600);
+  }
+});
+
+test('a malformed Cowork session file is also recorded rather than silently dropped', async () => {
+  const readable = freshDir();
+  const broken = join(readable, 'local_broken.json');
+  await writeFile(broken, '{"sessionId": "c3", trunc');
+  const out = await collectSessions({ roots: [{ root: readable, surface: 'Cowork' }] });
+  assert.deepEqual(out.coworkSessions, []);
+  assert.ok(out.unreadablePaths.includes(broken));
+});

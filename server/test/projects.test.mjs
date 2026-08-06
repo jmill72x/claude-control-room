@@ -158,3 +158,43 @@ test('returned project objects expose exactly the documented keys', () => {
   const p = buildProjects(input, NOW).find(x => x.name === 'invoice');
   assert.deepEqual(Object.keys(p).sort(), ['detail', 'name', 'running', 'tasks', 'tool']);
 });
+
+// I2: `claude agents --json` failing is not evidence that nothing is running.
+// The old collapse to `running: false` printed "Idle" against every project on
+// the page as a statement of fact — and did it deterministically at startup,
+// where the first sessions run always reads an empty agents cache.
+test('an unavailable agents source leaves running unknown, never false', () => {
+  const projects = buildProjects({
+    agents: [],
+    agentsAvailable: false,
+    coworkSessions: [],
+    transcripts: [{ cwd: '/Users/example/Projects/ledger', gitBranch: 'main', lastTs: NOW - MIN, surface: 'Code' }]
+  }, NOW);
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].running, null, 'null means unknown; false would claim idle');
+});
+
+test('a readable agents source that lists nothing busy does report idle', () => {
+  const projects = buildProjects({
+    agents: [{ cwd: '/Users/example/Projects/ledger', status: 'idle' }],
+    agentsAvailable: true,
+    coworkSessions: [],
+    transcripts: []
+  }, NOW);
+  assert.equal(projects[0].running, false);
+});
+
+test('agentsAvailable defaults to true so existing callers are unchanged', () => {
+  const projects = buildProjects({ transcripts: [{ cwd: '/Users/example/Projects/x', lastTs: NOW }] }, NOW);
+  assert.equal(projects[0].running, false);
+});
+
+test('a busy agent still sorts to the top when others are unknown', () => {
+  const projects = buildProjects({
+    agents: [{ cwd: '/Users/example/Projects/busy', status: 'busy' }],
+    agentsAvailable: true,
+    coworkSessions: [],
+    transcripts: [{ cwd: '/Users/example/Projects/quiet', lastTs: NOW - MIN, surface: 'Code' }]
+  }, NOW);
+  assert.equal(projects[0].name, 'busy');
+});

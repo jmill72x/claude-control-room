@@ -1,15 +1,25 @@
 import { basename } from 'node:path';
 import { formatRelative } from './humanize.mjs';
 
-export function buildProjects({ agents = [], coworkSessions = [], transcripts = [] }, now = Date.now()) {
+// `agentsAvailable: false` means `claude agents --json` could not be read. That
+// is not "nothing is running" — it is "we do not know what is running", and the
+// two must not collapse into the same `running: false` the page prints as Idle
+// against every project at once. It also fires at startup by construction:
+// registry.startAll runs every collector in the same tick, so the first sessions
+// run always reads an empty agents cache.
+export function buildProjects(
+  { agents = [], agentsAvailable = true, coworkSessions = [], transcripts = [] },
+  now = Date.now()
+) {
   const projects = new Map();
+  const unknown = !agentsAvailable;
 
   // Keyed by tool AND name: /Projects/docs (Code) and /CoworkSpace/docs (Cowork)
   // are different projects that happen to share a basename.
   const touch = (name, tool) => {
     const key = `${tool}:${name}`;
     if (!projects.has(key)) {
-      projects.set(key, { name, tool, running: false, lastTs: null, branch: null, tasks: null });
+      projects.set(key, { name, tool, running: unknown ? null : false, lastTs: null, branch: null, tasks: null });
     }
     return projects.get(key);
   };
@@ -54,7 +64,7 @@ export function buildProjects({ agents = [], coworkSessions = [], transcripts = 
       };
     })
     .sort((a, b) => {
-      if (a.running !== b.running) return a.running ? -1 : 1;
+      if (a.running !== b.running) return a.running === true ? -1 : 1;
       return (b.lastTs ?? -Infinity) - (a.lastTs ?? -Infinity);
     })
     .map(({ lastTs, ...rest }) => rest);

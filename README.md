@@ -95,6 +95,28 @@ The server holds no API key — there is nothing to hold. It shells out to the `
 CLI the user is already logged into, and reads local files. It binds to
 `127.0.0.1` only; nothing about it is exposed to the network by the server itself.
 
+### What the ingest endpoints require
+
+They are unauthenticated by design (loopback only), so they are narrow instead:
+
+- `Content-Type: application/json` — required. This also stops them being CORS
+  *simple* requests, which is what made them reachable from any page the browser
+  happened to have open.
+- an `Origin` header, if present, must match this server's own host; anything else
+  is refused with a 403.
+- bodies over 256 KB are refused with a 413 rather than buffered.
+- each payload is validated before it is cached — `crons` and `projects` must be
+  arrays of objects carrying at least a `name`, `credits` must be an object of
+  numbers and date strings — and unknown fields are dropped rather than reaching
+  the page. A feed that does not say whether a cron passed leaves that unknown; it
+  is never filled in as a pass.
+
+```bash
+curl -X POST http://127.0.0.1:8322/api/ingest/crons \
+  -H 'Content-Type: application/json' \
+  -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
+```
+
 ## Running it
 
 ### Prerequisites
@@ -108,7 +130,7 @@ CLI the user is already logged into, and reads local files. It binds to
 ### Tests and build
 
 ```bash
-cd server && npm test      # 117 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 176 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 

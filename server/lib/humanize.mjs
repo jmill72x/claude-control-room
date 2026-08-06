@@ -27,11 +27,34 @@ export function formatRelative(ms) {
   return `${Math.floor(total / DAY)}d ago`;
 }
 
-export function formatSchedule(cal, intervalSec) {
-  if (cal) {
-    const time = `${pad(cal.Hour ?? 0)}:${pad(cal.Minute ?? 0)}`;
-    return cal.Weekday === undefined ? `Every day, ${time}` : `${DAYS[cal.Weekday] ?? 'Weekly'}, ${time}`;
+const has = v => Number.isInteger(v);
+
+// An omitted StartCalendarInterval key is a wildcard to launchd, not a zero.
+// `{Minute: 30}` runs hourly at :30; printing "Every day, 00:30" states a
+// schedule the job does not keep. Each partial case gets its own wording rather
+// than being filled in with a number nobody specified.
+function calendarPhrase(cal) {
+  const { Hour, Minute, Weekday } = cal;
+  const day = has(Weekday) ? (DAYS[Weekday] ?? 'Weekly') : null;
+
+  if (has(Hour) && has(Minute)) {
+    const time = `${pad(Hour)}:${pad(Minute)}`;
+    return day ? `${day}, ${time}` : `Every day, ${time}`;
   }
+  if (has(Minute)) {
+    const every = `every hour at :${pad(Minute)}`;
+    return day ? `${day}, ${every}` : `Every hour at :${pad(Minute)}`;
+  }
+  if (has(Hour)) {
+    const window = `${pad(Hour)}:00–${pad(Hour)}:59, every minute`;
+    return day ? `${day}, ${window}` : `Every day, ${window}`;
+  }
+  if (day) return `${day}, every minute`;
+  return 'Every minute';
+}
+
+export function formatSchedule(cal, intervalSec) {
+  if (cal && typeof cal === 'object') return calendarPhrase(cal);
   if (intervalSec) {
     if (intervalSec % 3600 === 0) {
       const h = intervalSec / 3600;

@@ -64,9 +64,23 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
     }
     if (surface === 'Cowork') {
       for (const file of await walk(root, n => n.startsWith('local_') && n.endsWith('.json'), [], failures)) {
+        // A malformed session file and one we are not allowed to open are
+        // different problems with the same consequence — a project missing from
+        // the panel — so both are recorded, exactly as the .jsonl path does.
+        // The single catch swallowed EACCES as if it were bad JSON and reported
+        // neither, which is how a whole unreadable Cowork tree looked empty.
+        let text;
         try {
-          coworkSessions.push(parseCoworkSession(JSON.parse(await readFile(file, 'utf8'))));
-        } catch { /* a malformed session file must not sink the collector */ }
+          text = await readFile(file, 'utf8');
+        } catch {
+          failures.push(file);
+          continue;
+        }
+        try {
+          coworkSessions.push(parseCoworkSession(JSON.parse(text)));
+        } catch {
+          failures.push(file);
+        }
       }
     }
     // Captured after both walks for this root so Cowork-walk failures are
