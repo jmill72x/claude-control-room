@@ -56,12 +56,22 @@ const num = s => Number(String(s).replace(/,/g, ''));
 // returns null rather than an empty shape that would read as "no drivers".
 //
 // The returned shape is PARTIAL: { '24h'?: Window, '7d'?: Window }, not both
-// keys guaranteed. A window key is present only if its "Last 24h"/"Last 7d"
-// header line parsed AND it went on to yield at least one behaviour or Top
-// entry. Format drift on one header, or an account with no 7-day history
-// yet, legitimately produces a result with only one key — callers must treat
-// either key as possibly absent rather than assuming both exist whenever
-// factors is non-null.
+// keys guaranteed, and a present window is not guaranteed to carry content
+// either:
+//   - A window key is present if and only if its "Last 24h"/"Last 7d" header
+//     line parsed. Format drift on one header, or an account with no 7-day
+//     history yet, legitimately produces a result with only one key.
+//   - A present window may still have zero behaviours and zero top entries —
+//     its requests/sessions counts are genuinely scraped from the header
+//     line and are kept even when nothing below that line parsed, because
+//     dropping the window would discard real data along with the absence.
+//   - `factors` as a whole is null only when NO window, across both, yielded
+//     any behaviour or top entry — usable-ness is judged over the whole
+//     block, not per window.
+// Consumers must therefore defend against three states per window: absent,
+// present-but-empty, and present-with-content. Treating "key present" as a
+// promise of meaningful content will render a blank section with no code
+// path expecting it.
 function parseFactors(text) {
   const windows = {};
   let current = null;

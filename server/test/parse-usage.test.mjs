@@ -248,3 +248,26 @@ Last 7d · 5477 requests · 12 sessions
   assert.ok('7d' in factors);
   assert.equal('24h' in factors, false);
 });
+
+test('a window with a parsed header but no behaviour or top lines is still present, empty, with its counts intact', () => {
+  // Both headers parse; only 7d goes on to have a behaviour line. usable-ness
+  // is judged over the whole block, not per window, so 24h is legitimately
+  // returned present-but-empty rather than dropped or fabricated as absent.
+  const bothHeadersOneEmpty = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 5% used · resets Aug 6 at 5:49pm (America/New_York)
+
+What's contributing to your limits usage?
+
+Last 24h · 100 requests · 5 sessions
+Last 7d · 200 requests · 10 sessions
+  93% of your usage came from subagent-heavy sessions
+`;
+  const { factors } = parseUsage(bothHeadersOneEmpty, new Date());
+  assert.ok(factors !== null);
+  assert.ok('24h' in factors);
+  assert.deepEqual(factors['24h'].behaviours, []);
+  assert.deepEqual(factors['24h'].top, []);
+  assert.equal(factors['24h'].requests, 100);
+  assert.equal(factors['24h'].sessions, 5);
+});
