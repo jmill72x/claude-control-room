@@ -5,6 +5,10 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
   return {
     register(name, fn, intervalMs) {
       collectors.set(name, { fn, intervalMs, running: false });
+      // Tell the cache what this collector's own interval is so its
+      // staleness budget can never be shorter than the interval the data is
+      // produced on — see cache.mjs's deriveBudgetFromInterval().
+      cache.deriveBudgetFromInterval(name, intervalMs);
     },
     async runOnce(name) {
       const c = collectors.get(name);

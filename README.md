@@ -192,7 +192,66 @@ directory explicitly. The checked-in example already does:
 If you installed `claude` somewhere else, add that directory to `PATH` in the plist and
 reload the service (`launchctl unload` then `launchctl load` the same path).
 
-### Remote access: tunnel and Access policy
+### Remote access
+
+The service binds to `127.0.0.1` only (see `server.mjs`) — it never listens on the
+LAN interface, and nothing below changes that. Both routes described here reach it by
+proxying to that loopback address from somewhere else; there is no second listener to
+lock down separately.
+
+#### Recommended: Tailscale Serve
+
+If the host is already on a [Tailscale](https://tailscale.com) tailnet, this is the
+lowest-effort and lowest-risk path — no extra process, no separate config file, and
+nothing to review for breaking an unrelated production tunnel.
+
+```bash
+tailscale serve --bg --http=80 8322
+```
+
+This tells `tailscaled` (already running on the host for the tailnet connection) to
+proxy port 80 to `127.0.0.1:8322` **for tailnet traffic only**. What that does and does
+not expose:
+
+- Reachable at `http://<mini-hostname>.<tailnet>.ts.net/` from any device that is on
+  the same tailnet, from anywhere — no VPN client config, no port forwarding.
+- **Not** reachable from the LAN. The server still only binds `127.0.0.1`; a device on
+  the same Wi-Fi that isn't on the tailnet gets connection refused, verified live.
+- Traffic rides the tailnet's WireGuard tunnel, which is encrypted end-to-end between
+  devices regardless of what's inside it.
+
+**The inside-the-tunnel leg is plain HTTP, not HTTPS**, because `--http=80` is what
+works without first turning on HTTPS certificates for the tailnet (`tailscale cert`
+requires `CertDomains` to be enabled in the admin console's DNS settings, which is off
+by default). The WireGuard encryption still applies — this is "encrypted transport,
+unencrypted inside it," not "unencrypted." One concrete consequence: the browser
+considers a plain-HTTP tailnet page a non-secure context, so `crypto.randomUUID()` is
+unavailable there and the to-do board's id generator falls back to a non-crypto
+alternative (see the comment in `web/src/components/Lanes.jsx`) — that fallback is
+correct and this is exactly the scenario it exists for.
+
+**Upgrade path to a real cert and `https://`:** enable HTTPS certificates for the
+tailnet in the Tailscale admin console (DNS settings → HTTPS Certificates), then
+re-run:
+
+```bash
+tailscale serve --bg 8322
+```
+
+(omitting `--http=80` lets it default to serving HTTPS with a real cert on 443). This
+also restores a secure context, so the `crypto.randomUUID()` fallback above stops being
+exercised.
+
+**To turn it off:**
+
+```bash
+tailscale serve --http=80 off
+```
+
+#### Alternative: Cloudflare Tunnel + Access
+
+Use this instead when a device that needs access can't run Tailscale — Tailscale Serve
+above is the plan for everything else.
 
 **This step is documented here, not automated, and intentionally not applied by any
 script in this repo.** The dashboard is meant to ride an existing `cloudflared` tunnel

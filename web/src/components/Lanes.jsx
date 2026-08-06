@@ -77,11 +77,16 @@ export function Lanes() {
     }
   };
 
-  // randomUUID exists only in a secure context. localhost and the HTTPS
-  // tunnel both qualify, but a bare-LAN-IP page over plain HTTP does not —
-  // and calling it there throws synchronously, outside save()'s try, so the
-  // failure would be silent: no optimistic update, no revert, no error
-  // banner, nothing. Fall back to a non-crypto unique-enough id.
+  // randomUUID exists only in a secure context. localhost and an HTTPS
+  // tunnel both qualify, but plain HTTP does not — and that is not a
+  // hypothetical edge case: the recommended remote-access route
+  // (`tailscale serve --bg --http=80 8322`, see README) serves the
+  // dashboard over plain HTTP inside the tailnet's WireGuard tunnel until
+  // HTTPS certs are turned on for the tailnet, so this fallback is exercised
+  // on every real tailnet visit today. Calling randomUUID in a non-secure
+  // context throws synchronously, outside save()'s try, so the failure would
+  // be silent: no optimistic update, no revert, no error banner, nothing.
+  // Fall back to a non-crypto unique-enough id.
   const newId = () =>
     globalThis.crypto?.randomUUID
       ? crypto.randomUUID()

@@ -3,28 +3,42 @@
 What's unfinished on this dashboard, written so a fresh session can pick it up cold.
 The README covers setup and architecture; this file is only the open items.
 
-## 1. Remote access (the main outstanding item)
+## 1. Remote access — done via Tailscale Serve
 
-The dashboard is localhost-only today. The README's **"Remote access: tunnel and
-Access policy"** section already has the exact `cloudflared` ingress-rule stanza and
-the Cloudflare Access policy steps — read that section rather than re-deriving it
-here.
+Remote access is set up. `tailscale serve --bg --http=80 8322` is running on the
+host, and the dashboard is reachable at `http://<mini-hostname>.<tailnet>.ts.net/`
+from any device on the tailnet, from anywhere — see the README's **"Remote
+access"** section for the command, exactly what it does and does not expose, and how
+to turn it off.
 
-It was deliberately never applied. This machine already runs a `cloudflared` tunnel
-serving an unrelated production service (a LinkedIn review tool), and editing that
-tunnel's live config to add a route was judged not worth the risk of breaking it
+**No code change was needed or made.** The service still binds `127.0.0.1` only (see
+`server.mjs`); it is not reachable from the LAN, only from the tailnet, verified live.
+
+**Remaining nicety, not a blocker: turn on HTTPS.** The tailnet doesn't have HTTPS
+certificates enabled yet, so `tailscale serve` is running in `--http=80` mode — real
+WireGuard encryption between devices, but plain HTTP inside that tunnel, not `https://`.
+The upgrade is two steps, both documented in the README: enable HTTPS Certificates for
+the tailnet in the Tailscale admin console's DNS settings, then re-run
+`tailscale serve --bg 8322` (no `--http=80`) to pick up a real cert. Worth doing
+because it also restores a secure context in the browser, which matters for the
+`crypto.randomUUID()` fallback documented in `web/src/components/Lanes.jsx` — that
+fallback is currently exercised on every tailnet visit, not just a hypothetical one.
+
+**Cloudflare Tunnel + Access remains documented as the alternative route**, for a
+device that can't run Tailscale, but it has not been applied and there is no plan to
+apply it unless that need comes up — see the README's **"Alternative: Cloudflare
+Tunnel + Access"** subsection for the exact ingress-rule stanza and Access policy
+steps. It was deliberately never applied: this machine already runs a `cloudflared`
+tunnel serving an unrelated production service (a LinkedIn review tool), and editing
+that tunnel's live config to add a route was judged not worth the risk of breaking it
 unattended. Any future session that adds the route should apply it by hand, reading
 the current tunnel config first, not via a script.
 
-**The Access policy must go on before or with the route, never after.** The hostname
-becomes publicly reachable the instant the ingress rule exists — Cloudflare doesn't
-gate on the Access policy being present, it gates on you having added one. This
-dashboard renders account usage, project names, and spend figures, so a route that
-outlives an unprotected minute is a real exposure, not a theoretical one.
-
-The service itself binds to `127.0.0.1` only (see `server.mjs`) — it does not listen
-on any other interface. The tunnel is therefore the *only* intended path from outside
-this machine; there is no secondary listener to lock down separately.
+**If it is ever applied, the Access policy must go on before or with the route, never
+after.** The hostname becomes publicly reachable the instant the ingress rule exists —
+Cloudflare doesn't gate on the Access policy being present, it gates on you having
+added one. This dashboard renders account usage, project names, and spend figures, so
+a route that outlives an unprotected minute is a real exposure, not a theoretical one.
 
 ## 2. Parked findings from the final review
 
