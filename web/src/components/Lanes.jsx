@@ -9,6 +9,10 @@ const LANES = [
 export function Lanes() {
   const [todos, setTodos] = useState([]);
   const [error, setError] = useState(null);
+  // Until the list has actually been read, `todos` is an empty array we chose,
+  // not an empty backlog we found: the lane counts must say so rather than
+  // print a confident 0 next to a load error.
+  const [loaded, setLoaded] = useState(false);
 
   // `.then(r => r.json())` accepted any body the server sent, including a 500's
   // `{error}` object, which then reached `todos.filter` and threw during render —
@@ -24,7 +28,7 @@ export function Lanes() {
         }
         const body = await res.json();
         if (!Array.isArray(body)) throw new Error('the server did not return a list');
-        if (!cancelled) { setTodos(body); setError(null); }
+        if (!cancelled) { setTodos(body); setLoaded(true); setError(null); }
       } catch (e) {
         if (!cancelled) setError(`could not load: ${e.message}`);
       }
@@ -64,6 +68,7 @@ export function Lanes() {
         const body = await res.json();
         if (!Array.isArray(body)) throw new Error('not a list');
         setTodos(body);
+        setLoaded(true);
       } catch {
         setTodos(previous); // server unreachable: no write landed, snapshot is correct
       }
@@ -100,7 +105,9 @@ export function Lanes() {
               <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
                 {lane.title}
               </span>
-              <span className="num" style={{ fontSize: 11, fontWeight: 700, color: 'var(--n600)' }}>{items.length}</span>
+              <span className="num" style={{ fontSize: 11, fontWeight: 700, color: 'var(--n600)' }}>
+                {loaded ? items.length : '—'}
+              </span>
             </div>
             {items.map(t => (
               <div key={t.id} style={{

@@ -33,7 +33,11 @@ const readBody = (req, limit = MAX_BODY) => new Promise((resolve, reject) => {
     const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
     size += buf.length;
     if (size > limit) {
-      req.destroy?.();
+      // Stop reading, but do not destroy the socket: killing it here means the
+      // client gets no response at all, only a dropped connection. The 413 goes
+      // out first and the connection is closed with it.
+      req.unpipe?.();
+      req.pause?.();
       return stop(reject, new HttpError(413, `body exceeds ${limit} bytes`));
     }
     chunks.push(buf);
@@ -130,6 +134,12 @@ export function createHandler({ cache, todos, config }) {
       // whole in-memory cache) down with it.
       const status = err instanceof HttpError ? err.status : 500;
       if (status === 500) console.error('api error', path, err);
+      if (status === 413) {
+        // The client is still uploading; answer and hang up rather than
+        // reading the rest of a body already refused.
+        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+        return res.end(JSON.stringify({ error: String(err.message) }));
+      }
       return json(res, status, { error: String(err?.message ?? err) });
     }
   };
