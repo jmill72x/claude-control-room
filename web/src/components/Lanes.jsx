@@ -30,16 +30,39 @@ export function Lanes() {
       setError(null);
       return true;
     } catch (e) {
-      setTodos(previous); // a failed save must not look like a success
+      // On failure, ask the server what is actually true rather than
+      // rewinding to the pre-request snapshot. With two saves in flight,
+      // `previous` can predate a write a *different* save already landed
+      // (e.g. this one advances an item while a faster, later one deletes a
+      // different item) — restoring `previous` would silently resurrect
+      // that deleted item, which is the never-fabricate rule in reverse:
+      // the client showing state the server does not have. Only fall back
+      // to `previous` if the server itself is unreachable, in which case no
+      // write landed at all and the pre-request snapshot is correct — this
+      // is exactly the server-down case, so that path is unchanged.
+      try {
+        const res = await fetch('/api/todos');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setTodos(await res.json());
+      } catch {
+        setTodos(previous); // server unreachable: no write landed, snapshot is correct
+      }
       setError('could not save');
       return false;
     }
   };
 
-  // crypto.randomUUID over Date.now(): the brief's Date.now() id is unique in
-  // practice but not guaranteed — two adds in the same millisecond (e.g. two
-  // browser tabs) would collide and violate the stable-unique-key rule.
-  const add = (lane, text) => save([...todos, { id: crypto.randomUUID(), text, lane, tag: 'Note' }]);
+  // randomUUID exists only in a secure context. localhost and the HTTPS
+  // tunnel both qualify, but a bare-LAN-IP page over plain HTTP does not —
+  // and calling it there throws synchronously, outside save()'s try, so the
+  // failure would be silent: no optimistic update, no revert, no error
+  // banner, nothing. Fall back to a non-crypto unique-enough id.
+  const newId = () =>
+    globalThis.crypto?.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const add = (lane, text) => save([...todos, { id: newId(), text, lane, tag: 'Note' }]);
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
 
