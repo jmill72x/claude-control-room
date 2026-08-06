@@ -14,7 +14,7 @@ import { ModelRows } from './components/ModelRows.jsx';
 import { SessionRows } from './components/SessionRows.jsx';
 import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
-import { formatTokens, billingCycleNote } from './lib/format.js';
+import { formatTokens, billingCycleNote, summaryOrDash } from './lib/format.js';
 
 export default function App() {
   const { payload } = useDashboard();
@@ -65,12 +65,16 @@ export default function App() {
         <section className="ccr-col ccr-col--ruled">
           <div className="ccr-col-head">
             <h2>02&nbsp;&nbsp;Projects</h2>
-            <span className="num">{projects.filter(p => p.running).length} running · {projects.length} total</span>
+            <span className="num">
+              {summaryOrDash(payload?.sessions, `${projects.filter(p => p.running).length} running · ${projects.length} total`)}
+            </span>
           </div>
           <ProjectRows projects={projects} />
           <div className="ccr-subhead">
             <h3>Scheduled crons</h3>
-            <span className="num">{crons.filter(c => !c.ok).length} failing · {crons.length} scheduled</span>
+            <span className="num">
+              {summaryOrDash(payload?.crons, `${crons.filter(c => !c.ok).length} failing · ${crons.length} scheduled`)}
+            </span>
           </div>
           {payload?.crons && <StatusNote {...payload.crons} />}
           {!cronsUnavailable && <CronRows crons={crons} now={now} />}

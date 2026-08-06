@@ -31,3 +31,8 @@ export function billingCycleNote(renews, now = Date.now()) {
   const days = Math.max(0, Math.ceil((at - now) / 86400000));
   return `Billing cycle · ${days} day${days === 1 ? '' : 's'} left`;
 }
+
+// A count derived from missing data is a fabrication. Render an em dash instead.
+export function summaryOrDash(envelope, text) {
+  return envelope?.status === 'unavailable' ? '—' : text;
+}
