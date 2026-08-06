@@ -3038,6 +3038,7 @@ export function Lanes() {
     fetch('/api/todos').then(r => r.json()).then(setTodos).catch(e => setError(String(e.message)));
   }, []);
 
+  // Returns whether the write landed, so callers can avoid acting as though it did.
   const save = async next => {
     const previous = todos;
     setTodos(next); // optimistic
@@ -3049,13 +3050,15 @@ export function Lanes() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setError(null);
+      return true;
     } catch (e) {
       setTodos(previous); // a failed save must not look like a success
       setError('could not save');
+      return false;
     }
   };
 
-  const add = (lane, text) => save([...todos, { id: Date.now(), text, lane, tag: 'Note' }]);
+  const add = (lane, text) => save([...todos, { id: crypto.randomUUID(), text, lane, tag: 'Note' }]);
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
 
@@ -3114,12 +3117,15 @@ export function Lanes() {
             <input
               type="text"
               placeholder={lane.placeholder}
-              onKeyDown={e => {
+              onKeyDown={async e => {
                 if (e.key !== 'Enter') return;
                 const v = e.target.value.trim();
                 if (!v) return;
-                add(lane.key, v);
-                e.target.value = '';
+                const field = e.target;
+                // Clear ONLY on a landed write. Clearing unconditionally makes a
+                // failed save indistinguishable from a successful one, and loses
+                // what the user typed.
+                if (await add(lane.key, v)) field.value = '';
               }}
               style={{
                 fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '8px 10px',
