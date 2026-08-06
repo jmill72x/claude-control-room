@@ -2895,7 +2895,9 @@ export function ProjectRows({ projects }) {
                 fontSize: 11, fontWeight: 800, letterSpacing: '0.06em',
                 textTransform: 'uppercase', color: dot
               }}>{p.running ? 'Running' : 'Idle'}</span>
-              {p.tasks && <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{p.tasks}</span>}
+              {/* `p.tasks &&` would render a literal "0" when tasks is 0 — React
+                  prints the falsy number rather than skipping it. Test for null. */}
+              {p.tasks != null && <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{p.tasks}</span>}
             </span>
           </div>
         );
@@ -2910,7 +2912,6 @@ export function ProjectRows({ projects }) {
 ```jsx
 export function CronRows({ crons, now }) {
   const short = ms => {
-    if (ms === null || ms === undefined) return '—';
     const total = Math.max(0, ms);
     const d = Math.floor(total / 86400000);
     const h = Math.floor((total % 86400000) / 3600000);
