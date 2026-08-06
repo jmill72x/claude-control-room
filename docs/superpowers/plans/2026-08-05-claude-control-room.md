@@ -2895,8 +2895,13 @@ export function ProjectRows({ projects }) {
                 fontSize: 11, fontWeight: 800, letterSpacing: '0.06em',
                 textTransform: 'uppercase', color: dot
               }}>{p.running ? 'Running' : 'Idle'}</span>
-              {/* `p.tasks &&` would render a literal "0" when tasks is 0 — React
-                  prints the falsy number rather than skipping it. Test for null. */}
+              {/* Null means "we don't know"; 0 means "we looked and there are none".
+                  Those are different facts and must render differently, so this tests
+                  for null rather than truthiness — `p.tasks &&` would also print a
+                  bare unstyled "0" text node, since React renders the falsy number.
+                  When open-task counts are eventually wired, the SERVER should send a
+                  display string ('none', '7 open') as the original design does, so a
+                  bare numeral never reaches this row. */}
               {p.tasks != null && <span className="num" style={{ fontSize: 11, color: 'var(--n600)' }}>{p.tasks}</span>}
             </span>
           </div>
