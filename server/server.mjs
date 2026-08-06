@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, extname, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createStaticHandler } from './lib/static.mjs';
 import { createCache } from './cache.mjs';
 import { createRegistry } from './collectors/registry.mjs';
 import { collectUsage } from './collectors/usage.mjs';
@@ -17,7 +17,6 @@ import { buildProjects } from './lib/projects.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8322);
 const WEB_DIR = join(HERE, '..', 'web', 'dist');
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.json': 'application/json' };
 
 const config = await loadConfig(join(HERE, 'config.json'));
 const cache = createCache();
@@ -30,12 +29,17 @@ registry.register('crons', () => collectCrons(), 60 * 1000);
 registry.register('sessions', async () => {
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths } = await collectSessions();
   const now = Date.now();
+  // `?? []` collapsed "the agents source is unreadable" into "no agent is
+  // running", which made every project read Idle as a statement of fact while
+  // the header still said ok. Pass the distinction through instead.
+  const agentsEnvelope = cache.get('agents', now);
   return {
     ...aggregate(transcripts, now),
     unavailableRoots,
     unreadablePaths,
     projects: buildProjects({
-      agents: cache.get('agents', now).data ?? [],
+      agents: agentsEnvelope.data ?? [],
+      agentsAvailable: agentsEnvelope.status !== 'unavailable',
       coworkSessions,
       transcripts
     }, now)
@@ -43,21 +47,24 @@ registry.register('sessions', async () => {
 }, 60 * 1000);
 
 const api = createHandler({ cache, todos, config });
+const serveStatic = createStaticHandler(WEB_DIR);
+
+// A rejection nobody catches used to take the whole process down; launchd then
+// restarted it with an empty cache, so every panel dropped to unavailable and
+// usage stayed blank for up to five minutes. Log and keep serving.
+process.on('unhandledRejection', err => {
+  console.error('unhandled rejection (ignored, process kept alive)', err);
+});
 
 createServer(async (req, res) => {
-  if (req.url.startsWith('/api/')) return api(req, res);
   try {
-    const rel = req.url === '/' ? 'index.html' : req.url.slice(1).split('?')[0];
-    const body = await readFile(join(WEB_DIR, rel));
-    res.writeHead(200, { 'Content-Type': MIME[extname(rel)] ?? 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    try {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(await readFile(join(WEB_DIR, 'index.html')));
-    } catch {
-      res.writeHead(404); res.end('not built');
-    }
+    if (req.url.startsWith('/api/')) return await api(req, res);
+    return await serveStatic(req, res);
+  } catch (err) {
+    console.error('request failed', req.method, req.url, err);
+    if (res.headersSent) return res.end();
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'internal error' }));
   }
 }).listen(PORT, '127.0.0.1', () => {
   registry.startAll();
