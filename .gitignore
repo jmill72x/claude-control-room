@@ -9,6 +9,9 @@ Claude dashboard prototype.zip
 server/config.json
 server/todos.json
 
+# Usage history: personal, non-recoverable, and this repo is public
+server/data/
+
 # The real plist carries absolute paths; only the example is tracked
 deploy/*.plist
 !deploy/*.plist.example
