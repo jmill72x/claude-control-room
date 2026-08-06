@@ -402,6 +402,12 @@ export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAU
     monthFile,
 
     async append(record) {
+      // A record with no usable timestamp has no month to live in: MONTH() would
+      // yield `NaN-NaN` and the write would create a file nothing ever reads again.
+      // This is a contract violation, not bad input to tolerate — say so loudly.
+      if (!Number.isFinite(record?.t)) {
+        throw new TypeError(`history record needs a finite t, got ${record?.t}`);
+      }
       await mkdir(dir, { recursive: true });
       await appendFile(monthFile(record.t), `${JSON.stringify(record)}\n`);
       records.push(record);
@@ -414,12 +420,20 @@ export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAU
 
     async warm() {
       const t = now();
-      const prev = new Date(t);
-      prev.setMonth(prev.getMonth() - 1);
-      const loaded = [
-        ...(await loadFile(monthFile(prev.getTime()))),
-        ...(await loadFile(monthFile(t)))
-      ];
+      const here = new Date(t);
+      const loaded = [];
+      // Walk back far enough to cover the whole retention window, not a fixed two
+      // months: a caller with 90-day retention would otherwise never see its oldest
+      // month. 28 days is the shortest possible month, so this always over-reaches
+      // rather than under-reaches, and a month with no file simply yields nothing.
+      const months = Math.max(2, Math.ceil(retentionMs / (28 * 24 * 3600 * 1000)) + 1);
+      for (let back = months - 1; back >= 0; back--) {
+        // Constructed from (year, month, 1) rather than setMonth(): setMonth does
+        // not clamp, so 31 March minus one month is 3 March, not February — which
+        // silently loaded the current month twice and the previous one never.
+        const m = new Date(here.getFullYear(), here.getMonth() - back, 1).getTime();
+        loaded.push(...(await loadFile(monthFile(m))));
+      }
       records = loaded;
       trim();
     }
@@ -714,10 +728,17 @@ export async function collectUsage({ run = runUsageCli, now = () => new Date(), 
   // Appended only after a successful parse. A gap in the history file must mean
   // "no reading was taken", never "a reading of zero".
   if (history) {
-    await history.append({
-      t: now().getTime(),
-      limits: parsed.limits.map(l => ({ label: l.label, pct: l.pct, resetsAt: l.resetsAt }))
-    });
+    try {
+      await history.append({
+        t: now().getTime(),
+        limits: parsed.limits.map(l => ({ label: l.label, pct: l.pct, resetsAt: l.resetsAt }))
+      });
+    } catch (err) {
+      // The reading itself is good. Losing a history write costs a future
+      // sparkline point; failing the collector would blank a panel that has
+      // perfectly valid data. Report it, keep the reading.
+      console.error('history append failed:', err.message);
+    }
   }
   return parsed;
 }
