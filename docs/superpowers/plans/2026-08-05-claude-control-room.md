@@ -2957,18 +2957,28 @@ export function CronRows({ crons, now }) {
 <section className="ccr-col ccr-col--ruled">
   <div className="ccr-col-head">
     <h2>02&nbsp;&nbsp;Projects</h2>
-    <span>{projects.filter(p => p.running).length} running · {projects.length} total</span>
+    <span>{summaryOrDash(payload?.sessions, `${projects.filter(p => p.running).length} running · ${projects.length} total`)}</span>
   </div>
   <ProjectRows projects={projects} />
   <div className="ccr-col-head" style={{ marginTop: 4 }}>
     <h3 style={{ margin: 0, fontSize: 13, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
       Scheduled crons
     </h3>
-    <span>{crons.filter(c => !c.ok).length} failing · {crons.length} scheduled</span>
+    <span>{summaryOrDash(payload?.crons, `${crons.filter(c => !c.ok).length} failing · ${crons.length} scheduled`)}</span>
   </div>
   <StatusNote {...(payload?.crons ?? { status: 'unavailable' })} />
   <CronRows crons={crons} now={now} />
 </section>
+```
+
+A header summary counted from absent data is a fabricated number: "0 failing · 0 scheduled"
+reads as "everything is fine" when the truth is "we could not look". Add to `lib/format.js`:
+
+```js
+// A count derived from missing data is a fabrication. Render an em dash instead.
+export function summaryOrDash(envelope, text) {
+  return envelope?.status === 'unavailable' ? '—' : text;
+}
 ```
 
 With, near the top of the component body:
