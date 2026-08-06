@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "test": "node --test test/*.mjs",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "build": "npm --prefix ../web run build"
   }
 }
