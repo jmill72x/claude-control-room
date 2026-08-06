@@ -221,3 +221,30 @@ test('the real captured fixture yields usable factors', () => {
     for (const t of w.top) assert.ok(typeof t.category === 'string' && Array.isArray(t.entries));
   }
 });
+
+test('a Top line with one unparseable fragment (e.g. a comma inside a name) yields no category, not a truncated name', () => {
+  const text = FACTORS.replace('Top subagents: general-purpose 48%', 'Top subagents: My Comma, Name 48%');
+  const { factors } = parseUsage(text, new Date());
+  // The ambiguous split must not silently keep the fragment that happened to
+  // parse — "Name 48%" alone would look plausible but is a fabricated name.
+  assert.ok(!factors['24h'].top.some(t => t.category === 'subagents'));
+  for (const t of factors['24h'].top) {
+    for (const e of t.entries) assert.notEqual(e.name, 'Name');
+  }
+});
+
+test('a text with only a Last 7d block yields factors with 7d present and 24h absent, not a fabricated empty 24h', () => {
+  const only7d = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 5% used · resets Aug 6 at 5:49pm (America/New_York)
+
+What's contributing to your limits usage?
+
+Last 7d · 5477 requests · 12 sessions
+  100% of your usage came from sessions active for 8+ hours
+`;
+  const { factors } = parseUsage(only7d, new Date());
+  assert.ok(factors !== null);
+  assert.ok('7d' in factors);
+  assert.equal('24h' in factors, false);
+});

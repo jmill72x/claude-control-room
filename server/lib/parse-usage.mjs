@@ -10,7 +10,10 @@ const LIMIT_RE = /^(Current session|Current week \(([^)]+)\)):\s*(\d+)%\s*used(?
 // LIMIT_RE in full. Used to catch a limit line whose format has drifted —
 // e.g. a changed suffix — so it is never silently dropped.
 const LOOKS_LIKE_LIMIT_RE = /^(Current session|Current week)\b/;
-const COUNTS_RE = /^Last\s+(24h|7d)\s*·\s*([\d,]+)\s+requests\s*·\s*([\d,]+)\s+sessions/;
+// Shared by the top-level requests/sessions counts and by parseFactors below —
+// both read the same "Last 24h · N requests · N sessions" line, so one regex
+// keeps them from silently diverging if the format ever changes.
+const WINDOW_COUNTS_RE = /^Last\s+(24h|7d)\s*·\s*([\d,]+)\s+requests\s*·\s*([\d,]+)\s+sessions/;
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 // A generous plausibility bound, not a 0-100 clamp: credit-spend limits on
 // real accounts legitimately exceed 100%. This exists only to catch garbled
@@ -41,7 +44,6 @@ function resolveReset(clause, now) {
   return d.toISOString();
 }
 
-const WINDOW_RE = /^Last\s+(24h|7d)\s*·\s*([\d,]+)\s+requests\s*·\s*([\d,]+)\s+sessions/;
 const BEHAVIOUR_RE = /^(\d+)%\s+of your usage\s+(?:came from|was at)\s+(.+?)\s*$/;
 const TOP_RE = /^Top\s+([^:]+):\s*(.+?)\s*$/;
 const ENTRY_RE = /^(.*?)\s+(\d+)%$/;
@@ -52,6 +54,14 @@ const num = s => Number(String(s).replace(/,/g, ''));
 // supplementary; a format change here must never take down the primary numbers.
 // Anything unrecognised is skipped, and a block that yields nothing usable
 // returns null rather than an empty shape that would read as "no drivers".
+//
+// The returned shape is PARTIAL: { '24h'?: Window, '7d'?: Window }, not both
+// keys guaranteed. A window key is present only if its "Last 24h"/"Last 7d"
+// header line parsed AND it went on to yield at least one behaviour or Top
+// entry. Format drift on one header, or an account with no 7-day history
+// yet, legitimately produces a result with only one key — callers must treat
+// either key as possibly absent rather than assuming both exist whenever
+// factors is non-null.
 function parseFactors(text) {
   const windows = {};
   let current = null;
@@ -59,7 +69,7 @@ function parseFactors(text) {
   for (const raw of text.split('\n')) {
     const line = raw.trim();
 
-    const w = line.match(WINDOW_RE);
+    const w = line.match(WINDOW_COUNTS_RE);
     if (w) {
       current = { requests: num(w[2]), sessions: num(w[3]), behaviours: [], top: [] };
       windows[w[1]] = current;
@@ -75,12 +85,20 @@ function parseFactors(text) {
 
     const t = line.match(TOP_RE);
     if (t) {
+      // The format is comma-separated, so a name that itself contains a comma
+      // is inherently ambiguous — it cannot be recovered, only guessed at.
+      // A single unparseable fragment therefore invalidates the whole line:
+      // keeping the fragments that happened to parse would produce a
+      // truncated name presented as fact, which is worse than no entry at
+      // all because nothing marks it as suspect.
       const entries = [];
+      let allMatched = true;
       for (const part of t[2].split(',')) {
         const e = part.trim().match(ENTRY_RE);
-        if (e) entries.push({ name: e[1].trim(), pct: Number(e[2]) });
+        if (!e) { allMatched = false; break; }
+        entries.push({ name: e[1].trim(), pct: Number(e[2]) });
       }
-      if (entries.length > 0) current.top.push({ category: t[1].trim(), entries });
+      if (allMatched && entries.length > 0) current.top.push({ category: t[1].trim(), entries });
     }
   }
 
@@ -115,7 +133,7 @@ export function parseUsage(text, now = new Date()) {
       // with no signal that anything was lost.
       throw new UsageParseError(`malformed limit line: ${trimmed}`);
     }
-    const cm = trimmed.match(COUNTS_RE);
+    const cm = trimmed.match(WINDOW_COUNTS_RE);
     if (cm) {
       const key = cm[1] === '24h' ? 'last24h' : 'last7d';
       requests[key] = Number(cm[2].replace(/,/g, ''));
