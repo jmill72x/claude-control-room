@@ -3039,6 +3039,13 @@ export function Lanes() {
   }, []);
 
   // Returns whether the write landed, so callers can avoid acting as though it did.
+  //
+  // On failure we re-read the server rather than restoring a snapshot taken before
+  // the request. A snapshot is only correct if nothing else changed meanwhile: with
+  // two writes in flight, a failing older one would roll the client back past a
+  // newer write the server already accepted — resurrecting a deleted item. The
+  // server is the authority, so ask it. If it cannot be reached either, nothing
+  // landed, and the pre-request snapshot is then the right answer.
   const save = async next => {
     const previous = todos;
     setTodos(next); // optimistic
@@ -3052,13 +3059,28 @@ export function Lanes() {
       setError(null);
       return true;
     } catch (e) {
-      setTodos(previous); // a failed save must not look like a success
+      try {
+        const res = await fetch('/api/todos');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setTodos(await res.json());
+      } catch {
+        setTodos(previous); // server unreachable: no write landed, snapshot is correct
+      }
       setError('could not save');
       return false;
     }
   };
 
-  const add = (lane, text) => save([...todos, { id: crypto.randomUUID(), text, lane, tag: 'Note' }]);
+  // randomUUID exists only in a secure context. localhost and the HTTPS tunnel
+  // both qualify, but a bare-LAN-IP page over plain HTTP does not — and calling it
+  // there throws synchronously, outside save()'s try, so the failure would be
+  // silent: no revert, no error banner, nothing.
+  const newId = () =>
+    globalThis.crypto?.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const add = (lane, text) => save([...todos, { id: newId(), text, lane, tag: 'Note' }]);
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
 
