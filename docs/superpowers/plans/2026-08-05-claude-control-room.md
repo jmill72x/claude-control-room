@@ -1212,7 +1212,9 @@ export function buildProjects({ agents = [], coworkSessions = [], transcripts = 
 
   for (const t of transcripts) {
     if (!t.cwd) continue;
-    const p = touch(basename(t.cwd), 'Code');
+    // Use the transcript's OWN surface. Hardcoding 'Code' files every Cowork
+    // transcript under a Code project named after Cowork's internal directory.
+    const p = touch(basename(t.cwd), t.surface ?? 'Code');
     noteActivity(p, t.lastTs);
     if (t.gitBranch) p.branch = t.gitBranch;
   }
@@ -2335,6 +2337,26 @@ export function formatCountdown(ms) {
   return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
 }
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// The design spec prints dates as 'Aug 21, 2026', not as the raw ISO the config holds.
+export function formatDate(value) {
+  if (!value) return '—';
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+// A weekly window is days away, and 'resets 118:15:50' is unreadable. Use the
+// clock format only where it is meaningful — under a day.
+export function formatUntil(ms) {
+  const total = Math.max(0, ms);
+  if (total < 24 * 3600 * 1000) return formatCountdown(total);
+  const d = Math.floor(total / (24 * 3600 * 1000));
+  const h = Math.floor((total % (24 * 3600 * 1000)) / 3600000);
+  return `${d}d ${h}h`;
+}
+
 export function formatTokens(n) {
   if (n === null || n === undefined) return '—';
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -2575,7 +2597,7 @@ export function LimitBars({ limits, threshold, now }) {
               <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, l.pct)}%`, background: color }} />
             </div>
             <div className="num" style={{ fontSize: 11, color: 'var(--n600)', fontWeight: 500 }}>
-              {resetsAt ? `resets ${formatCountdown(resetsAt - now)}` : 'no reset time reported'}
+              {resetsAt ? `resets ${formatUntil(resetsAt - now)}` : 'no reset time reported'}
             </div>
           </div>
         );
@@ -2610,8 +2632,10 @@ export function StackedBar({ segments }) {
             flex: Math.max(s.pct, 1), background: PALETTE[i % PALETTE.length],
             display: 'flex', alignItems: 'center', paddingLeft: 6, overflow: 'hidden'
           }}>
+            {/* A 0% segment is one pixel wide; its label clips to a bare '0'
+                that reads as a truncated number. The legend already states it. */}
             <span className="num" style={{ fontSize: 10, fontWeight: 800, color: FG[i % FG.length], letterSpacing: '0.04em' }}>
-              {s.pct}%
+              {s.pct > 0 ? `${s.pct}%` : ''}
             </span>
           </div>
         ))}
@@ -2654,7 +2678,7 @@ export function PlanBlock({ plan }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: 'var(--rule-fine)' }}>
         <div style={{ padding: '8px 12px 8px 0', borderRight: 'var(--rule-fine)' }}>
           <div className="section-label">Renews</div>
-          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{plan.renews}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{formatDate(plan.renews)}</div>
         </div>
         <div style={{ padding: '8px 0 8px 12px' }}>
           <div className="section-label">Seats · Extra</div>
@@ -2700,11 +2724,11 @@ export function CreditsPanel({ credits, threshold, now }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: 'var(--rule-fine)' }}>
         <div style={{ padding: '8px 12px 8px 0', borderRight: 'var(--rule-fine)' }}>
           <div className="section-label">Resets</div>
-          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{credits.resetsOn ?? '—'}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{formatDate(credits.resetsOn)}</div>
         </div>
         <div style={{ padding: '8px 0 8px 12px' }}>
           <div className="section-label">Promo expires</div>
-          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{credits.promoExpiresOn ?? '—'}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 700 }}>{formatDate(credits.promoExpiresOn)}</div>
         </div>
       </div>
       <div className="num" style={{ fontSize: 10, color: aged ? 'var(--accent)' : 'var(--n600)', fontWeight: aged ? 700 : 500 }}>
