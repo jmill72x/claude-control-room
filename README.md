@@ -71,7 +71,10 @@ a failed, stale, or absent reading writes nothing, so a gap in the file always
 means "no reading," never "a reading of zero." Retention is indefinite (the data
 is non-recoverable and the volume is trivial — roughly 21 MB a year at one
 reading every five minutes), while the server keeps the most recent 30 days in
-memory to serve sparklines. At startup it warms that window by loading enough
+memory to serve sparklines. That 30 days is a **single constant**,
+`RETENTION_MS` in `server/history.mjs`: `server.mjs` asks the store for exactly
+that span and `lib/usage-panel.mjs` caps a sparkline's range to it, so widening
+retention actually widens the series instead of silently doing nothing. At startup it warms that window by loading enough
 trailing month files to cover the configured retention, not a fixed count — a
 walk-back derived from retention rather than fixed to two months, precisely so a
 longer retention setting doesn't silently lose its oldest data. At the default
@@ -86,19 +89,56 @@ file to "repair" it.
 *is*. Weekly windows can fall back to a plausible default because the label
 itself says "Current week" — seven days. **The session window has no such
 label and gets no fallback.** Instead, the dashboard watches the history for a
-window rolling over: when a reset timestamp jumps forward, that jump is the
-window's length. `server/lib/pace.mjs` scans for the most recent such jump per
-limit.
+window rolling over and reads the length off the jump.
+
+A forward jump is **not** automatically one window length, and treating it as
+one produced real, wrong numbers on this dashboard. Session windows are
+user-initiated, so they aren't contiguous: after an idle spell the next window
+starts when you send the next message, and the jump spans *idle + window*. The
+printed reset also flaps by a minute between polls (`07:49` / `07:50` both
+appear in captured history), so a rollover first caught on the low side
+"recovers" into a one-minute jump. `server/lib/pace.mjs` therefore accepts a
+jump as evidence only when all of these hold:
+
+- **We were watching.** The gap between the reading that set the current
+  baseline and the reading that saw the jump must be *shorter than the jump
+  itself*. If the dashboard may have slept through a whole window, the jump
+  spans more than one thing.
+- **It is a plausible window.** Anything under `MIN_PLAUSIBLE_WINDOW_MS`
+  (30 minutes) is rejected outright — that is the minute-flap, not a window.
+- **Repetition beats recency.** Candidates are rounded to the minute and
+  grouped; the length seen most often wins, ties breaking towards the most
+  recent. A length observed twice is far likelier to be real than one sighting.
+- **The baseline only ever advances**, so a backward blip followed by a recovery
+  can't manufacture a rollover that never happened.
+
+If nothing survives, the answer is `null` — window length not yet observed — and
+no pace is shown. Accepting a suspicious jump just to have an answer is exactly
+the failure this project exists to avoid.
 
 The practical consequence: **pace is unavailable on a freshly-started history**
 for the session bar, until the first rollover is observed — potentially the
 first several hours of running the dashboard for the first time. The bar states
-this plainly (`window length unknown`) rather than guessing a number that would
+this plainly (`window length not yet observed`) rather than guessing a number that would
 look real but isn't. Once a rollover has been seen, pace shows a tick mark at
 where you'd be if usage were burning evenly, plus a line reading `on pace`,
 `ahead of pace · projected N% by reset`, or `under pace` — with no projection
 at all when less than 10% of the window has elapsed, since dividing by a small
-elapsed fraction produces wild, trust-eroding numbers.
+elapsed fraction produces wild, trust-eroding numbers. If the reset being held
+has already passed — a stale reading with the countdown beside it reading
+`00:00` — the line says `window ended · awaiting a fresh reading` rather than
+projecting to a deadline that is behind us.
+
+Two further honesty rules on the sparklines. A series is **decimated
+server-side** to `MAX_SERIES_POINTS` (240) before it goes on the wire: the line
+is 120 CSS pixels wide, so a full 30-day series at one poll per five minutes
+would ship ~72 points per pixel every 30 seconds, over a tunnel, to be drawn on
+top of each other. Decimation keeps each bucket's highest and lowest *actual*
+readings plus the newest one — it never averages, smooths or invents a point. And
+if the store cannot read or write its own files, the bar says **`History
+unavailable`** with the failure code rather than `Not enough history yet`: the
+second promises that waiting will fill the line, and when `server/data/` is
+unwritable, waiting fixes nothing.
 
 ### The usage-drivers panel is local-machine-only, and does not sum to 100
 
