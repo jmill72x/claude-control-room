@@ -19,6 +19,15 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
     if (limit.pct >= threshold) alerts.push({ text: `${limit.label} at ${limit.pct}%` });
   }
 
+  // Pace complements the threshold rule rather than replacing it: 85% tells you
+  // that you are nearly out, a projection tells you while you can still act.
+  for (const limit of snapshot.usage?.data?.limits ?? []) {
+    const projected = limit?.pace?.projectedPct;
+    if (Number.isFinite(projected) && projected > 100) {
+      alerts.push({ text: `${limit.label} projected to reach ${projected}% by reset` });
+    }
+  }
+
   // Ingested credits outrank config credits on the page, so they must outrank
   // them here too — otherwise the promo expiry warning is computed from figures
   // nobody is looking at.

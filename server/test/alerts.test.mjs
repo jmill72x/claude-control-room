@@ -79,3 +79,36 @@ test('config credits still drive the warning when nothing has been ingested', ()
   assert.equal(alerts.length, 1);
   assert.match(alerts[0].text, /14 days old/);
 });
+
+const snapshotWith = limits => ({
+  crons: { data: [] },
+  ingestCrons: { data: [] },
+  usage: { status: 'ok', data: { limits } }
+});
+
+test('a limit projected to exceed 100% raises an alert', () => {
+  const limits = [{ label: 'Weekly · all models', pct: 60, pace: { state: 'ahead', projectedPct: 140 } }];
+  const alerts = buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now());
+  assert.ok(alerts.some(a => /projected/i.test(a.text) && /140/.test(a.text)));
+});
+
+test('a projection at or under 100% raises nothing', () => {
+  const limits = [{ label: 'Weekly · all models', pct: 40, pace: { state: 'on', projectedPct: 100 } }];
+  assert.deepEqual(buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now()), []);
+});
+
+test('no projection alert below the confidence guard', () => {
+  const limits = [{ label: 'Current session', pct: 40, pace: { state: 'too-early', projectedPct: null } }];
+  assert.deepEqual(buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now()), []);
+});
+
+test('no projection alert when the window length is unknown', () => {
+  const limits = [{ label: 'Current session', pct: 90, pace: { state: 'unknown-window', projectedPct: null } }];
+  const alerts = buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now());
+  assert.equal(alerts.filter(a => /projected/i.test(a.text)).length, 0);
+});
+
+test('a limit with no pace object at all is handled', () => {
+  const limits = [{ label: 'Weekly · Opus', pct: 10 }];
+  assert.deepEqual(buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now()), []);
+});
