@@ -756,13 +756,60 @@ export async function collectUsage({ run = runUsageCli, now = () => new Date(), 
 Run: `cd server && npm test`
 Expected: PASS, count increased by 3
 
-- [ ] **Step 5: Wire it up in `server/server.mjs`**
+- [ ] **Step 5: Extract the panel-building logic so it can be tested**
+
+The range split, the weekly-fallback gate and the `resetsAt: null` path are real logic. Left
+inline in a `registry.register` callback they are unreachable from any test, and only a manual
+curl would catch a regression. Put them in `server/lib/usage-panel.mjs`:
+
+```js
+import { inferWindowMs, computePace, WEEKLY_FALLBACK_MS } from './pace.mjs';
+
+const DAY = 24 * 3600 * 1000;
+
+// Percentages reset to zero each window, so one range for every bar would render
+// the session limit as ~144 sawtooth spikes across a month. Each sparkline spans
+// its own limit's natural period instead.
+export const seriesRangeMs = label => (label === 'Current session' ? DAY : 30 * DAY);
+
+// `records` MUST already be in ascending `t` order — inferWindowMs depends on it
+// and the history store guarantees it. Do not sort here.
+export function buildUsagePanel({ parsed, records, now }) {
+  const limits = parsed.limits.map(limit => {
+    const observed = inferWindowMs(records, limit.label);
+    // Weekly windows may fall back to seven days because the label says so. The
+    // session window gets no fallback: substituting a plausible default is the
+    // one thing this design forbids.
+    const windowMs = observed ?? (limit.label.startsWith('Weekly') ? WEEKLY_FALLBACK_MS : null);
+    const since = now - seriesRangeMs(limit.label);
+    const series = records
+      .filter(r => r.t >= since)
+      .map(r => ({ t: r.t, pct: r.limits.find(l => l.label === limit.label)?.pct }))
+      .filter(p => Number.isFinite(p.pct));
+    return {
+      ...limit,
+      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now }),
+      series
+    };
+  });
+  return { ...parsed, limits };
+}
+```
+
+Test it in `server/test/usage-panel.test.mjs` — the session limit gets a 24h range and weekly
+gets 30d; an unrecognised label falls back to the 30d range rather than an empty one; only
+`Weekly`-prefixed labels receive the seven-day fallback and `Current session` never does; a
+limit with `resetsAt: null` yields `unknown-window` rather than a fabricated window; and a
+limit absent from some history records produces a series containing only the points that
+actually carry it.
+
+- [ ] **Step 6: Wire it up in `server/server.mjs`**
 
 Add near the other imports:
 
 ```js
 import { createHistory } from './history.mjs';
-import { inferWindowMs, computePace, WEEKLY_FALLBACK_MS } from './lib/pace.mjs';
+import { buildUsagePanel } from './lib/usage-panel.mjs';
 ```
 
 After `const cache = createCache();`:
@@ -784,30 +831,13 @@ Replace the `usage` registration with:
 registry.register('usage', async () => {
   const parsed = await collectUsage({ history });
   const now = Date.now();
-  const records = history.recent(now - 30 * DAY);
-
-  const limits = parsed.limits.map(limit => {
-    const observed = inferWindowMs(records, limit.label);
-    const windowMs = observed ?? (limit.label.startsWith('Weekly') ? WEEKLY_FALLBACK_MS : null);
-    const since = now - seriesRangeMs(limit.label);
-    const series = records
-      .filter(r => r.t >= since)
-      .map(r => ({ t: r.t, pct: r.limits.find(l => l.label === limit.label)?.pct }))
-      .filter(p => Number.isFinite(p.pct));
-    return {
-      ...limit,
-      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now }),
-      series
-    };
-  });
-
-  return { ...parsed, limits };
+  return buildUsagePanel({ parsed, records: history.recent(now - 30 * DAY), now });
 }, 5 * 60 * 1000);
 ```
 
 Confirm `join` and `HERE` are already imported/defined in `server.mjs` — they are, from the static-file serving.
 
-- [ ] **Step 6: Verify against the live service**
+- [ ] **Step 7: Verify against the live service**
 
 ```bash
 cd server && node server.mjs &
@@ -823,10 +853,10 @@ kill %1
 
 Expected: each limit prints a `pace.state`. On a cold history the session limit shows `unknown-window` and weekly limits show a real state via the fallback. `series` lengths start near 1 and grow.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add server/collectors/usage.mjs server/server.mjs server/test/collectors.test.mjs
+git add server/collectors/usage.mjs server/lib/usage-panel.mjs server/server.mjs server/test/collectors.test.mjs server/test/usage-panel.test.mjs
 git commit -m "feat: record usage history and attach pace and series to each limit"
 ```
 
