@@ -56,9 +56,9 @@ invent a number.
 
 ### Why there's a history store at all
 
-Everything else this dashboard shows can be recomputed after the fact — token
-counts, project activity, and session lists all live on disk in transcripts that
-aren't going anywhere. The `/usage` percentages are the one exception: they are a
+The transcript-backed panels this dashboard shows can be recomputed after the
+fact — token counts, project activity, and session lists all live on disk in
+transcripts that aren't going anywhere. The `/usage` percentages are different: they are a
 point-in-time reading with no record behind them. Miss a poll, or don't capture
 the number the moment it's printed, and that moment is gone permanently — there is
 no transcript to recompute it from later. That's the entire reason
@@ -71,8 +71,12 @@ a failed, stale, or absent reading writes nothing, so a gap in the file always
 means "no reading," never "a reading of zero." Retention is indefinite (the data
 is non-recoverable and the volume is trivial — roughly 21 MB a year at one
 reading every five minutes), while the server keeps the most recent 30 days in
-memory to serve sparklines, warming that window at startup from the current and
-previous month's files. A corrupt line is skipped on read, the same tolerance the
+memory to serve sparklines. At startup it warms that window by loading enough
+trailing month files to cover the configured retention, not a fixed count — a
+walk-back derived from retention rather than fixed to two months, precisely so a
+longer retention setting doesn't silently lose its oldest data. At the default
+30-day retention that currently means three month files (the current month plus
+the two before it). A corrupt line is skipped on read, the same tolerance the
 transcript parser already has — the store never seeds, fabricates, or rewrites a
 file to "repair" it.
 
