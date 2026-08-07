@@ -102,6 +102,35 @@ test('a limit exactly at the threshold fires; one point below does not', () => {
   assert.equal(below.length, 0);
 });
 
+const HISTORY_USAGE_TEXT = `Current session: 50% used · resets Aug 6 at 10:00am (America/New_York)
+Current week (all models): 20% used · resets Aug 10 at 8:00pm (America/New_York)
+`;
+
+test('collectUsage appends a history record on success', async () => {
+  const appended = [];
+  await collectUsage({
+    run: async () => HISTORY_USAGE_TEXT,
+    history: { append: async r => appended.push(r), recent: () => [] }
+  });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].limits.length, 2);
+  assert.ok(Number.isFinite(appended[0].t));
+});
+
+test('a failed parse appends nothing — a gap must mean no reading, not zero', async () => {
+  const appended = [];
+  await assert.rejects(() => collectUsage({
+    run: async () => 'garbage',
+    history: { append: async r => appended.push(r), recent: () => [] }
+  }));
+  assert.equal(appended.length, 0);
+});
+
+test('collectUsage works without a history store injected', async () => {
+  const out = await collectUsage({ run: async () => HISTORY_USAGE_TEXT });
+  assert.equal(out.limits.length, 2);
+});
+
 test('no alerts when everything is healthy', () => {
   const snapshot = {
     crons: { status: 'ok', data: [{ name: 'ok-job', ok: true }] },

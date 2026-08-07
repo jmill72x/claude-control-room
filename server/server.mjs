@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStaticHandler } from './lib/static.mjs';
+import { createHistory } from './history.mjs';
+import { inferWindowMs, computePace, WEEKLY_FALLBACK_MS } from './lib/pace.mjs';
 import { createCache } from './cache.mjs';
 import { createRegistry } from './collectors/registry.mjs';
 import { collectUsage } from './collectors/usage.mjs';
@@ -24,7 +26,37 @@ const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
 
-registry.register('usage', () => collectUsage(), 5 * 60 * 1000);
+const HOUR = 3600000, DAY = 24 * HOUR;
+const history = createHistory({ dir: join(HERE, 'data') });
+await history.warm();
+
+// Percentages reset to zero each window, so one range for every bar would render
+// the session limit as ~144 sawtooth spikes across a month. Each sparkline spans
+// its own limit's natural period instead.
+const seriesRangeMs = label => (label === 'Current session' ? DAY : 30 * DAY);
+
+registry.register('usage', async () => {
+  const parsed = await collectUsage({ history });
+  const now = Date.now();
+  const records = history.recent(now - 30 * DAY);
+
+  const limits = parsed.limits.map(limit => {
+    const observed = inferWindowMs(records, limit.label);
+    const windowMs = observed ?? (limit.label.startsWith('Weekly') ? WEEKLY_FALLBACK_MS : null);
+    const since = now - seriesRangeMs(limit.label);
+    const series = records
+      .filter(r => r.t >= since)
+      .map(r => ({ t: r.t, pct: r.limits.find(l => l.label === limit.label)?.pct }))
+      .filter(p => Number.isFinite(p.pct));
+    return {
+      ...limit,
+      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now }),
+      series
+    };
+  });
+
+  return { ...parsed, limits };
+}, 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
 registry.register('crons', () => collectCrons(), 60 * 1000);
 // The subscription tier changes rarely — hourly is plenty, and it keeps
