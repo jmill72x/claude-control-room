@@ -16,6 +16,7 @@ import { ModelRows } from './components/ModelRows.jsx';
 import { SessionRows } from './components/SessionRows.jsx';
 import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
+import { DriversPanel } from './components/DriversPanel.jsx';
 import { Lanes } from './components/Lanes.jsx';
 import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf } from './lib/format.js';
 
@@ -165,6 +166,9 @@ export default function App() {
           </Panel>
           <Panel label="Recent sessions" envelope={sessionsEnv} note={incomplete}>
             <SessionRows sessions={sessionData?.recentSessions ?? []} threshold={threshold} />
+          </Panel>
+          <Panel label="What's driving usage · last 7d" envelope={usageEnv}>
+            <DriversPanel factors={payload?.usage?.data?.factors} window="7d" />
           </Panel>
         </section>
         <section className="ccr-col ccr-col--ruled">
