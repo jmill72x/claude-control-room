@@ -39,6 +39,18 @@
 .ccr-lane-input:focus { border-color: var(--ink); }
 .ccr-lane-delete:hover { color: var(--accent); }
 
+/* The card's text is a real button so it is keyboard-reachable and gets the
+   project's focus ring, but it must read as body text, not as a control. */
+.ccr-lane-text {
+  font-family: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: text;
+  width: 100%;
+}
+
 /* iPad portrait and below: one column, rules dropped. */
 @media (max-width: 1024px) {
   .ccr-grid { grid-template-columns: 1fr; }

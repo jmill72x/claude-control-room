@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const LANES = [
   { key: 'idea', title: 'Idea', placeholder: '+ new idea', mark: ' ', next: 'doing', edge: 'var(--n400)', box: 'transparent' },
@@ -13,6 +13,13 @@ export function Lanes() {
   // not an empty backlog we found: the lane counts must say so rather than
   // print a confident 0 next to a load error.
   const [loaded, setLoaded] = useState(false);
+  // The id being edited, and the draft being typed. `draft` is deliberately
+  // separate from `todos` so Escape can restore without a server round-trip.
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState({ text: '', tag: '' });
+  // Enter fires a commit, and the resulting blur fires another. Without a
+  // guard the second one saves a stale draft over the first one's result.
+  const committing = useRef(false);
 
   // `.then(r => r.json())` accepted any body the server sent, including a 500's
   // `{error}` object, which then reached `todos.filter` and threw during render —
@@ -96,6 +103,38 @@ export function Lanes() {
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
 
+  const beginEdit = t => {
+    setEditingId(t.id);
+    setDraft({ text: t.text ?? '', tag: t.tag ?? '' });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraft({ text: '', tag: '' });
+  };
+
+  const commitEdit = async id => {
+    if (committing.current) return;
+    const text = draft.text.trim();
+    const tag = draft.tag.trim();
+    const original = todos.find(t => t.id === id);
+
+    // Blanking the text and tabbing away must not erase the item — `×` is what
+    // deletion is for. Treat an empty text exactly as Escape does.
+    if (!original || !text) { cancelEdit(); return; }
+
+    // Nothing changed: close without a write. A no-op PUT would still be a
+    // write that could fail and raise an error banner for no reason.
+    if (text === original.text && tag === (original.tag ?? '')) { cancelEdit(); return; }
+
+    committing.current = true;
+    const ok = await save(todos.map(t => (t.id === id ? { ...t, text, tag } : t)));
+    committing.current = false;
+    // Stay in edit mode when the write failed, so what was typed is not lost.
+    // `save()` has already reverted the list and shown the error.
+    if (ok) cancelEdit();
+  };
+
   return (
     <>
       {error && <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>{error}</div>}
@@ -129,17 +168,81 @@ export function Lanes() {
                     color: 'var(--ground)', fontSize: 10, fontWeight: 800, lineHeight: 1
                   }}
                 >{lane.mark}</button>
-                <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                  <span style={{
-                    fontSize: 13, fontWeight: 600, lineHeight: 1.35, textWrap: 'pretty',
-                    color: lane.key === 'done' ? 'var(--n500)' : 'var(--ink)',
-                    textDecoration: lane.key === 'done' ? 'line-through' : 'none'
-                  }}>{t.text}</span>
-                  <span style={{
-                    fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
-                    textTransform: 'uppercase', color: 'var(--n600)'
-                  }}>{t.tag ?? 'Note'}</span>
-                </span>
+                {editingId === t.id ? (
+                  <div
+                    style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.preventDefault(); commitEdit(t.id); }
+                      if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+                    }}
+                    onBlur={e => {
+                      // Tabbing from the text field to the tag field is a blur on
+                      // the text field. Commit only when focus leaves the CARD,
+                      // not when it moves within it.
+                      const card = e.currentTarget;
+                      if (card.contains(e.relatedTarget)) return;
+                      // relatedTarget is null when focus goes somewhere
+                      // unfocusable, or in Safari. Re-check once the browser has
+                      // settled who actually has focus.
+                      if (e.relatedTarget === null) {
+                        setTimeout(() => {
+                          if (!card.contains(document.activeElement)) commitEdit(t.id);
+                        }, 0);
+                        return;
+                      }
+                      commitEdit(t.id);
+                    }}
+                  >
+                    <input
+                      className="ccr-lane-input"
+                      value={draft.text}
+                      autoFocus
+                      onFocus={e => e.target.setSelectionRange(e.target.value.length, e.target.value.length)}
+                      onChange={e => setDraft(d => ({ ...d, text: e.target.value }))}
+                      aria-label="Edit text"
+                      style={{
+                        fontFamily: 'inherit', fontSize: 13, fontWeight: 600, padding: '2px 4px',
+                        border: 'var(--rule-fine)', background: 'var(--ground)', color: 'var(--ink)',
+                        width: '100%'
+                      }}
+                    />
+                    <input
+                      className="ccr-lane-input"
+                      value={draft.tag}
+                      onChange={e => setDraft(d => ({ ...d, tag: e.target.value }))}
+                      placeholder="tag"
+                      aria-label="Edit tag"
+                      style={{
+                        fontFamily: 'inherit', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+                        textTransform: 'uppercase', padding: '2px 4px',
+                        border: 'var(--rule-fine)', background: 'var(--ground)', color: 'var(--n600)',
+                        width: '100%'
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                    <button
+                      className="ccr-lane-text"
+                      onClick={() => beginEdit(t)}
+                      title="Edit"
+                      style={{
+                        fontSize: 13, fontWeight: 600, lineHeight: 1.35, textWrap: 'pretty',
+                        color: lane.key === 'done' ? 'var(--n500)' : 'var(--ink)',
+                        textDecoration: lane.key === 'done' ? 'line-through' : 'none'
+                      }}
+                    >{t.text}</button>
+                    {/* Render the tag only when there is one. The old `?? 'Note'`
+                        printed a label the item did not carry — now that tags are
+                        editable and meaningful, that is a value being invented. */}
+                    {t.tag && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+                        textTransform: 'uppercase', color: 'var(--n600)'
+                      }}>{t.tag}</span>
+                    )}
+                  </span>
+                )}
                 <button
                   className="ccr-lane-delete"
                   onClick={() => remove(t.id)}
