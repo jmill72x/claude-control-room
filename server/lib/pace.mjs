@@ -23,34 +23,87 @@ export const limitsOf = record => (Array.isArray(record?.limits) ? record.limits
 // this floor, a rollover first caught at the low value and then "recovering" to
 // the high one fabricates a one-minute window, which on a weekly limit then
 // overrides the correct seven-day fallback and persists for up to a week.
+//
+// The lateness rule below CANNOT catch that case and this floor is the only
+// thing that does: a flap observed seconds after the reset it supersedes is, by
+// construction, a maximally punctual sighting. The live history contains
+// exactly that — a 44-second poll gap across a one-minute change of the printed
+// reset. There is a test that isolates this; if it is ever deleted, the floor
+// will look unused and it is not.
 export const MIN_PLAUSIBLE_WINDOW_MS = 30 * MINUTE;
+
+// How late a rollover may be first seen and still measure its own window. The
+// collector polls every five minutes, so this is three polls: enough to survive
+// a missed poll or two around the rollover, and small enough that the resulting
+// error is bounded at 15 minutes on a window measured in hours. See the proof
+// below — this number IS the worst-case error, not a confidence heuristic.
+export const MAX_ROLLOVER_LATENESS_MS = 15 * MINUTE;
 
 // `/usage` reports when a window ENDS, never how long it is. A rollover moves
 // the reset forward, so the length is observable rather than assumed — but a
 // forward jump is NOT automatically one window length. Session windows are
 // user-initiated and therefore not contiguous: after an idle spell the new
 // window starts when the next message is sent, so the jump is `idle + window`.
-// Three rules separate evidence from coincidence, and anything that survives
-// none of them leaves the length unobserved rather than guessed:
 //
-//   1. GAP RULE — a jump is only evidence of a rollover if we were watching
-//      closely enough to have seen it happen. The straddling gap is measured
-//      from the reading that set the current baseline, and must be SMALLER than
-//      the jump. If we may have slept through a whole window, the jump spans
-//      more than one thing and is not a window length.
+// WHY LATENESS — AND WHY THE POLL GAP THIS RULE REPLACED COULD NEVER WORK.
+//
+// Write `R1` for the reset we were holding, `S` for the start of the new
+// window, `W` for its length, and `t2` for the reading that first showed the
+// new reset `R2 = S + W`. Then
+//
+//     jump = R2 - R1 = W + (S - R1)      i.e.      W = jump - (S - R1).
+//
+// The entire question is how much of the jump is idle. We never observe `S`,
+// but we bound it exactly: the old window ended at `R1`, and the new one had
+// certainly started by the time we saw its reset, so `R1 <= S <= t2`, hence
+//
+//     jump - (t2 - R1) <= W <= jump.
+//
+// The error in reading `jump` as `W` is AT MOST the lateness of the sighting,
+// `t2 - R1` — an exact bound computed from two numbers we actually hold. A
+// sighting that is punctual is therefore accurate, as a matter of arithmetic
+// rather than of judgement.
+//
+// The rule this replaced compared the straddling poll gap `t2 - t1` against the
+// jump and accepted when `gap < jump`. Substituting the identity above, that
+// rule rejects only when `(t2 - S) + (R1 - t1) > W`. When the rollover is
+// caught promptly `t2 - S` is nearly zero, so rejection then requires
+// `R1 - t1 > W`: the baseline reading would have to precede the old reset by
+// more than a whole window, which cannot happen. So the gap rule could only
+// ever reject when the baseline happened to be set at the very start of the
+// previous window — on the live history its entire margin was 33 seconds. It
+// was a proxy for lateness that goes blind in precisely the case it was written
+// for, and it fabricated 14.5h from an ordinary overnight poll gap. Measure the
+// quantity that bounds the error, not one correlated with it.
+//
+// The bound is applied symmetrically. A "rollover" first seen BEFORE the old
+// reset (`t2 < R1`) is not a rollover at all — that window had not ended yet —
+// so its jump stands in no relation to any window length and is refused for the
+// same reason, not tolerated because its lateness is negative.
+//
+// Three rules; anything surviving none of them leaves the length unobserved
+// rather than guessed:
+//
+//   1. LATENESS — `|t2 - R1| <= MAX_ROLLOVER_LATENESS_MS`, per the proof above.
+//      A reading with no usable timestamp has no measurable lateness and so
+//      cannot support a length either.
 //   2. PLAUSIBILITY FLOOR — see MIN_PLAUSIBLE_WINDOW_MS.
-//   3. REPETITION — a length observed twice is far likelier to be real than a
-//      single sighting, so the most frequently seen candidate wins; ties break
-//      towards the most recent. Candidates are rounded to the minute first, so
-//      the one-minute flap cannot split an otherwise repeated observation.
+//   3. RECENCY WINS — the most recent accepted observation is the answer. Spec
+//      §4 promises inference is self-correcting: if Anthropic changes a window,
+//      the next rollover reflects it. A previous round preferred the most
+//      REPEATED length instead, which silently traded that away — five hours
+//      seen ten times outvoted three hours seen cleanly three times, so a
+//      genuine change stayed misreported for half the retention window.
+//      Repetition was standing in for filtering that rule 1 now does exactly,
+//      so it buys nothing and costs the promise. Candidates are still rounded
+//      to the minute, since the printed reset only has minute resolution.
 //
 // PRECONDITION: `records` must be in ascending `t` order. The history store
 // guarantees this; a caller that does not would get a plausible wrong answer
 // rather than an error, because the walk is order-sensitive by construction.
 export function inferWindowMs(records, label) {
-  let previous = null;   // highest reset seen so far
-  let previousT = null;  // the record timestamp that set it
-  const candidates = []; // rounded lengths, in observation order
+  let previous = null;   // highest reset seen so far — the `R1` above
+  let observed = null;   // most recently accepted window length
 
   for (const record of records) {
     const limit = limitsOf(record).find(l => l?.label === label);
@@ -59,14 +112,13 @@ export function inferWindowMs(records, label) {
     if (!Number.isFinite(resetsAt)) continue;
     const t = Number.isFinite(record?.t) ? record.t : null;
 
+    // Because the baseline only advances, this is the FIRST sighting of a reset
+    // beyond it — which is what makes `t` the `t2` the bound is stated in.
     if (previous !== null && resetsAt > previous) {
       const jump = resetsAt - previous;
-      // A reading with no usable timestamp cannot establish that we were
-      // watching, so it cannot support a window length either.
-      const gap = t !== null && previousT !== null ? t - previousT : null;
-      const watched = gap !== null && gap < jump;
-      if (watched && jump >= MIN_PLAUSIBLE_WINDOW_MS) {
-        candidates.push(Math.round(jump / MINUTE) * MINUTE);
+      const lateness = t === null ? null : Math.abs(t - previous);
+      if (lateness !== null && lateness <= MAX_ROLLOVER_LATENESS_MS && jump >= MIN_PLAUSIBLE_WINDOW_MS) {
+        observed = Math.round(jump / MINUTE) * MINUTE;
       }
     }
     // Only ever advance the baseline. Lowering it on a backward blip (a stale or
@@ -74,27 +126,10 @@ export function inferWindowMs(records, label) {
     // like a rollover, manufacturing a window length that never occurred. The
     // baseline advances even for a jump we refused to trust: it is where the
     // reset now is, which is a separate question from how long the window is.
-    if (previous === null || resetsAt > previous) {
-      previous = resetsAt;
-      previousT = t;
-    }
+    if (previous === null || resetsAt > previous) previous = resetsAt;
   }
 
-  if (candidates.length === 0) return null;
-
-  const groups = new Map();
-  candidates.forEach((ms, index) => {
-    const seen = groups.get(ms) ?? { count: 0, last: -1 };
-    groups.set(ms, { count: seen.count + 1, last: index });
-  });
-
-  let best = null;
-  for (const [ms, g] of groups) {
-    if (!best || g.count > best.count || (g.count === best.count && g.last > best.last)) {
-      best = { ms, ...g };
-    }
-  }
-  return best.ms;
+  return observed;
 }
 
 export function computePace({ pct, resetsAt, windowMs, now }) {

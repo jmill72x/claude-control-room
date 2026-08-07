@@ -100,15 +100,23 @@ appear in captured history), so a rollover first caught on the low side
 "recovers" into a one-minute jump. `server/lib/pace.mjs` therefore accepts a
 jump as evidence only when all of these hold:
 
-- **We were watching.** The gap between the reading that set the current
-  baseline and the reading that saw the jump must be *shorter than the jump
-  itself*. If the dashboard may have slept through a whole window, the jump
-  spans more than one thing.
+- **We saw it happen.** The jump must be first seen within
+  `MAX_ROLLOVER_LATENESS_MS` (15 minutes, three poll intervals) of the reset it
+  supersedes. This is not a confidence heuristic: since the new window began at
+  or after the old reset and had certainly begun by the time we saw its new
+  reset, the lateness of that sighting is an *exact upper bound* on how much of
+  the jump could be idle — so a punctual sighting is an accurate measurement,
+  and a late one measures nothing. Applied in both directions: a jump seen
+  before the old reset is not a rollover, because that window hadn't ended.
 - **It is a plausible window.** Anything under `MIN_PLAUSIBLE_WINDOW_MS`
-  (30 minutes) is rejected outright — that is the minute-flap, not a window.
-- **Repetition beats recency.** Candidates are rounded to the minute and
-  grouped; the length seen most often wins, ties breaking towards the most
-  recent. A length observed twice is far likelier to be real than one sighting.
+  (30 minutes) is rejected outright — that is the minute-flap, not a window. A
+  flap caught right at a rollover is perfectly punctual, so this floor, not the
+  lateness rule, is the only thing that rejects it.
+- **The most recent accepted observation wins**, rounded to the minute. That is
+  what makes the inference self-correcting: if Anthropic changes a window
+  length, the next clean rollover reports it. Preferring a *repeated* length
+  instead would keep reporting the old window until the new one had been seen
+  more often — days of a knowingly stale number.
 - **The baseline only ever advances**, so a backward blip followed by a recovery
   can't manufacture a rollover that never happened.
 

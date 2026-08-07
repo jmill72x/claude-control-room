@@ -62,14 +62,40 @@ Interface:
 Pace needs a window's **length**; `/usage` reports only its **end**. Weekly windows are seven
 days (the label says so). The session window is not stated anywhere.
 
-Rather than assume, observe: each poll records `resetsAt` per limit. When a window rolls over,
-the new `resetsAt` jumps forward by exactly one window length. `server/lib/pace.mjs` scans the
-history for these jumps per label and takes the most recent observed length.
+Rather than assume, observe: each poll records `resetsAt` per limit, and `server/lib/pace.mjs`
+scans the history for forward jumps per label.
 
+A forward jump is **not** exactly one window length — the original premise here was wrong, and
+it put wrong numbers on the live dashboard. Session windows are user-initiated and therefore
+not contiguous: the next window starts when you send the next message, so a jump spans
+*idle + window*. Writing `R1` for the reset being superseded, `S` for the new window's start,
+`W` for its length and `t2` for the reading that first showed the new reset:
+
+    jump = (S + W) - R1 = W + (S - R1),    and    R1 <= S <= t2
+
+so `jump - (t2 - R1) <= W <= jump`. **The lateness of the sighting, `t2 - R1`, is an exact bound
+on the error** in reading the jump as the window. Inference therefore accepts a jump only when:
+
+1. **Lateness.** `|t2 - R1| <= MAX_ROLLOVER_LATENESS_MS` (15 minutes — three poll intervals).
+   Bounding the lateness bounds the error, by the arithmetic above rather than by judgement.
+   Applied in both directions: a jump seen *before* `R1` is not a rollover at all, because that
+   window had not ended. A reading with no usable `t` has no measurable lateness and is refused.
+2. **Plausibility.** `jump >= MIN_PLAUSIBLE_WINDOW_MS` (30 minutes). The printed reset flaps by
+   a minute between polls (`07:49`/`07:50` both appear in captured history); a flap caught right
+   at a rollover is a *punctual* sighting, so this floor — not rule 1 — is what rejects it.
+3. **The baseline only ever advances**, so a backward blip followed by a recovery cannot
+   manufacture a rollover. It advances even for a jump that is refused: where the reset now is,
+   is a different question from how long the window is.
+
+- The answer is the **most recent** accepted observation, rounded to the minute.
 - Weekly labels fall back to 7 days when no rollover has been observed yet.
 - The session label has **no fallback**. Until a rollover is seen, that bar shows no pace and
-  states plainly that the window length is not yet known.
+  states plainly that the window length is not yet known. `null` always stands in preference to
+  accepting a suspicious jump.
 - Inference is self-correcting: if Anthropic changes a window, the next rollover reflects it.
+  This is why recency wins and why no preference for a *repeated* length may override it — such
+  a preference would keep reporting the old window for as long as its sightings outnumbered the
+  new one's. With rule 1 doing the filtering, repetition is not needed for correctness.
 
 ## 5. Pace
 
