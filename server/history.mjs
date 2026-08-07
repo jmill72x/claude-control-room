@@ -6,10 +6,21 @@ const MONTH = t => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
-const DEFAULT_RETENTION = 30 * 24 * 3600 * 1000;
+// How much history the server holds in memory to serve sparklines.
+//
+// COUPLED CONSTANT — three places must agree or a change here silently does
+// nothing: `server.mjs` asks the store for exactly this span, and
+// `usage-panel.mjs` caps a sparkline's range to it (a series can never be wider
+// than the window it is drawn from). Both import this value; do not re-type it.
+export const RETENTION_MS = 30 * 24 * 3600 * 1000;
 
-export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAULT_RETENTION } = {}) {
+export function createHistory({ dir, now = () => Date.now(), retentionMs = RETENTION_MS } = {}) {
   let records = [];
+  // Spec §10: "history file unreadable → the store reports it". Without this,
+  // an unwritable or unreadable `data/` is indistinguishable from a month with
+  // no readings, and every panel reassures the reader that waiting will fill it.
+  let readError = null;
+  let writeError = null;
 
   const trim = () => {
     const cutoff = now() - retentionMs;
@@ -22,8 +33,12 @@ export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAU
     let text;
     try {
       text = await readFile(path, 'utf8');
-    } catch {
-      return []; // a month with no readings is normal, not an error
+    } catch (err) {
+      // ENOENT is normal: a month with no readings has no file. Anything else —
+      // EACCES, EISDIR, EIO — means we could not find out what is in there, and
+      // that is not the same claim as "there was no usage".
+      if (err?.code !== 'ENOENT') readError = err?.code ?? err?.message ?? 'read failed';
+      return [];
     }
     const out = [];
     for (const line of text.split('\n')) {
@@ -46,10 +61,25 @@ export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAU
       if (!Number.isFinite(record?.t)) {
         throw new TypeError(`history record needs a finite t, got ${record?.t}`);
       }
-      await mkdir(dir, { recursive: true });
-      await appendFile(monthFile(record.t), `${JSON.stringify(record)}\n`);
+      try {
+        await mkdir(dir, { recursive: true });
+        await appendFile(monthFile(record.t), `${JSON.stringify(record)}\n`);
+      } catch (err) {
+        // The caller keeps the reading and logs; the store remembers that the
+        // trend it is serving is now knowingly incomplete, so the page can say
+        // so instead of quietly showing a shorter line.
+        writeError = err?.code ?? err?.message ?? 'write failed';
+        throw err;
+      }
+      writeError = null;
       records.push(record);
       trim();
+    },
+
+    // `ok: false` means we could not find out, which is a different state from
+    // "nothing recorded yet" and must be rendered differently.
+    status() {
+      return { ok: readError === null && writeError === null, readError, writeError };
     },
 
     recent(sinceMs) {
@@ -57,6 +87,7 @@ export function createHistory({ dir, now = () => Date.now(), retentionMs = DEFAU
     },
 
     async warm() {
+      readError = null; // a fresh load re-establishes whether the files are readable
       const t = now();
       const here = new Date(t);
       const loaded = [];

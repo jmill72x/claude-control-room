@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStaticHandler } from './lib/static.mjs';
-import { createHistory } from './history.mjs';
+import { createHistory, RETENTION_MS } from './history.mjs';
 import { buildUsagePanel } from './lib/usage-panel.mjs';
 import { createCache } from './cache.mjs';
 import { createRegistry } from './collectors/registry.mjs';
@@ -26,14 +26,20 @@ const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
 
-const HOUR = 3600000, DAY = 24 * HOUR;
 const history = createHistory({ dir: join(HERE, 'data') });
 await history.warm();
 
 registry.register('usage', async () => {
   const parsed = await collectUsage({ history });
   const now = Date.now();
-  return buildUsagePanel({ parsed, records: history.recent(now - 30 * DAY), now });
+  // RETENTION_MS, not a local 30 days: the store's in-memory window, the span
+  // asked for here and the sparkline range in usage-panel.mjs are one setting.
+  return buildUsagePanel({
+    parsed,
+    records: history.recent(now - RETENTION_MS),
+    now,
+    historyStatus: history.status()
+  });
 }, 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
 registry.register('crons', () => collectCrons(), 60 * 1000);

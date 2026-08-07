@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHistory } from '../history.mjs';
@@ -149,6 +149,51 @@ test('append rejects a record with a non-numeric t and writes no file', async ()
   const h = createHistory({ dir: d });
   await assert.rejects(() => h.append({ t: 'not-a-number', limits: [] }), TypeError);
   assert.deepEqual(readdirSync(d), []);
+});
+
+// --- Fix round 2: spec §10, "history file unreadable → the store reports it" ---
+
+test('a month with no file is normal and leaves the store healthy', async () => {
+  const h = createHistory({ dir: dir() });
+  await h.warm();
+  assert.deepEqual(h.status(), { ok: true, readError: null, writeError: null });
+});
+
+test('a read failure that is not ENOENT is reported rather than read as "no readings"', async () => {
+  const d = dir();
+  const now = new Date(2026, 1, 10, 12, 0, 0).getTime();
+  const h = createHistory({ dir: d, now: () => now });
+  // A directory where the month file should be: readFile fails with EISDIR,
+  // which is indistinguishable from an empty month unless the store says so.
+  mkdirSync(h.monthFile(now), { recursive: true });
+  await h.warm();
+  assert.deepEqual(h.recent(0), []);
+  assert.equal(h.status().ok, false);
+  assert.ok(h.status().readError, 'the failure must be named, not just flagged');
+});
+
+test('an append failure is reported on the store, not only to the caller', async () => {
+  const d = dir();
+  const blocked = join(d, 'not-a-directory');
+  writeFileSync(blocked, 'x'); // mkdir under a regular file fails with ENOTDIR
+  const h = createHistory({ dir: join(blocked, 'data'), now: () => 100_000 });
+  assert.equal(h.status().ok, true);
+  await assert.rejects(() => h.append(rec(1000, 5)));
+  assert.equal(h.status().ok, false);
+  assert.ok(h.status().writeError);
+});
+
+test('a later successful append clears the write failure', async () => {
+  const d = dir();
+  const blocked = join(d, 'not-a-directory');
+  writeFileSync(blocked, 'x');
+  const h = createHistory({ dir: join(blocked, 'data'), now: () => 100_000 });
+  await assert.rejects(() => h.append(rec(1000, 5)));
+  assert.equal(h.status().ok, false);
+
+  rmSync(blocked); // the obstruction goes away; the store must stop claiming it is broken
+  await h.append(rec(2000, 6));
+  assert.equal(h.status().ok, true);
 });
 
 test('warm skips a syntactically valid line whose t is missing or non-numeric', async () => {
