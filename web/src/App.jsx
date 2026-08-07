@@ -149,7 +149,8 @@ export default function App() {
             <CreditsPanel credits={credits} threshold={threshold} now={now} />
           </Panel>
           <Panel label="Against limits now" envelope={usageEnv}>
-            <LimitBars limits={limits} threshold={threshold} now={now} />
+            <LimitBars limits={limits} threshold={threshold} now={now}
+                       historyStatus={usageEnv?.data?.history ?? null} />
           </Panel>
           <Panel label="By surface · this week" envelope={sessionsEnv} note={incomplete}>
             <StackedBar segments={(sessionData?.bySurface ?? []).map(s => ({

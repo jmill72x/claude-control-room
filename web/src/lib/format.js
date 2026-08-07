@@ -13,6 +13,9 @@ export function paceNote(pace) {
   switch (pace.state) {
     case 'unknown-window': return 'window length not yet observed';
     case 'too-early': return 'too early to project';
+    // The reset we are holding is behind us, so there is no deadline left to
+    // project to — the countdown beside this line already reads 00:00.
+    case 'window-ended': return 'window ended · awaiting a fresh reading';
     case 'ahead': return `ahead of pace · projected ${pace.projectedPct}% by reset`;
     case 'under': return `under pace · projected ${pace.projectedPct}% by reset`;
     case 'on': return `on pace · projected ${pace.projectedPct}% by reset`;
