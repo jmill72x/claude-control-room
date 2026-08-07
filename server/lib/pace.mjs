@@ -12,6 +12,10 @@ const ON_PACE_BAND = 5;
 // `/usage` reports when a window ENDS, never how long it is. But when a window
 // rolls over, the new reset jumps forward by exactly one window length — so the
 // length is observable rather than assumed, and self-corrects if it ever changes.
+//
+// PRECONDITION: `records` must be in ascending `t` order. The history store
+// guarantees this; a caller that does not would get a plausible wrong answer
+// rather than an error, because the walk is order-sensitive by construction.
 export function inferWindowMs(records, label) {
   let previous = null;
   let inferred = null;
@@ -23,7 +27,10 @@ export function inferWindowMs(records, label) {
     if (!Number.isFinite(resetsAt)) continue;
 
     if (previous !== null && resetsAt > previous) inferred = resetsAt - previous;
-    previous = resetsAt;
+    // Only ever advance the baseline. Lowering it on a backward blip (a stale or
+    // duplicated poll) would make a later RECOVERY to the original value look
+    // like a rollover, manufacturing a window length that never occurred.
+    if (previous === null || resetsAt > previous) previous = resetsAt;
   }
   return inferred;
 }

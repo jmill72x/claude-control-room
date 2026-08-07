@@ -54,6 +54,16 @@ test('ignores other labels', () => {
   assert.equal(inferWindowMs(recs, 'Weekly · all models'), 7 * DAY);
 });
 
+test('a backward blip does not lower the baseline for a later recovery', () => {
+  const r1 = Date.parse('2026-08-06T10:00:00Z');
+  const recs = [
+    at(1, 'Current session', 40, iso(r1)),
+    at(2, 'Current session', 45, iso(r1 - 3 * HOUR)), // backward blip, correctly skipped
+    at(3, 'Current session', 50, iso(r1))              // recovers to the original value
+  ];
+  assert.equal(inferWindowMs(recs, 'Current session'), null);
+});
+
 test('no window length means no pace, stated explicitly', () => {
   const out = computePace({ pct: 50, resetsAt: iso(Date.now() + HOUR), windowMs: null, now: Date.now() });
   assert.equal(out.state, 'unknown-window');
