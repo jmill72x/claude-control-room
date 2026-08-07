@@ -35,6 +35,9 @@ never a zero or an empty bar standing in for missing data.
 | By project · this week | Same transcript roots, top 3 by tokens + Other | Real |
 | By model · this week | Same transcript roots | Real |
 | Recent sessions | Same transcript roots; percent = that session's share of the week's tokens | Real |
+| Pace tick + projection on each limit bar | `/usage` history (see below) plus an observed window length | Real, but the session bar has no fallback — see below |
+| Sparklines on each limit bar | Same history store | Real; needs at least two readings, else says so |
+| Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
 | Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
 | Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source |
@@ -48,6 +51,69 @@ explicitly labeled "not measurable locally" rather than omitting it or showing z
 anything else on this machine) reliably gives an open-task count per project, so that
 field is `null` end-to-end and the UI simply doesn't print the line — it does not
 invent a number.
+
+## Pace, history, and the usage-drivers panel
+
+### Why there's a history store at all
+
+Everything else this dashboard shows can be recomputed after the fact — token
+counts, project activity, and session lists all live on disk in transcripts that
+aren't going anywhere. The `/usage` percentages are the one exception: they are a
+point-in-time reading with no record behind them. Miss a poll, or don't capture
+the number the moment it's printed, and that moment is gone permanently — there is
+no transcript to recompute it from later. That's the entire reason
+`server/history.mjs` exists: it appends every successful `/usage` reading to
+`server/data/usage-history-YYYY-MM.jsonl` (gitignored — this is runtime data, not
+source) so the dashboard can show a trend instead of only a snapshot.
+
+The store is append-only and month-rotated, one record per **successful** poll —
+a failed, stale, or absent reading writes nothing, so a gap in the file always
+means "no reading," never "a reading of zero." Retention is indefinite (the data
+is non-recoverable and the volume is trivial — roughly 21 MB a year at one
+reading every five minutes), while the server keeps the most recent 30 days in
+memory to serve sparklines, warming that window at startup from the current and
+previous month's files. A corrupt line is skipped on read, the same tolerance the
+transcript parser already has — the store never seeds, fabricates, or rewrites a
+file to "repair" it.
+
+### Pace: the session window length is observed, not assumed
+
+`/usage` tells you when a limit's window *ends* but never how long that window
+*is*. Weekly windows can fall back to a plausible default because the label
+itself says "Current week" — seven days. **The session window has no such
+label and gets no fallback.** Instead, the dashboard watches the history for a
+window rolling over: when a reset timestamp jumps forward, that jump is the
+window's length. `server/lib/pace.mjs` scans for the most recent such jump per
+limit.
+
+The practical consequence: **pace is unavailable on a freshly-started history**
+for the session bar, until the first rollover is observed — potentially the
+first several hours of running the dashboard for the first time. The bar states
+this plainly (`window length unknown`) rather than guessing a number that would
+look real but isn't. Once a rollover has been seen, pace shows a tick mark at
+where you'd be if usage were burning evenly, plus a line reading `on pace`,
+`ahead of pace · projected N% by reset`, or `under pace` — with no projection
+at all when less than 10% of the window has elapsed, since dividing by a small
+elapsed fraction produces wild, trust-eroding numbers.
+
+### The usage-drivers panel is local-machine-only, and does not sum to 100
+
+Every poll of `/usage` also prints a contributing-factors block — request and
+session counts plus behavioural percentages like "74% of your usage was at
+>150k context" — that earlier versions of this dashboard parsed and discarded.
+The drivers panel at the bottom of column 01 renders it instead, using the same
+name/track/percentage row idiom as the model breakdown above it, deliberately
+**not** as a stacked bar or pie: Anthropic's own output describes these as
+independent characteristics, not a breakdown, and they do not sum to 100.
+
+Unlike the account-wide limit percentages higher in the same column, this panel
+is **local-machine-only and approximate** — it reflects sessions on this
+machine only, not other devices and not claude.ai, and the panel says so
+visibly rather than leaving two figures of different provenance sitting in one
+column with no distinction between them. The factors block also parses
+leniently, unlike the limit lines above it: a malformed or missing factors
+block yields an unavailable drivers panel without ever affecting the limit
+bars, which still parse strictly and throw on drift.
 
 ## Why it shells out to the `claude` CLI
 
@@ -74,9 +140,11 @@ claude-control-room/
   server/
     collectors/     one module per source, each on its own timer, cache-only reads at request time
     cache.mjs        in-memory: { data, fetchedAt, status, error } per panel
+    history.mjs      append-only /usage snapshot store — see "Pace, history, and the usage-drivers panel"
     routes.mjs        /api/dashboard · /api/todos · /api/ingest/*
     config.json        user-set values with no API source (gitignored — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
+    data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
   web/               React + Vite SPA; the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
 ```
@@ -133,7 +201,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 187 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 267 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 

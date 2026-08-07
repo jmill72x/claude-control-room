@@ -129,7 +129,42 @@ The four surfaces this depends on, any of which can shift silently:
 4. `launchctl list` output plus the `~/Library/LaunchAgents/*.plist` files it reads
    alongside
 
-## 5. Working on it
+## 5. Source-health: diagnose *why* a panel is unavailable, not just that it is
+
+Raised during the Phase 2 design (pace, history, usage-drivers) but not built —
+it wasn't in the approved spec for that work, so it's recorded here instead.
+
+Right now `unavailable` means one thing to the UI regardless of cause. From the
+outside, a `/usage` output format that Anthropic reworded and a `claude` binary
+that crashed or isn't on the service's `PATH` look identical: same status,
+same blank panel, same shrug. The dashboard has no way to tell you which one
+it is, so every investigation starts from zero.
+
+The fix is cheap relative to the payoff: have the parsers report what they
+matched, not just whether they succeeded outright. `parse-usage.mjs` already
+knows, line by line, whether a limit line matched `LIMIT_RE`, whether the
+factors block's window-counts header matched, and how many behaviour/top
+lines parsed under it — that information exists during parsing and is
+discarded the moment the function returns. Surfacing it (something like
+"matched 2 of 3 expected limit lines" or "factors header matched, 0 of 4
+behaviour lines recognized") turns a silent unavailable into an actual
+diagnosis: a partial match points straight at a reworded format, a total
+match failure points at the CLI itself (not on `PATH`, timed out, auth
+expired, etc.).
+
+This is the highest-value follow-up on the table because it's aimed at the
+project's central fact, not an edge case: every source this dashboard reads —
+`/usage` text, `claude agents --json`, `claude auth status --json`, the
+transcript file layout, `launchctl`'s output — is undocumented and
+unversioned (see "Fragility warning" above), and any of it can change in any
+Claude Code release without notice. The question isn't whether a parser will
+eventually drift out from under this dashboard, it's how long that will take
+to notice and diagnose once it does. Right now the answer is "however long it
+takes to manually re-run the source-of-truth verification in the design
+spec." A parser that reports its own match rate shrinks that to reading one
+line of status.
+
+## 6. Working on it
 
 ```bash
 cd server && npm test                       # unit tests, no network, no shelling out
