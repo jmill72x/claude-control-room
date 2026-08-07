@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUsagePanel, seriesRangeMs } from '../lib/usage-panel.mjs';
+import { buildUsagePanel, seriesRangeMs, decimate, MAX_SERIES_POINTS } from '../lib/usage-panel.mjs';
 
 const DAY = 24 * 3600 * 1000;
 
@@ -57,4 +57,81 @@ test('a limit absent from some history records produces a series containing only
   assert.equal(weekly.series.length, 1);
   assert.equal(weekly.series[0].t, now - 1 * 3600000);
   assert.equal(weekly.series[0].pct, 20);
+});
+
+// --- Fix round 2: tolerate the records the store deliberately admits ---
+
+test('a record with no limits array costs that record, not the whole panel', () => {
+  const now = Date.parse('2026-08-06T00:00:00Z');
+  const records = [
+    { t: now - 2 * 3600000 }, // the store admits any object with a finite t
+    { t: now - 1 * 3600000, limits: [{ label: 'Current session', pct: 12, resetsAt: null }] }
+  ];
+  const parsed = { limits: [{ label: 'Current session', pct: 12, resetsAt: null }] };
+  // Unfixed this throws, the registry catches it, and limits, pace, sparklines
+  // and drivers all go unavailable until the file is hand-edited.
+  const out = buildUsagePanel({ parsed, records, now });
+  assert.equal(out.limits[0].series.length, 1);
+  assert.equal(out.limits[0].series[0].pct, 12);
+});
+
+test('a record whose limits is not an array is skipped rather than throwing', () => {
+  const now = Date.parse('2026-08-06T00:00:00Z');
+  const records = [{ t: now - 3600000, limits: 'nonsense' }];
+  const parsed = { limits: [{ label: 'Current session', pct: 5, resetsAt: null }] };
+  assert.equal(buildUsagePanel({ parsed, records, now }).limits[0].series.length, 0);
+});
+
+// --- Fix round 2: the history store's health reaches the panel ---
+
+test('the history status is carried onto the panel so the UI can say "unavailable", not "empty"', () => {
+  const now = Date.now();
+  const parsed = { limits: [{ label: 'Current session', pct: 5, resetsAt: null }] };
+  const status = { ok: false, readError: 'EACCES', writeError: null };
+  assert.deepEqual(buildUsagePanel({ parsed, records: [], now, historyStatus: status }).history, status);
+});
+
+// --- Fix round 2: server-side decimation ---
+
+const point = (t, pct) => ({ t, pct });
+
+test('a series shorter than the cap is passed through untouched', () => {
+  const series = Array.from({ length: 10 }, (_, i) => point(i, i));
+  assert.equal(decimate(series), series);
+});
+
+test('a full 30-day series is capped and still ends on the newest reading', () => {
+  // One poll every five minutes for 30 days: what steady state actually looks like.
+  const series = Array.from({ length: 8641 }, (_, i) => point(i * 300000, i % 100));
+  const out = decimate(series);
+  assert.ok(out.length <= MAX_SERIES_POINTS, `expected <= ${MAX_SERIES_POINTS}, got ${out.length}`);
+  assert.deepEqual(out[out.length - 1], series[series.length - 1]);
+  assert.deepEqual(out[0], series[0]);
+});
+
+test('decimation keeps real readings, in order, and never invents one', () => {
+  const series = Array.from({ length: 5000 }, (_, i) => point(i * 1000, (i * 7) % 101));
+  const out = decimate(series);
+  const known = new Set(series.map(p => `${p.t}:${p.pct}`));
+  for (const p of out) assert.ok(known.has(`${p.t}:${p.pct}`), 'every point must be one that was recorded');
+  for (let i = 1; i < out.length; i++) assert.ok(out[i].t >= out[i - 1].t, 'points stay in time order');
+});
+
+test('a spike survives decimation rather than being averaged away', () => {
+  const series = Array.from({ length: 5000 }, (_, i) => point(i * 1000, 10));
+  series[2500] = point(2500 * 1000, 97);
+  const out = decimate(series);
+  assert.ok(out.some(p => p.pct === 97), 'the peak is the whole reason to look at the line');
+});
+
+test('buildUsagePanel decimates the series it emits', () => {
+  const now = Date.parse('2026-08-06T00:00:00Z');
+  const records = Array.from({ length: 3000 }, (_, i) => ({
+    t: now - (3000 - i) * 60000,
+    limits: [{ label: 'Current session', pct: i % 100, resetsAt: null }]
+  }));
+  const parsed = { limits: [{ label: 'Current session', pct: 50, resetsAt: null }] };
+  const out = buildUsagePanel({ parsed, records, now });
+  assert.ok(out.limits[0].series.length <= MAX_SERIES_POINTS);
+  assert.equal(out.limits[0].series[out.limits[0].series.length - 1].t, now - 60000);
 });
