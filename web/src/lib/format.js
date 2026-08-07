@@ -6,6 +6,20 @@ export function heat(pct, threshold = 85) {
   return INK;
 }
 
+// Each state says exactly what is known. 'unknown-window' and 'too-early' are
+// not failures — they are honest reports that a projection would be a guess.
+export function paceNote(pace) {
+  if (!pace) return '';
+  switch (pace.state) {
+    case 'unknown-window': return 'window length not yet observed';
+    case 'too-early': return 'too early to project';
+    case 'ahead': return `ahead of pace · projected ${pace.projectedPct}% by reset`;
+    case 'under': return `under pace · projected ${pace.projectedPct}% by reset`;
+    case 'on': return `on pace · projected ${pace.projectedPct}% by reset`;
+    default: return '';
+  }
+}
+
 export function formatCountdown(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(total / 3600);
