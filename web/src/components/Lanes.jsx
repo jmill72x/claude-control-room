@@ -109,8 +109,14 @@ export function Lanes() {
   };
 
   const cancelEdit = () => {
+    // Unmounting a focused input fires a native blur, and that blur reaches the
+    // onBlur handler holding the PRE-commit closure — same todos, same draft.
+    // Hold the guard across that turn so the stale handler cannot re-commit a
+    // draft we just saved, or re-commit one the user just discarded with Escape.
+    committing.current = true;
     setEditingId(null);
     setDraft({ text: '', tag: '' });
+    setTimeout(() => { committing.current = false; }, 0);
   };
 
   const commitEdit = async id => {
@@ -129,10 +135,13 @@ export function Lanes() {
 
     committing.current = true;
     const ok = await save(todos.map(t => (t.id === id ? { ...t, text, tag } : t)));
-    committing.current = false;
     // Stay in edit mode when the write failed, so what was typed is not lost.
-    // `save()` has already reverted the list and shown the error.
-    if (ok) cancelEdit();
+    // `save()` has already reverted the list and shown the error. cancelEdit()
+    // re-arms the guard and schedules its own release, so do NOT clear it here
+    // on the success path — clearing before the unmount is what let the phantom
+    // blur through.
+    if (ok) { cancelEdit(); return; }
+    committing.current = false;
   };
 
   return (
