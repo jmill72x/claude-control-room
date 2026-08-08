@@ -182,7 +182,7 @@ git commit -m "feat: give each alert a kind and a subject-stable key"
 ```js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pushableFrom, newKeys, prune } from '../lib/push-alerts.mjs';
+import { pushableFrom, newKeys, prune, observableKinds } from '../lib/push-alerts.mjs';
 
 const cron = (key, text) => ({ kind: 'cron', key, text });
 const limit = (key, text) => ({ kind: 'limit', key, text });
@@ -257,22 +257,26 @@ Expected: FAIL — cannot find module
 // per SOURCE, not per message: usage figures are the user's own and go out in
 // full, but cron identifiers come from launchd and include jobs belonging to a
 // private repo. Those never leave; a count is enough to know whether to look.
-const REDACTED_KINDS = new Set(['cron']);
+// An ALLOWLIST, deliberately. A denylist would send full text for any kind that
+// is missing, misspelled, or added later by someone who has not read this — so
+// the failure mode of a future mistake would be disclosure to a third party.
+// Anything not named here is counted, never quoted.
+const DISCLOSED_KINDS = new Set(['limit', 'projection', 'credits']);
 
 export function pushableFrom(alerts) {
   const keyed = (alerts ?? []).filter(a => typeof a?.key === 'string' && a.key);
   const out = [];
 
-  for (const a of keyed.filter(a => !REDACTED_KINDS.has(a.kind))) {
+  for (const a of keyed.filter(a => DISCLOSED_KINDS.has(a.kind))) {
     out.push({ keys: [a.key], title: 'Control Room', message: a.text });
   }
 
-  const crons = keyed.filter(a => REDACTED_KINDS.has(a.kind));
+  const crons = keyed.filter(a => !DISCLOSED_KINDS.has(a.kind));
   if (crons.length > 0) {
     out.push({
       keys: crons.map(a => a.key),
       title: 'Control Room',
-      message: `${crons.length} scheduled job${crons.length === 1 ? '' : 's'} failed — open the dashboard for detail`
+      message: `${crons.length} item${crons.length === 1 ? '' : 's'} need attention — open the dashboard for detail`
     });
   }
   return out;
@@ -284,12 +288,32 @@ export function newKeys(alerts, alreadySent) {
     .filter(k => typeof k === 'string' && k && !(k in (alreadySent ?? {})));
 }
 
+// Which sources we can actually see this run. A key may only be forgotten if we
+// could have observed its condition — otherwise a cold start, where the slow
+// `/usage` collector has not written yet, looks identical to every alert having
+// cleared, and the whole notified set is wiped and re-pushed.
+export function observableKinds(snapshot) {
+  const ok = k => snapshot?.[k]?.status === 'ok';
+  return new Set([
+    ...(ok('usage') ? ['limit', 'projection'] : []),
+    ...(ok('crons') || ok('ingestCrons') ? ['cron'] : []),
+    // Credits alerts are config-backed, not panel-backed: config is loaded at
+    // startup and always readable, so they are always observable.
+    'credits'
+  ]);
+}
+
 // A condition that has cleared is forgotten, so that if it returns it notifies
-// again. Without this, one 88% week would silence that limit forever.
-export function prune(alreadySent, alerts) {
+// again — without this, one 88% week would silence that limit forever. But a
+// key whose SOURCE is not observable right now is kept, because absence of
+// evidence is not evidence the condition cleared.
+export function prune(alreadySent, alerts, observable) {
   const live = new Set((alerts ?? []).map(a => a?.key));
+  const kinds = observable ?? new Set();
   const out = {};
-  for (const [k, v] of Object.entries(alreadySent ?? {})) if (live.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(alreadySent ?? {})) {
+    if (live.has(k) || !kinds.has(String(k).split(':')[0])) out[k] = v;
+  }
   return out;
 }
 ```
@@ -323,16 +347,18 @@ export async function getTopic({ run } = {}) {
 export async function publish({ topic, title, message, fetchImpl = fetch }) {
   if (!topic) return { sent: false, reason: 'no topic configured' };
   try {
-    const res = await fetchImpl(`https://ntfy.sh/${topic}`, {
+    // Encoded: an unencoded topic containing `/` or whitespace rewrites the
+    // request target entirely.
+    const res = await fetchImpl(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: 'POST',
       headers: { Title: title, Priority: 'default' },
       body: message
     });
     return { sent: res.ok, reason: res.ok ? null : `HTTP ${res.status}` };
-  } catch (err) {
-    // A failed push must never fail the thing that triggered it. The dashboard
-    // is the source of truth; this is a convenience on top of it.
-    return { sent: false, reason: err.message };
+  } catch {
+    // Deliberately opaque: a fetch error message can quote the whole URL, and
+    // the URL contains the topic — which is the only access control there is.
+    return { sent: false, reason: 'request failed' };
   }
 }
 ```
@@ -485,7 +511,7 @@ Expected: FAIL — cannot find module
 
 ```js
 import { buildAlerts } from '../lib/alerts.mjs';
-import { pushableFrom, newKeys, prune } from '../lib/push-alerts.mjs';
+import { pushableFrom, newKeys, prune, observableKinds } from '../lib/push-alerts.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
 // its last good reading, which is right to keep showing on screen — but pushing
@@ -501,7 +527,7 @@ const okOnly = snapshot => {
 
 export async function runNotifier({ snapshot, config, now, readSent, writeSent, send }) {
   const alerts = buildAlerts(okOnly(snapshot), config ?? {}, now);
-  const alreadySent = prune((await readSent()) ?? {}, alerts);
+  const alreadySent = prune((await readSent()) ?? {}, alerts, observableKinds(snapshot));
   const unsentKeys = new Set(newKeys(alerts, alreadySent));
 
   let sent = 0, skipped = 0;
