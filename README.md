@@ -474,25 +474,31 @@ render as unknown rather than a guess.
 ## Push notifications
 
 Alerts (the same ones the on-page alert bar shows) can also be pushed to a phone via
-[ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a scheduled job failing reaches
+[ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a cron job failing reaches
 you when you are not looking at the dashboard. This is off by default: with no topic
 configured, the notifier collector does nothing and the rest of the dashboard is
 completely unaffected — it reports `configured: false` rather than erroring.
 
-**Four kinds of alert can push:**
+**Only three kinds of alert are quoted in full — everything else is counted, never
+quoted:**
 
 | kind | pushed as |
 |---|---|
 | `limit` | full text — e.g. `Weekly · all models at 88%` |
 | `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
-| `cron` | **redacted to a count** — e.g. `1 scheduled job failed` |
+| anything else (including `cron`) | **counted, never quoted** — e.g. `1 item needs attention — open the dashboard for detail` |
 
-Cron alerts never include a job name or exit status. The topic on free ntfy.sh is the
-only access control there is — anyone who knows it can read everything published to
-it — and the message body transits a third party. Usage and credits figures are your
-own and are worth sending in full; cron identifiers come from `~/Library/LaunchAgents`
-and can include jobs from a private repo, so only a count leaves the machine.
+This is an **allowlist**, deliberately: only the three kinds above are named as safe to
+quote. A kind that is missing, misspelled, or added later by someone who has not read
+this rule is counted rather than disclosed, so the failure mode of a future mistake is
+over-redaction, not a private name leaving the machine. Cron alerts never include a job
+name or exit status — their identifiers come from `~/Library/LaunchAgents` and can
+include jobs from a private repo, and this project deliberately scrubbed those names
+from its own committed fixtures. The topic on free ntfy.sh is the only access control
+there is — anyone who knows it can read everything published to it — and the message
+body transits a third party. Usage and credits figures are your own, so they're worth
+sending in full.
 
 Each alert notifies once per condition, keyed on its subject rather than its wording
 (a limit's percentage moves every poll; the key does not), and a persisted set of

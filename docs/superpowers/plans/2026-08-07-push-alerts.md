@@ -280,7 +280,7 @@ export function pushableFrom(alerts) {
     out.push({
       keys: crons.map(a => a.key),
       title: 'Control Room',
-      message: `${crons.length} item${crons.length === 1 ? '' : 's'} need attention — open the dashboard for detail`
+      message: `${crons.length} item${crons.length === 1 ? '' : 's'} need${crons.length === 1 ? 's' : ''} attention — open the dashboard for detail`
     });
   }
   return out;

@@ -4,7 +4,7 @@ import { pushableFrom, newKeys, prune, observableKinds } from '../lib/push-alert
 
 const cron = (key, text) => ({ kind: 'cron', key, text });
 const limit = (key, text) => ({ kind: 'limit', key, text });
-const isCounted = msg => /need attention/i.test(msg);
+const isCounted = msg => /needs? attention/i.test(msg);
 
 test('a limit alert pushes its real text', () => {
   const out = pushableFrom([limit('limit:W', 'Weekly · all models at 88%')]);
@@ -18,7 +18,7 @@ test('a cron alert never sends the job name or its exit status', () => {
   const blob = `${out[0].title} ${out[0].message}`;
   assert.ok(!blob.includes('secret-job'), 'job name must not leave the machine');
   assert.ok(!blob.includes('429'), 'exit status must not leave the machine');
-  assert.match(blob, /need attention/i);
+  assert.match(blob, /needs? attention/i);
 });
 
 test('several failing crons collapse into one counted message', () => {
@@ -41,7 +41,7 @@ test('an alert of an unrecognized kind is counted, never quoted', () => {
   const out = pushableFrom([{ kind: 'session', key: 'session:x', text: '/Users/jeff/private/path leaked' }]);
   assert.equal(out.length, 1);
   assert.ok(!out[0].message.includes('/Users/jeff/private/path'), 'unknown kinds must not be disclosed by default');
-  assert.match(out[0].message, /need attention/i);
+  assert.match(out[0].message, /needs? attention/i);
 });
 
 test('newKeys returns only alerts not already notified', () => {

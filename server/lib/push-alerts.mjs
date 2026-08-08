@@ -24,7 +24,7 @@ export function pushableFrom(alerts) {
     out.push({
       keys: counted.map(a => a.key),
       title: 'Control Room',
-      message: `${counted.length} item${counted.length === 1 ? '' : 's'} need attention — open the dashboard for detail`
+      message: `${counted.length} item${counted.length === 1 ? '' : 's'} need${counted.length === 1 ? 's' : ''} attention — open the dashboard for detail`
     });
   }
   return out;
