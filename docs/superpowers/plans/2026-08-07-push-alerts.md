@@ -30,7 +30,11 @@ So redaction is decided **per alert source, not per message**:
 | `limit` | full text — `Weekly · all models at 88%` |
 | `projection` | full text — `Weekly · all models projected to reach 140% by reset` |
 | `credits` | full text — `Promotional credit expires in 12 days` |
-| `cron` | **redacted to a count** — `1 scheduled job failed` |
+
+Redaction is an **allowlist**: only the three kinds above are quoted. Anything else — a
+misspelled kind, a kind added later by someone who has not read this — is counted, so the
+failure mode of a future mistake is over-redaction rather than disclosure to a third party.
+| anything else | **counted, never quoted** — `1 item needs attention` |
 
 Cron *names* are the sharpest case: they come from `~/Library/LaunchAgents` and include jobs from a private repo, which this project deliberately scrubbed from its own fixtures. They must not leave the machine. The count is enough to know whether to look.
 
@@ -199,19 +203,19 @@ test('a cron alert never sends the job name or its exit status', () => {
   const blob = `${out[0].title} ${out[0].message}`;
   assert.ok(!blob.includes('secret-job'), 'job name must not leave the machine');
   assert.ok(!blob.includes('429'), 'exit status must not leave the machine');
-  assert.match(blob, /scheduled job/i);
+  assert.match(blob, /needs? attention/i);
 });
 
 test('several failing crons collapse into one counted message', () => {
   const out = pushableFrom([cron('cron:a', 'a failed'), cron('cron:b', 'b failed'), cron('cron:c', 'c failed')]);
-  const crons = out.filter(o => /scheduled job/i.test(o.message));
+  const crons = out.filter(o => /needs? attention/i.test(o.message));
   assert.equal(crons.length, 1);
   assert.match(crons[0].message, /3/);
 });
 
 test('the collapsed cron entry still carries every cron key, so each is deduped separately', () => {
   const out = pushableFrom([cron('cron:a', 'a failed'), cron('cron:b', 'b failed')]);
-  const entry = out.find(o => /scheduled job/i.test(o.message));
+  const entry = out.find(o => /needs? attention/i.test(o.message));
   assert.deepEqual([...entry.keys].sort(), ['cron:a', 'cron:b']);
 });
 
@@ -489,7 +493,7 @@ test('cron alerts are counted, and each key deduped separately', async () => {
   };
   await runNotifier({ snapshot: two, config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].message, /2 scheduled jobs failed/);
+  assert.match(h.sent[0].message, /2 items need attention/);
 
   const three = {
     crons: { status: 'ok', data: [
