@@ -471,6 +471,45 @@ of a shorter month, it does not overflow into the next one). If `plan.renews` is
 absent or not a real calendar date, both the RENEWS cell and the billing-cycle note
 render as unknown rather than a guess.
 
+## Push notifications
+
+Alerts (the same ones the on-page alert bar shows) can also be pushed to a phone via
+[ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a scheduled job failing reaches
+you when you are not looking at the dashboard. This is off by default: with no topic
+configured, the notifier collector does nothing and the rest of the dashboard is
+completely unaffected — it reports `configured: false` rather than erroring.
+
+**Four kinds of alert can push:**
+
+| kind | pushed as |
+|---|---|
+| `limit` | full text — e.g. `Weekly · all models at 88%` |
+| `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
+| `credits` | full text — e.g. `Promotional credit expires in 12 days` |
+| `cron` | **redacted to a count** — e.g. `1 scheduled job failed` |
+
+Cron alerts never include a job name or exit status. The topic on free ntfy.sh is the
+only access control there is — anyone who knows it can read everything published to
+it — and the message body transits a third party. Usage and credits figures are your
+own and are worth sending in full; cron identifiers come from `~/Library/LaunchAgents`
+and can include jobs from a private repo, so only a count leaves the machine.
+
+Each alert notifies once per condition, keyed on its subject rather than its wording
+(a limit's percentage moves every poll; the key does not), and a persisted set of
+already-notified keys survives a service restart. If a condition clears and later
+returns, it notifies again.
+
+**One-time setup** — the topic lives in Keychain, never in this public repo:
+
+```bash
+security add-generic-password -a claude-control-room -s ntfy-topic -w 'your-topic-here'
+```
+
+Pick something long and random — it is the only thing standing between the topic and
+anyone who guesses or brute-forces it — and don't reuse a topic from another service:
+a leaked topic should cost you one integration, not two. Subscribe to the same topic
+in the ntfy app (iOS/Android) or at `https://ntfy.sh/your-topic-here` to receive pushes.
+
 ## Fragility
 
 This dashboard has no stable, documented interface to the things it reads. It depends

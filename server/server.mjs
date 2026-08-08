@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createStaticHandler } from './lib/static.mjs';
 import { createHistory, RETENTION_MS } from './history.mjs';
 import { buildUsagePanel } from './lib/usage-panel.mjs';
@@ -11,6 +12,8 @@ import { collectAgents } from './collectors/agents.mjs';
 import { collectPlan } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
+import { runNotifier } from './collectors/notifier.mjs';
+import { getTopic, publish } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler } from './routes.mjs';
@@ -65,6 +68,31 @@ registry.register('sessions', async () => {
     }, now)
   };
 }, 60 * 1000);
+
+const SENT_PATH = join(HERE, 'data', 'notified.json');
+const readSent = async () => {
+  try { return JSON.parse(await readFile(SENT_PATH, 'utf8')); } catch { return {}; }
+};
+const writeSent = async next => {
+  await mkdir(dirname(SENT_PATH), { recursive: true });
+  await writeFile(SENT_PATH, JSON.stringify(next, null, 2));
+};
+
+registry.register('notifier', async () => {
+  const topic = await getTopic();
+  // Not configured is a normal state — the dashboard works without it.
+  if (!topic) return { configured: false, sent: 0 };
+  const now = Date.now();
+  const out = await runNotifier({
+    snapshot: cache.snapshot(now),
+    config,
+    now,
+    readSent,
+    writeSent,
+    send: entry => publish({ topic, title: entry.title, message: entry.message })
+  });
+  return { configured: true, ...out };
+}, 5 * 60 * 1000);
 
 const api = createHandler({ cache, todos, config });
 const serveStatic = createStaticHandler(WEB_DIR);
