@@ -89,7 +89,7 @@ test('cron alerts are counted, and each key deduped separately', async () => {
   };
   await runNotifier({ snapshot: two, config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].message, /2 scheduled jobs failed/);
+  assert.match(h.sent[0].message, /2 items need attention/);
 
   const three = {
     crons: { status: 'ok', data: [
@@ -99,4 +99,75 @@ test('cron alerts are counted, and each key deduped separately', async () => {
   };
   await runNotifier({ snapshot: three, config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 2, 'a third failing job is new and must notify');
+});
+
+// --- Critical fix: a restart (or any run) that cannot yet see a source must
+// not treat that source's alerts as cleared. registry.startAll() fires every
+// collector at once, so the notifier's first run can land before the slow
+// `/usage` collector (which shells out to `claude`) has written anything.
+
+test('a snapshot where usage has not been observed yet leaves a previously-notified limit key in place and pushes nothing new for it', async () => {
+  const h = harness();
+  const cfg = { warnThreshold: 85 };
+
+  const withUsage = base([{ label: 'Weekly · X', pct: 90 }]);
+  await runNotifier({ snapshot: withUsage, config: cfg, now: Date.now(), ...h });
+  assert.equal(h.sent.length, 1);
+  assert.deepEqual(Object.keys(h.store), ['limit:Weekly · X']);
+
+  // Cold start: the usage collector has not written to the cache yet, so its
+  // cache entry does not exist at all (not even as 'stale').
+  const cold = { crons: { status: 'ok', data: [] }, ingestCrons: { status: 'ok', data: [] } };
+  const out = await runNotifier({ snapshot: cold, config: cfg, now: Date.now(), ...h });
+  assert.equal(out.sent, 0, 'usage is unobserved, so nothing should push');
+  assert.equal(h.sent.length, 1, 'no new push must occur while usage is unobserved');
+  assert.deepEqual(Object.keys(h.store), ['limit:Weekly · X'], 'the previously-notified key must survive a run that cannot observe it');
+});
+
+test('the full restart sequence — notify, cold-start with an incomplete cache, then a fully populated cache — does not wipe the notified set or re-push', async () => {
+  const store = {};
+  const sent = [];
+  const readSent = async () => store;
+  const writeSent = async next => { for (const k of Object.keys(store)) delete store[k]; Object.assign(store, next); };
+  const send = async msg => { sent.push(msg); return { sent: true }; };
+  const cfg = { warnThreshold: 85 };
+
+  const full = {
+    crons: { status: 'ok', data: [{ name: 'nightly', label: 'net.example.nightly', ok: false }] },
+    ingestCrons: { status: 'ok', data: [] },
+    usage: okUsage([{ label: 'Weekly · X', pct: 90 }])
+  };
+  await runNotifier({ snapshot: full, config: cfg, now: Date.now(), readSent, writeSent, send });
+  assert.deepEqual(Object.keys(store).sort(), ['cron:net.example.nightly', 'limit:Weekly · X']);
+  assert.equal(sent.length, 2, 'the disclosed limit and the counted cron push separately');
+
+  // Restart: registry.startAll() runs every collector at once, so the first
+  // notifier tick after a restart can see crons before usage has landed.
+  const coldStart = {
+    crons: { status: 'ok', data: [{ name: 'nightly', label: 'net.example.nightly', ok: false }] },
+    ingestCrons: { status: 'ok', data: [] }
+    // usage: absent — the collector has not run yet on this process lifetime
+  };
+  await runNotifier({ snapshot: coldStart, config: cfg, now: Date.now(), readSent, writeSent, send });
+  assert.deepEqual(Object.keys(store).sort(), ['cron:net.example.nightly', 'limit:Weekly · X'],
+    'a cold start must not wipe keys belonging to a source it cannot observe');
+  assert.equal(sent.length, 2, 'nothing should be pushed while usage remains unobserved');
+
+  // Usage catches up on its own timer tick; the reading is unchanged.
+  await runNotifier({ snapshot: full, config: cfg, now: Date.now(), readSent, writeSent, send });
+  assert.equal(sent.length, 2, 'the same, still-live conditions must not re-push once usage becomes observable again');
+});
+
+test('a promo-expiry alert still pushes when every panel is stale, because credits are config-backed rather than panel-backed', async () => {
+  const h = harness();
+  const now = Date.parse('2026-09-01T00:00:00Z');
+  const cfg = { warnThreshold: 85, credits: { promoExpiresOn: '2026-09-19' } };
+  const snap = {
+    crons: { status: 'stale', data: [] },
+    ingestCrons: { status: 'stale', data: [] },
+    usage: { status: 'stale', data: { limits: [] } }
+  };
+  const out = await runNotifier({ snapshot: snap, config: cfg, now, ...h });
+  assert.equal(out.sent, 1);
+  assert.match(h.sent[0].message, /Promotional credit expires/);
 });

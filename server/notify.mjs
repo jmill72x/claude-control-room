@@ -24,15 +24,19 @@ export async function getTopic({ run } = {}) {
 export async function publish({ topic, title, message, fetchImpl = fetch }) {
   if (!topic) return { sent: false, reason: 'no topic configured' };
   try {
-    const res = await fetchImpl(`https://ntfy.sh/${topic}`, {
+    // Encoded: an unencoded topic containing `/` or whitespace rewrites the
+    // request target entirely.
+    const res = await fetchImpl(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: 'POST',
       headers: { Title: title, Priority: 'default' },
       body: message
     });
     return { sent: res.ok, reason: res.ok ? null : `HTTP ${res.status}` };
-  } catch (err) {
+  } catch {
     // A failed push must never fail the thing that triggered it. The dashboard
-    // is the source of truth; this is a convenience on top of it.
-    return { sent: false, reason: err.message };
+    // is the source of truth; this is a convenience on top of it. Deliberately
+    // opaque: a fetch error message can quote the whole URL, and the URL
+    // contains the topic — which is the only access control there is.
+    return { sent: false, reason: 'request failed' };
   }
 }
