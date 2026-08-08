@@ -112,3 +112,74 @@ test('a limit with no pace object at all is handled', () => {
   const limits = [{ label: 'Weekly · Opus', pct: 10 }];
   assert.deepEqual(buildAlerts(snapshotWith(limits), { warnThreshold: 85 }, Date.now()), []);
 });
+
+test('every alert carries a kind and a key', () => {
+  const snapshot = {
+    crons: { status: 'ok', data: [{ name: 'nightly', label: 'net.example.nightly', ok: false, last: 'Failed · 1' }] },
+    ingestCrons: { data: [] },
+    usage: { status: 'ok', data: { limits: [{ label: 'Weekly · all models', pct: 90, pace: { projectedPct: 140 } }] } }
+  };
+  const alerts = buildAlerts(snapshot, { warnThreshold: 85 }, Date.now());
+  for (const a of alerts) {
+    assert.ok(typeof a.text === 'string' && a.text.length > 0);
+    assert.ok(['cron', 'limit', 'projection', 'credits'].includes(a.kind));
+    assert.ok(typeof a.key === 'string' && a.key.length > 0);
+  }
+});
+
+test('a limit alert keeps the same key as its percentage moves', () => {
+  const at = pct => buildAlerts(
+    { crons: { data: [] }, ingestCrons: { data: [] },
+      usage: { status: 'ok', data: { limits: [{ label: 'Weekly · all models', pct }] } } },
+    { warnThreshold: 85 }, Date.now()
+  ).find(a => a.kind === 'limit');
+  assert.equal(at(86).key, at(87).key);
+  assert.notEqual(at(86).text, at(87).text);
+});
+
+test('a projection alert keeps the same key as the projection moves', () => {
+  const at = projectedPct => buildAlerts(
+    { crons: { data: [] }, ingestCrons: { data: [] },
+      usage: { status: 'ok', data: { limits: [{ label: 'Weekly · Opus', pct: 50, pace: { projectedPct } }] } } },
+    { warnThreshold: 85 }, Date.now()
+  ).find(a => a.kind === 'projection');
+  assert.equal(at(140).key, at(150).key);
+});
+
+test('two limits produce distinct keys', () => {
+  const alerts = buildAlerts(
+    { crons: { data: [] }, ingestCrons: { data: [] },
+      usage: { status: 'ok', data: { limits: [
+        { label: 'Weekly · all models', pct: 90 }, { label: 'Weekly · Opus', pct: 91 }
+      ] } } },
+    { warnThreshold: 85 }, Date.now()
+  );
+  const keys = alerts.map(a => a.key);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test('a cron alert keys on its label, which is stable across runs', () => {
+  const alerts = buildAlerts(
+    { crons: { status: 'ok', data: [{ name: 'nightly', label: 'net.example.nightly', ok: false, last: 'Failed · 1' }] },
+      ingestCrons: { data: [] }, usage: { data: { limits: [] } } },
+    { warnThreshold: 85 }, Date.now()
+  );
+  assert.equal(alerts[0].kind, 'cron');
+  assert.equal(alerts[0].key, 'cron:net.example.nightly');
+});
+
+test('a cron with no label still gets a key rather than colliding with others', () => {
+  const alerts = buildAlerts(
+    { crons: { status: 'ok', data: [{ name: 'a', ok: false }, { name: 'b', ok: false }] },
+      ingestCrons: { data: [] }, usage: { data: { limits: [] } } },
+    { warnThreshold: 85 }, Date.now()
+  );
+  assert.equal(new Set(alerts.map(a => a.key)).size, 2);
+});
+
+test('the two credits rules produce different keys', () => {
+  const now = Date.parse('2026-09-01T00:00:00Z');
+  const config = { warnThreshold: 85, credits: { promoExpiresOn: '2026-09-19', updatedAt: '2026-07-01' } };
+  const alerts = buildAlerts({ crons: { data: [] }, ingestCrons: { data: [] }, usage: { data: { limits: [] } } }, config, now);
+  assert.equal(new Set(alerts.map(a => a.key)).size, alerts.length);
+});
