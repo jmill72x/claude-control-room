@@ -40,7 +40,7 @@ never a zero or an empty bar standing in for missing data.
 | Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
 | Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source |
+| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag (case-folded) and sorts by priority within each group, unset last |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes

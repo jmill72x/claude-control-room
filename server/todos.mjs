@@ -3,6 +3,10 @@ import { dirname, join, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 const LANES = new Set(['idea', 'doing', 'done']);
+// Priority is optional: absent or null means "not set", and the UI renders
+// that as a dashed placeholder rather than inventing a rank. Anything else
+// must be one of these four, so a typo can never sort as if it were P0.
+const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
 const asidePrefix = path => `${basename(path)}.corrupt-`;
 const SEED = [
   { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
@@ -81,6 +85,7 @@ export function createTodoStore(path) {
       if (!Array.isArray(todos)) throw new Error('todos must be an array');
       for (const t of todos) {
         if (!LANES.has(t.lane)) throw new Error(`unknown lane: ${t.lane}`);
+        if (t.priority != null && !PRIORITIES.has(t.priority)) throw new Error(`unknown priority: ${t.priority}`);
       }
       await mkdir(dirname(path), { recursive: true });
       // Write-then-rename: a crash or a full disk part-way through a direct

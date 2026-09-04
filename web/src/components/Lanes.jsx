@@ -5,6 +5,32 @@ const LANES = [
   { key: 'doing', title: 'Doing', placeholder: '+ start something', mark: '›', next: 'done', edge: 'var(--ink)', box: 'var(--n500)' },
   { key: 'done', title: 'Done', placeholder: '+ log something done', mark: '✓', next: 'idea', edge: 'var(--n300)', box: 'var(--ink)' }
 ];
+const LANE_BY_KEY = Object.fromEntries(LANES.map(l => [l.key, l]));
+
+// Clicking the chip walks this list and then clears. The server refuses
+// anything outside it, so a stray value can never sort as though it ranked.
+const PRIORITIES = ['P0', 'P1', 'P2', 'P3'];
+const rank = p => (PRIORITIES.includes(p) ? PRIORITIES.indexOf(p) : PRIORITIES.length);
+const CHIP = {
+  P0: { bg: 'var(--accent)', fg: 'var(--ground)', border: 'var(--accent)', style: 'solid' },
+  P1: { bg: 'transparent', fg: 'var(--ink)', border: 'var(--ink)', style: 'solid' },
+  P2: { bg: 'transparent', fg: 'var(--n700)', border: 'var(--n400)', style: 'solid' },
+  P3: { bg: 'transparent', fg: 'var(--n500)', border: 'var(--n300)', style: 'solid' },
+  // Not set. A dashed chip and a dash, never a default rank.
+  none: { bg: 'transparent', fg: 'var(--n400)', border: 'var(--n300)', style: 'dashed' }
+};
+
+// Tags are typed freehand, so "Pi" and "pi" are the same group.
+const tagKey = t => (t ?? '').trim().toLowerCase();
+
+// Which axis the column is grouped on is a per-browser convenience, not
+// data: it lives in localStorage, which can be absent or throw (private
+// windows, blocked site data), so every touch is guarded.
+const GROUP_KEY = 'ccr.todos.groupBy';
+const readGroupBy = () => {
+  try { return localStorage.getItem(GROUP_KEY) === 'tag' ? 'tag' : 'stage'; } catch { return 'stage'; }
+};
+const writeGroupBy = v => { try { localStorage.setItem(GROUP_KEY, v); } catch { /* per-viewer convenience only */ } };
 
 export function Lanes() {
   const [todos, setTodos] = useState([]);
@@ -13,6 +39,7 @@ export function Lanes() {
   // not an empty backlog we found: the lane counts must say so rather than
   // print a confident 0 next to a load error.
   const [loaded, setLoaded] = useState(false);
+  const [groupBy, setGroupBy] = useState(readGroupBy);
   // The id being edited, and the draft being typed. `draft` is deliberately
   // separate from `todos` so Escape can restore without a server round-trip.
   const [editingId, setEditingId] = useState(null);
@@ -102,6 +129,16 @@ export function Lanes() {
   const add = (lane, text) => save([...todos, { id: newId(), text, lane, tag: 'Note' }]);
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
+  const cyclePriority = id => save(todos.map(t => {
+    if (t.id !== id) return t;
+    const i = PRIORITIES.indexOf(t.priority);
+    // Past P3 the key is dropped rather than set to null, so an item that
+    // has never been ranked and one that was un-ranked look the same on disk.
+    if (i === PRIORITIES.length - 1) { const { priority: _dropped, ...rest } = t; return rest; }
+    return { ...t, priority: PRIORITIES[i + 1] };
+  }));
+
+  const chooseGroupBy = v => { setGroupBy(v); writeGroupBy(v); };
 
   const beginEdit = t => {
     setEditingId(t.id);
@@ -144,27 +181,107 @@ export function Lanes() {
     committing.current = false;
   };
 
+  // Sort is stable, so items of equal priority keep the order they were added in.
+  const byPriority = (a, b) => rank(a.priority) - rank(b.priority);
+
+  // Both views render the same group shape: a header, sorted items, and
+  // optionally an add box. Grouping by stage is the three lanes. Grouping by
+  // tag lifts them: one section per tag, ordered by its best OPEN priority
+  // (a tag whose only P0 is already done should not float to the top), done
+  // items sinking to the bottom of their tag so the stage still reads.
+  const groups = groupBy === 'stage'
+    ? LANES.map(lane => ({
+        key: lane.key, title: lane.title,
+        items: todos.filter(t => t.lane === lane.key).sort(byPriority),
+        addLane: lane
+      }))
+    : (() => {
+        const map = new Map();
+        for (const t of todos) {
+          const k = tagKey(t.tag);
+          // First-seen casing names the group; it renders uppercase anyway.
+          if (!map.has(k)) map.set(k, { key: `tag:${k}`, title: t.tag?.trim() || 'No tag', items: [] });
+          map.get(k).items.push(t);
+        }
+        return [...map.values()]
+          .map(g => {
+            g.items.sort((a, b) => (a.lane === 'done') - (b.lane === 'done') || byPriority(a, b));
+            const open = g.items.filter(t => t.lane !== 'done');
+            g.best = open.length ? Math.min(...open.map(t => rank(t.priority))) : PRIORITIES.length + 1;
+            return g;
+          })
+          .sort((a, b) => a.best - b.best || a.title.localeCompare(b.title));
+      })();
+
+  const addInput = lane => (
+    <input
+      type="text"
+      className="ccr-lane-input"
+      placeholder={lane.placeholder}
+      onKeyDown={async e => {
+        if (e.key !== 'Enter') return;
+        const input = e.target;
+        const v = input.value.trim();
+        if (!v) return;
+        // Clear only once the write has actually landed — clearing
+        // synchronously (as the brief does) would empty the field
+        // even when the save fails and reverts, making a dropped
+        // write look identical to a successful one.
+        const ok = await add(lane.key, v);
+        if (ok) input.value = '';
+      }}
+      style={{
+        fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '8px 10px',
+        border: 'var(--rule-fine)', background: 'transparent', color: 'var(--ink)',
+        width: '100%'
+      }}
+    />
+  );
+
+  const segment = (value, label) => (
+    <button
+      className="ccr-lane-seg"
+      aria-pressed={groupBy === value}
+      onClick={() => chooseGroupBy(value)}
+      style={{
+        fontFamily: 'inherit', cursor: 'pointer', fontSize: 10, fontWeight: 800,
+        letterSpacing: '0.12em', textTransform: 'uppercase', padding: '5px 10px',
+        border: '1px solid var(--ink)', borderLeft: value === 'stage' ? '1px solid var(--ink)' : 0,
+        background: groupBy === value ? 'var(--ink)' : 'transparent',
+        color: groupBy === value ? 'var(--ground)' : 'var(--ink)'
+      }}
+    >{label}</button>
+  );
+
   return (
     <>
       {error && <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>{error}</div>}
-      {LANES.map(lane => {
-        const items = todos.filter(t => t.lane === lane.key);
-        return (
-          <div key={lane.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{
-              display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-              gap: 8, borderBottom: '1px solid var(--ink)', paddingBottom: 5
-            }}>
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-                {lane.title}
-              </span>
-              <span className="num" style={{ fontSize: 11, fontWeight: 700, color: 'var(--n600)' }}>
-                {loaded ? items.length : '—'}
-              </span>
-            </div>
-            {items.map(t => (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: -8 }}>
+        <span className="section-label">Group by</span>
+        <div style={{ display: 'flex' }}>
+          {segment('stage', 'Stage')}
+          {segment('tag', 'Tag')}
+        </div>
+      </div>
+      {groups.map(group => (
+        <div key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{
+            display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+            gap: 8, borderBottom: '1px solid var(--ink)', paddingBottom: 5
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+              {group.title}
+            </span>
+            <span className="num" style={{ fontSize: 11, fontWeight: 700, color: 'var(--n600)' }}>
+              {loaded ? group.items.length : '—'}
+            </span>
+          </div>
+          {group.items.map(t => {
+            const lane = LANE_BY_KEY[t.lane];
+            const chip = CHIP[t.priority] ?? CHIP.none;
+            return (
               <div key={t.id} style={{
-                display: 'grid', gridTemplateColumns: 'auto 1fr auto', alignItems: 'start',
+                display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', alignItems: 'start',
                 gap: 10, padding: '9px 10px', background: 'var(--surface)',
                 borderLeft: `3px solid ${lane.edge}`
               }}>
@@ -253,6 +370,17 @@ export function Lanes() {
                   </span>
                 )}
                 <button
+                  className="ccr-lane-prio num"
+                  onClick={() => cyclePriority(t.id)}
+                  title={t.priority ? `Priority ${t.priority} — click to change` : 'No priority — click to set'}
+                  aria-label={t.priority ? `Priority ${t.priority}, click to change` : 'No priority, click to set'}
+                  style={{
+                    fontFamily: 'inherit', cursor: 'pointer', marginTop: 1, padding: '1px 5px',
+                    fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', lineHeight: '14px',
+                    border: `1px ${chip.style} ${chip.border}`, background: chip.bg, color: chip.fg
+                  }}
+                >{t.priority ?? '—'}</button>
+                <button
                   className="ccr-lane-delete"
                   onClick={() => remove(t.id)}
                   title="Delete"
@@ -262,32 +390,14 @@ export function Lanes() {
                   }}
                 >×</button>
               </div>
-            ))}
-            <input
-              type="text"
-              className="ccr-lane-input"
-              placeholder={lane.placeholder}
-              onKeyDown={async e => {
-                if (e.key !== 'Enter') return;
-                const input = e.target;
-                const v = input.value.trim();
-                if (!v) return;
-                // Clear only once the write has actually landed — clearing
-                // synchronously (as the brief does) would empty the field
-                // even when the save fails and reverts, making a dropped
-                // write look identical to a successful one.
-                const ok = await add(lane.key, v);
-                if (ok) input.value = '';
-              }}
-              style={{
-                fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '8px 10px',
-                border: 'var(--rule-fine)', background: 'transparent', color: 'var(--ink)',
-                width: '100%'
-              }}
-            />
-          </div>
-        );
-      })}
+            );
+          })}
+          {group.addLane && addInput(group.addLane)}
+        </div>
+      ))}
+      {/* Grouped by tag there is no lane to add into, so one box at the
+          bottom adds to Idea — the same place a card starts in stage view. */}
+      {groupBy === 'tag' && loaded && addInput(LANE_BY_KEY.idea)}
     </>
   );
 }

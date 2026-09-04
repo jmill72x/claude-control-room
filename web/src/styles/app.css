@@ -51,6 +51,12 @@
   width: 100%;
 }
 
+/* Column 03 priority chip and group-by switch: hover states only, sizing and
+   colour stay inline where the lane code decides them per item. */
+.ccr-lane-prio:hover { border-color: var(--ink); border-style: solid; }
+.ccr-lane-seg:hover { background: var(--n200); }
+.ccr-lane-seg[aria-pressed="true"]:hover { background: var(--ink); }
+
 /* iPad portrait and below: one column, rules dropped. */
 @media (max-width: 1024px) {
   .ccr-grid { grid-template-columns: 1fr; }

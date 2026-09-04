@@ -31,6 +31,30 @@ test('rejects an unknown lane', async () => {
   await assert.rejects(() => store.write([{ id: 1, text: 'x', lane: 'nowhere' }]));
 });
 
+test('accepts P0–P3, an absent priority, and an explicit null', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  const list = [
+    { id: 1, text: 'a', lane: 'idea', priority: 'P0' },
+    { id: 2, text: 'b', lane: 'idea', priority: 'P3' },
+    { id: 3, text: 'c', lane: 'idea' },
+    { id: 4, text: 'd', lane: 'done', priority: null }
+  ];
+  await store.write(list);
+  assert.deepEqual(await createTodoStore(path).read(), list);
+});
+
+test('rejects a priority outside P0–P3, so a typo can never sort as a rank', async () => {
+  const store = createTodoStore(tmp());
+  for (const bad of ['P4', 'p0', 'high', 0, '', {}]) {
+    await assert.rejects(
+      () => store.write([{ id: 1, text: 'x', lane: 'idea', priority: bad }]),
+      /unknown priority/,
+      `priority ${JSON.stringify(bad)} must be refused`
+    );
+  }
+});
+
 test('a corrupt file is preserved and reported, never silently reseeded (I6)', async () => {
   const path = tmp();
   const real = [{ id: 1, text: 'months of real backlog', lane: 'doing', tag: 'Note' }];
