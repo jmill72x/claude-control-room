@@ -100,3 +100,15 @@ export function arrayFrom(envelope) {
   if (Array.isArray(data)) return { items: data, invalid: false };
   return { items: [], invalid: true };
 }
+
+// A cron that launchd has loaded but never run has no exit status at all. It is
+// not failing — but it has not succeeded either, and painting it with the same
+// "OK" every genuinely-successful job gets claims a run that never happened.
+// `state` comes from the server for launchd jobs; an ingested cron that only
+// reports `ok` is mapped here, and one that reports nothing stays unknown.
+export function cronState(c) {
+  if (c.state === 'ok' || c.state === 'failed' || c.state === 'never') return c.state;
+  if (c.ok === false) return 'failed';
+  if (c.ok === true) return 'ok';
+  return 'unknown';
+}

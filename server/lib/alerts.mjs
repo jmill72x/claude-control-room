@@ -14,13 +14,21 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
   // failure is ever seen. Reading `snapshot.crons` alone meant an ingested cron
   // could report ok:false and raise nothing, while the page merged both feeds
   // for display. Spec §6: any cron with a non-zero exit raises an alert.
-  for (const cron of [...listOf(snapshot.crons), ...listOf(snapshot.ingestCrons)]) {
-    if (cron?.ok === false) {
-      alerts.push({
-        text: `${cron.name} cron ${cron.last ?? 'failed'}`,
-        kind: 'cron',
-        key: `cron:${cron.label ?? cron.name}`
-      });
+  // The key names the SOURCE too. The notifier may forget a key only when it
+  // could observe that key's source this run, and launchd being readable says
+  // nothing about the ingest poster — a bare `cron:label` could not tell the
+  // two apart, so an ingested job's key was forgotten on every poster gap and
+  // the same failure re-pushed each time the poster came back.
+  const cronSources = [['launchd', listOf(snapshot.crons)], ['ingest', listOf(snapshot.ingestCrons)]];
+  for (const [source, crons] of cronSources) {
+    for (const cron of crons) {
+      if (cron?.ok === false) {
+        alerts.push({
+          text: `${cron.name} cron ${cron.last ?? 'failed'}`,
+          kind: 'cron',
+          key: `cron:${source}:${cron.label ?? cron.name}`
+        });
+      }
     }
   }
 

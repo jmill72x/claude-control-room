@@ -1,5 +1,5 @@
 import { buildAlerts } from '../lib/alerts.mjs';
-import { pushableFrom, newKeys, prune, observableKinds } from '../lib/push-alerts.mjs';
+import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
 // its last good reading, which is right to keep showing on screen — but pushing
@@ -17,7 +17,7 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
   const alerts = buildAlerts(okOnly(snapshot), config ?? {}, now);
   // The raw snapshot, not okOnly(snapshot): observability is about whether a
   // source reported this run at all, which okOnly's blanking already erases.
-  const alreadySent = prune((await readSent()) ?? {}, alerts, observableKinds(snapshot));
+  const alreadySent = prune((await readSent()) ?? {}, alerts, observableSources(snapshot));
   const unsentKeys = new Set(newKeys(alerts, alreadySent));
 
   let sent = 0, skipped = 0;

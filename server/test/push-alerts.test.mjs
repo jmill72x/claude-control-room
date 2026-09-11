@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pushableFrom, newKeys, prune, observableKinds } from '../lib/push-alerts.mjs';
+import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
 
 const cron = (key, text) => ({ kind: 'cron', key, text });
 const limit = (key, text) => ({ kind: 'limit', key, text });
@@ -87,19 +87,41 @@ test('an alert with no key is dropped rather than pushed unkeyed', () => {
   assert.deepEqual(pushableFrom([{ kind: 'limit', text: 'no key' }]), []);
 });
 
-test('observableKinds reports usage-backed kinds only when the usage panel is ok', () => {
-  assert.deepEqual([...observableKinds({ usage: { status: 'ok' } })].sort(),
-    ['credits', 'limit', 'projection']);
-  assert.deepEqual([...observableKinds({ usage: { status: 'stale' } })].sort(), ['credits']);
+test('observableSources reports usage-backed keys only when the usage panel is ok', () => {
+  assert.deepEqual([...observableSources({ usage: { status: 'ok' } })].sort(), ['credits', 'limit', 'projection']);
+  assert.deepEqual([...observableSources({ usage: { status: 'stale' } })].sort(), ['credits']);
 });
 
-test('observableKinds reports cron as observable when either cron source is ok', () => {
-  assert.ok(observableKinds({ crons: { status: 'ok' } }).has('cron'));
-  assert.ok(observableKinds({ ingestCrons: { status: 'ok' } }).has('cron'));
-  assert.ok(!observableKinds({ crons: { status: 'unavailable' }, ingestCrons: { status: 'stale' } }).has('cron'));
+// Observability is per SOURCE, not per kind. Launchd being readable says
+// nothing about the ingest poster, and vice versa.
+test('observableSources treats launchd and ingested crons as separate sources', () => {
+  assert.deepEqual([...observableSources({ crons: { status: 'ok' } })].filter(k => k.startsWith('cron')), ['cron:launchd']);
+  assert.deepEqual([...observableSources({ ingestCrons: { status: 'ok' } })].filter(k => k.startsWith('cron')), ['cron:ingest']);
+  assert.deepEqual([...observableSources({ crons: { status: 'unavailable' }, ingestCrons: { status: 'stale' } })].filter(k => k.startsWith('cron')), []);
 });
 
-test('observableKinds always reports credits, since it is config-backed rather than panel-backed', () => {
-  assert.ok(observableKinds({}).has('credits'));
-  assert.ok(observableKinds(undefined).has('credits'));
+test('prune keeps an ingested cron key while launchd alone is readable, and forgets a cleared launchd key', () => {
+  const pruned = prune(
+    { 'cron:launchd:a': 1, 'cron:ingest:b': 2 },
+    [],
+    observableSources({ crons: { status: 'ok' } }) // poster gap: ingestCrons absent
+  );
+  assert.deepEqual(pruned, { 'cron:ingest:b': 2 });
+});
+
+// Credits alerts read the ingested feed when it is current and fall back to
+// config otherwise. So the source is observable when the feed is current (it
+// drove the alert) or when it has never been posted (config drove it) — but a
+// STALE feed means the alert's real source went quiet, and its key must be kept.
+test('observableSources reports credits when the ingested feed is current or was never posted, but not when it is stale', () => {
+  assert.ok(observableSources({ ingestCredits: { status: 'ok' } }).has('credits'));
+  assert.ok(observableSources({ ingestCredits: { status: 'unavailable' } }).has('credits'));
+  assert.ok(observableSources({}).has('credits'));
+  assert.ok(observableSources(undefined).has('credits'));
+  assert.ok(!observableSources({ ingestCredits: { status: 'stale' } }).has('credits'));
+});
+
+test('prune keeps a credits key through an ingest gap, even though the alert is absent that run', () => {
+  const pruned = prune({ 'credits:promo': 1 }, [], observableSources({ ingestCredits: { status: 'stale' } }));
+  assert.deepEqual(pruned, { 'credits:promo': 1 });
 });

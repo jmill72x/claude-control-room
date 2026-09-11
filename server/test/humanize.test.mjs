@@ -51,3 +51,15 @@ test('schedule renders second intervals', () => {
 test('schedule falls back rather than inventing', () => {
   assert.equal(formatSchedule(null, null), 'On demand');
 });
+
+// launchd accepts an ARRAY of calendar dictionaries (run at 08:00 and 20:00).
+// An array is an object, so it fell into the single-dictionary path with every
+// key undefined and rendered as "Every minute" — a schedule the job never keeps.
+test('an array-form calendar lists each entry rather than collapsing to "Every minute"', () => {
+  assert.equal(
+    formatSchedule([{ Hour: 8, Minute: 0 }, { Hour: 20, Minute: 0 }], null),
+    'Every day, 08:00 · Every day, 20:00'
+  );
+  assert.equal(formatSchedule([{ Weekday: 1, Hour: 9, Minute: 30 }], null), 'Mondays, 09:30');
+  assert.equal(formatSchedule([], null), 'On demand', 'an empty array specifies no schedule at all');
+});

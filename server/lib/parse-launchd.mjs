@@ -24,6 +24,11 @@ const has = v => Number.isInteger(v);
 // IS specified, skipping whole months, days or hours that cannot match, so even
 // a once-a-year job costs a few hundred iterations rather than half a million.
 export function nextRun(cal, now) {
+  if (Array.isArray(cal)) {
+    // Array form: the job fires at whichever entry comes first.
+    const times = cal.map(c => nextRun(c, now)).filter(t => t !== null);
+    return times.length > 0 ? Math.min(...times) : null;
+  }
   if (!cal || typeof cal !== 'object') return null;
   const { Minute, Hour, Weekday, Day, Month } = cal;
   if (![Minute, Hour, Weekday, Day, Month].some(has)) return null;

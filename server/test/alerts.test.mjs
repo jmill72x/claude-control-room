@@ -158,14 +158,29 @@ test('two limits produce distinct keys', () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test('a cron alert keys on its label, which is stable across runs', () => {
+// The key carries the SOURCE as well as the label. The notifier forgets a key
+// only when it could observe that key's source this run; a bare `cron:label`
+// could not say whether it came from launchd or the ingest poster, so an
+// ingested job's key was forgotten whenever launchd alone was readable — and
+// re-pushed on every poster gap.
+test('a launchd cron alert keys on its source and label, which is stable across runs', () => {
   const alerts = buildAlerts(
     { crons: { status: 'ok', data: [{ name: 'nightly', label: 'net.example.nightly', ok: false, last: 'Failed · 1' }] },
       ingestCrons: { data: [] }, usage: { data: { limits: [] } } },
     { warnThreshold: 85 }, Date.now()
   );
   assert.equal(alerts[0].kind, 'cron');
-  assert.equal(alerts[0].key, 'cron:net.example.nightly');
+  assert.equal(alerts[0].key, 'cron:launchd:net.example.nightly');
+});
+
+test('an ingested cron alert keys on its own source, so it never shares a key with a launchd job', () => {
+  const alerts = buildAlerts(
+    { crons: { status: 'ok', data: [{ name: 'x', label: 'same', ok: false }] },
+      ingestCrons: { status: 'ok', data: [{ name: 'x', label: 'same', ok: false }] },
+      usage: { data: { limits: [] } } },
+    { warnThreshold: 85 }, Date.now()
+  );
+  assert.deepEqual(alerts.map(a => a.key).sort(), ['cron:ingest:same', 'cron:launchd:same']);
 });
 
 test('a cron with no label still gets a key rather than colliding with others', () => {

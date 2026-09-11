@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProjects } from '../lib/projects.mjs';
+import { buildProjects, agentsReadable } from '../lib/projects.mjs';
 
 const NOW = Date.parse('2026-08-05T12:00:00Z');
 const MIN = 60000;
@@ -197,4 +197,16 @@ test('a busy agent still sorts to the top when others are unknown', () => {
     transcripts: [{ cwd: '/Users/example/Projects/quiet', lastTs: NOW - MIN, surface: 'Code' }]
   }, NOW);
   assert.equal(projects[0].name, 'busy');
+});
+
+// The stale case is the one server.mjs used to miss: `status !== 'unavailable'`
+// let a cache entry whose last refresh FAILED (data kept, error set, status
+// stale) pass as readable, so a dead `claude agents` still printed Running and
+// Idle as fact until the process restarted.
+test('agentsReadable trusts only an ok agents envelope — stale or unavailable is unknown, never idle', () => {
+  assert.equal(agentsReadable({ status: 'ok', data: [], error: null }), true);
+  assert.equal(agentsReadable({ status: 'stale', data: [], error: 'claude agents: exit 1' }), false);
+  assert.equal(agentsReadable({ status: 'stale', data: [], error: null }), false, 'aged out counts as unknown too');
+  assert.equal(agentsReadable({ status: 'unavailable', data: null }), false);
+  assert.equal(agentsReadable(undefined), false);
 });

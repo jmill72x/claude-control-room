@@ -53,8 +53,17 @@ function calendarPhrase(cal) {
   return 'Every minute';
 }
 
+// launchd also accepts an ARRAY of calendar dictionaries (08:00 and 20:00).
+// An array is an object too, so it used to fall into the single-dictionary
+// path with every key undefined and print "Every minute". Each entry gets its
+// own phrase; an empty array specifies nothing, which is on-demand.
 export function formatSchedule(cal, intervalSec) {
-  if (cal && typeof cal === 'object') return calendarPhrase(cal);
+  if (Array.isArray(cal)) {
+    const entries = cal.filter(c => c && typeof c === 'object');
+    if (entries.length > 0) return entries.map(calendarPhrase).join(' · ');
+  } else if (cal && typeof cal === 'object') {
+    return calendarPhrase(cal);
+  }
   if (intervalSec) {
     if (intervalSec % 3600 === 0) {
       const h = intervalSec / 3600;

@@ -138,7 +138,7 @@ test('the full restart sequence — notify, cold-start with an incomplete cache,
     usage: okUsage([{ label: 'Weekly · X', pct: 90 }])
   };
   await runNotifier({ snapshot: full, config: cfg, now: Date.now(), readSent, writeSent, send });
-  assert.deepEqual(Object.keys(store).sort(), ['cron:net.example.nightly', 'limit:Weekly · X']);
+  assert.deepEqual(Object.keys(store).sort(), ['cron:launchd:net.example.nightly', 'limit:Weekly · X']);
   assert.equal(sent.length, 2, 'the disclosed limit and the counted cron push separately');
 
   // Restart: registry.startAll() runs every collector at once, so the first
@@ -149,7 +149,7 @@ test('the full restart sequence — notify, cold-start with an incomplete cache,
     // usage: absent — the collector has not run yet on this process lifetime
   };
   await runNotifier({ snapshot: coldStart, config: cfg, now: Date.now(), readSent, writeSent, send });
-  assert.deepEqual(Object.keys(store).sort(), ['cron:net.example.nightly', 'limit:Weekly · X'],
+  assert.deepEqual(Object.keys(store).sort(), ['cron:launchd:net.example.nightly', 'limit:Weekly · X'],
     'a cold start must not wipe keys belonging to a source it cannot observe');
   assert.equal(sent.length, 2, 'nothing should be pushed while usage remains unobserved');
 
@@ -170,4 +170,34 @@ test('a promo-expiry alert still pushes when every panel is stale, because credi
   const out = await runNotifier({ snapshot: snap, config: cfg, now, ...h });
   assert.equal(out.sent, 1);
   assert.match(h.sent[0].message, /Promotional credit expires/);
+});
+
+// The dormant bug behind todo push-ingest-observability: an ingest-fed cron
+// alert was forgotten on every poster gap (panel absent or >5min stale) because
+// launchd being readable made the whole `cron` kind look observable, so the
+// same failing job re-pushed every time the poster came back.
+test('an ingested cron alert survives a poster gap without re-pushing when the poster returns', async () => {
+  const h = harness();
+  const cfg = { warnThreshold: 85 };
+  const failing = [{ name: 'cloud-job', label: 'cloud:job', ok: false }];
+  const posterUp = { crons: { status: 'ok', data: [] }, ingestCrons: { status: 'ok', data: failing }, usage: okUsage([]) };
+  const posterGap = { crons: { status: 'ok', data: [] }, ingestCrons: { status: 'stale', data: failing }, usage: okUsage([]) };
+  const posterGone = { crons: { status: 'ok', data: [] }, usage: okUsage([]) };
+
+  await runNotifier({ snapshot: posterUp, config: cfg, now: 1, ...h });
+  assert.equal(h.sent.length, 1, 'first sighting pushes');
+  await runNotifier({ snapshot: posterGap, config: cfg, now: 2, ...h });
+  await runNotifier({ snapshot: posterGone, config: cfg, now: 3, ...h });
+  await runNotifier({ snapshot: posterUp, config: cfg, now: 4, ...h });
+  assert.equal(h.sent.length, 1, 'the same still-failing job must not re-push after the poster gap');
+});
+
+test('a launchd cron key is still forgotten when launchd is readable and the job recovered, even during a poster gap', async () => {
+  const h = harness();
+  const cfg = { warnThreshold: 85 };
+  const failing = { crons: { status: 'ok', data: [{ name: 'a', label: 'l:a', ok: false }] }, usage: okUsage([]) };
+  const recovered = { crons: { status: 'ok', data: [{ name: 'a', label: 'l:a', ok: true }] }, usage: okUsage([]) };
+  await runNotifier({ snapshot: failing, config: cfg, now: 1, ...h });
+  await runNotifier({ snapshot: recovered, config: cfg, now: 2, ...h });
+  assert.deepEqual(Object.keys(h.store), [], 'a cleared launchd job is forgotten so a later failure notifies again');
 });

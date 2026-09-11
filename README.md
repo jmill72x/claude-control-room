@@ -253,7 +253,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 267 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 340 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -503,7 +503,11 @@ sending in full.
 Each alert notifies once per condition, keyed on its subject rather than its wording
 (a limit's percentage moves every poll; the key does not), and a persisted set of
 already-notified keys survives a service restart. If a condition clears and later
-returns, it notifies again.
+returns, it notifies again — but "cleared" is only believed when the alert's own
+source was readable that run. Launchd crons, ingested crons, usage and the ingested
+credits feed are tracked as separate sources, so a poster gap or a cold start where
+one feed is absent or stale keeps that feed's keys rather than re-pushing them when it
+comes back.
 
 **One-time setup** — the topic lives in Keychain, never in this public repo:
 
@@ -563,9 +567,11 @@ Making it work elsewhere is not a supported path, but if you want to try:
   parameterizes these via `__HOME__` / `__REPO__`; nothing else in the server hardcodes
   a path outside of what `os.homedir()` and `import.meta.url` resolve at runtime.
 - **Multiple users / shared deployment:** not designed for this at any layer — one
-  `config.json`, one `todos.json`, one cache, no auth of its own (auth is delegated
-  entirely to Cloudflare Access in front of it). Turning this into a multi-tenant
-  service would be a rewrite, not a configuration change.
+  `config.json`, one `todos.json`, one cache, no auth of its own. Access control is
+  whatever sits in front of it: tailnet membership under Tailscale Serve, or a Zero
+  Trust Access policy under Cloudflare Tunnel (see [Remote access](#remote-access)).
+  Turning this into a multi-tenant service would be a rewrite, not a configuration
+  change.
 
 If you adapt a collector for a new source, keep the shape every panel already commits
 to: `{ data, fetchedAt, status: 'ok' | 'stale' | 'unavailable', error }`, and prefer

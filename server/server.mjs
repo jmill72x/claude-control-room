@@ -18,7 +18,7 @@ import { createTodoStore } from './todos.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler } from './routes.mjs';
 import { aggregate } from './lib/aggregate.mjs';
-import { buildProjects } from './lib/projects.mjs';
+import { buildProjects, agentsReadable } from './lib/projects.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8322);
@@ -62,7 +62,7 @@ registry.register('sessions', async () => {
     unreadablePaths,
     projects: buildProjects({
       agents: agentsEnvelope.data ?? [],
-      agentsAvailable: agentsEnvelope.status !== 'unavailable',
+      agentsAvailable: agentsReadable(agentsEnvelope),
       coworkSessions,
       transcripts
     }, now)

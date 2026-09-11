@@ -7,6 +7,12 @@ import { formatRelative } from './humanize.mjs';
 // against every project at once. It also fires at startup by construction:
 // registry.startAll runs every collector in the same tick, so the first sessions
 // run always reads an empty agents cache.
+// Only a current, successful read of `claude agents --json` says anything
+// about what is running now. `stale` covers both a refresh that FAILED after
+// once succeeding (data kept, error set) and one that simply aged out; either
+// way the list is a memory, not an observation, and must read as unknown.
+export const agentsReadable = envelope => envelope?.status === 'ok';
+
 export function buildProjects(
   { agents = [], agentsAvailable = true, coworkSessions = [], transcripts = [] },
   now = Date.now()

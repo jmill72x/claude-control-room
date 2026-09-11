@@ -18,7 +18,7 @@ import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
 import { DriversPanel } from './components/DriversPanel.jsx';
 import { Lanes } from './components/Lanes.jsx';
-import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf } from './lib/format.js';
+import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf, cronState } from './lib/format.js';
 
 // Polling is every 30s. Three minutes of silence without a fetch error means the
 // tab was suspended or the machine slept — the numbers on screen are real but no
@@ -81,8 +81,13 @@ export default function App() {
   const ingestCrons = arrayFrom(payload?.ingestCrons);
   const crons = [...launchdCrons.items, ...ingestCrons.items]
     .sort((a, b) => (a.ok === b.ok ? (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) : a.ok ? 1 : -1));
-  // `!c.ok` counted a cron whose state is unknown as a confirmed failure.
-  const cronSummary = `${crons.filter(c => c.ok === false).length} failing · ${crons.length} scheduled`;
+  // `!c.ok` counted a cron whose state is unknown as a confirmed failure. And a
+  // total that silently includes unknown-state jobs overstates what "N failing"
+  // was checked against, so the unknowns are named — the counterpart of the
+  // projects column's "running unknown".
+  const cronUnknown = crons.filter(c => cronState(c) === 'unknown').length;
+  const cronSummary = `${crons.filter(c => c.ok === false).length} failing · ${crons.length} scheduled`
+    + (cronUnknown > 0 ? ` · ${cronUnknown} unknown` : '');
 
   // Credits: ingest wins over config once it has actually reported. A feed that
   // carries no updatedAt of its own is dated by when it arrived, so the
@@ -104,7 +109,11 @@ export default function App() {
         ? {
           status: 'unavailable',
           fetchedAt: null,
-          error: configEnv?.error ?? 'no credits in config.json and nothing ingested'
+          // A malformed feed is not "nothing ingested": say which it was, since
+          // the Panel hides its note (and children) while unavailable.
+          error: configEnv?.error ?? (ingestCredits.invalid
+            ? 'the ingested credits feed is not an object, and config.json has no credits'
+            : 'no credits in config.json and nothing ingested')
         }
         : undefined));
 
@@ -145,7 +154,10 @@ export default function App() {
                 <StatusNote {...envelopeOf(planEnv)} />
               </div>
             )}
-          <Panel label="Credits" envelope={creditsEnv}>
+          <Panel label="Credits" envelope={creditsEnv} note={ingestCredits.invalid && (
+            <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
+              detail="the ingested credits feed is not an object, so the figures below come from config.json" />
+          )}>
             <CreditsPanel credits={credits} threshold={threshold} now={now} />
           </Panel>
           <Panel label="Against limits now" envelope={usageEnv}>
@@ -196,6 +208,10 @@ export default function App() {
           {(launchdCrons.invalid || ingestCrons.invalid) && (
             <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
               detail="a cron feed is not a list" />
+          )}
+          {cronUnknown > 0 && (
+            <StatusNote status="stale" fetchedAt={null} label="Result unknown"
+              detail={`${cronUnknown} ingested cron${cronUnknown === 1 ? '' : 's'} reported no result, so ${cronUnknown === 1 ? 'it is' : 'they are'} neither failing nor OK`} />
           )}
           {crons.length > 0 && <CronRows crons={crons} now={now} />}
         </section>

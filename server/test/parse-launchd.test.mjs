@@ -165,3 +165,10 @@ test('a day-of-month calendar lands on that day', () => {
   assert.equal(d.getDate(), 20);
   assert.equal(d.getHours(), 6);
 });
+
+test('nextRun on an array-form calendar is the soonest of its entries', () => {
+  const now = new Date(2026, 7, 5, 10, 0, 0).getTime(); // 10:00 local
+  const next = nextRun([{ Hour: 20, Minute: 0 }, { Hour: 14, Minute: 0 }], now);
+  assert.equal(new Date(next).getHours(), 14);
+  assert.equal(nextRun([], now), null);
+});

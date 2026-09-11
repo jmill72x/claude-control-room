@@ -36,20 +36,33 @@ export function newKeys(alerts, alreadySent) {
     .filter(k => typeof k === 'string' && k && !(k in (alreadySent ?? {})));
 }
 
-// Which sources we can actually see this run. A key may only be forgotten if we
-// could have observed its condition — otherwise a cold start, where the slow
-// `/usage` collector has not written yet, looks identical to every alert having
-// cleared, and the whole notified set is wiped and re-pushed.
-export function observableKinds(snapshot) {
-  const ok = k => snapshot?.[k]?.status === 'ok';
+// Which sources we can actually see this run, as the key prefixes they own. A
+// key may only be forgotten if we could have observed its condition — otherwise
+// a cold start, where the slow `/usage` collector has not written yet, looks
+// identical to every alert having cleared, and the whole notified set is wiped
+// and re-pushed. Per SOURCE, not per kind: launchd and the ingest poster both
+// produce `cron` alerts, and one being readable says nothing about the other.
+export function observableSources(snapshot) {
+  const status = k => snapshot?.[k]?.status;
+  const ok = k => status(k) === 'ok';
   return new Set([
     ...(ok('usage') ? ['limit', 'projection'] : []),
-    ...(ok('crons') || ok('ingestCrons') ? ['cron'] : []),
-    // Credits alerts are config-backed, not panel-backed: config is loaded at
-    // startup and always readable, so they are always observable.
-    'credits'
+    ...(ok('crons') ? ['cron:launchd'] : []),
+    ...(ok('ingestCrons') ? ['cron:ingest'] : []),
+    // Credits alerts read the ingested feed when it is current and fall back
+    // to config (loaded at startup, always readable) otherwise. So the source
+    // is observable when the feed is current or was never posted — but a
+    // STALE feed means whatever drove the alert has gone quiet, and absence of
+    // the alert is not evidence it cleared.
+    ...(status('ingestCredits') === 'stale' ? [] : ['credits'])
   ]);
 }
+
+const ownedBy = (key, prefixes) => {
+  const k = String(key);
+  for (const p of prefixes) if (k === p || k.startsWith(p + ':')) return true;
+  return false;
+};
 
 // A condition that has cleared is forgotten, so that if it returns it notifies
 // again — without this, one 88% week would silence that limit forever. But a
@@ -57,10 +70,10 @@ export function observableKinds(snapshot) {
 // evidence is not evidence the condition cleared.
 export function prune(alreadySent, alerts, observable) {
   const live = new Set((alerts ?? []).map(a => a?.key));
-  const kinds = observable ?? new Set();
+  const prefixes = [...(observable ?? [])];
   const out = {};
   for (const [k, v] of Object.entries(alreadySent ?? {})) {
-    if (live.has(k) || !kinds.has(String(k).split(':')[0])) out[k] = v;
+    if (live.has(k) || !ownedBy(k, prefixes)) out[k] = v;
   }
   return out;
 }

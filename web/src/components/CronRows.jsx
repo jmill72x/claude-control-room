@@ -1,3 +1,5 @@
+import { cronState } from '../lib/format.js';
+
 // Mirrors server/lib/humanize.mjs formatShort, but must live client-side: this
 // countdown re-renders every second off the live `now` tick, not off server data.
 // The only call site already guards null/undefined with `c.nextRunAt ? short(...) : '—'`.
@@ -11,18 +13,6 @@ const short = ms => {
   return `in ${m}m`;
 };
 
-// A cron that launchd has loaded but never run has no exit status at all. It is
-// not failing — but it has not succeeded either, and painting it with the same
-// "OK" every genuinely-successful job gets claims a run that never happened.
-// `state` comes from the server for launchd jobs; an ingested cron that only
-// reports `ok` is mapped here, and one that reports nothing stays unknown.
-const stateOf = c => {
-  if (c.state === 'ok' || c.state === 'failed' || c.state === 'never') return c.state;
-  if (c.ok === false) return 'failed';
-  if (c.ok === true) return 'ok';
-  return 'unknown';
-};
-
 const EDGE = { ok: 'var(--ink)', failed: 'var(--accent)', never: 'var(--n400)', unknown: 'var(--n400)' };
 const TEXT = { ok: 'var(--ink)', failed: 'var(--accent)', never: 'var(--n500)', unknown: 'var(--n500)' };
 const FALLBACK = { ok: 'OK', failed: 'Failed', never: 'Not yet run', unknown: 'Unknown' };
@@ -31,7 +21,7 @@ export function CronRows({ crons, now }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {crons.map(c => {
-        const state = stateOf(c);
+        const state = cronState(c);
         const edge = EDGE[state];
         return (
           <div key={c.label ?? c.name} style={{
