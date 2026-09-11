@@ -40,7 +40,7 @@ never a zero or an empty bar standing in for missing data.
 | Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
 | Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag (case-folded) and sorts by priority within each group, unset last |
+| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes
@@ -255,7 +255,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 342 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 347 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 

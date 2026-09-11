@@ -14,6 +14,39 @@ const SEED = [
   { id: 3, text: 'Rewrite the nightly-sync cron so it retries on 429', lane: 'doing', tag: 'Crons' }
 ];
 
+// The page prints every tag in uppercase, so `Pi` and `pi` look identical on
+// screen while being two different strings on disk — and the grouping that
+// case-folds them only hides the fork, it does not close it. Unify on write:
+// within one list, tags that differ only by case take the casing already in
+// the majority (ties to the first seen), so a new item typed in lowercase
+// joins the group it visibly belongs to. Distinct tags are never touched, and
+// an item with no tag stays without one.
+export function unifyTags(todos) {
+  const tally = new Map(); // folded -> Map(casing -> count), insertion-ordered
+  for (const t of todos) {
+    if (typeof t.tag !== 'string') continue;
+    const tag = t.tag.trim();
+    if (!tag) continue;
+    const folded = tag.toLowerCase();
+    if (!tally.has(folded)) tally.set(folded, new Map());
+    const casings = tally.get(folded);
+    casings.set(tag, (casings.get(tag) ?? 0) + 1);
+  }
+  const canonical = new Map();
+  for (const [folded, casings] of tally) {
+    let best = null, bestCount = 0;
+    for (const [casing, count] of casings) {
+      if (count > bestCount) { best = casing; bestCount = count; }
+    }
+    canonical.set(folded, best);
+  }
+  return todos.map(t => {
+    if (typeof t.tag !== 'string') return t;
+    const tag = t.tag.trim();
+    return { ...t, tag: tag ? canonical.get(tag.toLowerCase()) : tag };
+  });
+}
+
 export function createTodoStore(path) {
   return {
     async read() {
@@ -87,6 +120,7 @@ export function createTodoStore(path) {
         if (!LANES.has(t.lane)) throw new Error(`unknown lane: ${t.lane}`);
         if (t.priority != null && !PRIORITIES.has(t.priority)) throw new Error(`unknown priority: ${t.priority}`);
       }
+      const unified = unifyTags(todos);
       await mkdir(dirname(path), { recursive: true });
       // Write-then-rename: a crash or a full disk part-way through a direct
       // writeFile leaves exactly the truncated JSON that used to trigger the
@@ -94,13 +128,13 @@ export function createTodoStore(path) {
       // so what is on disk is always a complete list — the old one or the new.
       const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
       try {
-        await writeFile(tmp, JSON.stringify(todos, null, 2));
+        await writeFile(tmp, JSON.stringify(unified, null, 2));
         await rename(tmp, path);
       } catch (err) {
         await unlink(tmp).catch(() => {});
         throw err;
       }
-      return todos;
+      return unified;
     }
   };
 }

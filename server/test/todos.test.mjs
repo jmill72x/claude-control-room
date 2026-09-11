@@ -160,3 +160,59 @@ test('a genuinely first-run ENOENT, with no aside file present, still seeds', as
   assert.ok(todos.length > 0);
   assert.equal(readdirSync(dirname(path)).filter(f => f.includes('.corrupt-')).length, 0);
 });
+
+// The page prints every tag in uppercase, so `Pi` and `pi` are indistinguishable
+// on screen while being two different strings on disk. The store unifies them
+// on write: within one list, tags that differ only by case take the casing
+// already in the majority, ties to the first seen — so a new item typed in
+// lowercase joins the group it visibly belongs to instead of forking it.
+test('a write unifies tags that differ only by case to the majority casing', async () => {
+  const store = createTodoStore(tmp());
+  const out = await store.write([
+    { id: 1, text: 'a', lane: 'idea', tag: 'Pi' },
+    { id: 2, text: 'b', lane: 'idea', tag: 'pi' },
+    { id: 3, text: 'c', lane: 'done', tag: 'Pi' }
+  ]);
+  assert.deepEqual(out.map(t => t.tag), ['Pi', 'Pi', 'Pi']);
+  assert.deepEqual((await store.read()).map(t => t.tag), ['Pi', 'Pi', 'Pi'], 'the unified casing is what lands on disk');
+});
+
+test('the majority casing wins even when it is lowercase', async () => {
+  const store = createTodoStore(tmp());
+  const out = await store.write([
+    { id: 1, text: 'a', lane: 'idea', tag: 'infra' },
+    { id: 2, text: 'b', lane: 'idea', tag: 'Infra' },
+    { id: 3, text: 'c', lane: 'idea', tag: 'infra' }
+  ]);
+  assert.deepEqual(out.map(t => t.tag), ['infra', 'infra', 'infra']);
+});
+
+test('a tie between casings goes to the first seen', async () => {
+  const store = createTodoStore(tmp());
+  const out = await store.write([
+    { id: 1, text: 'a', lane: 'idea', tag: 'Mini' },
+    { id: 2, text: 'b', lane: 'idea', tag: 'mini' }
+  ]);
+  assert.deepEqual(out.map(t => t.tag), ['Mini', 'Mini']);
+});
+
+test('tags are trimmed, and an item with no tag is left without one', async () => {
+  const store = createTodoStore(tmp());
+  const out = await store.write([
+    { id: 1, text: 'a', lane: 'idea', tag: '  Pi ' },
+    { id: 2, text: 'b', lane: 'idea' },
+    { id: 3, text: 'c', lane: 'idea', tag: 'pi' }
+  ]);
+  assert.equal(out[0].tag, 'Pi');
+  assert.ok(!('tag' in out[1]), 'no tag is not the same as an empty tag');
+  assert.equal(out[2].tag, 'Pi');
+});
+
+test('distinct tags are never merged, only case variants of the same one', async () => {
+  const store = createTodoStore(tmp());
+  const out = await store.write([
+    { id: 1, text: 'a', lane: 'idea', tag: 'Pi' },
+    { id: 2, text: 'b', lane: 'idea', tag: 'Pinas' }
+  ]);
+  assert.deepEqual(out.map(t => t.tag), ['Pi', 'Pinas']);
+});
