@@ -76,10 +76,12 @@ export const MAX_ROLLOVER_LATENESS_MS = 15 * MINUTE;
 // for, and it fabricated 14.5h from an ordinary overnight poll gap. Measure the
 // quantity that bounds the error, not one correlated with it.
 //
-// The bound is applied symmetrically. A "rollover" first seen BEFORE the old
-// reset (`t2 < R1`) is not a rollover at all — that window had not ended yet —
-// so its jump stands in no relation to any window length and is refused for the
-// same reason, not tolerated because its lateness is negative.
+// The bound is two-sided: `|t2 - R1|`, so a sighting up to 15 minutes BEFORE
+// the old reset is accepted as well. That is deliberate. The CLI prints resets
+// rounded to the minute, so a poll can land seconds "before" a reset that has
+// in fact rolled; the arithmetic above bounds the error by the distance either
+// way, and refusing the early side would discard clean rollovers for nothing.
+// A sighting further than 15 minutes before `R1` is refused like a late one.
 //
 // Three rules; anything surviving none of them leaves the length unobserved
 // rather than guessed:

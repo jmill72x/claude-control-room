@@ -78,8 +78,10 @@ on the error** in reading the jump as the window. Inference therefore accepts a 
 
 1. **Lateness.** `|t2 - R1| <= MAX_ROLLOVER_LATENESS_MS` (15 minutes — three poll intervals).
    Bounding the lateness bounds the error, by the arithmetic above rather than by judgement.
-   Applied in both directions: a jump seen *before* `R1` is not a rollover at all, because that
-   window had not ended. A reading with no usable `t` has no measurable lateness and is refused.
+   Two-sided: a sighting up to 15 minutes *before* `R1` is accepted too — the CLI prints resets
+   rounded to the minute, so a poll can land seconds ahead of a reset that has in fact rolled, and
+   the error is bounded by the distance either way. Further out on either side is refused. A
+   reading with no usable `t` has no measurable lateness and is refused.
 2. **Plausibility.** `jump >= MIN_PLAUSIBLE_WINDOW_MS` (30 minutes). The printed reset flaps by
    a minute between polls (`07:49`/`07:50` both appear in captured history); a flap caught right
    at a rollover is a *punctual* sighting, so this floor — not rule 1 — is what rejects it.

@@ -61,12 +61,19 @@ test('ignores other labels', () => {
   assert.equal(inferWindowMs(recs, 'Weekly · all models'), 7 * DAY);
 });
 
+// This fixture is built so that ONLY the advance-only rule can refuse it. If
+// the blip lowered the baseline to 09:20, the recovery to 10:00 would be a 40m
+// jump (over the 30m plausibility floor) first seen at 09:10 — 10m from the
+// lowered baseline, inside the 15m lateness bound — and would be accepted as a
+// window length that never existed. An earlier version of this test used a
+// 3h blip with a recovery hours later, which the lateness rule rejected on its
+// own, so it passed with the advance-only rule deleted.
 test('a backward blip does not lower the baseline for a later recovery', () => {
   const r1 = Date.parse('2026-08-06T10:00:00Z');
   const recs = [
-    at(1, 'Current session', 40, iso(r1)),
-    at(2, 'Current session', 45, iso(r1 - 3 * HOUR)), // backward blip, correctly skipped
-    at(3, 'Current session', 50, iso(r1))              // recovers to the original value
+    at(r1 - 60 * MINUTE, 'Current session', 40, iso(r1)),
+    at(r1 - 55 * MINUTE, 'Current session', 45, iso(r1 - 40 * MINUTE)), // blip back to 09:20
+    at(r1 - 50 * MINUTE, 'Current session', 50, iso(r1))                // recovers to 10:00
   ];
   assert.equal(inferWindowMs(recs, 'Current session'), null);
 });
@@ -307,4 +314,26 @@ test('a missing or unparseable reset yields unknown-window', () => {
 
 test('the weekly fallback is seven days', () => {
   assert.equal(WEEKLY_FALLBACK_MS, 7 * DAY);
+});
+
+// The bound is two-sided. The CLI prints resets rounded to the minute, so a
+// poll can land a few seconds "before" a reset that has in fact rolled; the
+// arithmetic bounds the error by |t2 - R1| either way, and rejecting the early
+// side would discard clean rollovers for no gain in accuracy.
+test('a sighting within 15 minutes BEFORE the old reset is accepted — the bound is two-sided', () => {
+  const r1 = Date.parse('2026-08-06T10:00:00Z');
+  const recs = [
+    at(r1 - 10 * MINUTE, 'Current session', 40, iso(r1)),
+    at(r1 - 5 * MINUTE, 'Current session', 2, iso(r1 + 5 * HOUR))
+  ];
+  assert.equal(inferWindowMs(recs, 'Current session'), 5 * HOUR);
+});
+
+test('a sighting more than 15 minutes before the old reset is refused, like one more than 15 minutes after', () => {
+  const r1 = Date.parse('2026-08-06T10:00:00Z');
+  const early = [
+    at(r1 - 30 * MINUTE, 'Current session', 40, iso(r1)),
+    at(r1 - MAX_ROLLOVER_LATENESS_MS - MINUTE, 'Current session', 2, iso(r1 + 5 * HOUR))
+  ];
+  assert.equal(inferWindowMs(early, 'Current session'), null);
 });

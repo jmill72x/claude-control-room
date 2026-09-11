@@ -106,8 +106,10 @@ jump as evidence only when all of these hold:
   or after the old reset and had certainly begun by the time we saw its new
   reset, the lateness of that sighting is an *exact upper bound* on how much of
   the jump could be idle — so a punctual sighting is an accurate measurement,
-  and a late one measures nothing. Applied in both directions: a jump seen
-  before the old reset is not a rollover, because that window hadn't ended.
+  and a late one measures nothing. The bound is two-sided — a sighting up to
+  15 minutes *before* the old reset is accepted too, since the CLI prints resets
+  rounded to the minute and a poll can land seconds ahead of a reset that has in
+  fact rolled; anything further out on either side is refused.
 - **It is a plausible window.** Anything under `MIN_PLAUSIBLE_WINDOW_MS`
   (30 minutes) is rejected outright — that is the minute-flap, not a window. A
   flap caught right at a rollover is perfectly punctual, so this floor, not the
@@ -253,7 +255,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 340 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 342 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
