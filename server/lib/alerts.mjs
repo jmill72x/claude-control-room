@@ -55,6 +55,26 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
     }
   }
 
+  // Automatic credits — read from the CLI's own cached usage response — outrank
+  // everything hand-entered, on the page and here. While they are readable the
+  // config/ingest rules below do not run at all: their figures are superseded,
+  // and warning from them is exactly how an expired promo kept alerting.
+  const account = snapshot.accountCredits?.data;
+  if (account && Array.isArray(account.grants)) {
+    for (const g of account.grants) {
+      const expires = Date.parse(g?.expiresAt);
+      if (!Number.isFinite(expires) || expires <= now || expires - now > 7 * DAY) continue;
+      if (!(typeof g.remaining === 'number' && g.remaining > 0)) continue;
+      const days = Math.max(1, Math.ceil((expires - now) / DAY));
+      alerts.push({
+        text: `${g.label}: $${g.remaining.toFixed(2)} left, expires in ${days} day${days === 1 ? '' : 's'}`,
+        kind: 'credits',
+        key: `credits:grant:${g.id}`
+      });
+    }
+    return alerts;
+  }
+
   // Ingested credits outrank config credits on the page, so they must outrank
   // them here too — otherwise the promo expiry warning is computed from figures
   // nobody is looking at.
@@ -64,7 +84,9 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
     : config.credits;
   if (credits?.promoExpiresOn) {
     const expires = Date.parse(credits.promoExpiresOn);
-    if (Number.isFinite(expires) && expires - now < 30 * DAY) {
+    // `expires - now < 30 days` was also true for every date in the PAST, so an
+    // expired promo warned "expires in 0 days" forever.
+    if (Number.isFinite(expires) && expires > now && expires - now < 30 * DAY) {
       const days = Math.max(0, Math.round((expires - now) / DAY));
       alerts.push({
         text: `Promotional credit expires in ${days} days`,

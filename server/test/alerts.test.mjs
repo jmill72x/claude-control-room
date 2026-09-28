@@ -198,3 +198,35 @@ test('the two credits rules produce different keys', () => {
   const alerts = buildAlerts({ crons: { data: [] }, ingestCrons: { data: [] }, usage: { data: { limits: [] } } }, config, now);
   assert.equal(new Set(alerts.map(a => a.key)).size, alerts.length);
 });
+
+// --- Automatic credits (accountCredits, read from the CLI's cached usage) ---
+const acct = grants => ({ status: 'ok', data: { asOf: NOW, grants, usageCredits: { balance: null, enabled: false } } });
+const grant = over => ({ id: 'iguana_necktie', label: 'Cloud session credits', limit: 250, used: 0, remaining: 250, expiresAt: null, ...over });
+
+test('a grant with money left that expires within 7 days raises, keyed on the grant', () => {
+  const alerts = buildAlerts({ accountCredits: acct([grant({ remaining: 180, expiresAt: new Date(NOW + 5 * DAY).toISOString() })]) }, { warnThreshold: 85 }, NOW);
+  const a = alerts.find(x => x.kind === 'credits');
+  assert.equal(a.key, 'credits:grant:iguana_necktie');
+  assert.match(a.text, /Cloud session credits.*\$180.*5 days/);
+});
+
+test('a grant expiring later, fully used, or already expired raises nothing', () => {
+  for (const g of [
+    grant({ expiresAt: new Date(NOW + 30 * DAY).toISOString() }),
+    grant({ remaining: 0, expiresAt: new Date(NOW + 2 * DAY).toISOString() }),
+    grant({ expiresAt: new Date(NOW - DAY).toISOString() })
+  ]) {
+    assert.equal(buildAlerts({ accountCredits: acct([g]) }, { warnThreshold: 85 }, NOW).filter(a => a.kind === 'credits').length, 0);
+  }
+});
+
+test('when automatic credits are readable, hand-entered config credits raise nothing — they are superseded', () => {
+  const config = { warnThreshold: 85, credits: { promoExpiresOn: new Date(NOW + 3 * DAY).toISOString(), updatedAt: '2026-01-01' } };
+  const alerts = buildAlerts({ accountCredits: acct([]) }, config, NOW);
+  assert.equal(alerts.filter(a => a.kind === 'credits').length, 0);
+});
+
+test('a promo that has already expired no longer warns that it "expires in 0 days"', () => {
+  const config = { warnThreshold: 85, credits: { promoExpiresOn: new Date(NOW - 9 * DAY).toISOString() } };
+  assert.equal(buildAlerts({}, config, NOW).filter(a => a.key === 'credits:promo').length, 0);
+});

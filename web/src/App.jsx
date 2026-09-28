@@ -10,6 +10,7 @@ import { StatusNote } from './components/StatusNote.jsx';
 import { IncompleteNote } from './components/IncompleteNote.jsx';
 import { PlanBlock } from './components/PlanBlock.jsx';
 import { CreditsPanel } from './components/CreditsPanel.jsx';
+import { AccountCreditsPanel } from './components/AccountCreditsPanel.jsx';
 import { LimitBars } from './components/LimitBars.jsx';
 import { StackedBar } from './components/StackedBar.jsx';
 import { ModelRows } from './components/ModelRows.jsx';
@@ -89,6 +90,12 @@ export default function App() {
   const cronSummary = `${crons.filter(c => c.ok === false).length} failing · ${crons.length} scheduled`
     + (cronUnknown > 0 ? ` · ${cronUnknown} unknown` : '');
 
+  // Credits read automatically from the account's usage response win over
+  // everything hand-entered. While they are present, config and ingest credits
+  // are not shown at all — mixing a live figure with a stale typed one is how
+  // an expired promo stayed on screen.
+  const accountCredits = payload?.accountCredits?.data ?? null;
+
   // Credits: ingest wins over config once it has actually reported. A feed that
   // carries no updatedAt of its own is dated by when it arrived, so the
   // staleness line is neither blank nor invented.
@@ -154,12 +161,20 @@ export default function App() {
                 <StatusNote {...envelopeOf(planEnv)} />
               </div>
             )}
-          <Panel label="Credits" envelope={creditsEnv} note={ingestCredits.invalid && (
-            <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
-              detail="the ingested credits feed is not an object, so the figures below come from config.json" />
-          )}>
-            <CreditsPanel credits={credits} threshold={threshold} now={now} />
-          </Panel>
+          {accountCredits
+            ? (
+              <Panel label="Credits" envelope={payload.accountCredits}>
+                <AccountCreditsPanel credits={accountCredits} threshold={threshold} now={now} />
+              </Panel>
+            )
+            : (
+              <Panel label="Credits" envelope={creditsEnv} note={ingestCredits.invalid && (
+                <StatusNote status="stale" fetchedAt={null} label="Feed ignored"
+                  detail="the ingested credits feed is not an object, so the figures below come from config.json" />
+              )}>
+                <CreditsPanel credits={credits} threshold={threshold} now={now} />
+              </Panel>
+            )}
           <Panel label="Against limits now" envelope={usageEnv}>
             <LimitBars limits={limits} threshold={threshold} now={now}
                        historyStatus={usageEnv?.data?.history ?? null} />

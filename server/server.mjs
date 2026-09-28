@@ -12,6 +12,7 @@ import { collectAgents } from './collectors/agents.mjs';
 import { collectPlan } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
+import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, publish } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
@@ -46,6 +47,10 @@ registry.register('usage', async () => {
 }, 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
 registry.register('crons', () => collectCrons(), 60 * 1000);
+// Credits come from the CLI's cached usage response, which the usage collector's
+// own `/usage` poll refreshes every five minutes. Reading a local file is cheap,
+// so poll it every minute; the parser refuses a cache older than 30 minutes.
+registry.register('accountCredits', () => collectAccountCredits(), 60 * 1000);
 // The subscription tier changes rarely — hourly is plenty, and it keeps
 // `claude auth status` off the CLI's back next to the 30s agents poll.
 registry.register('plan', () => collectPlan(), 60 * 60 * 1000);

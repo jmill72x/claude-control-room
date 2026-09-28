@@ -54,7 +54,7 @@ export function observableSources(snapshot) {
     // is observable when the feed is current or was never posted — but a
     // STALE feed means whatever drove the alert has gone quiet, and absence of
     // the alert is not evidence it cleared.
-    ...(status('ingestCredits') === 'stale' ? [] : ['credits'])
+    ...(status('ingestCredits') === 'stale' || status('accountCredits') === 'stale' ? [] : ['credits'])
   ]);
 }
 

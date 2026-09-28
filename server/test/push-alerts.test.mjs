@@ -125,3 +125,8 @@ test('prune keeps a credits key through an ingest gap, even though the alert is 
   const pruned = prune({ 'credits:promo': 1 }, [], observableSources({ ingestCredits: { status: 'stale' } }));
   assert.deepEqual(pruned, { 'credits:promo': 1 });
 });
+
+test('a stale automatic-credits read makes credits unobservable, so a grant key survives the gap', () => {
+  assert.ok(!observableSources({ accountCredits: { status: 'stale' } }).has('credits'));
+  assert.ok(observableSources({ accountCredits: { status: 'ok' } }).has('credits'));
+});

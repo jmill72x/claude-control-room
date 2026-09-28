@@ -29,7 +29,7 @@ never a zero or an empty bar standing in for missing data.
 | Header countdown | `claude -p "/usage"` reset timestamp | Real |
 | Plan block — tier | `claude auth status --json` (`subscriptionType`) | Real, but coarse and can lag a plan change by days — see below |
 | Plan block — price, renews, seats | `config.json` | Static — no API exposes pricing, renewal date, or seat count |
-| Credits (balance, spend, resets, promo) | `config.json`, or the `/api/ingest/credits` feed | Hand-entered / manually updated, staleness-marked |
+| Credits (included, promotional and cloud-session grants; usage-credit balance) | The CLI's cached usage response in `~/.claude.json` (`cachedUsageUtilization`), refreshed by every `/usage` poll; falls back to the `/api/ingest/credits` feed, then `config.json`, only when that cache cannot be read | Real, read automatically every minute. Undocumented cache with codenamed buckets — see below |
 | Three limit bars (session, weekly all-models, weekly per-model) | `claude -p "/usage"` | Real |
 | By surface · this week (Cowork / Code / Chat) | Session-log token sums under both transcript roots | Real for Cowork and Code; **Chat is permanently unmeasurable** — see below |
 | By project · this week | Same transcript roots, top 3 by tokens + Other | Real |
@@ -46,6 +46,19 @@ never a zero or an empty bar standing in for missing data.
 Conversations there are server-side; the client never computes or exposes
 per-conversation token usage anywhere on disk. The UI renders the Chat segment
 explicitly labeled "not measurable locally" rather than omitting it or showing zero.
+
+**Credits are read, not typed.** Every `claude -p "/usage"` — which the usage collector
+already runs every five minutes — refreshes `cachedUsageUtilization` in `~/.claude.json`
+with the account's full usage response, including every dollar-denominated credit
+bucket. `server/lib/account-credits.mjs` treats any bucket with a dollar limit as a
+grant and shows what is left and when it expires. The bucket names are internal
+codenames, so only ones verified against claude.ai's usage page get a real label
+(`Cloud session credits`, `Promotional credit`); an unrecognised one is still shown,
+as `Included credit`, rather than hidden or guessed at. A cache older than 30 minutes is
+refused, so a dead poll marks the panel stale instead of passing an old balance off as
+current. Only the parsed figures leave the collector — the account id and everything
+else in that file are discarded at the parse boundary. While this source is readable,
+hand-entered `config.json` credits are neither shown nor alerted on.
 
 **Project task counts are not shown.** No source (agents JSON, session logs, or
 anything else on this machine) reliably gives an open-task count per project, so that
@@ -255,7 +268,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 347 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 361 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -537,6 +550,8 @@ on:
 - the on-disk layout of Claude Code and Cowork transcripts under `~/.claude/projects`
   and the Cowork session directory — none of which is a documented, versioned format
 - `launchctl list`'s column format and `plutil`'s JSON conversion of `.plist` files
+- the shape of `cachedUsageUtilization` in `~/.claude.json`, and the codename of each
+  credit bucket (the cloud-session grant is `iguana_necktie` as of 2026-09-28)
 
 None of this is an Anthropic-published, versioned API. Any of it can change in any
 Claude Code or Cowork release without notice, and probably will eventually. If a panel
