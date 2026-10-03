@@ -18,6 +18,8 @@ import { getTopic, publish } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler } from './routes.mjs';
+import { createWatchdog } from './lib/watchdog.mjs';
+import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildProjects, agentsReadable } from './lib/projects.mjs';
 
@@ -109,7 +111,7 @@ process.on('unhandledRejection', err => {
   console.error('unhandled rejection (ignored, process kept alive)', err);
 });
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   try {
     if (req.url.startsWith('/api/')) return await api(req, res);
     return await serveStatic(req, res);
@@ -119,7 +121,35 @@ createServer(async (req, res) => {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'internal error' }));
   }
-}).listen(PORT, '127.0.0.1', () => {
+});
+
+const selfCheck = () => new Promise((resolve, reject) => {
+  const req = get({ host: '127.0.0.1', port: PORT, path: '/api/health', timeout: 5000, agent: false }, res => {
+    res.resume();
+    resolve(res.statusCode === 200);
+  });
+  req.on('timeout', () => req.destroy(new Error('timed out')));
+  req.on('error', reject);
+});
+
+// Exit, don't limp: launchd's KeepAlive restarts an exited process within
+// seconds, which is the whole recovery. Exiting is also the only way the
+// failure reaches the log at all — the deaf state on 2026-10-02 wrote nothing.
+const watchdog = createWatchdog({
+  probe: selfCheck,
+  onDead: reason => {
+    console.error(`watchdog: ${reason}; exiting so launchd restarts the service`);
+    process.exit(1);
+  }
+});
+
+server.on('close', () => {
+  console.error('watchdog: HTTP listener closed; exiting so launchd restarts the service');
+  process.exit(1);
+});
+
+server.listen(PORT, '127.0.0.1', () => {
   registry.startAll();
+  setInterval(() => watchdog.tick(), 60 * 1000).unref();
   console.log(`control room on http://127.0.0.1:${PORT}`);
 });

@@ -167,3 +167,10 @@ test('ingested credits are cached under their own key for the page to prefer', a
   assert.equal(res.statusCode, 200);
   assert.equal(d.cache.get('ingestCredits', Date.now()).data.balance, 12.5);
 });
+
+test('GET /api/health answers ok without touching the cache, todos or config', async () => {
+  const handler = createHandler({ cache: null, todos: null, config: null });
+  const res = await call(handler, 'GET', '/api/health');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(JSON.parse(res.body), { ok: true });
+});

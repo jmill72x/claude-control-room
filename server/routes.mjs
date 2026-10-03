@@ -87,6 +87,10 @@ export function createHandler({ cache, todos, config }) {
     const path = url.pathname;
 
     try {
+      // The watchdog's self-check. Touches nothing but the listener itself:
+      // the question it answers is "is anyone answering this port".
+      if (req.method === 'GET' && path === '/api/health') return json(res, 200, { ok: true });
+
       if (req.method === 'GET' && path === '/api/dashboard') {
         const now = Date.now();
         const payload = {};

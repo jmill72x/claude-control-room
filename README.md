@@ -268,7 +268,7 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### Tests and build
 
 ```bash
-cd server && npm test      # 361 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 366 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -326,6 +326,14 @@ directory explicitly. The checked-in example already does:
 
 If you installed `claude` somewhere else, add that directory to `PATH` in the plist and
 reload the service (`launchctl unload` then `launchctl load` the same path).
+
+**The service restarts itself if it stops answering.** On 2026-10-02 it was found alive
+for four days with its collectors still running but no listening socket: every request
+hung, the page loaded blank, and nothing was logged. The cause was not identifiable from
+the logs. Now the server requests its own `/api/health` every minute; three consecutive
+failures, or the listener closing, make it log the reason and exit, and the plist's
+`KeepAlive` brings it back within seconds. A `watchdog:` line in the log means this
+happened.
 
 ### Remote access
 
