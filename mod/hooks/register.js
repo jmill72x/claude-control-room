@@ -194,17 +194,17 @@ export function register(on, opts) {
       return { text: await summary($) }
     }
     if (arg !== '') return { text: USAGE }
-    // Nothing that draws (claude -p, the Agent SDK): text is the only answer.
-    if ((await $.session.surfaces()).length === 0) {
+    // Text where no pane can be seen: nothing draws (claude -p, the Agent SDK),
+    // or the command came over Remote Control. The Claude iPad app was checked
+    // on 2026-10-08 and draws the command's row but no mod pane, and a pane
+    // opened from there would only sit on the mini's screen, polling.
+    if (e.origin?.kind === 'bridge' || (await $.session.surfaces()).length === 0) {
       await refresh($)
       return { text: await summary($) }
     }
     await $.ui.open({ id: PANE, title: TITLE, focus: true })
     paneOpen = true
     await refresh($)
-    // Typed on a phone or the web over Remote Control: the pane may not draw
-    // there, so the text comes too.
-    if (e.origin?.kind === 'bridge') return { text: await summary($) }
     return {}
   })
 

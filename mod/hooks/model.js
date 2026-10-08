@@ -280,91 +280,101 @@ export function workPrompt(todo) {
 }
 
 const unavailable = env => `unavailable — ${env.error ?? 'no reading yet'}`
-const withStale = (text, env, now) => {
+const staleMark = (env, now) => {
   const note = staleNote(env, now)
-  return note ? `${text} (${note})` : text
+  return note ? ` *(${note})*` : ''
 }
 
-function limitsLine(payload, now) {
+// Free text from the server goes into a markdown row, so a stray * or | in a
+// to-do cannot turn into formatting it never had.
+export const md = s => String(s ?? '').replace(/([\\`*_|<>[\]~])/g, '\\$1')
+
+function limitsBlock(payload, now) {
   const env = envelopeOf(payload, 'usage')
   const limits = Array.isArray(env.data?.limits) ? env.data.limits : null
-  if (env.status === 'unavailable' || !limits) return `Limits: ${unavailable(env)}`
-  const parts = limits.map(l => {
+  if (env.status === 'unavailable' || !limits) return { bullet: `- **Limits** ${unavailable(env)}` }
+  const rows = limits.map(l => {
     const at = Date.parse(l.resetsAt)
-    return `${l.label} ${l.pct}%` + (Number.isFinite(at) ? ` (resets in ${formatUntil(at - now)})` : '')
+    const used = Number.isFinite(l.pct) ? `${l.pct}%` : '—'
+    return `| ${md(l.label)} | ${used} | ${Number.isFinite(at) ? formatUntil(at - now) : '—'} |`
   })
-  return withStale(`Limits: ${parts.join(' · ')}`, env, now)
+  const note = staleNote(env, now)
+  return { table: ['| Limit | Used | Resets in |', '|---|--:|---|', ...rows].join('\n') + (note ? `\n\n*Limits ${note}*` : '') }
 }
 
-function creditsLine(payload, now) {
+function creditsBullet(payload, now) {
   const view = creditsView(payload)
   if (view.source === 'account') {
-    const grants = view.grants.map(g =>
-      `${g.label} ${money(g.remaining)} of ${money(g.limit)} left` + (g.expiresAt ? `, expires ${formatDate(g.expiresAt)}` : ''))
-    const parts = grants.length ? grants : ['no included or promotional credit']
+    const parts = view.grants.map(g =>
+      `${md(g.label)} ${money(g.remaining)} of ${money(g.limit)} left` + (g.expiresAt ? `, expires ${formatDate(g.expiresAt)}` : ''))
+    if (parts.length === 0) parts.push('no included or promotional credit')
     if (view.usageBalance !== null) parts.push(`usage credits ${money(view.usageBalance)}`)
-    return withStale(`Credits: ${parts.join('; ')}`, view.env, now)
+    return `- **Credits** ${parts.join('; ')}${staleMark(view.env, now)}`
   }
   if (view.source === 'hand') {
-    return withStale(`Credits: ${money(view.balance)} balance (hand-entered, updated ${formatDate(view.updatedAt)})`, view.env, now)
+    return `- **Credits** ${money(view.balance)} balance (hand-entered, updated ${formatDate(view.updatedAt)})${staleMark(view.env, now)}`
   }
-  return `Credits: unavailable — ${view.reason}`
+  return `- **Credits** unavailable — ${view.reason}`
 }
 
-function planLine(payload, now) {
+function planBullet(payload, now) {
   const env = envelopeOf(payload, 'plan')
   const tier = env.status !== 'unavailable' ? env.data?.tier : null
-  if (!tier) return `Plan: ${unavailable(env)}`
+  if (!tier) return `- **Plan** ${unavailable(env)}`
   const renews = envelopeOf(payload, 'config').data?.plan?.nextRenewal
-  return withStale(`Plan: ${tier}` + (renews ? ` · renews ${formatDate(renews)}` : ''), env, now)
+  return `- **Plan** ${md(tier)}${renews ? `, renews ${formatDate(renews)}` : ''}${staleMark(env, now)}`
 }
 
-function projectsLine(payload, now) {
+function projectsBullet(payload, now) {
   const env = envelopeOf(payload, 'sessions')
-  if (env.status === 'unavailable') return `Projects: ${unavailable(env)}`
-  const { items, summary } = projectList(payload)
-  const running = items.filter(p => p.running === true).map(p => p.name)
-  return withStale(`Projects: ${summary}` + (running.length ? ` · running: ${running.join(', ')}` : ''), env, now)
+  if (env.status === 'unavailable') return `- **Projects** ${unavailable(env)}`
+  const { items, runningUnknown } = projectList(payload)
+  if (runningUnknown) return `- **Projects** ${items.length} total, running unknown${staleMark(env, now)}`
+  const running = items.filter(p => p.running === true).map(p => md(p.name))
+  return `- **Projects** ${running.length} of ${items.length} running${running.length ? `: ${running.join(', ')}` : ''}${staleMark(env, now)}`
 }
 
-function cronsLine(payload, now) {
+function cronsBullet(payload, now) {
   const env = envelopeOf(payload, 'crons')
   const ingest = envelopeOf(payload, 'ingestCrons')
-  if (env.status === 'unavailable' && ingest.status === 'unavailable') return `Crons: ${unavailable(env)}`
+  if (env.status === 'unavailable' && ingest.status === 'unavailable') return `- **Crons** ${unavailable(env)}`
   const list = cronList(payload)
-  const failing = list.filter(c => cronState(c) === 'failed').map(c => c.name)
-  return withStale(`Crons: ${cronSummary(list)}` + (failing.length ? ` · failing: ${failing.join(', ')}` : ''), env, now)
+  const failing = list.filter(c => cronState(c) === 'failed').map(c => md(c.name))
+  const unknown = list.filter(c => cronState(c) === 'unknown').length
+  return `- **Crons** ${failing.length} of ${list.length} failing` +
+    (failing.length ? `: ${failing.join(', ')}` : '') +
+    (unknown ? ` · ${unknown} unknown` : '') +
+    staleMark(env, now)
 }
 
-function todoLines(todos) {
-  if (!Array.isArray(todos)) return ['To-dos: unavailable']
+function todoBlock(todos) {
+  if (!Array.isArray(todos)) return '**To-dos** unavailable'
   const count = lane => todos.filter(t => t.lane === lane).length
-  const lines = [`To-dos: ${count('doing')} doing · ${plural(count('idea'), 'idea')} · ${count('done')} done`]
-  // Read on phones over Remote Control, so one line per item, not a paragraph.
-  const tagged = t => `${clip(String(t.text ?? ''), 72)}${t.tag ? ` [${t.tag}]` : ''}`
+  const lines = [`**To-dos** ${plural(count('idea'), 'idea')} · ${count('doing')} doing · ${count('done')} done`]
+  // Read on phones, so one short line per item, not a paragraph.
+  const item = t => `${md(clip(String(t.text ?? ''), 72))}${t.tag ? ` · ${md(t.tag)}` : ''}`
   todos.filter(t => t.lane !== 'done' && rank(t.priority) <= 1).sort(byPriority).slice(0, 5)
-    .forEach(t => lines.push(`  ${t.priority} ${tagged(t)}`))
+    .forEach(t => lines.push(`- **${t.priority}** ${item(t)}`))
   todos.filter(t => t.lane === 'doing' && rank(t.priority) > 1).slice(0, 3)
-    .forEach(t => lines.push(`  Doing: ${tagged(t)}`))
-  return lines
+    .forEach(t => lines.push(`- **Doing** ${item(t)}`))
+  return lines.join('\n')
 }
 
-// The board as plain text, for a session where no pane can draw (`claude -p`,
-// a phone over Remote Control). Claude reads it too, so it stays short.
+// The board as markdown, for where no pane draws: `claude -p`, and the Claude
+// app over Remote Control, which draws the command's row and no mod pane. The
+// first line reads on after the "control-room:" prefix Claude Code adds. Claude
+// reads it too, so it stays short.
 export function summaryText({ payload, todos, now, url, error = null, fetchedAt = null }) {
-  if (error && !payload) return `Control Room unreachable at ${url}: ${error}`
-  const head = error
-    ? `Control Room unreachable at ${url}: ${error}. Last reading, from ${Number.isFinite(fetchedAt) ? formatAgo(now - fetchedAt) : 'an unknown time'}:`
-    : `Control Room · as of ${clockTime(now)}`
+  if (error && !payload) return `**Control Room unreachable** at ${url}: ${error}`
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts.map(a => a?.text).filter(Boolean) : []
-  return [
-    head,
-    `Alerts: ${alerts.length ? alerts.join(' · ') : 'none'}`,
-    limitsLine(payload, now),
-    creditsLine(payload, now),
-    planLine(payload, now),
-    projectsLine(payload, now),
-    cronsLine(payload, now),
-    ...todoLines(todos)
-  ].join('\n')
+  const head = error
+    ? `**Control Room unreachable** at ${url}: ${error}. Last reading, from ${Number.isFinite(fetchedAt) ? formatAgo(now - fetchedAt) : 'an unknown time'}:`
+    : `as of ${clockTime(now)} · ${alerts.length ? `**${plural(alerts.length, 'alert')}**` : 'no alerts'}`
+  const limits = limitsBlock(payload, now)
+  const blocks = [head]
+  if (alerts.length) blocks.push(alerts.map(a => `- **${md(a)}**`).join('\n'))
+  if (limits.table) blocks.push(limits.table)
+  blocks.push([limits.bullet, creditsBullet(payload, now), planBullet(payload, now), projectsBullet(payload, now), cronsBullet(payload, now)].filter(Boolean).join('\n'))
+  blocks.push(todoBlock(todos))
+  return blocks.join('\n\n')
 }

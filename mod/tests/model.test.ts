@@ -118,44 +118,71 @@ test('a new to-do is an idea, trimmed, with no tag rather than an empty one', ()
   expect(makeTodo({ text: '   ', tag: 'Infra' }, 'n3')).toBeNull()
 })
 
-test('the summary states every panel, with alerts first and to-dos by priority', () => {
+// The summary is the command's output row, which every surface draws as
+// markdown: a table for the limits, one short bullet per panel, and a first
+// line that reads on after the "control-room:" prefix Claude Code adds.
+test('the summary is markdown: alerts first, a limits table, one bullet per panel, to-dos by priority', () => {
   const text = summaryText({ payload: PAYLOAD, todos: TODOS, now: NOW, url: 'http://127.0.0.1:8322' })
-  expect(text).toMatch(/^Control Room · as of \d\d:\d\d/)
-  expect(text).toContain('Alerts: Weekly · all models at 90%')
-  expect(text).toContain('Limits: Current session 25% (resets in 3h 01m) · Weekly · all models 90% (resets in 3d 4h) · Weekly · Fable 8%')
-  expect(text).toContain('Credits: Cloud session credits $210.00 of $250.00 left, expires Nov 5')
-  expect(text).toContain('Plan: Max · renews Oct 21')
-  expect(text).toContain('Projects: 1 running · 3 total')
-  expect(text).toContain('Crons: 1 failing · 4 scheduled · 1 unknown · failing: nightly')
-  expect(text).toContain('To-dos: 1 doing · 3 ideas · 1 done')
-  expect(text.indexOf('P0 Retire the old NAS')).toBeLessThan(text.indexOf('P1 Offsite backup to B2'))
+  expect(text).toMatch(/^as of \d\d:\d\d · \*\*1 alert\*\*\n/)
+  expect(text).toContain('- **Weekly · all models at 90%**')
+  expect(text).toContain('| Limit | Used | Resets in |')
+  expect(text).toContain('| Current session | 25% | 3h 01m |')
+  expect(text).toContain('| Weekly · all models | 90% | 3d 4h |')
+  expect(text).toContain('| Weekly · Fable | 8% | — |')
+  expect(text).toContain('- **Credits** Cloud session credits $210.00 of $250.00 left, expires Nov 5')
+  expect(text).toContain('- **Plan** Max, renews Oct 21')
+  expect(text).toContain('- **Projects** 1 of 3 running: invoice')
+  expect(text).toContain('- **Crons** 1 of 4 failing: nightly · 1 unknown')
+  expect(text).toContain('**To-dos** 3 ideas · 1 doing · 1 done')
+  expect(text).toContain('- **Doing** Write the release notes · Docs')
+  expect(text.indexOf('- **P0** Retire the old NAS · Infra')).toBeLessThan(text.indexOf('- **P1** Offsite backup to B2 · Pi'))
+  // A table must not touch the paragraph above it, or it renders as text.
+  expect(text).toContain('\n\n| Limit |')
+})
+
+test('no alerts reads as such on the first line', () => {
+  const p = clone(PAYLOAD) as any
+  p.alerts = []
+  expect(summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })).toMatch(/^as of \d\d:\d\d · no alerts\n/)
 })
 
 test('the summary never prints a number for a panel it could not read', () => {
   const p = clone(PAYLOAD) as any
   p.usage = { data: null, status: 'unavailable', error: '/usage timed out', fetchedAt: null }
   const text = summaryText({ payload: p, todos: TODOS, now: NOW, url: 'http://127.0.0.1:8322' })
-  expect(text).toMatch(/^Limits: unavailable — \/usage timed out$/m)
+  expect(text).toMatch(/^- \*\*Limits\*\* unavailable — \/usage timed out$/m)
+  expect(text).not.toContain('| Limit |')
 })
 
 test('a stale panel is marked with its age', () => {
   const p = clone(PAYLOAD) as any
   p.crons.status = 'stale'
   p.crons.fetchedAt = NOW - 12 * MIN
-  expect(summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })).toContain('Crons: 1 failing · 4 scheduled · 1 unknown · failing: nightly (stale · 12m ago)')
+  expect(summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })).toContain('- **Crons** 1 of 4 failing: nightly · 1 unknown *(stale · 12m ago)*')
+})
+
+test('a running state that could not be read is said, not counted as idle', () => {
+  const p = clone(PAYLOAD) as any
+  p.sessions.data.projects[1].running = null
+  expect(summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })).toContain('- **Projects** 3 total, running unknown')
 })
 
 test('an unreachable server says so, and shows the last reading only as the last reading', () => {
   const none = summaryText({ payload: null, todos: null, now: NOW, url: 'http://127.0.0.1:8322', error: 'timed out after 5s' })
-  expect(none).toBe('Control Room unreachable at http://127.0.0.1:8322: timed out after 5s')
+  expect(none).toBe('**Control Room unreachable** at http://127.0.0.1:8322: timed out after 5s')
   const last = summaryText({ payload: PAYLOAD, todos: TODOS, now: NOW, url: 'http://127.0.0.1:8322', error: 'timed out after 5s', fetchedAt: NOW - 5 * MIN })
-  expect(last).toMatch(/^Control Room unreachable at http:\/\/127\.0\.0\.1:8322: timed out after 5s\. Last reading, from 5m ago:/)
+  expect(last).toMatch(/^\*\*Control Room unreachable\*\* at http:\/\/127\.0\.0\.1:8322: timed out after 5s\. Last reading, from 5m ago:\n/)
+})
+
+test('to-do text is escaped, so it cannot turn into markdown it never was', () => {
+  const odd = { id: 'o', text: 'Fix *bold* and a|pipe in `code`', lane: 'idea', priority: 'P0' }
+  expect(summaryText({ payload: PAYLOAD, todos: [odd], now: NOW, url: 'u' })).toContain('- **P0** Fix \\*bold\\* and a\\|pipe in \\`code\\`')
 })
 
 test('a long to-do is clipped in the summary, which is read on phones', () => {
   const long = { id: 'x', text: 'A'.repeat(200), lane: 'idea', tag: 'Pi', priority: 'P0' }
   const text = summaryText({ payload: PAYLOAD, todos: [long], now: NOW, url: 'u' })
-  const line = text.split('\n').find(l => l.startsWith('  P0'))!
-  expect(line.length).toBeLessThan(100)
+  const line = text.split('\n').find(l => l.startsWith('- **P0**'))!
+  expect(line.length).toBeLessThan(110)
   expect(line).toContain('…')
 })

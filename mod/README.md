@@ -8,8 +8,8 @@ The mod is a thin client. The Control Room server stays the single source of
 truth: the mod reads `/api/dashboard` and `/api/todos` and writes `/api/todos`,
 exactly as the web page does, so the two can never disagree about what is true.
 
-Built and tested against Claude Code 2.1.293. Mods need 2.1.287 or later in the
-terminal.
+Built and tested against Claude Code 2.1.293 and 2.1.295. Mods need 2.1.287 or
+later in the terminal.
 
 ## What it shows
 
@@ -37,8 +37,11 @@ seconds, because a server that hangs requests would otherwise hang the pane.
 /control-room close      close the pane
 ```
 
-Sent from a phone or the web over Remote Control, `/control-room` also prints
-the summary, in case that app doesn't draw the pane.
+Sent over Remote Control from the Claude app or the web, `/control-room` prints
+the summary instead of opening the pane, because the app draws no mod pane.
+
+The summary is Markdown, which is how every surface draws a command's output: a
+table for the limits, one line per panel, and the top to-dos by priority.
 
 | Key | What it does |
 |---|---|
@@ -54,12 +57,14 @@ the summary, in case that app doesn't draw the pane.
 |---|---|
 | Terminal | The pane: a sidebar in a wide fullscreen terminal, above the prompt otherwise |
 | Code tab of the Desktop app | The pane |
-| Claude mobile app, over Remote Control | The pane, without the add and edit fields, which that app doesn't draw yet. The summary prints as well |
-| `claude -p` and the Agent SDK | The summary as text |
+| The Claude app on a phone or iPad, over Remote Control | The summary only |
+| An SSH terminal on the iPad, such as Termius, running Claude Code on the mini | The full pane, with tabs and keys |
+| `claude -p` and the Agent SDK | The summary |
 
-The mobile row follows the type definitions Claude Code 2.1.293 writes, which
-list the mobile app as a surface that draws panes. The docs page describing 2.1.290
-says otherwise, so treat the phone as unconfirmed until you've seen it there.
+The Claude app row was checked on an iPad on 2026-10-08, with Claude Code
+2.1.295: the app drew the command's output and no pane. Claude Code's type
+definitions list the mobile app as a surface that can draw panes, so this may
+change; until it does, an SSH terminal is the way to get the pane on an iPad.
 
 ## Load it
 
@@ -117,7 +122,7 @@ write shows the server's error and the list the server actually holds.
 
 ```bash
 cd mod
-claude plugin test        # 49 tests
+claude plugin test        # 52 tests
 claude plugin validate .
 ```
 

@@ -34,9 +34,9 @@ test('/control-room summary prints the whole board as text', async ($, on) => {
   setup(on)
   await start($)
   const out = await run($, 'summary')
-  expect(out.text).toContain('Limits: Current session 25%')
-  expect(out.text).toContain('Credits: Cloud session credits $210.00 of $250.00 left')
-  expect(out.text).toContain('P0 Retire the old NAS')
+  expect(out.text).toContain('| Current session | 25% | 3h 01m |')
+  expect(out.text).toContain('- **Credits** Cloud session credits $210.00 of $250.00 left')
+  expect(out.text).toContain('- **P0** Retire the old NAS')
 })
 
 test('/control-room typed at the terminal opens the pane with the keyboard and prints nothing', async ($, on) => {
@@ -47,12 +47,14 @@ test('/control-room typed at the terminal opens the pane with the keyboard and p
   expect(out.text).toBeUndefined()
 })
 
-test('/control-room sent from a phone opens the pane and also prints the summary', async ($, on) => {
+// Seen on 2026-10-08: the Claude iPad app draws no mod pane, only the row. A
+// pane opened from the phone would sit on the mini's screen, polling for no one.
+test('/control-room sent from a phone prints the summary and opens nothing', async ($, on) => {
   const r = setup(on, { surfaces: ['terminal', 'mobile'] })
   await start($, false)
   const out = await run($, '', { kind: 'bridge' })
-  expect(r.opened.length).toBe(1)
-  expect(out.text).toContain('Limits: Current session 25%')
+  expect(r.opened).toEqual([])
+  expect(out.text).toContain('| Current session | 25% | 3h 01m |')
 })
 
 test('/control-room with no surface that draws prints the summary and opens nothing', async ($, on) => {
@@ -60,7 +62,7 @@ test('/control-room with no surface that draws prints the summary and opens noth
   await start($, false)
   const out = await run($, '', { kind: 'sdk' })
   expect(r.opened).toEqual([])
-  expect(out.text).toContain('Projects: 1 running · 3 total')
+  expect(out.text).toContain('- **Projects** 1 of 3 running: invoice')
 })
 
 test('/control-room close closes the pane', async ($, on) => {
@@ -88,14 +90,14 @@ test('a server that never answers times out after 5 seconds and is reported as u
   const pending = run($, 'summary')
   await clock.advance(5_000)
   const out = await pending
-  expect(out.text).toBe('Control Room unreachable at http://127.0.0.1:8322: timed out after 5s')
+  expect(out.text).toBe('**Control Room unreachable** at http://127.0.0.1:8322: timed out after 5s')
 })
 
 test('a refused connection is reported with the configured URL', { options: { dashboard_url: 'http://127.0.0.1:9999' } }, async ($, on) => {
   setup(on, { server: { dashboardDeny: 'connection refused' } })
   await start($, false)
   const out = await run($, 'summary')
-  expect(out.text).toMatch(/^Control Room unreachable at http:\/\/127\.0\.0\.1:9999: .*connection refused/)
+  expect(out.text).toMatch(/^\*\*Control Room unreachable\*\* at http:\/\/127\.0\.0\.1:9999: .*connection refused/)
 })
 
 // --- Opening and polling ---
