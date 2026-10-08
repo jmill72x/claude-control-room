@@ -1,0 +1,30 @@
+{
+  "name": "control-room",
+  "displayName": "Control Room",
+  "version": "0.1.0",
+  "description": "The Control Room dashboard as a side pane in Claude Code, plus /control-room summary for anywhere a pane can't draw",
+  "author": { "name": "jmill72x" },
+  "repository": "https://github.com/jmill72x/claude-control-room",
+  "userConfig": {
+    "dashboard_url": {
+      "type": "string",
+      "title": "Dashboard URL",
+      "description": "Where the Control Room server answers. It binds to loopback, so the default is right unless you moved it.",
+      "default": "http://127.0.0.1:8322"
+    },
+    "auto_open": {
+      "type": "boolean",
+      "title": "Open the pane when a session starts",
+      "description": "Opens the pane in interactive sessions. Claude Code only places a pane nobody asked for in a wide terminal: 144 columns, or 110 once you have opened it yourself.",
+      "default": true
+    },
+    "refresh_seconds": {
+      "type": "number",
+      "title": "Refresh interval in seconds",
+      "description": "How often an open pane re-reads the dashboard.",
+      "default": 30,
+      "min": 10,
+      "max": 600
+    }
+  }
+}

@@ -214,6 +214,7 @@ claude-control-room/
     data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
   web/               React + Vite SPA; the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
+  mod/               Claude Code mod: the dashboard as a side pane, and /control-room summary
 ```
 
 Collectors write to cache on a timer; HTTP requests only ever read cache — nothing
@@ -254,6 +255,14 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
   -H 'Content-Type: application/json' \
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
+
+### Inside Claude Code: the mod
+
+`mod/` is a Claude Code mod that shows the same board as a side pane in a
+Claude Code session, and prints it as text with `/control-room summary` where no
+pane can draw. It reads and writes only through this server's API, the same way
+the web page does. See [mod/README.md](mod/README.md) for loading it, the
+commands, and where it draws.
 
 ## Running it
 
