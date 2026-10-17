@@ -9,6 +9,10 @@ Claude dashboard prototype.zip
 server/config.json
 server/todos.json
 server/todos-history/
+# Left beside the board by the store: a temp file a crash cut short, and a
+# corrupt board set aside. Both hold board content.
+server/todos.json.tmp-*
+server/todos.json.corrupt-*
 
 # Usage history: personal, non-recoverable, and this repo is public
 server/data/

@@ -14,6 +14,9 @@ const asidePrefix = path => `${basename(path)}.corrupt-`;
 // nothing but the names.
 const stamp = ms => new Date(ms).toISOString().replace(/[-:.]/g, '');
 const COPY = /^todos-\d{8}T\d{9}Z\.json$/;
+// Numbers every temp file this process writes (see write()). Module-wide, not
+// per store, because two stores in one process can share a path.
+let tmpSeq = 0;
 const SEED = [
   { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
   { id: 2, text: 'Cron: weekly digest of all Cowork project status', lane: 'idea', tag: 'Crons' },
@@ -174,14 +177,23 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
       // writeFile leaves exactly the truncated JSON that used to trigger the
       // seed-over-the-top path above. A rename within one directory is atomic,
       // so what is on disk is always a complete list — the old one or the new.
-      const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+      // Each write needs a temp file of its own for that to hold. pid + time
+      // alone was shared by two writes in the same millisecond: both wrote
+      // into the one file, the first rename could put a torn list in place,
+      // and the second found its temp file gone. The counter tells apart the
+      // writes of one process, the pid tells apart processes (the server and
+      // restore-todos.mjs), so no two live writers can share a name.
+      const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`;
       try {
         await writeFile(tmp, JSON.stringify(unified, null, 2));
-        // The copy is the last step before the rename, so it holds exactly the
-        // board this rename replaces. If no copy can be made, the board is
-        // left alone: replacing it with nothing kept is the unrecoverable
-        // write this exists to prevent, and a refused write says so out loud
-        // where a skipped copy would say nothing until the copy was needed.
+        // The copy is the last step before the rename, so it holds the board
+        // this rename replaces. Only a second write renaming in between can
+        // make them differ: both then keep the same board, and the one renamed
+        // first is replaced an instant later without a copy; closing that
+        // would take a lock. If no copy can be made, the board is left alone:
+        // replacing it with nothing kept is the unrecoverable write this
+        // exists to prevent, and a refused write says so out loud where a
+        // skipped copy would say nothing until the copy was needed.
         await keepCopy().catch(err => {
           throw new Error(`could not keep a copy of the board before replacing it, so it was not replaced: ${err.message}`);
         });

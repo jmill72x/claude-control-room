@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { createTodoStore } from '../todos.mjs';
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-')), 'todos.json');
@@ -101,6 +102,30 @@ test('a rejected write leaves the previous list intact on disk', async () => {
   await store.write([{ id: 1, text: 'keep me', lane: 'idea' }]);
   await assert.rejects(() => store.write([{ id: 2, text: 'bad', lane: 'nowhere' }]));
   assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].text, 'keep me');
+});
+
+// Two PUTs can arrive together, and Jarvis writes the board often. The temp
+// name was path + pid + Date.now(), which two writes in one millisecond
+// shared: both wrote into the one temp file, the first rename could put a
+// torn list in place, and the second rename found its temp file gone. As in
+// N2, Date.now() is pinned so the two writes really do share a millisecond.
+test('two writes started at once both land, and the board is one of them, whole', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write([{ id: 1, text: 'the board before', lane: 'idea' }]);
+  // Different lengths, so a torn file cannot pass for either payload.
+  const long = Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, text: `a longer board, item ${i}`, lane: 'idea' }));
+  const short = [{ id: 99, text: 'short', lane: 'done' }];
+  const realNow = Date.now;
+  try {
+    Date.now = () => 1735689600123;
+    await Promise.all([store.write(long), store.write(short)]);
+  } finally {
+    Date.now = realNow;
+  }
+  const final = JSON.parse(readFileSync(path, 'utf8')); // a torn file throws here
+  assert.ok([long, short].some(p => isDeepStrictEqual(final, p)), `the board must be one payload, whole: ${JSON.stringify(final)}`);
+  assert.deepEqual(readdirSync(dirname(path)).filter(f => f.includes('.tmp-')), [], 'no temp file left behind');
 });
 
 // N2: the aside name was `todos.json.corrupt-${Date.now()}`, and POSIX

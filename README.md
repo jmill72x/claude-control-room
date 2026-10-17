@@ -278,7 +278,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 375 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 376 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -351,6 +351,8 @@ Every `PUT /api/todos` replaces `server/todos.json` whole, so a single bad write
 be enough to lose the board (it happened on 2026-10-07). Now each write first copies the
 board it is about to replace into `server/todos-history/` (gitignored) and keeps the
 newest 20, so the newest copy is always the board as it was just before the latest write.
+Each save makes a copy, so the window is the last 20 saves rather than a span of time: a
+busy hour of edits can push yesterday's board out.
 
 ```bash
 node server/restore-todos.mjs --list                            # newest first: <file>  <n> items
