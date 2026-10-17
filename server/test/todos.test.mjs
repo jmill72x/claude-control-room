@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createTodoStore } from '../todos.mjs';
@@ -215,4 +215,153 @@ test('distinct tags are never merged, only case variants of the same one', async
     { id: 2, text: 'b', lane: 'idea', tag: 'Pinas' }
   ]);
   assert.deepEqual(out.map(t => t.tag), ['Pi', 'Pinas']);
+});
+
+// Rolling copies. Every PUT replaces todos.json whole, and nothing kept the
+// board it replaced: one bad write was enough to lose it (2026-10-07). Each
+// write now copies the board it is about to replace into todos-history/ first.
+// These read the directory straight off disk rather than through the store,
+// so a store that lists its copies wrongly cannot vouch for itself.
+const historyFiles = path => {
+  const dir = join(dirname(path), 'todos-history');
+  return existsSync(dir) ? readdirSync(dir).sort() : [];
+};
+const readCopy = (path, name) => JSON.parse(readFileSync(join(dirname(path), 'todos-history', name), 'utf8'));
+const onDisk = path => JSON.parse(readFileSync(path, 'utf8'));
+// Different lengths, so an item count can tell the boards apart too.
+const A = [{ id: 1, text: 'board A', lane: 'idea', tag: 'Note' }];
+const B = [
+  { id: 2, text: 'board B', lane: 'doing', tag: 'Note' },
+  { id: 3, text: 'more of B', lane: 'done', tag: 'Note' }
+];
+
+test('keeps the previous board on every write', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  await store.write(B);
+  const kept = historyFiles(path);
+  assert.equal(kept.length, 1, `expected exactly one copy, got ${JSON.stringify(kept)}`);
+  assert.match(kept[0], /^todos-\d{8}T\d{9}Z\.json$/);
+  assert.deepEqual(readCopy(path, kept[0]), A);
+  assert.deepEqual(onDisk(path), B);
+});
+
+test('keeps only the newest 20 copies', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  // Board n is one item with id n, so every copy says which board it was.
+  const board = n => [{ id: n, text: `board ${n}`, lane: 'idea' }];
+  await store.write(board(0));
+  for (let n = 1; n <= 25; n++) await store.write(board(n));
+  // Each of the 25 writes kept the board before it, boards 0–24. The newest 20
+  // survive, in name order oldest first; the oldest five, boards 0–4, are gone.
+  const kept = historyFiles(path).map(f => readCopy(path, f)[0].id);
+  assert.deepEqual(kept, Array.from({ length: 20 }, (_, i) => i + 5));
+});
+
+test('first write makes no copy', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  assert.deepEqual(historyFiles(path), []);
+  assert.deepEqual(await store.copies(), [], 'no history yet is an empty list, not an error');
+});
+
+test('a rejected write changes neither board nor history', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  await store.write(B);
+  const before = historyFiles(path);
+  assert.equal(before.length, 1);
+  await assert.rejects(() => store.write({ nope: true }), /must be an array/);
+  assert.deepEqual(onDisk(path), B);
+  assert.deepEqual(historyFiles(path), before);
+  assert.deepEqual(readCopy(path, before[0]), A);
+});
+
+test('restore swaps in a copy and keeps the current board', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  await store.write(B);
+  const [copyOfA] = historyFiles(path);
+  assert.deepEqual(await store.restore(copyOfA), { file: copyOfA, items: A.length });
+  assert.deepEqual(onDisk(path), A, 'the copy is the board again');
+  const kept = historyFiles(path);
+  assert.equal(kept.length, 2);
+  assert.equal(kept[0], copyOfA, 'the restored copy stays in history');
+  assert.deepEqual(readCopy(path, kept[1]), B, 'the board the restore replaced was kept first, as the newest copy');
+});
+
+// As in N2, Date.now() is pinned so the collision is forced, not hoped for.
+test('two writes in the same millisecond keep two copies, named in UTC and in write order', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  const realNow = Date.now;
+  try {
+    Date.now = () => 1735689600123; // 2025-01-01T00:00:00.123Z
+    await store.write(A);
+    await store.write(B);
+    await store.write([{ id: 4, text: 'board C', lane: 'idea' }]);
+  } finally {
+    Date.now = realNow;
+  }
+  // The later copy takes the next free millisecond. A `-1` suffix would not
+  // do: `-` sorts before the `.` of `.json`, so it would list as the older.
+  assert.deepEqual(historyFiles(path), ['todos-20250101T000000123Z.json', 'todos-20250101T000000124Z.json']);
+  assert.deepEqual(readCopy(path, 'todos-20250101T000000123Z.json'), A);
+  assert.deepEqual(readCopy(path, 'todos-20250101T000000124Z.json'), B);
+  assert.deepEqual(await store.copies(), [
+    { file: 'todos-20250101T000000124Z.json', items: B.length },
+    { file: 'todos-20250101T000000123Z.json', items: A.length }
+  ], 'listed newest first, with item counts');
+});
+
+test('restore takes a name or an absolute path inside the history dir, and refuses anything outside it', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  await store.write(B);
+  const before = historyFiles(path);
+  assert.equal(before.length, 1);
+  // A perfectly good board, refused only for where it is.
+  const outside = join(dirname(path), 'elsewhere.json');
+  writeFileSync(outside, JSON.stringify(A));
+  for (const file of [outside, '../elsewhere.json', path, '.']) {
+    await assert.rejects(() => store.restore(file), /only a copy in/, `${file} must be refused`);
+  }
+  assert.deepEqual(onDisk(path), B);
+  assert.deepEqual(historyFiles(path), before);
+  // Absolute is fine when it is inside, even spelled another way: on macOS the
+  // temp dir is under /var, a symlink to /private/var, and realpath says so.
+  await store.restore(realpathSync(join(dirname(path), 'todos-history', before[0])));
+  assert.deepEqual(onDisk(path), A);
+});
+
+test('a copy that cannot be made refuses the write, and the board stays as it was', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  // A file squatting where the history directory goes: no copy can land.
+  writeFileSync(join(dirname(path), 'todos-history'), 'in the way');
+  await assert.rejects(() => store.write(B), /could not keep a copy/);
+  assert.deepEqual(onDisk(path), A);
+  assert.deepEqual(readdirSync(dirname(path)).filter(f => f.includes('.tmp-')), [], 'no temp file left behind');
+});
+
+test('a damaged copy is listed with the reason, not hidden', async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  await store.write(A);
+  await store.write(B);
+  const [good] = historyFiles(path);
+  const damaged = 'todos-20000101T000000000Z.json';
+  writeFileSync(join(dirname(path), 'todos-history', damaged), '[{"id": 1, "te');
+  const listed = await store.copies();
+  assert.deepEqual(listed.map(c => c.file), [good, damaged]);
+  assert.equal(listed[0].items, A.length);
+  assert.equal(listed[1].items, null);
+  assert.ok(listed[1].error, 'the reason it could not be read is given');
 });

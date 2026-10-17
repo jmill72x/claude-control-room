@@ -8,6 +8,7 @@ Claude dashboard prototype.zip
 # Local runtime state — machine-specific, not source
 server/config.json
 server/todos.json
+server/todos-history/
 
 # Usage history: personal, non-recoverable, and this repo is public
 server/data/

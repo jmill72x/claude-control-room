@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir, rename, unlink, readdir } from 'node:fs/promises';
-import { dirname, join, basename } from 'node:path';
+import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath } from 'node:fs/promises';
+import { dirname, join, basename, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 const LANES = new Set(['idea', 'doing', 'done']);
@@ -8,6 +8,12 @@ const LANES = new Set(['idea', 'doing', 'done']);
 // must be one of these four, so a typo can never sort as if it were P0.
 const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
 const asidePrefix = path => `${basename(path)}.corrupt-`;
+// A history copy is named for the UTC millisecond it was made: ISO 8601 with
+// the separators dropped, todos-yyyymmddThhmmssSSSZ.json. Every name is the
+// same width, so sorting the names sorts the copies by time and pruning needs
+// nothing but the names.
+const stamp = ms => new Date(ms).toISOString().replace(/[-:.]/g, '');
+const COPY = /^todos-\d{8}T\d{9}Z\.json$/;
 const SEED = [
   { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
   { id: 2, text: 'Cron: weekly digest of all Cowork project status', lane: 'idea', tag: 'Crons' },
@@ -47,7 +53,49 @@ export function unifyTags(todos) {
   });
 }
 
-export function createTodoStore(path) {
+// Every PUT replaces the whole board, and nothing used to keep the one it
+// replaced: a single bad write was enough to lose the board outright, as it
+// did on 2026-10-07. Each write now copies the board it is about to replace
+// into `historyDir` first and keeps the newest `keep` copies, so a bad write
+// is one command to undo (restore-todos.mjs).
+export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-history'), keep = 20 } = {}) {
+  const keepCopy = async () => {
+    let raw;
+    try {
+      raw = await readFile(path);
+    } catch (err) {
+      if (err.code === 'ENOENT') return; // the first write: there is no board to keep yet
+      throw err;
+    }
+    await mkdir(historyDir, { recursive: true });
+    // Exclusive create (`wx`), so one copy can never replace another. Two
+    // writes in the same millisecond want the same name; the later one moves
+    // to the next free millisecond rather than taking a suffix, which keeps
+    // one name format and keeps a later copy sorting later. A `-1` would not:
+    // `-` sorts before the `.` of `.json`, so it would list as the older one.
+    // Each EEXIST is a name already taken, so the walk passes at most as many
+    // names as the directory holds. Date.now() rather than new Date(), so a
+    // test can pin the clock.
+    for (let t = Date.now(); ; t++) {
+      try {
+        await writeFile(join(historyDir, `todos-${stamp(t)}.json`), raw, { flag: 'wx' });
+        return;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+    }
+  };
+
+  // Best-effort, and only once the board is written: a copy that cannot be
+  // deleted now is retried by the next write's prune, and must not fail a
+  // write that already landed. Only names this store makes are counted, so
+  // nothing else in the directory is ever deleted.
+  const prune = async () => {
+    const names = (await readdir(historyDir).catch(() => [])).filter(f => COPY.test(f)).sort();
+    const surplus = names.slice(0, Math.max(0, names.length - keep));
+    await Promise.all(surplus.map(f => unlink(join(historyDir, f)).catch(() => {})));
+  };
+
   return {
     async read() {
       let raw;
@@ -129,12 +177,70 @@ export function createTodoStore(path) {
       const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
       try {
         await writeFile(tmp, JSON.stringify(unified, null, 2));
+        // The copy is the last step before the rename, so it holds exactly the
+        // board this rename replaces. If no copy can be made, the board is
+        // left alone: replacing it with nothing kept is the unrecoverable
+        // write this exists to prevent, and a refused write says so out loud
+        // where a skipped copy would say nothing until the copy was needed.
+        await keepCopy().catch(err => {
+          throw new Error(`could not keep a copy of the board before replacing it, so it was not replaced: ${err.message}`);
+        });
         await rename(tmp, path);
       } catch (err) {
         await unlink(tmp).catch(() => {});
         throw err;
       }
+      await prune();
       return unified;
+    },
+
+    // The copies on record, newest first, each with its item count — or, for
+    // a copy that does not parse as a list, the reason, so a damaged copy is
+    // listed rather than hidden behind the good ones.
+    async copies() {
+      let names;
+      try {
+        names = await readdir(historyDir);
+      } catch (err) {
+        if (err.code === 'ENOENT') return []; // no write has replaced a board yet
+        throw new Error(`could not read the board's history: ${err.message}`);
+      }
+      return Promise.all(names.filter(f => COPY.test(f)).sort().reverse().map(async file => {
+        try {
+          const list = JSON.parse(await readFile(join(historyDir, file), 'utf8'));
+          if (!Array.isArray(list)) throw new Error('the file does not contain a list');
+          return { file, items: list.length };
+        } catch (err) {
+          return { file, items: null, error: err.message };
+        }
+      }));
+    },
+
+    // Put a copy back. It goes through write(), so it is checked like any
+    // other write, and the board it replaces is kept first: a restore can be
+    // undone the same way.
+    async restore(file) {
+      // A relative name resolves against historyDir, so a name from copies()
+      // works as it is. Both sides are compared as real paths: macOS paths
+      // are case-insensitive and /var is a symlink to /private/var, so two
+      // spellings of one file must not read as two places, and a symlink that
+      // leads out of historyDir must read as outside it.
+      const asked = resolve(historyDir, file);
+      let target;
+      try {
+        target = await realpath(asked);
+      } catch (err) {
+        if (err.code === 'ENOENT') throw new Error(`no such copy: ${asked}`);
+        throw err;
+      }
+      const home = await realpath(historyDir).catch(() => null);
+      if (dirname(target) !== home) throw new Error(`refusing ${file}: only a copy in ${historyDir} can be restored`);
+      try {
+        const written = await this.write(JSON.parse(await readFile(target, 'utf8')));
+        return { file: basename(target), items: written.length };
+      } catch (err) {
+        throw new Error(`${basename(target)} was not restored: ${err.message}`);
+      }
     }
   };
 }

@@ -211,6 +211,7 @@ claude-control-room/
     routes.mjs        /api/dashboard · /api/todos · /api/ingest/*
     config.json        user-set values with no API source (gitignored — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
+    todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
     data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
   web/               React + Vite SPA; the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
@@ -277,7 +278,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 366 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 375 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -343,6 +344,22 @@ the logs. Now the server requests its own `/api/health` every minute; three cons
 failures, or the listener closing, make it log the reason and exit, and the plist's
 `KeepAlive` brings it back within seconds. A `watchdog:` line in the log means this
 happened.
+
+### Undo a bad board write
+
+Every `PUT /api/todos` replaces `server/todos.json` whole, so a single bad write used to
+be enough to lose the board (it happened on 2026-10-07). Now each write first copies the
+board it is about to replace into `server/todos-history/` (gitignored) and keeps the
+newest 20, so the newest copy is always the board as it was just before the latest write.
+
+```bash
+node server/restore-todos.mjs --list                            # newest first: <file>  <n> items
+node server/restore-todos.mjs todos-20261017T175800123Z.json    # put that copy back
+```
+
+A restore is checked like any other write and keeps the board it replaces first, so it
+can be undone the same way. The server needs no restart, but reload any page that has the
+board open before editing there: the page still holds the old list and would write it back.
 
 ### Remote access
 
