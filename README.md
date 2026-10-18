@@ -278,7 +278,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 376 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 381 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 
@@ -527,8 +527,16 @@ render as unknown rather than a guess.
 Alerts (the same ones the on-page alert bar shows) can also be pushed to a phone via
 [ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a cron job failing reaches
 you when you are not looking at the dashboard. This is off by default: with no topic
-configured, the notifier collector does nothing and the rest of the dashboard is
-completely unaffected — it reports `configured: false` rather than erroring.
+configured, nothing goes to ntfy and the rest of the dashboard is completely
+unaffected — the notifier reports `configured: false` rather than erroring.
+
+Each alert is also posted to the `#pepper` Discord feed through the Jarvis toolkit's
+poster (`~/Projects/jarvis/bin/discord-post`), topic or no topic. The poster reads the
+feed's webhook URL from Keychain itself, so that URL never passes through this repo.
+Where there is no poster, or no webhook stored for it, the post fails and nothing else
+changes. Discord gets the same title and text as ntfy, so the rules below apply to
+both. An alert that lands on either channel counts as notified: a channel that is down
+can't make the next run post it again on the one that worked.
 
 **Only three kinds of alert are quoted in full — everything else is counted, never
 quoted:**

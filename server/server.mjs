@@ -14,7 +14,7 @@ import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
-import { getTopic, publish } from './notify.mjs';
+import { getTopic, sendAlert } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler } from './routes.mjs';
@@ -86,9 +86,10 @@ const writeSent = async next => {
 };
 
 registry.register('notifier', async () => {
+  // No ntfy topic is a normal state, and no longer a reason to skip the run:
+  // every alert also goes to #pepper, which needs no topic, and publish() turns
+  // a missing one into a not-sent result. `configured` still means ntfy's topic.
   const topic = await getTopic();
-  // Not configured is a normal state — the dashboard works without it.
-  if (!topic) return { configured: false, sent: 0 };
   const now = Date.now();
   const out = await runNotifier({
     snapshot: cache.snapshot(now),
@@ -96,9 +97,9 @@ registry.register('notifier', async () => {
     now,
     readSent,
     writeSent,
-    send: entry => publish({ topic, title: entry.title, message: entry.message })
+    send: entry => sendAlert({ topic, title: entry.title, message: entry.message })
   });
-  return { configured: true, ...out };
+  return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
 
 const api = createHandler({ cache, todos, config });
