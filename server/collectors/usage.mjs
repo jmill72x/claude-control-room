@@ -10,9 +10,11 @@ const execFileAsync = promisify(execFile);
 // that blocked Jarvis's Discord connector. --strict-mcp-config starts only the
 // servers named by --mcp-config, and there are none. The permission mode is
 // pinned so the poll never inherits a looser default from the user's settings.
-// Neither flag changes what /usage prints.
+// `manual` is its listed name; Claude Code 2.1.302 still takes the older
+// `default`, but only as an unlisted alias. Neither flag changes what /usage
+// prints.
 export const runUsageCli = async ({ exec = execFileAsync } = {}) => {
-  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'default'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 };
 

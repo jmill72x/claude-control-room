@@ -33,7 +33,7 @@ test('usage poll never loads plugin servers', async () => {
   assert.equal(file, 'claude');
   assert.deepEqual(args.slice(0, 2), ['-p', '/usage'], 'still the same command, so the output parses as before');
   assert.ok(args.includes('--strict-mcp-config'), 'only servers named by --mcp-config, and none are');
-  assert.equal(args[args.indexOf('--permission-mode') + 1], 'default', "never the user's own default mode");
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'manual', "never the user's own default mode");
 });
 
 test('collectAgents parses the JSON array', async () => {
