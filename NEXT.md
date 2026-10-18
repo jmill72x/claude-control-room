@@ -40,57 +40,29 @@ Cloudflare doesn't gate on the Access policy being present, it gates on you havi
 added one. This dashboard renders account usage, project names, and spend figures, so
 a route that outlives an unprotected minute is a real exposure, not a theoretical one.
 
-## 2. Parked findings from the final review
+## 2. Open bugs
 
-Four issues were identified but not fixed. None are regressions from this session's
-work; all pre-date it.
+The four review findings that used to be parked here were all fixed in `ee1e1df`
+(2026-09-11). These are the ones still open:
 
-- **A *stale* `agents` envelope still asserts Running/Idle from old data.**
-  `server.mjs` computes `agentsAvailable: agentsEnvelope.status !== 'unavailable'`
-  before calling `buildProjects()`. The cache (`cache.mjs`) only returns
-  `'unavailable'` when a source has *never* produced data; once it has succeeded at
-  least once, a subsequent failure downgrades it to `'stale'` while still serving the
-  last-good array. `buildProjects()` (`server/lib/projects.mjs`) treats `stale` the
-  same as `ok` and prints definite Running/Idle from data that may be many minutes
-  old — the unknown-vs-idle fix (`running: null` when the source truly can't be
-  read) only covers the case where `claude agents --json` has *never* succeeded, not
-  "succeeded once, then started failing." Fix likely means passing the envelope's
-  `status` through instead of a collapsed boolean, and treating `stale` as unknown
-  too.
+- **P2: the server lost its HTTP listener while staying alive.** From Sep 28 to Oct 2
+  the process kept running, collectors still ticking, but held no listening socket,
+  so every request hung. The root cause is unknown. Since `e725dbb` the server checks
+  its own `/api/health` every minute and exits after three failures in a row, so
+  launchd restarts it (see the README), but that watchdog has never been seen firing
+  for real. Next step: look for `watchdog:` lines in `~/Library/Logs/control-room.log`;
+  the first one is the moment to dig into the cause.
 
-- **Array-form `StartCalendarInterval` renders "Every minute."** launchd accepts
-  either a single object or an *array* of objects for `StartCalendarInterval` (e.g. a
-  job that runs Mondays and Thursdays at 03:00 — two objects in an array). The
-  humanizer (`server/lib/humanize.mjs`, `calendarPhrase()`) destructures
-  `{ Hour, Minute, Weekday }` directly off `cal` without checking
-  `Array.isArray(cal)` first; on an array all three come back `undefined` and it
-  falls through to the generic `'Every minute'` string — legal launchd form,
-  wrong rendered schedule. No plist on this machine currently uses the array form, so
-  this is latent, not actively wrong today. Fix: branch on `Array.isArray` in
-  `formatSchedule`/`calendarPhrase` and describe each entry (or at least say
-  "multiple times" rather than guessing).
+- **P3: `cachedUsageUtilization` vanished from `~/.claude.json` for ten minutes.** On
+  2026-10-08, after Claude Code auto-updated itself to 2.1.295, the cached usage
+  response the credits panel reads was missing from 19:35 to 19:45 local, then came
+  back. The panel stayed honest, showing the last good figures marked stale. Cause
+  unknown; watch for a repeat, especially the morning after a CLI update.
 
-- **The cron summary's "N failing" is measured against a total that includes
-  Unknown crons.** In `web/src/App.jsx`, `cronSummary` is
-  `` `${crons.filter(c => c.ok === false).length} failing · ${crons.length} scheduled}` ``.
-  Ingested crons (`POST /api/ingest/crons`) may report `ok: undefined` when the
-  reporting source doesn't know the result (see `validate-ingest.mjs`, where `c.ok`
-  is preserved as `undefined` rather than coerced to a boolean) — those crons count
-  toward "scheduled" but are neither counted as failing nor called out separately.
-  The projects column already has the right pattern for this: `projectSummary` in
-  the same file switches to a `"N total · running unknown"` phrasing when any
-  project's `running` is neither `true` nor `false`. The cron summary needs the same
-  treatment.
-
-- **`objectFrom(...).invalid` is computed and never rendered.** `App.jsx` defines
-  `objectFrom()` for the credits ingest feed (a malformed `ingestCredits` payload —
-  anything that isn't a plain object — is caught and flagged `invalid: true`), but
-  only `.value` is read from the result; `.invalid` is discarded. Compare to
-  `arrayFrom()`, used for `ingestProjects` and `ingestCrons`, where `.invalid` drives
-  a visible `StatusNote` reading "Feed ignored" (see the `ingestProjects.invalid` and
-  `launchdCrons.invalid || ingestCrons.invalid` blocks in the same file). A bad
-  credits POST is silently dropped today instead of surfacing the same "Feed
-  ignored" marker the other two feeds get.
+- **P3: the web page's cron sort is inconsistent for unknown-state crons.** The
+  comparator in `web/src/App.jsx` gives no consistent answer when one cron's `ok` is
+  `undefined` (unknown) and the other's is `false`, so their order depends on the
+  browser. Harmless until an ingest poster exists. The mod uses a fixed order.
 
 ## 3. Known-unknowable data (don't go looking for these)
 
@@ -164,12 +136,37 @@ takes to manually re-run the source-of-truth verification in the design
 spec." A parser that reports its own match rate shrinks that to reading one
 line of status.
 
-## 6. Working on it
+**A `/control-room doctor` command would put this in front of a person.** The idea comes
+from SessionDeck (§6): one line per source with its last success, its last error, and a
+"format drift suspected" flag when a file that exists stops parsing, as opposed to one
+that is simply missing. Telling those apart needs the match rates above. The 2026-10-08
+credits flake (§2) took several manual checks to diagnose; this would have made it one.
+
+## 6. On hold: ideas from SessionDeck
+
+Raised 2026-10-15: SessionDeck (`len5ky/sessiondeck`), an editor extension that tracks
+live agent sessions. **Take the ideas only, never its code.** It is source-available, not
+open source, and its license bars distributing modified copies; this repo is public, so
+anything built from these has to be our own code. Waiting on a go-ahead; nothing is built.
+
+- **A "needs you" session state.** Claude Code's Notification, Stop and UserPromptSubmit
+  hooks post straight to this server, so the Projects column and the mod pane can show
+  working, needs you, finished-unread and idle (`claude agents --json` only ever reports
+  busy or idle), and ntfy can push "a session needs you". It needs a hook entry in
+  `~/.claude/settings.json`, which only Jeff can add.
+- **A "quiet" flag.** A working session that has been silent far longer than its current
+  tool normally takes keeps its status but gains "quiet 12m" (SessionDeck allows 5
+  minutes for a file read and 15 for a shell command). It flags a possible hang without
+  inventing a state, and comes almost free once the first idea exists.
+
+The third idea, a `/control-room doctor` command, is folded into §5.
+
+## 7. Working on it
 
 ```bash
 cd server && npm test                       # unit tests, no network, no shelling out
 cd web && npm run build                     # produces web/dist, which the server serves
-launchctl kickstart -k gui/$(id -u)/<your-service-label>   # restart the running service
+launchctl kickstart -k gui/$(id -u)/<your-service-label>   # restart the running service (Vision's and Jeff's job, not the agent's)
 ```
 
 Config (`server/config.json`, gitignored) and the to-do board (`server/todos.json`,
