@@ -98,7 +98,8 @@ test('publishDiscord passes pepper and the title', async () => {
   assert.equal(DISCORD_POSTER, join(homedir(), 'Projects', 'jarvis', 'bin', 'discord-post'));
 });
 
-test('publishDiscord failure is reported not thrown', async () => {
+test('publishDiscord failure is reported not thrown', async t => {
+  t.mock.method(console, 'error', () => {}); // the log line has its own test, below
   const message = 'SENTINEL message text';
   const post = run => publishDiscord({ title: 'Control Room', message, run });
   // 2 is the poster refusing (no #pepper webhook stored yet, or a message that
@@ -117,6 +118,27 @@ test('publishDiscord failure is reported not thrown', async () => {
   const thrown = await post(() => { throw new TypeError(message); });
   assert.equal(thrown.sent, false);
   assert.doesNotMatch(thrown.reason, /SENTINEL/);
+});
+
+// A poster that ran and exited non-zero has already printed its own reason to
+// the log. One that could not run at all (killed by the backstop, or not
+// executable) printed nothing, so its reason gets a line. A missing poster
+// stays quiet: that is the normal state wherever Jarvis isn't installed.
+test('a poster that could not run logs its reason, and a missing one logs nothing', async t => {
+  const error = t.mock.method(console, 'error', () => {});
+  const lines = () => error.mock.calls.map(c => c.arguments);
+  const post = run => publishDiscord({ title: 'Control Room', message: 'SENTINEL message text', run });
+  const failing = fields => async () => {
+    throw Object.assign(new Error('Command failed: SENTINEL message text'), fields);
+  };
+
+  await post(failing({ code: 'ENOENT' }));
+  await post(fakeRun(2).run);
+  assert.deepEqual(lines(), [], 'a missing poster, and one that printed its own reason, add no line');
+
+  await post(failing({ code: null, signal: 'SIGTERM' }));
+  await post(failing({ code: 'EACCES' }));
+  assert.deepEqual(lines(), [['discord-post failed (SIGTERM)'], ['discord-post failed (EACCES)']]);
 });
 
 // sendAlert is the notifier's `send` in server.mjs: the one caller of both

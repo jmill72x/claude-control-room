@@ -278,7 +278,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 381 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 382 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 

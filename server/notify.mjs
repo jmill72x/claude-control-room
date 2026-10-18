@@ -60,21 +60,31 @@ export async function publishDiscord({ title, message, run = runPoster }) {
     const code = await run(DISCORD_POSTER, ['--agent', 'pepper', '--title', title], { input: message });
     return code === 0 ? { sent: true, reason: null } : { sent: false, reason: `discord-post exited ${code}` };
   } catch (err) {
+    // No poster is the normal state wherever Jarvis isn't installed, and this
+    // repo is public, so that stays out of the log. A poster that could not run
+    // at all (killed by the backstop, not executable) printed nothing of its
+    // own, so it gets one line: the reason, value-free like the rest.
     if (err?.code === 'ENOENT') return { sent: false, reason: `jarvis discord-post not found at ${DISCORD_POSTER}` };
-    return { sent: false, reason: `discord-post failed (${err?.signal ?? err?.code ?? err?.name ?? 'unknown error'})` };
+    const reason = `discord-post failed (${err?.signal ?? err?.code ?? err?.name ?? 'unknown error'})`;
+    console.error(reason);
+    return { sent: false, reason };
   }
 }
 
 // execFile with `input` on stdin, settling with the exit code. It rejects only
-// when the poster never started (ENOENT, EACCES) or was killed. The poster
-// bounds its own Keychain read (20 s) and each request (30 s), so the timeout
-// is only a backstop: a child that never exited would hold the notifier's run
-// open, and the registry skips every later run while one is in flight, ntfy's
-// pushes included. The poster prints neither the webhook URL nor the message,
-// so its output goes on to this service's log.
+// when the poster never started (ENOENT, EACCES) or was killed. The timeout is
+// a backstop: a child that never exited would hold the notifier's run open,
+// and the registry skips every later run while one is in flight, ntfy's pushes
+// included. Six minutes matches the poster's own worst case, about five and a
+// half: a 20 s Keychain read, then up to 10 messages at 30 s each, a second
+// apart. So a long body is never cut off mid-post and then posted again whole
+// on the retry. The poster prints neither the webhook URL nor the message, so
+// its output goes on to this service's log.
 export function runPoster(file, args, { input }) {
   return new Promise((resolve, reject) => {
-    const child = execFile(file, args, { timeout: 2 * 60 * 1000 }, (err, stdout, stderr) => {
+    const child = execFile(file, args, { timeout: 6 * 60 * 1000 }, (err, stdout, stderr) => {
+      // Written as is: the poster's lines keep their own newlines, which
+      // console.log would double.
       process.stdout.write(stdout);
       process.stderr.write(stderr);
       if (err && typeof err.code !== 'number') reject(err);
@@ -92,8 +102,8 @@ export function runPoster(file, args, { input }) {
 // one's failure skips the other. Landing on either counts as sent: the notifier
 // stops retrying an alert once it is sent, so requiring both would let a
 // channel that is down make every five-minute run post it again on the one
-// that works. Each channel's own result comes back too, for logging; the
-// notifier itself reads only `sent`.
+// that works. Each channel's own result is attached for callers; runNotifier
+// reads only `sent`.
 export async function sendAlert({ topic, title, message, ntfy = publish, discord = publishDiscord }) {
   const viaNtfy = await ntfy({ topic, title, message });
   const viaDiscord = await discord({ title, message });
