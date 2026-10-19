@@ -174,3 +174,40 @@ gitignored) both live under `server/` and are edited directly on the machine run
 the service — see the README's Configuration section for the field-by-field
 reference. There is no separate staging step: edit the file, restart the service,
 done.
+
+## 8. Ranked improvements for the Jarvis era (2026-10-19)
+
+Jeff asked "How can we improve the control panel?" on the day Jarvis went live. Jarvis now
+writes the board several times a day, the agents run as subagents of one Jarvis session,
+and Jeff reads mostly from an iPad or iPhone. Ranked, all read-only findings, nothing built:
+
+1. **Stop a stale tab from reverting Jarvis's board edits** (bug, S–M). `Lanes.jsx` reads
+   `/api/todos` once on mount and every edit PUTs its whole in-memory list, and the PUT has
+   no version check. Jarvis saved 5 boards between 11:57 and 13:38 on 10-19, so one tap in
+   an iPad tab opened that morning silently reverts all of them (the 10-07 mechanism, now
+   routine). Fix: a board revision (ETag/If-Match), a 409 that reloads the list, and a
+   re-read when the tab regains focus. The 20 rolling copies make it recoverable, not safe.
+2. **Board first on the phone** (S). Below 1024px the grid becomes one column, so the board
+   Jeff reads most sits under every usage panel and the Projects column. Put column 03 first
+   (CSS `order`) or add a three-tab switcher at phone width.
+3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
+   "linkedin-post-agent" and 31% of the week's tokens land in "Projects". Each subagent
+   transcript has a `.meta.json` with `agentType` and the brief's `description` (checked
+   10-19), so the server can show, per agent, its last run, what it was asked and its tokens.
+4. **Watch the always-on services** (S–M). `collectors/crons.mjs` keeps only plists with a
+   schedule, so `com.jeff.jarvis` (Jarvis itself), this service, `cloudflared` and
+   `linkedin-review` never appear. Show their PID and last exit from `launchctl list`, and
+   alert #pepper when Jarvis has no PID. Read-only, so it stays within Vision's scope.
+5. **Board fields for a co-owned board** (M). Add `created` (the P3 item on the board), an
+   optional `owner` (agent name) and a done-lane archive (37 of 86 items are done). There is
+   no Control Room tag: this dashboard's items sit under Bug, Feature and Infra, so the board
+   can't group them.
+6. **Source health / `/control-room doctor`** (M, §5 above). Also serve it as a small JSON
+   status Jarvis can read for the morning brief, so "is the dashboard right?" is one GET.
+7. **Timestamp the service log** (S). `~/Library/Logs/control-room.log` has 51 bare
+   "control room on" starts and no times, so neither a restart nor a future `watchdog:` line
+   can be dated, which blocks the P2 listener-loss investigation in §2.
+
+Smaller rough edges seen the same day: the board's "push alerts have reached no one" P3 item
+is stale (alerts post to #pepper since `4a50a5b`; the log shows 3 posts, and
+`server/data/notified.json` now exists); the HTTPS item on the board has no priority.
