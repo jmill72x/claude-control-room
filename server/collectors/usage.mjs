@@ -2,10 +2,19 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseUsage } from '../lib/parse-usage.mjs';
 
-const exec = promisify(execFile);
+const execFileAsync = promisify(execFile);
 
-export const runUsageCli = async () => {
-  const { stdout } = await exec('claude', ['-p', '/usage'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+// A bare `claude -p` starts every MCP server the user has, plugins' included.
+// This poll needs none of them. On 2026-10-17 its failed plugin starts, one
+// every five minutes, kept a shared 15-minute plugin-failure cache full, and
+// that blocked Jarvis's Discord connector. --strict-mcp-config starts only the
+// servers named by --mcp-config, and there are none. The permission mode is
+// pinned so the poll never inherits a looser default from the user's settings.
+// `manual` is its listed name; Claude Code 2.1.302 still takes the older
+// `default`, but only as an unlisted alias. Neither flag changes what /usage
+// prints.
+export const runUsageCli = async ({ exec = execFileAsync } = {}) => {
+  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 };
 

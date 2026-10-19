@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectUsage } from '../collectors/usage.mjs';
+import { collectUsage, runUsageCli } from '../collectors/usage.mjs';
 import { collectAgents } from '../collectors/agents.mjs';
 import { collectPlan } from '../collectors/plan.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
@@ -18,6 +18,22 @@ test('collectUsage parses whatever the injected runner returns', async () => {
 
 test('collectUsage propagates failure so the registry can mark it', async () => {
   await assert.rejects(() => collectUsage({ run: async () => 'garbage output' }));
+});
+
+// The 2026-10-17 root cause: a bare `claude -p` starts every MCP server the
+// user has, plugins' included, and this poll runs every five minutes.
+test('usage poll never loads plugin servers', async () => {
+  const calls = [];
+  const stdout = await runUsageCli({
+    exec: async (file, args) => { calls.push({ file, args }); return { stdout: USAGE_TEXT }; }
+  });
+  assert.equal(stdout, USAGE_TEXT);
+  assert.equal(calls.length, 1);
+  const [{ file, args }] = calls;
+  assert.equal(file, 'claude');
+  assert.deepEqual(args.slice(0, 2), ['-p', '/usage'], 'still the same command, so the output parses as before');
+  assert.ok(args.includes('--strict-mcp-config'), 'only servers named by --mcp-config, and none are');
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'manual', "never the user's own default mode");
 });
 
 test('collectAgents parses the JSON array', async () => {
