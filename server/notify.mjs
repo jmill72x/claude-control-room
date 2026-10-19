@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { stampLines } from './lib/log-stamp.mjs';
 
 const exec = promisify(execFile);
 
@@ -83,10 +84,10 @@ export async function publishDiscord({ title, message, run = runPoster }) {
 export function runPoster(file, args, { input }) {
   return new Promise((resolve, reject) => {
     const child = execFile(file, args, { timeout: 6 * 60 * 1000 }, (err, stdout, stderr) => {
-      // Written as is: the poster's lines keep their own newlines, which
-      // console.log would double.
-      process.stdout.write(stdout);
-      process.stderr.write(stderr);
+      // Written as is, apart from the time at the start of each line: the
+      // poster's lines keep their own newlines, which console.log would double.
+      process.stdout.write(stampLines(stdout));
+      process.stderr.write(stampLines(stderr));
       if (err && typeof err.code !== 'number') reject(err);
       else resolve(err ? err.code : 0);
     });

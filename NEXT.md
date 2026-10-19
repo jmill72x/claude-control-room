@@ -51,7 +51,10 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   its own `/api/health` every minute and exits after three failures in a row, so
   launchd restarts it (see the README), but that watchdog has never been seen firing
   for real. Next step: look for `watchdog:` lines in `~/Library/Logs/control-room.log`;
-  the first one is the moment to dig into the cause.
+  the first one is the moment to dig into the cause. Since 2026-10-19 (once the service
+  restarts on that code) every log line starts with its UTC time, so a `watchdog:` line
+  can be lined up against the `control room on` restart after it, the Mac's sleep and
+  wake (`pmset -g log`) and the system log for the same minutes.
 
 - **P3: `cachedUsageUtilization` vanished from `~/.claude.json` for ten minutes.** On
   2026-10-08, after Claude Code auto-updated itself to 2.1.295, the cached usage
@@ -59,10 +62,6 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   back. The panel stayed honest, showing the last good figures marked stale. Cause
   unknown; watch for a repeat, especially the morning after a CLI update.
 
-- **P3: the web page's cron sort is inconsistent for unknown-state crons.** The
-  comparator in `web/src/App.jsx` gives no consistent answer when one cron's `ok` is
-  `undefined` (unknown) and the other's is `false`, so their order depends on the
-  browser. Harmless until an ingest poster exists. The mod uses a fixed order.
 
 ## 3. Known-unknowable data (don't go looking for these)
 
@@ -179,35 +178,55 @@ done.
 
 Jeff asked "How can we improve the control panel?" on the day Jarvis went live. Jarvis now
 writes the board several times a day, the agents run as subagents of one Jarvis session,
-and Jeff reads mostly from an iPad or iPhone. Ranked, all read-only findings, nothing built:
+and Jeff reads mostly from an iPad or iPhone. Ranked. Items 1, 2 and 7 and the cron sort
+bug were built the same day (staged, waiting for Jeff's C&P and a service restart):
 
-1. **Stop a stale tab from reverting Jarvis's board edits** (bug, S–M). `Lanes.jsx` reads
-   `/api/todos` once on mount and every edit PUTs its whole in-memory list, and the PUT has
-   no version check. Jarvis saved 5 boards between 11:57 and 13:38 on 10-19, so one tap in
-   an iPad tab opened that morning silently reverts all of them (the 10-07 mechanism, now
-   routine). Fix: a board revision (ETag/If-Match), a 409 that reloads the list, and a
-   re-read when the tab regains focus. The 20 rolling copies make it recoverable, not safe.
-2. **Board first on the phone** (S). Below 1024px the grid becomes one column, so the board
-   Jeff reads most sits under every usage panel and the Projects column. Put column 03 first
-   (CSS `order`) or add a three-tab switcher at phone width.
+1. **Done (2026-10-19): a stale tab can no longer revert Jarvis's board edits.** The board
+   has a revision (a hash of `todos.json`), sent as an `ETag`; a PUT with an old
+   `If-Match` gets 409 and writes nothing, and the page re-reads the board on a 409, when
+   the tab comes back into view, and every minute while visible. A PUT with no `If-Match`
+   still writes (curl, Jarvis, the mod); one from a browser gets 428, which stops tabs
+   loaded before the change. README, "Two writers, one board". Tests:
+   `server/test/board-revision.test.mjs`. Left open: the mod still PUTs without
+   `If-Match` (it re-reads just before writing, so its window is milliseconds); making it
+   send the ETag from that GET is a few lines in `saveTodos()` plus a `claude plugin test`
+   run.
+2. **Done (2026-10-19): the board is first below 1024px** (CSS `order` on column 03; the
+   keyboard order is unchanged). Checked at 390, 820 and 1440 px against a test server.
 3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
    "linkedin-post-agent" and 31% of the week's tokens land in "Projects". Each subagent
    transcript has a `.meta.json` with `agentType` and the brief's `description` (checked
    10-19), so the server can show, per agent, its last run, what it was asked and its tokens.
-4. **Watch the always-on services** (S–M). `collectors/crons.mjs` keeps only plists with a
-   schedule, so `com.jeff.jarvis` (Jarvis itself), this service, `cloudflared` and
-   `linkedin-review` never appear. Show their PID and last exit from `launchctl list`, and
-   alert #pepper when Jarvis has no PID. Read-only, so it stays within Vision's scope.
+   Plan: `collectors/sessions.mjs` already walks the transcripts; read the sibling
+   `agent-*.meta.json`, attribute tokens by `agentType` instead of cwd, and add an
+   `agents` block to `/api/dashboard` (name, last run, last description, tokens this week).
+4. **Watch the always-on services** (S–M, not built). `collectors/crons.mjs` keeps only
+   plists with a schedule, so the always-on ones never appear. Checked 10-19:
+   `control-room`, `cloudflared.mini` and `linkedin-review` are `KeepAlive` and show a PID
+   in `launchctl list`, so "PID and last exit" works for them. **`com.jeff.jarvis` is not:**
+   it is `KeepAlive false`, runs `jarvis/bin/jarvis-start` once at load and exits, so it
+   shows no PID while Jarvis is perfectly alive. Its "is Jarvis up" signal has to come from
+   Jarvis (a heartbeat file he touches, or a process match on his session), which is a
+   decision for Jarvis/Vision before the alert is built. Plan: a `services` collector
+   listing `KeepAlive` plists from the same directory with PID, last exit and, for a
+   one-shot launcher, the agreed heartbeat; a "Services" block in column 02; a #pepper
+   alert only once the Jarvis signal exists.
 5. **Board fields for a co-owned board** (M). Add `created` (the P3 item on the board), an
    optional `owner` (agent name) and a done-lane archive (37 of 86 items are done). There is
    no Control Room tag: this dashboard's items sit under Bug, Feature and Infra, so the board
-   can't group them.
+   can't group them. Plan: the store stamps `created` on items that lack it (never
+   overwrites it); `owner` is a free-text field the page shows as a chip; "archive" moves
+   done items older than 14 days into `todos-archive.json` behind a "show archived" link.
 6. **Source health / `/control-room doctor`** (M, §5 above). Also serve it as a small JSON
    status Jarvis can read for the morning brief, so "is the dashboard right?" is one GET.
-7. **Timestamp the service log** (S). `~/Library/Logs/control-room.log` has 51 bare
-   "control room on" starts and no times, so neither a restart nor a future `watchdog:` line
-   can be dated, which blocks the P2 listener-loss investigation in §2.
+7. **Done (2026-10-19): the service log is timestamped.** Every `console` line and the
+   Discord poster's output start with the UTC time (`server/lib/log-stamp.mjs`). This
+   unblocks the listener-loss item in §2 the next time it happens.
 
-Smaller rough edges seen the same day: the board's "push alerts have reached no one" P3 item
-is stale (alerts post to #pepper since `4a50a5b`; the log shows 3 posts, and
-`server/data/notified.json` now exists); the HTTPS item on the board has no priority.
+Also done the same day: the web page's cron sort (failed, then unknown, then the rest by
+next run, the mod's order, in `sortCrons()` in `web/src/lib/format.js`); before, an
+ingested cron with no `ok` ranked before or after a failure depending on the browser.
+
+Still open from the same day's look: the board's "Control Room alerts post to #pepper"
+P3 item is an observation, not a bug (alerts post; the ntfy question is Jarvis's Task 24),
+so it can go to done; the HTTPS item on the board has no priority.

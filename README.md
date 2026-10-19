@@ -40,7 +40,7 @@ never a zero or an empty bar standing in for missing data.
 | Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
 | Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
+| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Below 1024px wide it is the first column on screen. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes
@@ -343,7 +343,9 @@ hung, the page loaded blank, and nothing was logged. The cause was not identifia
 the logs. Now the server requests its own `/api/health` every minute; three consecutive
 failures, or the listener closing, make it log the reason and exit, and the plist's
 `KeepAlive` brings it back within seconds. A `watchdog:` line in the log means this
-happened.
+happened. Every line in the log starts with its UTC time (ISO 8601), the Discord
+poster's lines included, so a restart (`control room on …`) or a watchdog exit can be
+dated; lines written before 2026-10-19 have no time.
 
 ### Undo a bad board write
 
@@ -360,8 +362,40 @@ node server/restore-todos.mjs todos-20261017T175800123Z.json    # put that copy 
 ```
 
 A restore is checked like any other write and keeps the board it replaces first, so it
-can be undone the same way. The server needs no restart, but reload any page that has the
-board open before editing there: the page still holds the old list and would write it back.
+can be undone the same way. The server needs no restart, and an open page can no longer
+write its old list back over the restore (see the next section).
+
+### Two writers, one board: the revision check
+
+The page used to read the board once and PUT its whole copy on every tap, so a tab left
+open on the iPad silently undid every write made since it loaded (Jarvis's included).
+Now the board has a revision: a hash of `server/todos.json` as it sits on disk.
+
+- `GET /api/todos` answers with the bare list, as before, plus `ETag: "<revision>"` and
+  `Cache-Control: no-store`.
+- `PUT /api/todos` with `If-Match: "<revision>"` lands only if the board is still at that
+  revision; otherwise it is refused with **409** `{error, revision}` and nothing is
+  written. A successful PUT answers with the new `ETag`.
+- **A PUT with no `If-Match` still writes**, unconditionally: that is how curl, Jarvis's
+  GET → modify → PUT block and the Claude Code mod write, and none of them needs to
+  change. The exception is a PUT from a browser (it carries an `Origin` header) with no
+  `If-Match`: that can only be a page loaded before this check existed, so it gets
+  **428** and writes nothing; the old page then re-reads the board on its own.
+- The page sends `If-Match` on every save and sends saves one at a time. On a 409 it
+  re-reads the board and says the change was not saved. It also re-reads the board when
+  the tab comes back into view and every minute while it is visible.
+
+A script that wants the same protection reads the `ETag` from its GET and sends it back:
+
+```bash
+tag=$(curl -sD - -o board.json http://127.0.0.1:8322/api/todos | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
+# … edit board.json …
+curl -s -X PUT -H 'Content-Type: application/json' -H "If-Match: $tag" \
+  --data-binary @board.json http://127.0.0.1:8322/api/todos   # 409 = someone saved first: GET again
+```
+
+The revision is a hash of the file, so it survives a restart, and a restore or a hand
+edit of `todos.json` changes it like any other write.
 
 ### Remote access
 

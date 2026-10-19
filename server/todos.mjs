@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath } from 'node:fs/promises';
 import { dirname, join, basename, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 
 const LANES = new Set(['idea', 'doing', 'done']);
 // Priority is optional: absent or null means "not set", and the UI renders
@@ -17,6 +17,23 @@ const COPY = /^todos-\d{8}T\d{9}Z\.json$/;
 // Numbers every temp file this process writes (see write()). Module-wide, not
 // per store, because two stores in one process can share a path.
 let tmpSeq = 0;
+// A board's revision is a hash of the bytes on disk, so it needs no state of
+// its own: it survives a restart, a restore-todos.mjs run changes it like any
+// other write, and two servers reading one file agree on it. A board that does
+// not exist yet has the revision null.
+export const revisionOf = raw => createHash('sha256').update(raw).digest('hex').slice(0, 16);
+
+// Raised by save() when the caller's revision is not the board's. It carries
+// the board's current revision so the route can hand it back.
+export class StaleRevisionError extends Error {
+  constructor(expected, current) {
+    super(`the board changed since revision ${expected} was read (it is now ${current ?? 'empty'}); re-read it and apply the change again`);
+    this.code = 'STALE_REVISION';
+    this.expected = expected;
+    this.current = current;
+  }
+}
+
 const SEED = [
   { id: 1, text: 'Route bulk transcript cleanup to Haiku — Sonnet is overkill', lane: 'idea', tag: 'Usage' },
   { id: 2, text: 'Cron: weekly digest of all Cowork project status', lane: 'idea', tag: 'Crons' },
@@ -99,111 +116,164 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
     await Promise.all(surplus.map(f => unlink(join(historyDir, f)).catch(() => {})));
   };
 
-  return {
-    async read() {
-      let raw;
-      try {
-        raw = await readFile(path, 'utf8');
-      } catch (err) {
-        // Only a file that genuinely is not there gets seeded. The old blanket
-        // catch also swallowed EACCES and every parse failure, and answered by
-        // WRITING the seed over the user's backlog — destroying real work and
-        // replacing it with three invented items that look exactly like real
-        // ones.
-        if (err.code === 'ENOENT') {
-          // A corrupt file that was just renamed aside also leaves nothing at
-          // `path` — indistinguishable from a genuine first run by ENOENT
-          // alone. Seeding here would bury the backlog we just went out of
-          // our way to preserve under three invented items, with nothing on
-          // screen ever saying so. Only seed when no aside is on record.
-          const siblings = await readdir(dirname(path)).catch(() => []);
-          const asides = siblings.filter(f => f.startsWith(asidePrefix(path))).sort();
-          if (asides.length > 0) {
-            const latest = asides[asides.length - 1];
-            throw new Error(
-              `the to-do list is missing, but a previously corrupted version was set aside as ${latest} — ` +
-              `nothing has replaced it, so the list is not being reseeded over it`
-            );
-          }
-          await this.write(SEED);
-          return SEED;
-        }
-        throw new Error(`could not read the to-do list: ${err.message}`);
-      }
+  // Every write in this process goes through one queue, so the revision check
+  // in save() and the rename that follows it cannot interleave with another
+  // write: a check that passed is still true when the board is replaced. A
+  // failed write does not jam the queue.
+  let queue = Promise.resolve();
+  const serial = fn => {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
+  };
+  const currentRevision = async () => {
+    try {
+      return revisionOf(await readFile(path));
+    } catch (err) {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    }
+  };
 
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) throw new Error('the file does not contain a list');
-      } catch (err) {
-        // Preserve the damaged file — it is the only copy of the backlog — and
-        // report the problem rather than papering over it. Date.now() alone is
-        // not collision-proof: two corruptions landing in the same millisecond
-        // produce the same aside name, and plain rename() silently replaces
-        // whatever already sits there — the second "preserve" destroying the
-        // first. A random suffix, written with an exclusive create (refuses to
-        // overwrite an existing file), makes the name unique and makes
-        // clobbering an already-preserved aside impossible rather than just
-        // unlikely.
-        let aside = null;
-        for (let attempt = 0; attempt < 5 && !aside; attempt++) {
-          const candidate = join(dirname(path), `${asidePrefix(path)}${Date.now()}-${randomBytes(4).toString('hex')}`);
-          try {
-            await writeFile(candidate, raw, { flag: 'wx' });
-            aside = candidate;
-          } catch (writeErr) {
-            if (writeErr.code !== 'EEXIST') break; // nothing more we can do
-          }
+  // The write itself. Only ever called from inside serial().
+  const writeUnlocked = async todos => {
+    if (!Array.isArray(todos)) throw new Error('todos must be an array');
+    for (const t of todos) {
+      if (!LANES.has(t.lane)) throw new Error(`unknown lane: ${t.lane}`);
+      if (t.priority != null && !PRIORITIES.has(t.priority)) throw new Error(`unknown priority: ${t.priority}`);
+    }
+    const unified = unifyTags(todos);
+    await mkdir(dirname(path), { recursive: true });
+    // Write-then-rename: a crash or a full disk part-way through a direct
+    // writeFile leaves exactly the truncated JSON that used to trigger the
+    // seed-over-the-top path above. A rename within one directory is atomic,
+    // so what is on disk is always a complete list — the old one or the new.
+    // Each write needs a temp file of its own for that to hold. pid + time
+    // alone was shared by two writes in the same millisecond: both wrote
+    // into the one file, the first rename could put a torn list in place,
+    // and the second found its temp file gone. The counter tells apart the
+    // writes of one process, the pid tells apart processes (the server and
+    // restore-todos.mjs), so no two live writers can share a name.
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`;
+    const text = JSON.stringify(unified, null, 2);
+    try {
+      await writeFile(tmp, text);
+      // The copy is the last step before the rename, so it holds the board
+      // this rename replaces. Only a second write renaming in between can
+      // make them differ: both then keep the same board, and the one renamed
+      // first is replaced an instant later without a copy. Within this
+      // process serial() rules that out; a second process (restore-todos.mjs)
+      // writing at the same instant still could. If no copy can be made, the
+      // board is left alone: replacing it with nothing kept is the
+      // unrecoverable write this exists to prevent, and a refused write says
+      // so out loud where a skipped copy would say nothing until the copy was
+      // needed.
+      await keepCopy().catch(err => {
+        throw new Error(`could not keep a copy of the board before replacing it, so it was not replaced: ${err.message}`);
+      });
+      await rename(tmp, path);
+    } catch (err) {
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
+    await prune();
+    return { todos: unified, revision: revisionOf(text) };
+  };
+
+  // Reads the board and its revision from one read of the file.
+  const load = async () => {
+    let raw;
+    try {
+      raw = await readFile(path, 'utf8');
+    } catch (err) {
+      // Only a file that genuinely is not there gets seeded. The old blanket
+      // catch also swallowed EACCES and every parse failure, and answered by
+      // WRITING the seed over the user's backlog — destroying real work and
+      // replacing it with three invented items that look exactly like real
+      // ones.
+      if (err.code === 'ENOENT') {
+        // A corrupt file that was just renamed aside also leaves nothing at
+        // `path` — indistinguishable from a genuine first run by ENOENT
+        // alone. Seeding here would bury the backlog we just went out of
+        // our way to preserve under three invented items, with nothing on
+        // screen ever saying so. Only seed when no aside is on record.
+        const siblings = await readdir(dirname(path)).catch(() => []);
+        const asides = siblings.filter(f => f.startsWith(asidePrefix(path))).sort();
+        if (asides.length > 0) {
+          const latest = asides[asides.length - 1];
+          throw new Error(
+            `the to-do list is missing, but a previously corrupted version was set aside as ${latest} — ` +
+            `nothing has replaced it, so the list is not being reseeded over it`
+          );
         }
-        if (aside) await unlink(path).catch(() => {});
-        throw new Error(
-          aside
-            ? `the to-do list could not be parsed (${err.message}); the file has been kept as ${basename(aside)}`
-            : `the to-do list could not be parsed (${err.message}); it could not be preserved either`
-        );
+        return serial(() => writeUnlocked(SEED));
       }
-      return parsed;
+      throw new Error(`could not read the to-do list: ${err.message}`);
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('the file does not contain a list');
+    } catch (err) {
+      // Preserve the damaged file — it is the only copy of the backlog — and
+      // report the problem rather than papering over it. Date.now() alone is
+      // not collision-proof: two corruptions landing in the same millisecond
+      // produce the same aside name, and plain rename() silently replaces
+      // whatever already sits there — the second "preserve" destroying the
+      // first. A random suffix, written with an exclusive create (refuses to
+      // overwrite an existing file), makes the name unique and makes
+      // clobbering an already-preserved aside impossible rather than just
+      // unlikely.
+      let aside = null;
+      for (let attempt = 0; attempt < 5 && !aside; attempt++) {
+        const candidate = join(dirname(path), `${asidePrefix(path)}${Date.now()}-${randomBytes(4).toString('hex')}`);
+        try {
+          await writeFile(candidate, raw, { flag: 'wx' });
+          aside = candidate;
+        } catch (writeErr) {
+          if (writeErr.code !== 'EEXIST') break; // nothing more we can do
+        }
+      }
+      if (aside) await unlink(path).catch(() => {});
+      throw new Error(
+        aside
+          ? `the to-do list could not be parsed (${err.message}); the file has been kept as ${basename(aside)}`
+          : `the to-do list could not be parsed (${err.message}); it could not be preserved either`
+      );
+    }
+    return { todos: parsed, revision: revisionOf(raw) };
+  };
+
+  const store = {
+    // The board and its revision, both from one read of the file, so a write
+    // landing in between can never pair an old list with a new revision.
+    async readState() {
+      return load();
+    },
+
+    // A write that says which revision it was made from. With `ifMatch` set
+    // (a revision, or a list of them), the board is replaced only if it is
+    // still at that revision; otherwise StaleRevisionError, and nothing is
+    // written. Without it, this is a plain write: that is how curl, Jarvis's
+    // GET-modify-PUT and the Claude Code mod write, and they keep working.
+    async save(todos, { ifMatch = null } = {}) {
+      return serial(async () => {
+        if (ifMatch !== null) {
+          const wanted = Array.isArray(ifMatch) ? ifMatch : [ifMatch];
+          const current = await currentRevision();
+          if (!wanted.includes(current)) throw new StaleRevisionError(wanted[0], current);
+        }
+        return writeUnlocked(todos);
+      });
+    },
+
+    async read() {
+      return (await load()).todos;
     },
 
     async write(todos) {
-      if (!Array.isArray(todos)) throw new Error('todos must be an array');
-      for (const t of todos) {
-        if (!LANES.has(t.lane)) throw new Error(`unknown lane: ${t.lane}`);
-        if (t.priority != null && !PRIORITIES.has(t.priority)) throw new Error(`unknown priority: ${t.priority}`);
-      }
-      const unified = unifyTags(todos);
-      await mkdir(dirname(path), { recursive: true });
-      // Write-then-rename: a crash or a full disk part-way through a direct
-      // writeFile leaves exactly the truncated JSON that used to trigger the
-      // seed-over-the-top path above. A rename within one directory is atomic,
-      // so what is on disk is always a complete list — the old one or the new.
-      // Each write needs a temp file of its own for that to hold. pid + time
-      // alone was shared by two writes in the same millisecond: both wrote
-      // into the one file, the first rename could put a torn list in place,
-      // and the second found its temp file gone. The counter tells apart the
-      // writes of one process, the pid tells apart processes (the server and
-      // restore-todos.mjs), so no two live writers can share a name.
-      const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`;
-      try {
-        await writeFile(tmp, JSON.stringify(unified, null, 2));
-        // The copy is the last step before the rename, so it holds the board
-        // this rename replaces. Only a second write renaming in between can
-        // make them differ: both then keep the same board, and the one renamed
-        // first is replaced an instant later without a copy; closing that
-        // would take a lock. If no copy can be made, the board is left alone:
-        // replacing it with nothing kept is the unrecoverable write this
-        // exists to prevent, and a refused write says so out loud where a
-        // skipped copy would say nothing until the copy was needed.
-        await keepCopy().catch(err => {
-          throw new Error(`could not keep a copy of the board before replacing it, so it was not replaced: ${err.message}`);
-        });
-        await rename(tmp, path);
-      } catch (err) {
-        await unlink(tmp).catch(() => {});
-        throw err;
-      }
-      await prune();
-      return unified;
+      return (await serial(() => writeUnlocked(todos))).todos;
     },
 
     // The copies on record, newest first, each with its item count — or, for
@@ -248,11 +318,12 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
       const home = await realpath(historyDir).catch(() => null);
       if (dirname(target) !== home) throw new Error(`refusing ${file}: only a copy in ${historyDir} can be restored`);
       try {
-        const written = await this.write(JSON.parse(await readFile(target, 'utf8')));
+        const written = await store.write(JSON.parse(await readFile(target, 'utf8')));
         return { file: basename(target), items: written.length };
       } catch (err) {
         throw new Error(`${basename(target)} was not restored: ${err.message}`);
       }
     }
   };
+  return store;
 }

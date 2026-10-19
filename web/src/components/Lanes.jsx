@@ -32,6 +32,25 @@ const readGroupBy = () => {
 };
 const writeGroupBy = v => { try { localStorage.setItem(GROUP_KEY, v); } catch { /* per-viewer convenience only */ } };
 
+// While the tab is open and visible, the board is re-read this often, so a
+// page left open on the iPad catches up with Jarvis's writes without a tap.
+const REFRESH_MS = 60 * 1000;
+const STALE_MESSAGE = 'The board changed elsewhere, so that change was not saved. This is the current board; make it again.';
+
+// `.then(r => r.json())` accepted any body the server sent, including a 500's
+// `{error}` object, which then reached `todos.filter` and threw during render —
+// taking the entire page down. Check the status, then check the shape.
+async function fetchBoard() {
+  const res = await fetch('/api/todos', { cache: 'no-store' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+  const body = await res.json();
+  if (!Array.isArray(body)) throw new Error('the server did not return a list');
+  return { list: body, etag: res.headers.get('ETag') };
+}
+
 export function Lanes() {
   const [todos, setTodos] = useState([]);
   const [error, setError] = useState(null);
@@ -48,41 +67,108 @@ export function Lanes() {
   // guard the second one saves a stale draft over the first one's result.
   const committing = useRef(false);
 
-  // `.then(r => r.json())` accepted any body the server sent, including a 500's
-  // `{error}` object, which then reached `todos.filter` and threw during render —
-  // taking the entire page down. Check the status, then check the shape.
+  // The board's revision (its ETag) as of the list on screen. Every save sends
+  // it as If-Match, and the server refuses a save made from an older board
+  // with a 409, so a tab opened this morning can no longer write its copy over
+  // the boards Jarvis saved since (NEXT.md §8.1).
+  const etag = useRef(null);
+  // Bumped whenever the list on screen is replaced from the server. A save
+  // queued behind one that failed was made from the list that was just
+  // replaced, so it is dropped rather than sent with the new revision.
+  const epoch = useRef(0);
+  // Saves go out one at a time, each with the revision the one before it
+  // returned; two in flight at once would refuse each other.
+  const chain = useRef(Promise.resolve());
+  const inFlight = useRef(0);
+
+  const adopt = ({ list, etag: tag }) => {
+    etag.current = tag;
+    epoch.current += 1;
+    setTodos(list);
+    setLoaded(true);
+  };
+
+  // Re-read the board, unless a save is under way (its answer brings the
+  // revision) or nothing has changed since the last read.
+  const refresh = async () => {
+    if (inFlight.current > 0) return;
+    try {
+      const board = await fetchBoard();
+      if (inFlight.current > 0) return;
+      if (board.etag && board.etag === etag.current) return;
+      adopt(board);
+      setError(e => (e?.startsWith('could not load') ? null : e));
+    } catch {
+      // A failed background re-read leaves the list as it is; the next save
+      // or the first load says what is wrong.
+    }
+  };
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/todos');
-        if (!res.ok) {
-          const body = await res.json().catch(() => null);
-          throw new Error(body?.error ?? `HTTP ${res.status}`);
-        }
-        const body = await res.json();
-        if (!Array.isArray(body)) throw new Error('the server did not return a list');
-        if (!cancelled) { setTodos(body); setLoaded(true); setError(null); }
+        const board = await fetchBoard();
+        if (!cancelled) { adopt(board); setError(null); }
       } catch (e) {
         if (!cancelled) setError(`could not load: ${e.message}`);
       }
     })();
-    return () => { cancelled = true; };
+    // Coming back to the tab (switching apps on the iPad, waking the screen,
+    // returning to a page from history) re-reads the board, and so does a
+    // slow timer while the tab is in view.
+    const onShow = () => { if (document.visibilityState === 'visible') refreshRef.current(); };
+    document.addEventListener('visibilitychange', onShow);
+    window.addEventListener('focus', onShow);
+    window.addEventListener('pageshow', onShow);
+    const timer = setInterval(onShow, REFRESH_MS);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onShow);
+      window.removeEventListener('focus', onShow);
+      window.removeEventListener('pageshow', onShow);
+      clearInterval(timer);
+    };
   }, []);
 
   // Returns true/false so callers (the Enter-to-add input) know whether the
   // write actually landed — an optimistic update that always looks like a
   // success would let a failed add clear the field as if it had saved.
-  const save = async next => {
+  const save = next => {
     const previous = todos;
+    const madeAt = epoch.current;
     setTodos(next); // optimistic
+    inFlight.current += 1;
+    const run = chain.current.then(() => send(next, previous, madeAt));
+    chain.current = run.catch(() => {});
+    return run.finally(() => { inFlight.current -= 1; });
+  };
+
+  const send = async (next, previous, madeAt) => {
+    // The list this save was made from has been replaced since (an earlier
+    // save was refused and the board re-read): it is not sent.
+    if (epoch.current !== madeAt) return false;
     try {
       const res = await fetch('/api/todos', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // No revision on record means the board was empty when read; `*`
+          // still marks this as a page that checks revisions.
+          'If-Match': etag.current ?? '*'
+        },
         body: JSON.stringify(next)
       });
+      if (res.status === 409 || res.status === 428) {
+        // Someone else saved first. Show what the server holds now.
+        try { adopt(await fetchBoard()); } catch { setTodos(previous); }
+        setError(STALE_MESSAGE);
+        return false;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      etag.current = res.headers.get('ETag') ?? etag.current;
       setError(null);
       return true;
     } catch (e) {
@@ -97,12 +183,7 @@ export function Lanes() {
       // write landed at all and the pre-request snapshot is correct — this
       // is exactly the server-down case, so that path is unchanged.
       try {
-        const res = await fetch('/api/todos');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = await res.json();
-        if (!Array.isArray(body)) throw new Error('not a list');
-        setTodos(body);
-        setLoaded(true);
+        adopt(await fetchBoard());
       } catch {
         setTodos(previous); // server unreachable: no write landed, snapshot is correct
       }

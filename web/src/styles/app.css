@@ -57,10 +57,14 @@
 .ccr-lane-seg:hover { background: var(--n200); }
 .ccr-lane-seg[aria-pressed="true"]:hover { background: var(--ink); }
 
-/* iPad portrait and below: one column, rules dropped. */
+/* iPad portrait and below: one column, rules dropped. The board (column 03)
+   moves to the top: it is what Jeff reads most on the iPad and phone, and in
+   source order it sat under every usage panel and the Projects column. Only
+   the visual order changes; the keyboard still walks 01, 02, 03. */
 @media (max-width: 1024px) {
   .ccr-grid { grid-template-columns: 1fr; }
   .ccr-col--ruled { border-right: 0; border-bottom: var(--rule-strong); }
+  .ccr-col--board { order: -1; border-bottom: var(--rule-strong); }
 }
 
 /* Phone: tighten padding and type, stats sit under the title. */

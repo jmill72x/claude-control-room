@@ -22,6 +22,10 @@ import { createWatchdog } from './lib/watchdog.mjs';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildProjects, agentsReadable } from './lib/projects.mjs';
+import { installLogStamps } from './lib/log-stamp.mjs';
+
+// Before anything logs, so every line in the service log carries its time.
+installLogStamps();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8322);

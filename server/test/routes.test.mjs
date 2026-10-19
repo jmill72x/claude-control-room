@@ -37,7 +37,12 @@ const call = async (handler, method, url, body, headers = {}) => {
 
 const deps = () => {
   const cache = createCache();
-  const todos = { read: async () => [], write: async () => {} };
+  const todos = {
+    read: async () => [],
+    write: async () => {},
+    readState: async () => ({ todos: await todos.read(), revision: null }),
+    save: async (list, opts) => ({ todos: (await todos.write(list, opts)) ?? list, revision: null })
+  };
   return {
     cache,
     todos,

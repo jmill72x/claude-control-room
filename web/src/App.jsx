@@ -19,7 +19,7 @@ import { ProjectRows } from './components/ProjectRows.jsx';
 import { CronRows } from './components/CronRows.jsx';
 import { DriversPanel } from './components/DriversPanel.jsx';
 import { Lanes } from './components/Lanes.jsx';
-import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf, cronState } from './lib/format.js';
+import { formatTokens, billingCycleNote, summaryOrDash, arrayFrom, envelopeOf, cronState, sortCrons } from './lib/format.js';
 
 // Polling is every 30s. Three minutes of silence without a fetch error means the
 // tab was suspended or the machine slept — the numbers on screen are real but no
@@ -80,8 +80,7 @@ export default function App() {
   const cronsEnv = payload?.crons;
   const launchdCrons = arrayFrom(cronsEnv);
   const ingestCrons = arrayFrom(payload?.ingestCrons);
-  const crons = [...launchdCrons.items, ...ingestCrons.items]
-    .sort((a, b) => (a.ok === b.ok ? (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) : a.ok ? 1 : -1));
+  const crons = sortCrons([...launchdCrons.items, ...ingestCrons.items]);
   // `!c.ok` counted a cron whose state is unknown as a confirmed failure. And a
   // total that silently includes unknown-state jobs overstates what "N failing"
   // was checked against, so the unknowns are named — the counterpart of the
@@ -230,7 +229,7 @@ export default function App() {
           )}
           {crons.length > 0 && <CronRows crons={crons} now={now} />}
         </section>
-        <section className="ccr-col">
+        <section className="ccr-col ccr-col--board">
           <div className="ccr-col-head"><h2>03&nbsp;&nbsp;Ideas &amp; to-dos</h2><span>Saved on the mini</span></div>
           <Lanes />
         </section>

@@ -112,3 +112,19 @@ export function cronState(c) {
   if (c.ok === true) return 'ok';
   return 'unknown';
 }
+
+// Failing first, then unknown, then the rest, each by next run, the same
+// order the Claude Code mod uses (mod/hooks/model.js). The old comparator
+// tested `a.ok === b.ok`, so an ingested cron with no `ok` at all ranked
+// before a failure or after it depending on which side of the comparison it
+// was on: not a consistent order, so its place depended on the browser's sort.
+const CRON_ORDER = { failed: 0, unknown: 1, never: 2, ok: 2 };
+export function sortCrons(list) {
+  return list
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) =>
+      CRON_ORDER[cronState(a.c)] - CRON_ORDER[cronState(b.c)] ||
+      (a.c.nextRunAt ?? Infinity) - (b.c.nextRunAt ?? Infinity) ||
+      a.i - b.i)
+    .map(x => x.c);
+}

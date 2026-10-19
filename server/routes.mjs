@@ -1,14 +1,15 @@
 import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
+import { StaleRevisionError } from './todos.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
 // was read into memory in full.
 const MAX_BODY = 256 * 1024;
 
-const json = (res, code, body) => {
-  res.writeHead(code, { 'Content-Type': 'application/json' });
+const json = (res, code, body, headers = {}) => {
+  res.writeHead(code, { 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify(body));
 };
 
@@ -79,6 +80,29 @@ const guardWrite = req => {
   if (!isJson(req)) throw new HttpError(415, 'Content-Type must be application/json');
 };
 
+// The board's revision travels as an HTTP entity tag, so the body stays the
+// bare list it has always been: a plain `curl` GET-modify-PUT never sees it.
+const etag = revision => (revision ? `"${revision}"` : null);
+const boardHeaders = revision => ({
+  // A tab that re-reads the board must get the board, never a cached copy.
+  'Cache-Control': 'no-store',
+  ...(revision ? { ETag: etag(revision) } : {})
+});
+
+// If-Match as RFC 9110 writes it: `*`, or a comma list of entity tags, each
+// possibly weak (`W/"…"`). Returns null when the header is absent, 'any' for
+// `*`, else the list of revisions it names.
+export function parseIfMatch(header) {
+  if (header === undefined || header === null) return null;
+  const value = String(header).trim();
+  if (value === '') return null;
+  if (value === '*') return 'any';
+  const tags = [...value.matchAll(/(?:W\/)?"([^"]*)"/g)].map(m => m[1]);
+  // A header that names no well-formed tag still asked for a check; it can
+  // match nothing, so it gets a 409 rather than being read as "no check".
+  return tags.length ? tags : [''];
+}
+
 const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits'];
 
 export function createHandler({ cache, todos, config }) {
@@ -123,10 +147,31 @@ export function createHandler({ cache, todos, config }) {
       }
 
       if (path === '/api/todos') {
-        if (req.method === 'GET') return json(res, 200, await todos.read());
+        if (req.method === 'GET') {
+          const { todos: list, revision } = await todos.readState();
+          return json(res, 200, list, boardHeaders(revision));
+        }
         if (req.method === 'PUT') {
           guardWrite(req);
-          return json(res, 200, await todos.write(await readBody(req)));
+          const ifMatch = parseIfMatch(req.headers?.['if-match']);
+          // A browser always sends Origin on a PUT; curl, Node's and Bun's
+          // fetch (Jarvis, the Claude Code mod) do not. So a browser write
+          // with no revision is a page built before revisions existed, the
+          // very stale tab that kept reverting Jarvis's edits: refuse it.
+          // Its old code re-reads the board on any failed save, so the tab
+          // shows the current board instead of saving its old one.
+          if (ifMatch === null && req.headers?.origin) {
+            throw new HttpError(428, 'this page is out of date: reload it before editing the board');
+          }
+          const body = await readBody(req);
+          try {
+            const saved = await todos.save(body, { ifMatch: Array.isArray(ifMatch) ? ifMatch : null });
+            return json(res, 200, saved.todos, boardHeaders(saved.revision));
+          } catch (err) {
+            if (!(err instanceof StaleRevisionError)) throw err;
+            return json(res, 409, { error: 'the board changed since this copy was read', revision: err.current },
+              boardHeaders(err.current));
+          }
         }
       }
 
