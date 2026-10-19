@@ -198,7 +198,7 @@ export default function App() {
             <DriversPanel factors={payload?.usage?.data?.factors} window="7d" />
           </Panel>
         </section>
-        <section className="ccr-col ccr-col--ruled">
+        <section className="ccr-col ccr-col--ruled ccr-col--projects">
           <div className="ccr-col-head">
             <h2>02&nbsp;&nbsp;Projects</h2>
             <span className="num">{summaryOrDash(sessionsEnv, projectSummary)}</span>

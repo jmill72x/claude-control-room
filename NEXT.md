@@ -191,8 +191,13 @@ bug were built the same day (staged, waiting for Jeff's C&P and a service restar
    `If-Match` (it re-reads just before writing, so its window is milliseconds); making it
    send the ETag from that GET is a few lines in `saveTodos()` plus a `claude plugin test`
    run.
-2. **Done (2026-10-19): the board is first below 1024px** (CSS `order` on column 03; the
-   keyboard order is unchanged). Checked at 390, 820 and 1440 px against a test server.
+2. **Done (2026-10-19): the board is second below 1024px**, after Usage and ahead of
+   Projects. A board-first version went live that afternoon; Jeff saw it on his iPhone and
+   wanted "usage first ... the to dos as 2 instead of 3", so Projects now carries the CSS
+   `order` and drops to the end (the keyboard still walks 01, 02, 03). Checked at 390, 820
+   and 1440 px against a test server and on the live page at 390. The Usage column is about
+   1,800 px tall on a phone, so the board starts about two screens down; the redesign
+   Jeff may run (`/design`) is the place to shorten it. The labels still read 01, 03, 02.
 3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
    "linkedin-post-agent" and 31% of the week's tokens land in "Projects". Each subagent
    transcript has a `.meta.json` with `agentType` and the brief's `description` (checked
