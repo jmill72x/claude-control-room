@@ -16,6 +16,8 @@
 
   --a100: #fff2ef; --a200: #ffe0d9; --a300: #ffc4b8;
   --a500: #ff563c; --a600: #dd2b0f; --a700: #ae1800; --a800: #7c1405;
+  /* Due soon on the board: a quiet amber, darker than the page's red so the two never read as one. */
+  --warn: #a35f00;
 
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
   --rule-strong: 2px solid var(--ink);

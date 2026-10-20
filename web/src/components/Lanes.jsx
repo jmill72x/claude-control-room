@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTick } from '../hooks/useTick.js';
+import { byDue, dueChip, localToday } from '../lib/due.js';
 
 const LANES = [
   { key: 'idea', title: 'Idea', placeholder: '+ new idea', mark: ' ', next: 'doing', edge: 'var(--n400)', box: 'transparent' },
@@ -31,6 +33,22 @@ const readGroupBy = () => {
   try { return localStorage.getItem(GROUP_KEY) === 'tag' ? 'tag' : 'stage'; } catch { return 'stage'; }
 };
 const writeGroupBy = v => { try { localStorage.setItem(GROUP_KEY, v); } catch { /* per-viewer convenience only */ } };
+// "Sort by due" is the same kind of per-viewer choice. The default is the
+// board's usual order (priority, then the order items were added).
+const SORT_KEY = 'ccr.todos.sortBy';
+const readSortBy = () => {
+  try { return localStorage.getItem(SORT_KEY) === 'due' ? 'due' : 'priority'; } catch { return 'priority'; }
+};
+const writeSortBy = v => { try { localStorage.setItem(SORT_KEY, v); } catch { /* per-viewer convenience only */ } };
+
+// The due chip's colours. Overdue is the page's red; due soon is a quiet amber
+// outline, so it is noticed without competing with the red.
+const DUE_CHIP = {
+  overdue: { fg: 'var(--ground)', bg: 'var(--accent)', border: 'var(--accent)' },
+  soon: { fg: 'var(--warn)', bg: 'transparent', border: 'var(--warn)' },
+  later: { fg: 'var(--n700)', bg: 'transparent', border: 'var(--n300)' },
+  done: { fg: 'var(--n500)', bg: 'transparent', border: 'var(--n300)' }
+};
 
 // While the tab is open and visible, the board is re-read this often, so a
 // page left open on the iPad catches up with Jarvis's writes without a tap.
@@ -59,10 +77,14 @@ export function Lanes() {
   // print a confident 0 next to a load error.
   const [loaded, setLoaded] = useState(false);
   const [groupBy, setGroupBy] = useState(readGroupBy);
+  const [sortBy, setSortBy] = useState(readSortBy);
+  // Re-render once a minute so "today", and with it the overdue colour, turns
+  // over at midnight on a page left open.
+  const today = localToday(new Date(useTick(60 * 1000)));
   // The id being edited, and the draft being typed. `draft` is deliberately
   // separate from `todos` so Escape can restore without a server round-trip.
   const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ text: '', tag: '' });
+  const [draft, setDraft] = useState({ text: '', tag: '', due: '' });
   // Enter fires a commit, and the resulting blur fires another. Without a
   // guard the second one saves a stale draft over the first one's result.
   const committing = useRef(false);
@@ -207,7 +229,13 @@ export function Lanes() {
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const add = (lane, text) => save([...todos, { id: newId(), text, lane, tag: 'Note' }]);
+  // A due date is only written when one was picked: an item without one has no
+  // `due` key at all, the same shape it had before due dates existed.
+  const withDue = (t, due) => {
+    const { due: _dropped, ...rest } = t;
+    return due ? { ...rest, due } : rest;
+  };
+  const add = (lane, text, due) => save([...todos, withDue({ id: newId(), text, lane, tag: 'Note' }, due)]);
   const advance = (id, next) => save(todos.map(t => (t.id === id ? { ...t, lane: next } : t)));
   const remove = id => save(todos.filter(t => t.id !== id));
   const cyclePriority = id => save(todos.map(t => {
@@ -220,10 +248,11 @@ export function Lanes() {
   }));
 
   const chooseGroupBy = v => { setGroupBy(v); writeGroupBy(v); };
+  const chooseSortBy = v => { setSortBy(v); writeSortBy(v); };
 
   const beginEdit = t => {
     setEditingId(t.id);
-    setDraft({ text: t.text ?? '', tag: t.tag ?? '' });
+    setDraft({ text: t.text ?? '', tag: t.tag ?? '', due: t.due ?? '' });
   };
 
   const cancelEdit = () => {
@@ -233,7 +262,7 @@ export function Lanes() {
     // draft we just saved, or re-commit one the user just discarded with Escape.
     committing.current = true;
     setEditingId(null);
-    setDraft({ text: '', tag: '' });
+    setDraft({ text: '', tag: '', due: '' });
     setTimeout(() => { committing.current = false; }, 0);
   };
 
@@ -241,6 +270,7 @@ export function Lanes() {
     if (committing.current) return;
     const text = draft.text.trim();
     const tag = draft.tag.trim();
+    const due = draft.due;
     const original = todos.find(t => t.id === id);
 
     // Blanking the text and tabbing away must not erase the item — `×` is what
@@ -249,10 +279,15 @@ export function Lanes() {
 
     // Nothing changed: close without a write. A no-op PUT would still be a
     // write that could fail and raise an error banner for no reason.
-    if (text === original.text && tag === (original.tag ?? '')) { cancelEdit(); return; }
+    if (text === original.text && tag === (original.tag ?? '') && due === (original.due ?? '')) { cancelEdit(); return; }
 
     committing.current = true;
-    const ok = await save(todos.map(t => (t.id === id ? { ...t, text, tag } : t)));
+    const ok = await save(todos.map(t => {
+      if (t.id !== id) return t;
+      // An unchanged date is left exactly as it was on disk (even an empty
+      // string Jarvis wrote); a changed one is set, or its key dropped.
+      return due === (t.due ?? '') ? { ...t, text, tag } : withDue({ ...t, text, tag }, due);
+    }));
     // Stay in edit mode when the write failed, so what was typed is not lost.
     // `save()` has already reverted the list and shown the error. cancelEdit()
     // re-arms the guard and schedules its own release, so do NOT clear it here
@@ -264,6 +299,10 @@ export function Lanes() {
 
   // Sort is stable, so items of equal priority keep the order they were added in.
   const byPriority = (a, b) => rank(a.priority) - rank(b.priority);
+  // With "sort by due" on, dated items come first, soonest first, and the rest
+  // keep the usual order. Both sorts are stable, so this second pass only
+  // moves items whose dates differ.
+  const order = items => (sortBy === 'due' ? items.sort(byDue) : items);
 
   // Both views render the same group shape: a header, sorted items, and
   // optionally an add box. Grouping by stage is the three lanes. Grouping by
@@ -273,7 +312,7 @@ export function Lanes() {
   const groups = groupBy === 'stage'
     ? LANES.map(lane => ({
         key: lane.key, title: lane.title,
-        items: todos.filter(t => t.lane === lane.key).sort(byPriority),
+        items: order(todos.filter(t => t.lane === lane.key).sort(byPriority)),
         addLane: lane
       }))
     : (() => {
@@ -287,6 +326,8 @@ export function Lanes() {
         return [...map.values()]
           .map(g => {
             g.items.sort((a, b) => (a.lane === 'done') - (b.lane === 'done') || byPriority(a, b));
+            // Done items stay at the bottom of their tag whichever way it is sorted.
+            if (sortBy === 'due') g.items.sort((a, b) => (a.lane === 'done') - (b.lane === 'done') || byDue(a, b));
             const open = g.items.filter(t => t.lane !== 'done');
             g.best = open.length ? Math.min(...open.map(t => rank(t.priority))) : PRIORITIES.length + 1;
             return g;
@@ -294,42 +335,66 @@ export function Lanes() {
           .sort((a, b) => a.best - b.best || a.title.localeCompare(b.title));
       })();
 
-  const addInput = lane => (
-    <input
-      type="text"
-      className="ccr-lane-input"
-      placeholder={lane.placeholder}
-      onKeyDown={async e => {
-        if (e.key !== 'Enter') return;
-        const input = e.target;
-        const v = input.value.trim();
-        if (!v) return;
-        // Clear only once the write has actually landed — clearing
-        // synchronously (as the brief does) would empty the field
-        // even when the save fails and reverts, making a dropped
-        // write look identical to a successful one.
-        const ok = await add(lane.key, v);
-        if (ok) input.value = '';
-      }}
-      style={{
-        fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '8px 10px',
-        border: 'var(--rule-fine)', background: 'transparent', color: 'var(--ink)',
-        width: '100%'
-      }}
-    />
-  );
+  // The add box. Open lanes get an optional date beside it; the Done lane
+  // logs what already happened, so it has none.
+  const addInput = lane => {
+    const dated = lane.key !== 'done';
+    return (
+      <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+        <input
+          type="text"
+          className="ccr-lane-input"
+          placeholder={lane.placeholder}
+          onKeyDown={async e => {
+            if (e.key !== 'Enter') return;
+            const input = e.target;
+            const v = input.value.trim();
+            if (!v) return;
+            const dateInput = dated ? input.parentElement.querySelector('input[type="date"]') : null;
+            // Clear only once the write has actually landed — clearing
+            // synchronously (as the brief does) would empty the field
+            // even when the save fails and reverts, making a dropped
+            // write look identical to a successful one.
+            const ok = await add(lane.key, v, dateInput?.value || '');
+            if (ok) {
+              input.value = '';
+              if (dateInput) dateInput.value = '';
+            }
+          }}
+          style={{
+            fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '8px 10px',
+            border: 'var(--rule-fine)', background: 'transparent', color: 'var(--ink)',
+            flex: '1 1 auto', minWidth: 0
+          }}
+        />
+        {dated && (
+          <input
+            type="date"
+            className="ccr-lane-input ccr-due-input num"
+            aria-label={`Due date for a new ${lane.title} item (optional)`}
+            title="Due date (optional)"
+            style={{
+              fontFamily: 'inherit', fontSize: 12, fontWeight: 500, padding: '0 8px',
+              border: 'var(--rule-fine)', background: 'transparent', color: 'var(--ink)',
+              flex: '0 0 auto', width: 128
+            }}
+          />
+        )}
+      </div>
+    );
+  };
 
-  const segment = (value, label) => (
+  const segment = (current, choose, value, label, first) => (
     <button
       className="ccr-lane-seg"
-      aria-pressed={groupBy === value}
-      onClick={() => chooseGroupBy(value)}
+      aria-pressed={current === value}
+      onClick={() => choose(value)}
       style={{
         fontFamily: 'inherit', cursor: 'pointer', fontSize: 10, fontWeight: 800,
         letterSpacing: '0.12em', textTransform: 'uppercase', padding: '5px 10px',
-        border: '1px solid var(--ink)', borderLeft: value === 'stage' ? '1px solid var(--ink)' : 0,
-        background: groupBy === value ? 'var(--ink)' : 'transparent',
-        color: groupBy === value ? 'var(--ground)' : 'var(--ink)'
+        border: '1px solid var(--ink)', borderLeft: first ? '1px solid var(--ink)' : 0,
+        background: current === value ? 'var(--ink)' : 'transparent',
+        color: current === value ? 'var(--ground)' : 'var(--ink)'
       }}
     >{label}</button>
   );
@@ -340,8 +405,15 @@ export function Lanes() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: -8 }}>
         <span className="section-label">Group by</span>
         <div style={{ display: 'flex' }}>
-          {segment('stage', 'Stage')}
-          {segment('tag', 'Tag')}
+          {segment(groupBy, chooseGroupBy, 'stage', 'Stage', true)}
+          {segment(groupBy, chooseGroupBy, 'tag', 'Tag')}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: -8 }}>
+        <span className="section-label">Sort by</span>
+        <div style={{ display: 'flex' }}>
+          {segment(sortBy, chooseSortBy, 'priority', 'Priority', true)}
+          {segment(sortBy, chooseSortBy, 'due', 'Due')}
         </div>
       </div>
       {groups.map(group => (
@@ -360,6 +432,7 @@ export function Lanes() {
           {group.items.map(t => {
             const lane = LANE_BY_KEY[t.lane];
             const chip = CHIP[t.priority] ?? CHIP.none;
+            const due = dueChip(t.due, t.lane, today);
             return (
               <div key={t.id} style={{
                 display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', alignItems: 'start',
@@ -426,6 +499,37 @@ export function Lanes() {
                         width: '100%'
                       }}
                     />
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span className="section-label" style={{ fontSize: 9 }}>Due</span>
+                      <input
+                        type="date"
+                        className="ccr-lane-input ccr-due-input num"
+                        value={draft.due}
+                        onChange={e => setDraft(d => ({ ...d, due: e.target.value }))}
+                        aria-label="Due date"
+                        style={{
+                          fontFamily: 'inherit', fontSize: 12, fontWeight: 600, padding: '0 4px',
+                          border: 'var(--rule-fine)', background: 'var(--ground)', color: 'var(--ink)',
+                          width: 132
+                        }}
+                      />
+                      {draft.due && (
+                        <button
+                          type="button"
+                          className="ccr-lane-seg"
+                          // Keep focus in the card, so pressing this is not
+                          // read as leaving it (which would save first).
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={() => setDraft(d => ({ ...d, due: '' }))}
+                          aria-label="Clear the due date"
+                          style={{
+                            fontFamily: 'inherit', cursor: 'pointer', fontSize: 9, fontWeight: 800,
+                            letterSpacing: '0.1em', textTransform: 'uppercase', padding: '4px 8px',
+                            border: '1px solid var(--n400)', background: 'transparent', color: 'var(--n700)'
+                          }}
+                        >Clear</button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
@@ -442,11 +546,28 @@ export function Lanes() {
                     {/* Render the tag only when there is one. The old `?? 'Note'`
                         printed a label the item did not carry — now that tags are
                         editable and meaningful, that is a value being invented. */}
-                    {t.tag && (
-                      <span style={{
-                        fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
-                        textTransform: 'uppercase', color: 'var(--n600)'
-                      }}>{t.tag}</span>
+                    {(t.tag || due) && (
+                      <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                        {t.tag && (
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+                            textTransform: 'uppercase', color: 'var(--n600)'
+                          }}>{t.tag}</span>
+                        )}
+                        {due && (
+                          <span
+                            className="ccr-due-chip num"
+                            data-state={due.state}
+                            title={due.title}
+                            style={{
+                              fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', lineHeight: '13px',
+                              textTransform: 'uppercase', whiteSpace: 'nowrap', padding: '0 5px',
+                              border: `1px solid ${DUE_CHIP[due.state].border}`,
+                              background: DUE_CHIP[due.state].bg, color: DUE_CHIP[due.state].fg
+                            }}
+                          >{due.label}</span>
+                        )}
+                      </span>
                     )}
                   </span>
                 )}

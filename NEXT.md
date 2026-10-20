@@ -179,7 +179,8 @@ done.
 Jeff asked "How can we improve the control panel?" on the day Jarvis went live. Jarvis now
 writes the board several times a day, the agents run as subagents of one Jarvis session,
 and Jeff reads mostly from an iPad or iPhone. Ranked. Items 1, 2 and 7 and the cron sort
-bug were built the same day (staged, waiting for Jeff's C&P and a service restart):
+bug were built the same day, committed and pushed, and live after the restart (the live
+`GET /api/todos` sends an `ETag`, checked 2026-10-19 evening):
 
 1. **Done (2026-10-19): a stale tab can no longer revert Jarvis's board edits.** The board
    has a revision (a hash of `todos.json`), sent as an `ETag`; a PUT with an old
@@ -227,6 +228,23 @@ bug were built the same day (staged, waiting for Jeff's C&P and a service restar
 7. **Done (2026-10-19): the service log is timestamped.** Every `console` line and the
    Discord poster's output start with the UTC time (`server/lib/log-stamp.mjs`). This
    unblocks the listener-loss item in §2 the next time it happens.
+
+8. **Built (2026-10-19), staged, needs C&P and a restart: optional due dates.** Jeff said
+   "Yes" to Jarvis's proposal. Each item may carry `due` (`YYYY-MM-DD`, a plain local
+   date); the server stores it as sent and refuses a malformed one with 400 (unknown lanes
+   and bad priorities are now 400 too, not 500). The page shows a chip (red when overdue
+   and not done, quiet amber within 2 days), edits it with a native date input plus Clear,
+   offers a date beside the Idea and Doing add boxes, and has a per-viewer "Sort by: Due"
+   switch. README, "The board's items". Tests: `server/test/due-date.test.mjs`; the page
+   was checked in headless Chromium at 390 and 1440 px against a scratch server. Left
+   open: (a) **not checked in Safari** (WebKit is not installed for playwright), so the
+   date input's look and the Clear button on iPhone/iPad want a look from Jeff after the
+   restart; (b) the Claude Code mod neither shows nor edits `due` (it keeps it, since it
+   spreads items when it changes them); (c) Jarvis's morning brief switches to the real
+   field and back-fills dates (Jarvis's side). `web/dist` was deliberately not rebuilt,
+   because a build is a live deploy of the page: the build goes with the restart, after
+   the C&P (`npm --prefix web run build`). Either order is safe: the old server stores
+   `due` unvalidated, and the old page keeps `due` when it edits an item.
 
 Also done the same day: the web page's cron sort (failed, then unknown, then the rest by
 next run, the mod's order, in `sortCrons()` in `web/src/lib/format.js`); before, an

@@ -7,6 +7,28 @@ const LANES = new Set(['idea', 'doing', 'done']);
 // that as a dashed placeholder rather than inventing a rank. Anything else
 // must be one of these four, so a typo can never sort as if it were P0.
 const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
+// A due date is optional too: absent, null or '' means none. Anything else
+// must be a real calendar date written YYYY-MM-DD, a plain local date on the
+// mini's clock with no time of day. It is stored exactly as sent, never
+// normalised, so what Jarvis wrote is what Jarvis reads back.
+const DUE = /^(\d{4})-(\d{2})-(\d{2})$/;
+export const isDueDate = v => {
+  const m = typeof v === 'string' && DUE.exec(v);
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
+};
+
+// Raised when a write carries an item the board cannot hold (an unknown
+// lane, a priority outside P0-P3, a malformed due date). Nothing is written,
+// and the route answers 400 with the message rather than a 500.
+export class InvalidBoardError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = 'INVALID_BOARD';
+  }
+}
 const asidePrefix = path => `${basename(path)}.corrupt-`;
 // A history copy is named for the UTC millisecond it was made: ISO 8601 with
 // the separators dropped, todos-yyyymmddThhmmssSSSZ.json. Every name is the
@@ -137,10 +159,14 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
 
   // The write itself. Only ever called from inside serial().
   const writeUnlocked = async todos => {
-    if (!Array.isArray(todos)) throw new Error('todos must be an array');
+    if (!Array.isArray(todos)) throw new InvalidBoardError('todos must be an array');
     for (const t of todos) {
-      if (!LANES.has(t.lane)) throw new Error(`unknown lane: ${t.lane}`);
-      if (t.priority != null && !PRIORITIES.has(t.priority)) throw new Error(`unknown priority: ${t.priority}`);
+      if (t === null || typeof t !== 'object' || Array.isArray(t)) throw new InvalidBoardError('every item must be an object');
+      if (!LANES.has(t.lane)) throw new InvalidBoardError(`unknown lane: ${t.lane}`);
+      if (t.priority != null && !PRIORITIES.has(t.priority)) throw new InvalidBoardError(`unknown priority: ${t.priority}`);
+      if (t.due != null && t.due !== '' && !isDueDate(t.due)) {
+        throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: due must be a date written YYYY-MM-DD, or empty for none (got ${JSON.stringify(t.due)})`);
+      }
     }
     const unified = unifyTags(todos);
     await mkdir(dirname(path), { recursive: true });

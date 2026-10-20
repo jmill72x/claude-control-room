@@ -57,6 +57,12 @@
 .ccr-lane-seg:hover { background: var(--n200); }
 .ccr-lane-seg[aria-pressed="true"]:hover { background: var(--ink); }
 
+/* The board's date inputs. Safari on iPhone and iPad draws a date input as a
+   rounded system control that ignores height; dropping the native appearance
+   lets it take the lane's square box, and the picker still opens on tap. */
+.ccr-due-input { -webkit-appearance: none; appearance: none; min-height: 30px; }
+.ccr-due-input::-webkit-date-and-time-value { text-align: left; }
+
 /* iPad portrait and below: one column, rules dropped. Usage (01) stays on
    top and the board (03) comes second, ahead of Projects (02), which drops to
    the end: Jeff's call on 2026-10-19 ("I need usage first ... the to dos as 2

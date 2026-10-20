@@ -1,7 +1,7 @@
 import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
-import { StaleRevisionError } from './todos.mjs';
+import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -168,6 +168,10 @@ export function createHandler({ cache, todos, config }) {
             const saved = await todos.save(body, { ifMatch: Array.isArray(ifMatch) ? ifMatch : null });
             return json(res, 200, saved.todos, boardHeaders(saved.revision));
           } catch (err) {
+            // A board that cannot be held (unknown lane, bad priority, a due
+            // date that is not YYYY-MM-DD) is the caller's mistake: say what
+            // is wrong, write nothing.
+            if (err instanceof InvalidBoardError) throw new HttpError(400, err.message);
             if (!(err instanceof StaleRevisionError)) throw err;
             return json(res, 409, { error: 'the board changed since this copy was read', revision: err.current },
               boardHeaders(err.current));

@@ -40,7 +40,7 @@ never a zero or an empty bar standing in for missing data.
 | Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
 | Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Below 1024px wide it is the second column on screen, after Usage and ahead of Projects. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
+| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Below 1024px wide it is the second column on screen, after Usage and ahead of Projects. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done), and a per-viewer "Sort by Due" switch puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes
@@ -396,6 +396,40 @@ curl -s -X PUT -H 'Content-Type: application/json' -H "If-Match: $tag" \
 
 The revision is a hash of the file, so it survives a restart, and a restore or a hand
 edit of `todos.json` changes it like any other write.
+
+### The board's items
+
+`GET /api/todos` returns, and `PUT /api/todos` takes, a bare JSON list of items:
+
+```json
+{ "id": "72e9717d-8d7c-458f-8f90-d92d9f52d693", "text": "Renew the domain", "lane": "idea", "tag": "MAP", "priority": "P1", "due": "2026-10-21" }
+```
+
+| Field | Required | Values |
+|---|---|---|
+| `id` | yes | any string or number, unique on the board (the page makes a UUID) |
+| `text` | yes | free text |
+| `lane` | yes | `idea`, `doing` or `done` |
+| `tag` | no | free text; tags that differ only by case are unified on every write |
+| `priority` | no | `P0` to `P3`; absent or `null` means none |
+| `due` | no | a plain local date `YYYY-MM-DD` (US Eastern, the mini's clock), no time of day; absent, `null` or `""` means none |
+
+The server checks `lane`, `priority` and `due` on every write. A bad one (an unknown
+lane, `P4`, a due date like `10/21` or `2026-02-30`) is refused with **400** and a message
+naming the item and the field, and nothing is written. Every field, `due` included, is
+stored and returned exactly as sent; other fields an item carries are kept too.
+
+How the page shows `due`: a chip next to the tag reads `Due today`, `Due tomorrow` or
+`Due Wed 10-21` (the year is added when it is not this year). Once the date has passed it
+reads `Overdue Thu 10-15` in red; due within 2 days it has a quiet amber outline; on a
+done item it is grey. "Today" is the viewer's date, re-checked every minute. Tapping an
+item's text opens its editor, which has a native date input and a Clear button; the add
+box of the Idea and Doing lanes has an optional date input beside it. When no date is
+picked the page writes no `due` key at all, and an item whose date is left alone keeps
+what it had (even `""`). **Sort by: Priority / Due** is a per-viewer switch kept in
+`localStorage` (`ccr.todos.sortBy`): with Due on, each lane (or tag group) lists its dated
+items first, soonest first, then the rest in the usual priority order; done items stay
+at the bottom of a tag group.
 
 ### Remote access
 
