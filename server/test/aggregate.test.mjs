@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { aggregate } from '../lib/aggregate.mjs';
+import { parseTranscript } from '../lib/parse-transcript.mjs';
 
 const NOW = Date.parse('2026-08-05T12:00:00Z');
 const HOUR = 3600000, DAY = 24 * HOUR;
@@ -264,4 +265,28 @@ test('recentSessions id for a given file is stable across polls, so React does n
   const firstPoll = aggregate(one, NOW).recentSessions[0].id;
   const secondPoll = aggregate(one, NOW + 60000).recentSessions[0].id;
   assert.equal(firstPoll, secondPoll);
+});
+
+// The 2026-10-20 bug, end to end: a response is written as one transcript line
+// per content block, each repeating its usage. Every weekly total must count the
+// response once. Synthetic lines, no real transcript content.
+test('every weekly total counts a response once, however many lines it was written as', () => {
+  const response = (id, hoursAgo, model, usage, blocks, cwd) => blocks.map(block => JSON.stringify({
+    type: 'assistant', timestamp: new Date(NOW - hoursAgo * HOUR).toISOString(), sessionId: `s-${id}`, cwd,
+    requestId: `req_${id}`, message: { id: `msg_${id}`, model, role: 'assistant', content: [{ type: block }], usage }
+  }));
+  const code = parseTranscript([
+    ...response('a', 1, 'claude-opus-5', { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 850, cache_read_input_tokens: 9000 },
+      ['thinking', 'text', 'tool_use'], '/Users/example/Projects/invoice'),
+    ...response('b', 2, 'claude-sonnet-5', { input_tokens: 200, output_tokens: 300 }, ['text', 'tool_use'], '/Users/example/Projects/invoice')
+  ].join('\n'), 'Code');
+  const cowork = parseTranscript(
+    response('c', 3, 'claude-opus-5', { input_tokens: 400, output_tokens: 100 }, ['thinking', 'text', 'tool_use', 'tool_use'], '/Users/example/CoworkSpace').join('\n'),
+    'Cowork');
+
+  const out = aggregate([code, cowork], NOW);
+  assert.deepEqual(out.byModel.map(m => [m.name, m.tokens, m.pct, m.cacheReadTokens]), [['Opus', 1500, 75, 9000], ['Sonnet', 500, 25, 0]]);
+  assert.deepEqual(out.bySurface.map(s => [s.name, s.tokens]), [['Cowork', 500], ['Code', 1500], ['Chat', null]]);
+  assert.deepEqual(out.byProject.map(p => [p.name, p.tokens, p.cacheReadTokens]), [['invoice', 1500, 9000], ['CoworkSpace', 500, 0]]);
+  assert.deepEqual(out.recentSessions.map(s => [s.surface, s.tokens, s.pct]), [['Code', 1500, 75], ['Cowork', 500, 25]]);
 });

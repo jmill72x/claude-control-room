@@ -208,3 +208,31 @@ test('a malformed Cowork session file is also recorded rather than silently drop
   assert.deepEqual(out.coworkSessions, []);
   assert.ok(out.unreadablePaths.includes(broken));
 });
+
+// A forked subagent's transcript opens with a copy of the parent's line that
+// launched it (seen 2026-10-16). Synthetic lines, no real transcript content.
+test('a request copied into a subagent transcript is counted once across the files', async () => {
+  const root = freshDir();
+  const project = join(root, '-Users-example-Projects-demo');
+  const subagents = join(project, 'sess-1', 'subagents');
+  await mkdir(subagents, { recursive: true });
+  const start = Date.now() - 3600_000;
+  const at = seconds => new Date(start + seconds * 1000).toISOString();
+  const usage = { input_tokens: 3, output_tokens: 200, cache_creation_input_tokens: 1000, cache_read_input_tokens: 50000 };
+  const line = (id, seconds, block, u = usage) => JSON.stringify({
+    type: 'assistant', timestamp: at(seconds), sessionId: 'sess-1', cwd: '/Users/example/Projects/demo', requestId: `req_${id}`,
+    message: { id: `msg_${id}`, model: 'claude-opus-5', role: 'assistant', content: [{ type: block }], usage: u }
+  });
+  await writeFile(join(project, 'sess-1.jsonl'), [line('P', 0, 'thinking'), line('P', 0, 'text'), line('P', 12, 'tool_use')].join('\n') + '\n');
+  await writeFile(join(subagents, 'agent-a.jsonl'), [line('P', 12, 'tool_use'), line('S', 20, 'text', { input_tokens: 7, output_tokens: 8 })].join('\n') + '\n');
+  await writeFile(join(subagents, 'agent-b.jsonl'), line('P', 12, 'tool_use') + '\n');
+
+  const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
+  const tokens = out.transcripts.flatMap(t => t.records).reduce((a, r) => a + r.tokens, 0);
+  assert.equal(tokens, 1203 + 15);
+  const names = out.transcripts.map(t => t.filePath.slice(root.length)).sort();
+  assert.deepEqual(names, ['/-Users-example-Projects-demo/sess-1.jsonl', '/-Users-example-Projects-demo/sess-1/subagents/agent-a.jsonl'],
+    'a file whose only request was a copy is not listed');
+  const sub = out.transcripts.find(t => t.filePath.endsWith('agent-a.jsonl'));
+  assert.equal(sub.lastTs, Date.parse(at(20)), 'lastTs comes from the records kept');
+});

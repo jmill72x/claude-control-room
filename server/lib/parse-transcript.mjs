@@ -31,8 +31,26 @@ export function cacheReadTokens(usage) {
   return usage.cache_read_input_tokens ?? 0;
 }
 
+const USAGE_FIELDS = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+
+// Claude Code writes one API response as several transcript lines, one per
+// content block (thinking, text, each tool call), and every one of them
+// repeats the response's usage. Summing lines counted a response once per
+// block: the week to 2026-10-20 read 3x its real new-token figure. A response
+// is named by the `requestId` Claude Code stamps on each line plus the API's
+// message id. A line lacking either can't be matched to its siblings, so it
+// counts on its own, as every line used to. JSON keeps the pair unambiguous.
+export function requestKey(entry) {
+  const requestId = entry?.requestId;
+  const messageId = entry?.message?.id;
+  if (typeof requestId !== 'string' || requestId === '') return null;
+  if (typeof messageId !== 'string' || messageId === '') return null;
+  return JSON.stringify([requestId, messageId]);
+}
+
 export function parseTranscript(text, surface) {
-  const records = [];
+  const requests = [];
+  const byKey = new Map();
   let sessionId = null, title = null, cwd = null, gitBranch = null;
 
   for (const line of text.split('\n')) {
@@ -47,16 +65,58 @@ export function parseTranscript(text, surface) {
 
     const message = d.message;
     if (!message || typeof message !== 'object' || !message.usage) continue;
-    const tokens = totalTokens(message.usage);
-    const cacheRead = cacheReadTokens(message.usage);
+    const ts = Date.parse(d.timestamp ?? '');
+    if (!Number.isFinite(ts)) continue;
+    const key = requestKey(d);
+    const seen = key === null ? undefined : byKey.get(key);
+    if (seen) {
+      // A response's lines can be written mid-stream: on 2026-10-20, 266 of
+      // 7,433 multi-line responses had a smaller output_tokens on their early
+      // lines, never a larger one. Each field's largest reading is the final usage.
+      for (const f of USAGE_FIELDS) seen.usage[f] = Math.max(seen.usage[f], message.usage[f] ?? 0);
+      continue;
+    }
+    // The request keeps its first line's time and model. That time is also what
+    // tells an original from a copy in another file (see dropCopiedRequests).
+    const request = { ts, model: message.model ?? 'unknown', requestKey: key, usage: {} };
+    for (const f of USAGE_FIELDS) request.usage[f] = message.usage[f] ?? 0;
+    requests.push(request);
+    if (key !== null) byKey.set(key, request);
+  }
+
+  const records = [];
+  for (const { ts, model, requestKey: key, usage } of requests) {
+    const tokens = totalTokens(usage);
+    const cacheRead = cacheReadTokens(usage);
     // A row with no new tokens but real cache-read volume (e.g. a turn that
     // only replayed context) still carries data worth keeping, so the gate
     // checks both fields rather than `tokens` alone.
     if (tokens <= 0 && cacheRead <= 0) continue;
-    const ts = Date.parse(d.timestamp ?? '');
-    if (!Number.isFinite(ts)) continue;
-    records.push({ ts, model: message.model ?? 'unknown', tokens, cacheReadTokens: cacheRead });
+    records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
   }
 
   return { sessionId, title, surface, cwd, gitBranch, records };
+}
+
+// The same request can also sit in two files. A forked subagent's transcript
+// opens with a copy of the parent's line that launched it: same ids, same
+// usage, same timestamp as that line (seen twice on 2026-10-16). Count each
+// request once across every transcript read, in the one that wrote it first.
+// A copy is never written before its original, and a request's time is its
+// first line's, so the earliest record is the original; a tie goes to the
+// transcript earlier in the list. Records without a requestKey are all kept.
+// Returns new transcript objects for the ones that lost a record.
+export function dropCopiedRequests(transcripts) {
+  const first = new Map();
+  for (const t of transcripts) {
+    for (const r of t.records) {
+      if (r.requestKey == null) continue;
+      const seen = first.get(r.requestKey);
+      if (!seen || r.ts < seen.ts) first.set(r.requestKey, r);
+    }
+  }
+  return transcripts.map(t => {
+    const records = t.records.filter(r => r.requestKey == null || first.get(r.requestKey) === r);
+    return records.length === t.records.length ? t : { ...t, records };
+  });
 }

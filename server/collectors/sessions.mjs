@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { TRANSCRIPT_ROOTS, parseTranscript } from '../lib/parse-transcript.mjs';
+import { TRANSCRIPT_ROOTS, parseTranscript, dropCopiedRequests } from '../lib/parse-transcript.mjs';
 import { parseCoworkSession } from '../lib/cowork.mjs';
 
 // `failures` collects every directory we could not list. Swallowing these
@@ -59,7 +59,6 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
       try { text = await readFile(file, 'utf8'); } catch { failures.push(file); continue; }
       const parsed = parseTranscript(text, surface);
       if (parsed.records.length === 0) continue;
-      parsed.lastTs = Math.max(...parsed.records.map(r => r.ts));
       // Claude Code writes one transcript FILE per parent session plus one
       // more per sub-agent it spawns, and every one of those files carries
       // the SAME sessionId. collectSessions emits one entry per file, so
@@ -104,7 +103,14 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
   if (roots.length > 0 && unavailableRoots.length === roots.length) {
     throw new Error(`no transcript root is readable: ${unavailableRoots.join(', ')}`);
   }
+  // A request copied into a second file (a forked subagent's transcript opens
+  // with the parent's launching line) counts once, so this runs over every
+  // file read, not per file. lastTs comes after it, from the records kept, and
+  // a file left with no request of its own drops out as an empty one does.
+  const counted = dropCopiedRequests(transcripts)
+    .filter(t => t.records.length > 0)
+    .map(t => ({ ...t, lastTs: t.records.reduce((max, r) => Math.max(max, r.ts), -Infinity) }));
   // A partially-read set understates every total, so say so rather than
   // presenting the remainder as complete.
-  return { transcripts, coworkSessions, unavailableRoots, unreadablePaths };
+  return { transcripts: counted, coworkSessions, unavailableRoots, unreadablePaths };
 }

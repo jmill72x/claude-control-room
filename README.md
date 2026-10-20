@@ -47,6 +47,21 @@ Conversations there are server-side; the client never computes or exposes
 per-conversation token usage anywhere on disk. The UI renders the Chat segment
 explicitly labeled "not measurable locally" rather than omitting it or showing zero.
 
+**The token figures count each API request once, in new tokens.** By surface, by
+project, by model and recent sessions all add up `input + output + cache creation`
+per API request, from each transcript line's `message.usage`. Cache reads are left
+out: they re-serve the same context on every request and are over 95% of the raw sum
+(the server keeps them as `cacheReadTokens`, but no panel prints them). Claude Code
+writes one response as several lines, one per content block (thinking, text, each tool
+call), and every line repeats the response's usage, so `server/lib/parse-transcript.mjs`
+merges the lines that share a `requestId` and message id. It keeps each usage field's
+largest reading (a line written mid-stream can carry a smaller output count) and the
+first line's time and model; a line that lacks either id counts on its own. A forked
+subagent's transcript opens with a copy of the parent's line that launched it, so the
+sessions collector also counts a request found in two files once, in the earlier copy.
+Until 2026-10-20 the lines were summed one by one, and the week read 3x too high:
+149.7M new tokens instead of 49.9M.
+
 **Credits are read, not typed.** Every `claude -p "/usage"` — which the usage collector
 already runs every five minutes — refreshes `cachedUsageUtilization` in `~/.claude.json`
 with the account's full usage response, including every dollar-denominated credit
@@ -660,7 +675,10 @@ on:
 - the JSON shape of `claude auth status --json`, specifically that `subscriptionType`
   keeps existing and keeps meaning the plan tier
 - the on-disk layout of Claude Code and Cowork transcripts under `~/.claude/projects`
-  and the Cowork session directory — none of which is a documented, versioned format
+  and the Cowork session directory — none of which is a documented, versioned format.
+  The per-request count needs every line of a response to carry its `requestId` and
+  message id: if a release drops either, the lines count one by one again and the token
+  figures read 2–3x high with no error anywhere
 - `launchctl list`'s column format and `plutil`'s JSON conversion of `.plist` files
 - the shape of `cachedUsageUtilization` in `~/.claude.json`, and the codename of each
   credit bucket (the cloud-session grant is `iguana_necktie` as of 2026-09-28)

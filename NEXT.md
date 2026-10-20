@@ -45,6 +45,20 @@ a route that outlives an unprotected minute is a real exposure, not a theoretica
 The four review findings that used to be parked here were all fixed in `ee1e1df`
 (2026-09-11). These are the ones still open:
 
+- **P2, fixed and staged 2026-10-20; live after C&P and a restart: token usage was counted
+  once per transcript line, not once per API request.** Claude Code writes a response as
+  one line per content block, each repeating the response's usage, and the parser summed
+  every line. Now `server/lib/parse-transcript.mjs` merges lines by `requestId` plus message
+  id (each usage field's largest reading, the first line's time and model; a line missing
+  either id counts alone), and `collectors/sessions.mjs` counts a request found in two files
+  once (a forked subagent's transcript opens with a copy of the parent's launching line).
+  README, "The token figures count each API request once". Measured on 2026-10-20 over the
+  real transcripts, HEAD and the fix side by side, read-only: the week's new tokens 149.7M →
+  49.9M (3.0x), Opus 121.8M → 42.9M, cache reads 4,481M → 1,838M (2.4x); with cache reads,
+  Jarvis's helpers since 10-13 went from 2,180M to 782M, matching Shuri's recount. No web
+  rebuild is needed: the page and the mod print what the server sends. Found by Shuri.
+  Tests: `parse-transcript.test.mjs`, `sessions.test.mjs`, `aggregate.test.mjs`.
+
 - **P2: the server lost its HTTP listener while staying alive.** From Sep 28 to Oct 2
   the process kept running, collectors still ticking, but held no listening socket,
   so every request hung. The root cause is unknown. Since `e725dbb` the server checks
@@ -140,6 +154,9 @@ from SessionDeck (§6): one line per source with its last success, its last erro
 "format drift suspected" flag when a file that exists stops parsing, as opposed to one
 that is simply missing. Telling those apart needs the match rates above. The 2026-10-08
 credits flake (§2) took several manual checks to diagnose; this would have made it one.
+It should also count usage lines that lack a `requestId` or message id: those count one
+line at a time, so a release that stopped writing either would bring back the 3x of
+2026-10-20 (§2) with no error anywhere.
 
 ## 6. On hold: ideas from SessionDeck
 
@@ -200,12 +217,17 @@ bug were built the same day, committed and pushed, and live after the restart (t
    1,800 px tall on a phone, so the board starts about two screens down; the redesign
    Jeff may run (`/design`) is the place to shorten it. The labels still read 01, 03, 02.
 3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
-   "linkedin-post-agent" and 31% of the week's tokens land in "Projects". Each subagent
+   "linkedin-post-agent" and over a third of the week's tokens land in "Projects" (37% on
+   10-20, counted per request). Each subagent
    transcript has a `.meta.json` with `agentType` and the brief's `description` (checked
    10-19), so the server can show, per agent, its last run, what it was asked and its tokens.
    Plan: `collectors/sessions.mjs` already walks the transcripts; read the sibling
    `agent-*.meta.json`, attribute tokens by `agentType` instead of cwd, and add an
    `agents` block to `/api/dashboard` (name, last run, last description, tokens this week).
+   It builds on the per-request records (§2), which already credit a fork's copy of its
+   launching line to the parent. Jeff said yes on 2026-10-20 to usage by agent through
+   Claude Code's OpenTelemetry export; Ultron vets that first, and it is the next piece of
+   work.
 4. **Watch the always-on services** (S–M, not built). `collectors/crons.mjs` keeps only
    plists with a schedule, so the always-on ones never appear. Checked 10-19:
    `control-room`, `cloudflared.mini` and `linkedin-review` are `KeepAlive` and show a PID
@@ -229,27 +251,20 @@ bug were built the same day, committed and pushed, and live after the restart (t
    Discord poster's output start with the UTC time (`server/lib/log-stamp.mjs`). This
    unblocks the listener-loss item in §2 the next time it happens.
 
-8. **Built (2026-10-19), staged, needs C&P and a restart: optional due dates.** Jeff said
-   "Yes" to Jarvis's proposal. Each item may carry `due` (`YYYY-MM-DD`, a plain local
-   date); the server stores it as sent and refuses a malformed one with 400 (unknown lanes
-   and bad priorities are now 400 too, not 500). The page shows a chip (red when overdue
-   and not done, quiet amber within 2 days), edits it with a native date input plus Clear,
-   offers a date beside the Idea and Doing add boxes, and has a per-viewer "Sort by: Due"
-   switch. README, "The board's items". Tests: `server/test/due-date.test.mjs`; the page
-   was checked in headless Chromium at 390 and 1440 px against a scratch server. Left
-   open: (a) **not checked in Safari** (WebKit is not installed for playwright), so the
-   date input's look and the Clear button on iPhone/iPad want a look from Jeff after the
-   restart; (b) the Claude Code mod neither shows nor edits `due` (it keeps it, since it
-   spreads items when it changes them); (c) Jarvis's morning brief switches to the real
-   field and back-fills dates (Jarvis's side). `web/dist` was deliberately not rebuilt,
-   because a build is a live deploy of the page: the build goes with the restart, after
-   the C&P (`npm --prefix web run build`). Either order is safe: the old server stores
-   `due` unvalidated, and the old page keeps `due` when it edits an item.
+8. **Done (2026-10-19), live: optional due dates.** Jeff said "Yes" to Jarvis's proposal.
+   Committed as `65312ba`; the service restarted and `web/dist` was rebuilt at 20:20 that
+   evening, and 13 board items carried a date on 10-20. Each item may carry `due`
+   (`YYYY-MM-DD`, a plain local date); the server stores it as sent and refuses a malformed
+   one with 400 (unknown lanes and bad priorities are 400 too, not 500). The page shows a
+   chip (red when overdue and not done, quiet amber within 2 days), edits it with a native
+   date input plus Clear, offers a date beside the Idea and Doing add boxes, and has a
+   per-viewer "Sort by: Due" switch. README, "The board's items". Tests:
+   `server/test/due-date.test.mjs`; the page was checked in headless Chromium at 390 and
+   1440 px against a scratch server. Left open: (a) **not checked in Safari** (WebKit is not
+   installed for playwright), so the date input's look and the Clear button on iPhone/iPad
+   want a look from Jeff; (b) the Claude Code mod neither shows nor edits `due` (it keeps
+   it, since it spreads items when it changes them).
 
 Also done the same day: the web page's cron sort (failed, then unknown, then the rest by
 next run, the mod's order, in `sortCrons()` in `web/src/lib/format.js`); before, an
 ingested cron with no `ok` ranked before or after a failure depending on the browser.
-
-Still open from the same day's look: the board's "Control Room alerts post to #pepper"
-P3 item is an observation, not a bug (alerts post; the ntfy question is Jarvis's Task 24),
-so it can go to done; the HTTPS item on the board has no priority.
