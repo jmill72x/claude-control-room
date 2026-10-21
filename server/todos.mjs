@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath } from 'node:fs/promises';
 import { dirname, join, basename, resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
+import { AGENT_KEY } from './lib/roster.mjs';
 
 const LANES = new Set(['idea', 'doing', 'done']);
 // Priority is optional: absent or null means "not set", and the UI renders
@@ -28,6 +29,67 @@ export class InvalidBoardError extends Error {
     super(message);
     this.code = 'INVALID_BOARD';
   }
+}
+
+// The optional fields from the Orbit plan. Each is checked on every write, a bad
+// one is refused with the item and the field named, and a good one is stored as
+// sent. Lengths count characters, not UTF-16 units, so an emoji counts once.
+const chars = s => [...s].length;
+const none = v => v === undefined || v === null || v === '';
+const ASK_KINDS = new Set(['decide', 'do']);
+const ASK_FIELDS = new Set(['what', 'why', 'kind', 'time']);
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+// A date and a time with its offset, as toISOString() writes it or with an
+// offset such as -04:00. A bare date is refused: Done is ordered by this.
+const ISO_INSTANT = /^(\d{4}-\d{2}-\d{2})T([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+export const isInstant = v => {
+  const m = typeof v === 'string' && ISO_INSTANT.exec(v);
+  return Boolean(m) && isDueDate(m[1]) && Number.isFinite(Date.parse(v));
+};
+
+function checkFields(t) {
+  const bad = message => new InvalidBoardError(`item ${JSON.stringify(t.id)}: ${message}`);
+  if (!none(t.title) && (typeof t.title !== 'string' || chars(t.title) > 120)) {
+    throw bad('title must be text of at most 120 characters, or empty for none');
+  }
+  if (!none(t.owner) && (typeof t.owner !== 'string' || !AGENT_KEY.test(t.owner))) {
+    throw bad('owner must be an agent key (lowercase letters, digits and hyphens), or empty for none');
+  }
+  if (!none(t.doneAt) && !isInstant(t.doneAt)) {
+    throw bad(`doneAt must be an ISO 8601 date and time, such as 2026-10-21T13:05:00.000Z (got ${JSON.stringify(t.doneAt)})`);
+  }
+  if (t.ask === undefined || t.ask === null) return;
+  const ask = t.ask;
+  if (typeof ask !== 'object' || Array.isArray(ask)) throw bad('ask must be an object with what, kind and optionally why and time, or null for none');
+  for (const key of Object.keys(ask)) if (!ASK_FIELDS.has(key)) throw bad(`ask.${key} is not a field ask takes (what, why, kind, time)`);
+  if (typeof ask.what !== 'string' || ask.what.trim() === '' || chars(ask.what) > 500) throw bad('ask.what must be text of 1 to 500 characters');
+  if (!none(ask.why) && (typeof ask.why !== 'string' || chars(ask.why) > 300)) throw bad('ask.why must be text of at most 300 characters');
+  if (!ASK_KINDS.has(ask.kind)) throw bad('ask.kind must be "decide" or "do"');
+  if (!none(ask.time) && !(typeof ask.time === 'string' && HHMM.test(ask.time))) throw bad('ask.time must be a 24-hour HH:MM time, or empty for none');
+}
+
+// When each item was finished, kept by the server: the writers never have to.
+// It is worked out against the board this write replaces:
+//   - an item that enters Done without a doneAt gets this write's time;
+//   - an item still in Done that arrives without one gets its old value back,
+//     so a writer that rebuilds its items from text, lane and tag can't wipe it;
+//   - an item outside Done carries none, so one that leaves Done loses it.
+// A doneAt a writer sends with a Done item is kept as sent. Items finished
+// before this existed have none, and keep having none while they stay in Done.
+export function stampDone(todos, previous, now = Date.now()) {
+  const before = new Map();
+  for (const t of Array.isArray(previous) ? previous : []) {
+    if (t && typeof t === 'object' && !Array.isArray(t)) before.set(t.id, t);
+  }
+  const at = new Date(now).toISOString();
+  return todos.map(t => {
+    if (t.lane === 'done' && typeof t.doneAt === 'string' && t.doneAt !== '') return t;
+    const { doneAt: _dropped, ...rest } = t;
+    if (t.lane !== 'done') return 'doneAt' in t ? rest : t;
+    const old = before.get(t.id);
+    if (old?.lane !== 'done') return { ...rest, doneAt: at };
+    return isInstant(old.doneAt) ? { ...rest, doneAt: old.doneAt } : rest;
+  });
 }
 const asidePrefix = path => `${basename(path)}.corrupt-`;
 // A history copy is named for the UTC millisecond it was made: ISO 8601 with
@@ -148,6 +210,17 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
     queue = run.catch(() => {});
     return run;
   };
+  // The board a write is about to replace, for stampDone(). A board that isn't
+  // there yet, or can't be parsed, has no items to carry a doneAt over from; a
+  // board that can't be read at all is refused by keepCopy() before the rename.
+  const readPrevious = async () => {
+    try {
+      const list = JSON.parse(await readFile(path, 'utf8'));
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  };
   const currentRevision = async () => {
     try {
       return revisionOf(await readFile(path));
@@ -167,8 +240,9 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
       if (t.due != null && t.due !== '' && !isDueDate(t.due)) {
         throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: due must be a date written YYYY-MM-DD, or empty for none (got ${JSON.stringify(t.due)})`);
       }
+      checkFields(t);
     }
-    const unified = unifyTags(todos);
+    const unified = stampDone(unifyTags(todos), await readPrevious(), Date.now());
     await mkdir(dirname(path), { recursive: true });
     // Write-then-rename: a crash or a full disk part-way through a direct
     // writeFile leaves exactly the truncated JSON that used to trigger the

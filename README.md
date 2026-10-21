@@ -228,6 +228,67 @@ user is already authenticated with is the only source that exists, and it is exa
 why `usage`, `agents`, and `plan` are the collectors that can go `unavailable` if
 `claude` isn't on the service's `PATH` (see [Running it](#running-it)).
 
+## The Orbit page (being built beside this one)
+
+A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
+`docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Until it replaces this page (Phase
+5), it is a second page in the same build, at **`/orbit.html`**, and the page at `/` is
+unchanged. Phase 1 gives it:
+
+- **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
+  minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
+  `#board`, and `#board/<id>`, which opens the board on one item), so Back works. The
+  alert bar's lines show in a strip under the header.
+- **Usage limits:** three rings (the session, the week and the model-scoped week) round
+  the countdown to the session reset, each with a faint arc where its last window ended
+  (`lastWindowPct`, below). The cloud-credit grants and the plan tier with its days left
+  are chips.
+- **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any
+  limit reset, on a timeline. A job that runs every few minutes (launchd's
+  `StartInterval`) has no fixed next run, so it never appears. Names come from config's
+  `jobs` block.
+- **Burn:** the tokens of the last 60 minutes, and the last 24 clock hours as bars stacked
+  by model family (Opus, Fable, Sonnet, Haiku and Other), with each family's share.
+- **This week, hour by hour:** today and the six days before it, by local clock hour.
+  The shades step at the same fractions of the week's busiest hour that the design's fixed
+  steps were of its own (25, 75 and 150 against a peak of 332), and that hour is ringed.
+- **The Board tab:** the open count, a priority bar and owner chips (tap one to see only
+  that agent's items) in the header; then New item, a priority filter and a Priority or
+  Due sort; then Doing, Ideas (the top 8, then "Show all") and Done (the 8 finished most
+  recently, then "N older done items are not shown"). A card shows its owner's avatar,
+  its title, its priority and its due chip, which keeps the rules above. Opened, it has
+  priority chips (P0 to P3, and None), the due date with Clear, Edit text (Title, Detail
+  and Area) and the move buttons. There is no delete: a dead item moves to Done.
+
+Every token figure is new tokens, each request counted once, as everywhere else here. A
+panel whose source is missing says so, and against a server from before Phase 1, Burn and
+the heat map say that it doesn't send hourly figures yet.
+
+Where the new figures come from:
+
+- `sessions.hourly` (`server/lib/hourly.mjs`) is built each minute from the per-request
+  records the sessions collector already parses: `last24h` (24 hours by family),
+  `lastHour`, and `week` (`days`, each with 24 hourly totals, and `peak`).
+- `usage.limits[].lastWindowPct` (`server/lib/usage-panel.mjs`) is the newest reading of
+  an earlier window in the 30-day history. It counts only when that reading was taken
+  within 15 minutes of the window's reset (otherwise the window may have grown past it)
+  and, for a weekly limit, only when no week went unread in between. It is left out when
+  it isn't known.
+- A card's owner is the item's `owner`, or else the agent whose area its tag is (config's
+  `roster.tagOwners`). With neither, the card shows the tag's initial.
+
+Saving keeps this page's protections (`web/src/orbit/useBoard.js`): `If-Match` on every
+PUT, one save at a time, a 409 or 428 re-reads the board, and the board is re-read when
+the tab comes back into view and every minute. After a save the page takes the server's
+list, which may carry a new `doneAt`.
+
+**Fonts:** Geist and Geist Mono, the variable `.woff2` files from Vercel's `geist` package
+on npm, version 1.7.2 (`dist/fonts/geist-sans/Geist-Variable.woff2` and
+`dist/fonts/geist-mono/GeistMono-Variable.woff2`, from a tarball checked against the
+registry's sha512), under the SIL Open Font License 1.1, which is in
+`web/src/fonts/Geist-OFL.txt`. This server serves them; nothing is fetched from a font
+service.
+
 ## Architecture
 
 ```
@@ -236,12 +297,13 @@ claude-control-room/
     collectors/     one module per source, each on its own timer, cache-only reads at request time
     cache.mjs        in-memory: { data, fetchedAt, status, error } per panel
     history.mjs      append-only /usage snapshot store — see "Pace, history, and the usage-drivers panel"
-    routes.mjs        /api/dashboard · /api/todos · /api/ingest/*
+    routes.mjs        /api/dashboard · /api/todos · /api/ingest/* (and server.mjs serves /avatars/<key>.png)
     config.json        user-set values with no API source (gitignored — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
     todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
     data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
-  web/               React + Vite SPA; the server serves the built web/dist bundle
+  web/               React + Vite, two pages: index.html (this page) and orbit.html (the redesign);
+                     the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
   mod/               Claude Code mod: the dashboard as a side pane, and /control-room summary
 ```
@@ -313,8 +375,9 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 433 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm run build    # produces web/dist, which the server serves
+cd server && npm test      # 469 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 39 tests of the Orbit page's logic (node --test, nothing to install)
+cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 
 (`server/package.json` also exposes `npm run build` as a convenience alias that runs
@@ -448,11 +511,25 @@ edit of `todos.json` changes it like any other write.
 | `tag` | no | free text; tags that differ only by case are unified on every write |
 | `priority` | no | `P0` to `P3`; absent or `null` means none |
 | `due` | no | a plain local date `YYYY-MM-DD` (US Eastern, the mini's clock), no time of day; absent, `null` or `""` means none |
+| `title` | no | a short label for the card, at most 120 characters; absent or `""` means none. Without one, the Orbit page shows the first sentence of `text`, cut at a word to 72 characters |
+| `ask` | no | what waits on the board's owner: `{ "what", "kind", "why", "time" }`. `what` is 1 to 500 characters, `kind` is `decide` or `do`, `why` (optional) at most 300 characters, `time` (optional) a 24-hour `HH:MM`, and no other key is taken. Absent or `null` means none (Phase 4 of the Orbit plan shows it) |
+| `owner` | no | an agent key (lowercase letters, digits and hyphens) that overrides the tag's owner; absent or `""` means none |
+| `doneAt` | no | when the item was finished, kept by the server (below); a writer may send one, as an ISO 8601 date and time with its offset |
 
-The server checks `lane`, `priority` and `due` on every write. A bad one (an unknown
-lane, `P4`, a due date like `10/21` or `2026-02-30`) is refused with **400** and a message
-naming the item and the field, and nothing is written. Every field, `due` included, is
-stored and returned exactly as sent; other fields an item carries are kept too.
+The server checks `lane`, `priority`, `due`, `title`, `ask`, `owner` and `doneAt` on every
+write. A bad one (an unknown lane, `P4`, a due date like `10/21` or `2026-02-30`, an `ask`
+whose `kind` is `maybe`) is refused with **400** and a message naming the item and the
+field, and nothing is written. Every field is stored and returned exactly as sent, except
+`doneAt`; other fields an item carries are kept too.
+
+`doneAt` is worked out against the board each write replaces: an item that enters Done
+without one gets the write's time; an item still in Done that arrives without one gets its
+old value back, so a writer that rebuilds its items can't wipe it; and an item outside Done
+never carries one, so reopening an item drops it. A restore follows the same rules. Items
+finished before 2026-10-21 have none and keep having none while they stay in Done; the
+Orbit page lists them after the dated ones. Because the server may add a `doneAt`, the
+answer to a PUT can differ from what was sent, and its `ETag` is the revision of what was
+written.
 
 How the page shows `due`: a chip next to the tag reads `Due today`, `Due tomorrow` or
 `Due Wed 10-21` (the year is added when it is not this year). Once the date has passed it
@@ -586,6 +663,31 @@ defaults shown below rather than failing to start).
 | `credits.promoAmount` | number | Promotional credit amount, if any. |
 | `credits.promoExpiresOn` | ISO date string | Drives an alert-bar line when within 30 days of expiring. |
 | `credits.updatedAt` | ISO date string | When the credits figures were last hand-updated. The staleness line switches to the accent color past 7 days old, and an alert fires past 14 days old. |
+
+### The roster, the job names and the avatars (the Orbit page)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `roster.agents` | list of `{ "key", "name" }` | The agents, in order. A key is lowercase letters, digits and hyphens, at most 40. The first agent is the lead: the header names it, and the Board tab names it as the board's other writer. The order picks each agent's colour. |
+| `roster.tagOwners` | object, tag → key | Whose area each board tag is. Tags match without regard to case, and a key that isn't on the roster is left out. |
+| `roster.avatarDir` | absolute path | A folder of `<key>.png` pictures, served at `/avatars/<key>.png`. |
+| `jobs` | object, launchd label → `{ "name", "owner" }` | Names for Next 24 hours, and (with `owner`, optional) whose colour the job's dot takes. |
+
+A bad entry is left out and named once in the service log at startup (`config: …`).
+
+`/avatars/<key>.png` (`server/lib/avatars.mjs`) serves only `<roster.avatarDir>/<key>.png`,
+and only for a key on the roster. It matches the raw request path against the key pattern
+without decoding it, refuses a symlink (`O_NOFOLLOW`), can't wait on a FIFO
+(`O_NONBLOCK`), and sends only a regular file of at most 2 MB that starts with the PNG
+signature, as `image/png` with `Cache-Control: max-age=86400` and `nosniff`. Anything else
+is a plain 404. The folder's path never reaches the page.
+
+**What of `config.json` reaches the page.** `/api/dashboard` used to send the whole config
+object, so anything added to `config.json` reached every device on the tailnet. It now
+sends an allowlist (`pageConfig()` in `server/routes.mjs`): `warnThreshold`,
+`showAlertBanner`, the documented `plan` and `credits` fields, the roster's keys, names and
+`tagOwners`, and the `jobs` names. Everything else in `config.json`, the avatar folder
+included, stays on the server.
 
 Nothing in `config.json` is fetched automatically — every credits field, and every
 remaining plan field, is either typed in by hand or pushed in via

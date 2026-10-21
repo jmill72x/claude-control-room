@@ -15,7 +15,7 @@ const DATED = [
   { id: 'a', text: 'renew the domain', lane: 'idea', tag: 'MAP', priority: 'P1', due: '2026-10-21' },
   { id: 'b', text: 'no date', lane: 'doing', tag: 'Pi' },
   { id: 'c', text: 'cleared', lane: 'idea', due: '' },
-  { id: 'd', text: 'null', lane: 'done', due: null }
+  { id: 'd', text: 'null', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', due: null }
 ];
 
 // ---- the date check ----

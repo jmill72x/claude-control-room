@@ -39,7 +39,7 @@ test('accepts P0–P3, an absent priority, and an explicit null', async () => {
     { id: 1, text: 'a', lane: 'idea', priority: 'P0' },
     { id: 2, text: 'b', lane: 'idea', priority: 'P3' },
     { id: 3, text: 'c', lane: 'idea' },
-    { id: 4, text: 'd', lane: 'done', priority: null }
+    { id: 4, text: 'd', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', priority: null }
   ];
   await store.write(list);
   assert.deepEqual(await createTodoStore(path).read(), list);
@@ -90,7 +90,7 @@ test('a write leaves no temp file behind and is never partially visible', async 
   const path = tmp();
   const store = createTodoStore(path);
   await store.write([{ id: 1, text: 'x', lane: 'idea' }]);
-  await store.write([{ id: 2, text: 'y', lane: 'done' }]);
+  await store.write([{ id: 2, text: 'y', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z' }]);
   const leftovers = readdirSync(dirname(path)).filter(f => f.includes('.tmp-'));
   assert.deepEqual(leftovers, []);
   assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].id, 2);
@@ -115,7 +115,7 @@ test('two writes started at once both land, and the board is one of them, whole'
   await store.write([{ id: 1, text: 'the board before', lane: 'idea' }]);
   // Different lengths, so a torn file cannot pass for either payload.
   const long = Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, text: `a longer board, item ${i}`, lane: 'idea' }));
-  const short = [{ id: 99, text: 'short', lane: 'done' }];
+  const short = [{ id: 99, text: 'short', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z' }];
   const realNow = Date.now;
   try {
     Date.now = () => 1735689600123;
@@ -196,7 +196,7 @@ test('a write unifies tags that differ only by case to the majority casing', asy
   const out = await store.write([
     { id: 1, text: 'a', lane: 'idea', tag: 'Pi' },
     { id: 2, text: 'b', lane: 'idea', tag: 'pi' },
-    { id: 3, text: 'c', lane: 'done', tag: 'Pi' }
+    { id: 3, text: 'c', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', tag: 'Pi' }
   ]);
   assert.deepEqual(out.map(t => t.tag), ['Pi', 'Pi', 'Pi']);
   assert.deepEqual((await store.read()).map(t => t.tag), ['Pi', 'Pi', 'Pi'], 'the unified casing is what lands on disk');
@@ -257,7 +257,7 @@ const onDisk = path => JSON.parse(readFileSync(path, 'utf8'));
 const A = [{ id: 1, text: 'board A', lane: 'idea', tag: 'Note' }];
 const B = [
   { id: 2, text: 'board B', lane: 'doing', tag: 'Note' },
-  { id: 3, text: 'more of B', lane: 'done', tag: 'Note' }
+  { id: 3, text: 'more of B', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', tag: 'Note' }
 ];
 
 test('keeps the previous board on every write', async () => {

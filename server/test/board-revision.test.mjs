@@ -14,7 +14,7 @@ import { createHandler, parseIfMatch } from '../routes.mjs';
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-rev-')), 'todos.json');
 const A = [{ id: 1, text: 'a', lane: 'idea' }];
 const B = [{ id: 1, text: 'a', lane: 'idea' }, { id: 2, text: 'b', lane: 'doing' }];
-const C = [{ id: 3, text: 'c', lane: 'done' }];
+const C = [{ id: 3, text: 'c', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z' }];
 
 // ---- the store ----
 

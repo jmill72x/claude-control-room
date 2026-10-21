@@ -1,4 +1,6 @@
-import { inferWindowMs, computePace, WEEKLY_FALLBACK_MS, limitsOf } from './pace.mjs';
+import {
+  inferWindowMs, computePace, WEEKLY_FALLBACK_MS, limitsOf, MIN_PLAUSIBLE_WINDOW_MS, MAX_ROLLOVER_LATENESS_MS
+} from './pace.mjs';
 import { RETENTION_MS } from '../history.mjs';
 
 const DAY = 24 * 3600 * 1000;
@@ -52,6 +54,38 @@ export function decimate(points, max = MAX_SERIES_POINTS) {
   return out;
 }
 
+// Where the window before this one ended: the faint arc on the Orbit page's
+// rings. It is the newest reading of an earlier window, and it counts only as
+// that window's final figure when it was taken within 15 minutes of the
+// window's reset (three polls). A reading from hours before the reset (the
+// server was down) is a figure the window may have grown past, so the answer is
+// then unknown (null), and so it is when the history holds no earlier window.
+//
+// "Earlier" means a reset more than half an hour before the current one: the
+// printed reset flaps by a minute between polls (see pace.mjs). A lapsed
+// session prints no reset at all, and then any window that has ended counts.
+// A weekly window follows the one before it, so for a weekly limit the earlier
+// reset must be about a week before the current one, or a whole week went
+// unread. `records` are in ascending `t` order, as the store keeps them.
+export function lastWindowPct(records, limit, now) {
+  const current = Date.parse(limit?.resetsAt ?? '');
+  for (let i = (records?.length ?? 0) - 1; i >= 0; i--) {
+    const r = records[i];
+    const seen = limitsOf(r).find(l => l?.label === limit.label);
+    if (!seen || !Number.isFinite(seen.pct)) continue;
+    const reset = Date.parse(seen.resetsAt ?? '');
+    if (!Number.isFinite(reset)) continue; // no window was open at this reading
+    if (Number.isFinite(current) && reset > current - MIN_PLAUSIBLE_WINDOW_MS) continue; // this window
+    // Not its final reading. This also means the window has ended: the reading
+    // was taken by now, so its reset is at most 15 minutes past now.
+    if (Math.abs(reset - r.t) > MAX_ROLLOVER_LATENESS_MS) return null;
+    if (Number.isFinite(current) && String(limit.label).startsWith('Weekly')
+      && current - reset > WEEKLY_FALLBACK_MS + MIN_PLAUSIBLE_WINDOW_MS) return null; // a week unread
+    return seen.pct;
+  }
+  return null;
+}
+
 // `records` MUST already be in ascending `t` order — inferWindowMs depends on it
 // and the history store guarantees it. Do not sort here.
 export function buildUsagePanel({ parsed, records, now, historyStatus = null }) {
@@ -71,10 +105,13 @@ export function buildUsagePanel({ parsed, records, now, historyStatus = null }) 
       // the same guard inferWindowMs uses, so both halves tolerate the same input.
       .map(r => ({ t: r.t, pct: limitsOf(r).find(l => l?.label === limit.label)?.pct }))
       .filter(p => Number.isFinite(p.pct));
+    const last = lastWindowPct(records, limit, now);
     return {
       ...limit,
       pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now }),
-      series: decimate(series)
+      series: decimate(series),
+      // Left out, not zero, when it isn't known.
+      ...(last === null ? {} : { lastWindowPct: last })
     };
   });
   // Carried onto the panel so the UI can distinguish "no readings yet" (wait and

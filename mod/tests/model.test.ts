@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   heat, paceNote, formatTokens, formatUntil, formatAgo, formatDate, bar, sparkline,
   envelopeOf, cronState, cronList, cronSummary, projectList, creditsView,
-  groupTodos, cyclePriority, advanceStage, makeTodo, summaryText
+  groupTodos, cyclePriority, advanceStage, makeTodo, updateItem, summaryText
 } from '../hooks/model.js'
 import { NOW, PAYLOAD, TODOS, clone } from './fixtures.ts'
 
@@ -110,6 +110,20 @@ test('priority cycles P0 to P3 then clears, and the stage cycles idea, doing, do
   expect(cyclePriority({ id: 'a', text: 'x', lane: 'idea', priority: 'P3' })).toEqual({ id: 'a', text: 'x', lane: 'idea' })
   expect(advanceStage({ id: 'a', text: 'x', lane: 'done' }).lane).toBe('idea')
   expect(advanceStage({ id: 'a', text: 'x', lane: 'idea' }).lane).toBe('doing')
+})
+
+// The board's newer fields (the Orbit page's title, ask and the server's
+// doneAt) are not the pane's to change: every change it makes spreads the item,
+// so they ride through, and editing the text leaves the title alone.
+test('title, ask and doneAt survive every change the pane makes', () => {
+  const item = {
+    id: 'a', text: 'Pay the renewal invoice', lane: 'done', priority: 'P2', title: 'Renewal invoice',
+    ask: { what: 'Pay it', why: 'The site lapses', kind: 'do', time: '09:30' }, doneAt: '2026-10-19T14:05:00.000Z'
+  }
+  expect(updateItem([item], 'a', t => ({ ...t, text: 'Pay the renewal invoice today' })))
+    .toEqual([{ ...item, text: 'Pay the renewal invoice today' }])
+  expect(cyclePriority(item)).toEqual({ ...item, priority: 'P3' })
+  expect(advanceStage(item)).toEqual({ ...item, lane: 'idea' })
 })
 
 test('a new to-do is an idea, trimmed, with no tag rather than an empty one', () => {

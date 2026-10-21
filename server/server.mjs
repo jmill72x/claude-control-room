@@ -3,6 +3,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createStaticHandler } from './lib/static.mjs';
+import { createAvatarHandler } from './lib/avatars.mjs';
+import { readRoster } from './lib/roster.mjs';
 import { createHistory, RETENTION_MS } from './history.mjs';
 import { buildUsagePanel } from './lib/usage-panel.mjs';
 import { createCache } from './cache.mjs';
@@ -21,6 +23,7 @@ import { createHandler } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
+import { buildHourly } from './lib/hourly.mjs';
 import { buildProjects, agentsReadable } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 
@@ -32,6 +35,10 @@ const PORT = Number(process.env.PORT ?? 8322);
 const WEB_DIR = join(HERE, '..', 'web', 'dist');
 
 const config = await loadConfig(join(HERE, 'config.json'));
+// The agents' names, the avatar folder and the job names (lib/roster.mjs). A bad
+// entry is left out; say which, once, so a typo in config.json doesn't just vanish.
+const roster = readRoster(config);
+for (const problem of roster.problems) console.error(`config: ${problem}`);
 const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
@@ -71,6 +78,8 @@ registry.register('sessions', async () => {
   const agentsEnvelope = cache.get('agents', now);
   return {
     ...aggregate(transcripts, now),
+    // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
+    hourly: buildHourly(transcripts, now),
     unavailableRoots,
     unreadablePaths,
     projects: buildProjects({
@@ -110,6 +119,7 @@ registry.register('notifier', async () => {
 
 const api = createHandler({ cache, todos, config });
 const serveStatic = createStaticHandler(WEB_DIR);
+const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 
 // A rejection nobody catches used to take the whole process down; launchd then
 // restarted it with an empty cache, so every panel dropped to unavailable and
@@ -121,6 +131,7 @@ process.on('unhandledRejection', err => {
 const server = createServer(async (req, res) => {
   try {
     if (req.url.startsWith('/api/')) return await api(req, res);
+    if (req.url.startsWith('/avatars/')) return await serveAvatar(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error('request failed', req.method, req.url, err);

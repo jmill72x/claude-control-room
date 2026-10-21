@@ -45,23 +45,23 @@ a route that outlives an unprotected minute is a real exposure, not a theoretica
 The four review findings that used to be parked here were all fixed in `ee1e1df`
 (2026-09-11). These are the ones still open:
 
-- **P2, fixed and staged 2026-10-20; live after C&P and a restart: a transcript could
-  outgrow what the sessions collector can read.** Each minute it read every transcript
-  changed in the last 7 days whole, into one string. Node can't hold a string longer than
-  about 512 MiB, and Jarvis's transcript was 145 MB after about 31 hours, so it would have
-  overflowed before his Sunday restart and dropped his session out of every total. Now each
-  file is streamed a line at a time, and read again only when its size, mtime or inode
-  changes (Orbit plan Phase 0, §9; README, "Transcripts are read as a stream").
-  - Measured side by side on the real transcripts, with one `now`: the new collector's
-    totals equal HEAD's exactly (56.538M new tokens, 2,212.0M cache reads, 175 files).
-  - A first pass takes 2.1 s and peaks at 276 MB (HEAD: 3.4 s and 1.55 GB). Later passes
-    take about 0.1 s.
-  - The same change has the `/usage` poll pass `--no-session-persistence`, so it stops
-    leaving a transcript every five minutes (2,022 in the week). After the restart, check
-    that no new poll transcripts appear in the claude-control-room project folders under
-    `~/.claude/projects`, and that the usage and credits panels stay current.
-  - Tests: `transcript-stream.test.mjs`, the cache tests in `sessions.test.mjs`, and
-    `collectors.test.mjs`.
+- **Done 2026-10-20 (`83a2e0e`, live since the 21:47 restart that day): a transcript can
+  no longer outgrow what the sessions collector can read.** Each file is streamed a line at
+  a time and read again only when its size, mtime or inode changes (Orbit plan Phase 0,
+  README, "Transcripts are read as a stream"). Measured before it shipped, on the real
+  transcripts with one `now`: the same totals as HEAD (56.538M new tokens, 175 files), a
+  first pass in 2.1 s peaking at 276 MB (HEAD: 3.4 s and 1.55 GB), later passes about
+  0.1 s. The `/usage` poll passes `--no-session-persistence`. Jarvis's checks after the
+  restart all passed: sessions, usage and credits `ok` with no unreadable paths, the
+  week's totals in line, and no new poll transcripts 11 minutes later while the credits
+  kept refreshing.
+
+- **P3, new 2026-10-21: a monthly or quarterly job's schedule reads "Every day".**
+  `calendarPhrase()` in `server/lib/humanize.mjs` ignores `Day` and `Month`, so a job set
+  for the 1st of each month at 06:00 prints "Every day, 06:00" (eight times over, one per
+  calendar entry) on this page and in the mod. The next run (`nextRun()`) is right; only
+  the words are wrong. Fix it before Phase 2 of the Orbit plan, whose job details list
+  each schedule.
 
 - **Done 2026-10-20 (`f16b659`, live since the 11:21 restart that day): token usage counts
   each API request once, not once per transcript line.** The week's new tokens read 3x
@@ -296,8 +296,25 @@ start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redes
 - Phase 6: the OpenTelemetry cross-check.
 
 Jeff approved the plan on 2026-10-20 (committed as `5c577e3`), and that evening answered
-its seven decisions: "Go with her picks", which is (a) on all seven. Phase 0 was built
-and staged the same night, and goes live after C&P and a restart (§2). Phases 2 and 4
-also wait on Jarvis (a narrow `job-status` mode, and filling the new board fields), on
-Vision (reading the Pi watch's state) and on Ultron (vetting the new reads). The plan
-supersedes the build notes in §8.3 to §8.5 wherever the two differ.
+its seven decisions: "Go with her picks", which is (a) on all seven. The plan supersedes
+the build notes in §8.3 to §8.5 wherever the two differ.
+
+- **Phase 0 is live** (`83a2e0e`, restarted 2026-10-20 21:47 ET, §2).
+- **Phase 1 is built and staged (2026-10-21), for Ultron's review and then C&P.** The new
+  page is at `/orbit.html` beside the classic one, with the header, Usage limits, Next 24
+  hours, Burn, the week's heat map and the whole Board tab (README, "The Orbit page").
+  Server: the hourly series, `lastWindowPct`, the board's `title`, `ask`, `owner` and
+  `doneAt`, the roster and `jobs` blocks in config, `/avatars/<key>.png`, and the config
+  allowlist on `/api/dashboard`. Tests: 469 server tests in local time and Tokyo (36 new,
+  47 of 48 mutations caught; the survivor is a redundant regular-file check in the avatar
+  route), 39 web logic tests (`cd web && npm test`, 62 of 62 mutations caught), one new
+  mod test, and playwright-cli checks at 390, 820 and 1440 px on a scratch server.
+  After C&P, in this order: Jarvis adds the real `roster` and `jobs` blocks to
+  `config.json` (safe once the allowlist is committed, since the running server read its
+  config at startup); one restart, which loads both; then the live web build (`npm run
+  build` in `web/`). Without the roster the page shows initials and no owner chips.
+- **Waiting on others for Phase 1:** Jarvis backfills `title` on the open items in one
+  pass and writes it on new ones (cards fall back to first sentences until then); Jeff's
+  Safari checks on the iPad and iPhone (Playwright has no WebKit here).
+- Phases 2 and 4 also wait on Jarvis (a narrow `job-status` mode, and filling `ask`), on
+  Vision (reading the Pi watch's state) and on Ultron (vetting the new reads).

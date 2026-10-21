@@ -15,5 +15,25 @@
     "promoAmount": 88.61,
     "promoExpiresOn": "2026-09-19",
     "updatedAt": "2026-08-05"
+  },
+  "roster": {
+    "avatarDir": "/absolute/path/to/a/folder/of/avatars",
+    "agents": [
+      { "key": "chief", "name": "Chief of Staff" },
+      { "key": "builder", "name": "Builder" },
+      { "key": "writer", "name": "Writer" },
+      { "key": "ops", "name": "Ops" }
+    ],
+    "tagOwners": {
+      "Planning": "chief",
+      "Feature": "builder",
+      "Bug": "builder",
+      "Blog": "writer",
+      "Infra": "ops"
+    }
+  },
+  "jobs": {
+    "com.example.morning-brief": { "name": "Morning brief", "owner": "chief" },
+    "com.example.nightly-backup": { "name": "Nightly backup", "owner": "ops" }
   }
 }

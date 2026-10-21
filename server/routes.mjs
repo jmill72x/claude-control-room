@@ -2,6 +2,7 @@ import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
 import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
+import { readRoster } from './lib/roster.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -105,6 +106,27 @@ export function parseIfMatch(header) {
 
 const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits'];
 
+// What of config.json the page gets: only the fields it shows. The page used to
+// get the whole object, so anything added to config.json (a path, a command, a
+// topic) reached every device on the tailnet. Plan and credits keep their
+// documented fields; the roster sends names and keys, never the avatar folder.
+const PLAN_FIELDS = ['price', 'renews', 'cycle', 'seats', 'nextRenewal'];
+const CREDIT_FIELDS = ['balance', 'spent', 'monthlyLimit', 'resetsOn', 'promoAmount', 'promoExpiresOn', 'updatedAt'];
+const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const pick = (obj, keys) => (isObject(obj) ? Object.fromEntries(keys.filter(k => k in obj).map(k => [k, obj[k]])) : null);
+
+export function pageConfig(config, planData) {
+  const roster = readRoster(config);
+  return {
+    warnThreshold: config?.warnThreshold,
+    showAlertBanner: config?.showAlertBanner,
+    plan: pick(planData, PLAN_FIELDS),
+    credits: pick(config?.credits, CREDIT_FIELDS),
+    roster: { agents: roster.agents, tagOwners: roster.tagOwners },
+    jobs: roster.jobs
+  };
+}
+
 export function createHandler({ cache, todos, config }) {
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
@@ -134,7 +156,7 @@ export function createHandler({ cache, todos, config }) {
           ? { ...config.plan, nextRenewal: nextRenewalDate(config.plan.renews, config.plan.cycle, now) }
           : null;
         payload.config = {
-          data: { ...config, plan: planData },
+          data: pageConfig(config, planData),
           fetchedAt: now,
           status: missing ? 'unavailable' : 'ok',
           error: missing
