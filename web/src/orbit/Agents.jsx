@@ -156,7 +156,7 @@ export function TodayByAgent({ payload, now, roster }) {
                 <div className="o-today-track" role="img" aria-label={laneLabel(l)}>
                   {l.marks.map((m, i) => (
                     <span key={i} title={m.title} className={`o-today-mark${l.scheduled ? ' o-today-sched' : ''}`}
-                      style={{ left: m.left, width: m.d, height: m.d, borderColor: l.color, background: l.scheduled ? l.color : `${l.color}33` }} />
+                      style={{ left: m.left, width: m.d, height: m.d, borderColor: l.color, background: m.hollow ? 'transparent' : l.scheduled ? l.color : `${l.color}33` }} />
                   ))}
                   {l.note && <span className="o-today-note">{l.note}</span>}
                   <span className="o-today-now" style={{ left: view.nowLeft }} aria-hidden="true" />

@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parseLaunchctlList, buildCron } from '../lib/parse-launchd.mjs';
+import { parseLaunchctlList, buildCron, cronOrder } from '../lib/parse-launchd.mjs';
 
 const exec = promisify(execFile);
 const AGENTS_DIR = join(homedir(), 'Library', 'LaunchAgents');
@@ -36,8 +36,5 @@ export async function collectCrons({
     crons.push(buildCron({ label, plist, statusRow: statuses.get(label) ?? null }, at));
   }
 
-  return crons.sort((a, b) => {
-    if (a.ok !== b.ok) return a.ok ? 1 : -1;
-    return (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity);
-  });
+  return crons.sort(cronOrder);
 }

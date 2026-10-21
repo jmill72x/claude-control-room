@@ -14,6 +14,8 @@ import { collectAgents } from './collectors/agents.mjs';
 import { collectPlan } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
+import { createHealth } from './collectors/health.mjs';
+import { readHealthConfig } from './lib/health.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
@@ -30,6 +32,8 @@ import { installLogStamps } from './lib/log-stamp.mjs';
 
 // Before anything logs, so every line in the service log carries its time.
 installLogStamps();
+// When this run of the server began, for the Control Room chip on the health strip.
+const STARTED_AT = Date.now();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8322);
@@ -40,6 +44,10 @@ const config = await loadConfig(join(HERE, 'config.json'));
 // entry is left out; say which, once, so a typo in config.json doesn't just vanish.
 const roster = readRoster(config);
 for (const problem of roster.problems) console.error(`config: ${problem}`);
+// The health strip's job-status path, services and the Pi watch's files
+// (lib/health.mjs), checked the same way.
+const healthSettings = readHealthConfig(config);
+for (const problem of healthSettings.problems) console.error(`config: ${problem}`);
 const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
@@ -60,7 +68,12 @@ registry.register('usage', async () => {
   });
 }, 5 * 60 * 1000);
 registry.register('agents', () => collectAgents(), 30 * 1000);
-registry.register('crons', () => collectCrons(), 60 * 1000);
+// The health strip (collectors/health.mjs): job-status every minute, whose
+// verdicts the crons panel then takes over launchd's own, so the morning brief,
+// the page, the mod and the alerts agree on every job.
+const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT });
+registry.register('crons', async () => health.overlay(await collectCrons()), 60 * 1000);
+registry.register('health', () => health.collect(), 60 * 1000);
 // Credits come from the CLI's cached usage response, which the usage collector's
 // own `/usage` poll refreshes every five minutes. Reading a local file is cheap,
 // so poll it every minute; the parser refuses a cache older than 30 minutes.

@@ -12,6 +12,15 @@
 // from two numbers alone (lib/alerts.mjs), so its percent can go out as written.
 const DISCLOSED_KINDS = new Set(['limit', 'projection', 'credits', 'board']);
 
+// How a count of each counted kind is said: "1 job failed", "2 services are
+// down". Any other kind is an item that needs attention. Each kind goes out as
+// its own message, so a new failure of one kind doesn't repeat the others.
+const COUNT_WORDS = {
+  cron: n => `${n} job${n === 1 ? '' : 's'} failed`,
+  service: n => `${n} service${n === 1 ? ' is' : 's are'} down`
+};
+const anyOther = n => `${n} item${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} attention`;
+
 export function pushableFrom(alerts) {
   const keyed = (alerts ?? []).filter(a => typeof a?.key === 'string' && a.key);
   const out = [];
@@ -20,13 +29,15 @@ export function pushableFrom(alerts) {
     out.push({ keys: [a.key], title: 'Control Room', message: a.text });
   }
 
-  const counted = keyed.filter(a => !DISCLOSED_KINDS.has(a.kind));
-  if (counted.length > 0) {
-    out.push({
-      keys: counted.map(a => a.key),
-      title: 'Control Room',
-      message: `${counted.length} item${counted.length === 1 ? '' : 's'} need${counted.length === 1 ? 's' : ''} attention — open the dashboard for detail`
-    });
+  const groups = new Map();
+  for (const a of keyed.filter(a => !DISCLOSED_KINDS.has(a.kind))) {
+    const group = Object.hasOwn(COUNT_WORDS, a.kind) ? a.kind : 'other';
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(a.key);
+  }
+  for (const [group, keys] of groups) {
+    const words = group === 'other' ? anyOther(keys.length) : COUNT_WORDS[group](keys.length);
+    out.push({ keys, title: 'Control Room', message: `${words} — open the dashboard for detail` });
   }
   return out;
 }
@@ -51,6 +62,7 @@ export function observableSources(snapshot) {
     ...(ok('crons') ? ['cron:launchd'] : []),
     ...(ok('ingestCrons') ? ['cron:ingest'] : []),
     ...(ok('board') ? ['board'] : []),
+    ...(ok('health') ? ['service'] : []),
     // Credits alerts read the ingested feed when it is current and fall back
     // to config (loaded at startup, always readable) otherwise. So the source
     // is observable when the feed is current or was never posted — but a

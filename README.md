@@ -235,12 +235,25 @@ A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 5), it is a second page in the same build, at **`/orbit.html`**, and the page at `/` is
 unchanged. Its Overview runs in the approved order: Usage limits beside the agent work map,
 Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's heat map
-(Waiting on you goes on top in Phase 4). Phases 1 and 3 give it:
+(Waiting on you goes on top in Phase 4). Phases 1 to 3 give it:
 
 - **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
   minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
   `#board`, and `#board/<id>`, which opens the board on one item), so Back works. The
   alert bar's lines show in a strip under the header.
+- **The health strip (Phase 2),** under the title on both tabs: a chip for the scheduled
+  jobs, then one for each always-on service in config, each a dot (green, red or grey)
+  and a word. A chip opens its details below the strip; a second tap or Escape closes
+  them. Jobs reads "all OK", "N failed", "unknown" (job-status didn't answer) or "not
+  set up". A job that hasn't had its first run says so and isn't a failure, and the
+  details list every job with its schedule and verdict, a failure with job-status's
+  reason. The lead reads up or down, from its session. This server can't report itself
+  down, so its chip says what the page sees ("up", "not current", "no answer"), and its
+  details give its start, its restarts and how the run before it ended. A KeepAlive job
+  reads "running" or "not running", which proves the process, not the connection. The
+  NAS reads its watch's word ("up", or "down", "degraded", "Kuma down", "no SSH" and
+  "backup late", all shown as not OK) while the watch itself is current, and "unknown"
+  otherwise.
 - **Usage limits:** three rings (the session, the week and the model-scoped week) round
   the countdown to the session reset, each with a faint arc where its last window ended
   (`lastWindowPct`, below). The cloud-credit grants and the plan tier with its days left
@@ -255,7 +268,8 @@ Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's he
   Each run is a dot at its start, sized by its tokens against the day's largest run, and
   its tooltip holds its time, task and tokens. An agent with no run today says so, with its
   next scheduled job when it has one. Scheduled marks each calendar job's due times so far
-  today; whether it then ran comes with the health strip (Phase 2). On a phone the lanes
+  today: filled once its log has been written since (it ran), hollow until then, and as
+  plain marks when job-status hasn't answered. On a phone the lanes
   scroll sideways inside the panel, with the names pinned, and open with now in view.
 - **Latest runs (Phase 3):** the 10 most recent runs, each with its time (and weekday
   when it wasn't today), the agent, its task and its tokens.
@@ -279,8 +293,9 @@ Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's he
 Every token figure is new tokens, each request counted once, as everywhere else here. A
 panel whose source is missing says so. Against a server from before Phase 1, Burn and the
 heat map say that it doesn't send hourly figures yet; against one from before Phase 3,
-the three agent panels say the same of agent runs; and with no roster in config they say
-that no run has anyone to belong to.
+the three agent panels say the same of agent runs; with no roster in config they say
+that no run has anyone to belong to; and against a server from before Phase 2 there is
+no health strip.
 
 Where the new figures come from:
 
@@ -322,6 +337,36 @@ Where the new figures come from:
   due over the last 7 days, from its `StartCalendarInterval`. They are the times launchd
   was due to start it, not proof that it ran: a Mac asleep at that minute starts the job
   when it wakes.
+- `health` (`server/collectors/health.mjs`, `server/lib/health.mjs`) is built every
+  minute, field by field, so no launchd label, path, command line or process id reaches
+  the page. `jobs` holds `status` (ok, unset or error), `error`, and `list`: each job's
+  `name`, `schedule`, `state` (ok, new or failed) and `reason`. `services` holds each
+  service's `key`, `kind`, `name`, `about`, `state` and `downSince`, and by kind: the
+  lead's `startedAt`, `count` and `launcher` (its state and last exit, a detail, not a
+  verdict); this server's `startedAt`, `runs` and `lastStop`; a KeepAlive job's
+  `launchd` state and `reason`; the NAS's `label`, `line`, `checkedAt` and `why`. The
+  sources:
+  - Jobs: `<health.jobStatus> --json --only jobs`, a narrow mode of the lead's own
+    job-status check that runs only `launchctl print` per job and reads the plists. Its
+    verdict per job is its `ok`, with log age judged against the schedule; the list is
+    every job it reports except the labels a service chip speaks for.
+  - The lead: `ps -axww -o pid=,etime=,command=`, for a `claude` process started with
+    `-n <session>` (or `--name`). Only the count and the oldest one's start are kept.
+  - This server: its own start, and `launchctl print gui/<uid>/<label>` once, at the
+    first pass that gets an answer, for `runs` and how the run before it ended (a signal
+    or an exit code). Neither can change while this run lives. Nothing else in that
+    output, which includes the job's environment, is kept.
+  - A KeepAlive job: job-status's `state` for its label.
+  - The NAS: one token from the watch's state file, opened without following a symlink
+    or waiting on a FIFO, at most 64 bytes. It counts only while job-status says the
+    watch's own job is OK (its log at most 15 minutes old and its last exit 0) or, when
+    job-status doesn't answer, while the watch's log is at most 15 minutes old. The
+    file is written only on a change, so its own age means nothing.
+- `crons[]` takes job-status's verdict for each job it knows (`ok`, `state` and `last`),
+  from an answer at most 3 minutes old, plus `lastRunAt`, when the job's log was last
+  written. So the morning brief, this page, the classic page, the mod and the alerts
+  agree on every job. Without an answer, or for a job job-status doesn't cover, the
+  verdict is launchd's own, as before.
 
 Saving keeps this page's protections (`web/src/orbit/useBoard.js`): `If-Match` on every
 PUT, one save at a time, a 409 or 428 re-reads the board, and the board is re-read when
@@ -728,9 +773,24 @@ and that must not reach every device on the tailnet.
 | `roster.agents` | list of `{ "key", "name" }` | The agents, in order. A key is lowercase letters, digits and hyphens, at most 40. The first agent is the lead: the header names it, and the Board tab names it as the board's other writer. The order picks each agent's colour. |
 | `roster.tagOwners` | object, tag → key | Whose area each board tag is. Tags match without regard to case, and a key that isn't on the roster is left out. |
 | `roster.avatarDir` | absolute path | A folder of `<key>.png` pictures, served at `/avatars/<key>.png`. |
-| `jobs` | object, launchd label → `{ "name", "owner" }` | Names for Next 24 hours, and (with `owner`, optional) whose colour the job's dot takes. |
+| `jobs` | object, launchd label → `{ "name", "owner" }` | Names for Next 24 hours and the health strip's Jobs list, and (with `owner`, optional) whose colour the job's dot takes. |
 
 A bad entry is left out and named once in the service log at startup (`config: …`).
+
+### The health strip (the Orbit page)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `health.jobStatus` | absolute path | The job-status program, run every minute as `<path> --json --only jobs`, with 20 s for the whole call. Without it, Jobs reads "not set up" and the KeepAlive jobs "unknown". |
+| `health.services` | list | The service chips, in order after Jobs. Each has a `kind`, a `name` (the chip's word, unique, at most 40 characters) and an optional `about` line (at most 120) for its details. |
+| … `kind: "session"` | `session`, `launcher` | `session`: the name the lead's session was started with (`claude -n <name>`, no spaces). `launcher`, optional: the label of the job that starts it, shown as a detail. |
+| … `kind: "self"` | `label` | This server's own launchd label. |
+| … `kind: "launchd"` | `label` | A KeepAlive job's label. |
+| … `kind: "pi"` | `stateFile`, `log`, `watchJob` | The NAS watch's state file and log (absolute paths), and its job's label. |
+
+At most one `session`, one `self` and one `pi`. A bad entry is left out and named once in
+the service log at startup, as above. The labels a service chip names (and the
+launcher's) are left out of the Jobs list. None of this block reaches the page.
 
 `/avatars/<key>.png` (`server/lib/avatars.mjs`) serves only `<roster.avatarDir>/<key>.png`,
 and only for a key on the roster. It matches the raw request path against the key pattern
@@ -809,7 +869,12 @@ quoted:**
 | `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
 | `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
-| anything else (including `cron`) | **counted, never quoted** — e.g. `1 item needs attention — open the dashboard for detail` |
+| `cron` | **counted, never quoted** — `1 job failed — open the dashboard for detail`. A launchd job's verdict is job-status's when it answers (`crons[]` above) |
+| `service` | **counted, never quoted** — `1 service is down — open the dashboard for detail`. Raised once the lead's session or a KeepAlive job has been down for five minutes, so a restart never pushes. Never for the NAS, whose watch pages on every change itself, and never for this server |
+| anything else | **counted, never quoted** — e.g. `1 item needs attention — open the dashboard for detail` |
+
+Each counted kind goes out as its own message, so a new failure of one kind doesn't
+repeat another.
 
 This is an **allowlist**, deliberately: only the four kinds above are named as safe to
 quote. A kind that is missing, misspelled, or added later by someone who has not read
@@ -826,8 +891,8 @@ Each alert notifies once per condition, keyed on its subject rather than its wor
 (a limit's percentage moves every poll; the key does not), and a persisted set of
 already-notified keys survives a service restart. If a condition clears and later
 returns, it notifies again — but "cleared" is only believed when the alert's own
-source was readable that run. Launchd crons, ingested crons, usage, the board's size and
-the ingested credits feed are tracked as separate sources, so a poster gap or a cold start where
+source was readable that run. Launchd crons, ingested crons, usage, the board's size, the
+health panel's services and the ingested credits feed are tracked as separate sources, so a poster gap or a cold start where
 one feed is absent or stale keeps that feed's keys rather than re-pushing them when it
 comes back.
 
@@ -840,7 +905,27 @@ security add-generic-password -a claude-control-room -s ntfy-topic -w 'your-topi
 Pick something long and random — it is the only thing standing between the topic and
 anyone who guesses or brute-forces it — and don't reuse a topic from another service:
 a leaked topic should cost you one integration, not two. Subscribe to the same topic
-in the ntfy app (iOS/Android) or at `https://ntfy.sh/your-topic-here` to receive pushes.
+in the ntfy app (iOS/Android) or at `https://ntfy.sh/<your-topic>` to receive pushes.
+
+## Security
+
+The server binds `127.0.0.1`, and the tailnet reaches it only through Tailscale Serve.
+Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB). What
+reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
+field by field (the health strip's above).
+
+What it runs, as the service's own user: `claude -p /usage` every 5 minutes (with
+`--strict-mcp-config`, `--permission-mode manual` and `--no-session-persistence`),
+`claude agents --json` every 30 seconds (whose runs were seen starting `security`, the
+Keychain tool, on 2026-10-21), `claude auth status --json` hourly, `launchctl
+list` and `plutil` on each LaunchAgent every minute, and for the health strip,
+`<health.jobStatus> --json --only jobs` and `ps` every minute and `launchctl print` for
+its own job once. **job-status runs from the path in `config.json`, which is a working
+tree: whatever is in it runs every minute, uncommitted edits included.**
+
+What it reads besides the transcripts: `~/.claude.json` (the cached usage response),
+the LaunchAgent plists, the avatar folder, the NAS watch's state file (a token) and the
+modification time of its log.
 
 ## Fragility
 

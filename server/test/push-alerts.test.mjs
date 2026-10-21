@@ -4,7 +4,8 @@ import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-ale
 
 const cron = (key, text) => ({ kind: 'cron', key, text });
 const limit = (key, text) => ({ kind: 'limit', key, text });
-const isCounted = msg => /needs? attention/i.test(msg);
+const service = (key, text) => ({ kind: 'service', key, text });
+const isCounted = msg => /jobs? failed|services? (is|are) down|needs? attention/i.test(msg);
 
 test('a limit alert pushes its real text', () => {
   const out = pushableFrom([limit('limit:W', 'Weekly · all models at 88%')]);
@@ -18,14 +19,14 @@ test('a cron alert never sends the job name or its exit status', () => {
   const blob = `${out[0].title} ${out[0].message}`;
   assert.ok(!blob.includes('secret-job'), 'job name must not leave the machine');
   assert.ok(!blob.includes('429'), 'exit status must not leave the machine');
-  assert.match(blob, /needs? attention/i);
+  assert.equal(out[0].message, '1 job failed — open the dashboard for detail');
 });
 
 test('several failing crons collapse into one counted message', () => {
   const out = pushableFrom([cron('cron:a', 'a failed'), cron('cron:b', 'b failed'), cron('cron:c', 'c failed')]);
   const crons = out.filter(o => isCounted(o.message));
   assert.equal(crons.length, 1);
-  assert.match(crons[0].message, /3/);
+  assert.match(crons[0].message, /^3 jobs failed/);
 });
 
 test('the collapsed cron entry still carries every cron key, so each is deduped separately', () => {
@@ -142,4 +143,27 @@ test('the board alert is forgotten only while the board can be read', () => {
   assert.ok(!observableSources({ board: { status: 'unavailable' } }).has('board'));
   assert.deepEqual(prune(sent, [], observableSources({ board: { status: 'ok' } })), {}, 'the board shrank: next time it notifies again');
   assert.deepEqual(prune(sent, [], observableSources({})), sent, 'no reading: kept');
+});
+
+// The health strip (Orbit plan, Phase 2): a down service is counted like a
+// failed job, in words of its own, and never named.
+test('a down service pushes a count, never its name', () => {
+  const one = pushableFrom([service('service:launchd:Secret tunnel', 'Secret tunnel is not running')]);
+  assert.equal(one.length, 1);
+  assert.equal(one[0].message, '1 service is down — open the dashboard for detail');
+  assert.ok(!JSON.stringify(one).includes('Secret tunnel is'), 'the name stays on the machine');
+  const two = pushableFrom([service('service:a', 'A is not running'), service('service:b', 'B is not running')]);
+  assert.equal(two[0].message, '2 services are down — open the dashboard for detail');
+});
+
+test('each counted kind is its own message, carrying only its own keys', () => {
+  const out = pushableFrom([cron('cron:a', 'a failed'), service('service:t', 'T is not running'), { kind: 'mystery', key: 'mystery:1', text: 'x' }]);
+  const byText = Object.fromEntries(out.map(o => [o.message.split(' — ')[0], o.keys]));
+  assert.deepEqual(byText, { '1 job failed': ['cron:a'], '1 service is down': ['service:t'], '1 item needs attention': ['mystery:1'] });
+});
+
+test('a down service can be forgotten only while the health panel reports', () => {
+  assert.ok(observableSources({ health: { status: 'ok' } }).has('service'));
+  assert.ok(!observableSources({ health: { status: 'stale' } }).has('service'));
+  assert.ok(!observableSources({}).has('service'));
 });

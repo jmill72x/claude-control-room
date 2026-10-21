@@ -56,7 +56,8 @@ export function routeHash({ tab, item = null }) {
 // Past this, the figures on the page are not current, and the line turns amber.
 export const STALE_AFTER_MS = 3 * 60 * 1000;
 
-const ago = ms => {
+// An age as the page says it: just now, 40 s ago, 5 min ago, 3 h ago, 2 d ago.
+export const ago = ms => {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 5) return 'just now';
   if (s < 60) return `${s} s ago`;

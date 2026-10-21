@@ -1,4 +1,5 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { TRANSCRIPT_ROOTS, parseTranscriptFile, dropCopiedRequests } from '../lib/parse-transcript.mjs';
 import { parseCoworkSession } from '../lib/cowork.mjs';
@@ -11,6 +12,11 @@ import { parseCoworkSession } from '../lib/cowork.mjs';
 // Cowork transcripts already sit ~6 levels below their root, so a cap of 8 was
 // uncomfortably close to legitimate depth. Truncation is recorded rather than
 // silent: a tree we stopped short of is not a tree we found nothing in.
+//
+// Only regular files are listed. A FIFO named like a transcript would block
+// the read that opens it, and the collector would then never finish a pass
+// again (the registry skips a run while the last one is still going); a
+// socket, device or symlink isn't a transcript either (the 2026-10-21 security review).
 const MAX_DEPTH = 12;
 
 async function walk(dir, match, out = [], failures = [], depth = 0) {
@@ -28,7 +34,7 @@ async function walk(dir, match, out = [], failures = [], depth = 0) {
   for (const e of entries) {
     const full = join(dir, e.name);
     if (e.isDirectory()) await walk(full, match, out, failures, depth + 1);
-    else if (match(e.name)) out.push(full);
+    else if (e.isFile() && match(e.name)) out.push(full);
   }
   return out;
 }
@@ -38,19 +44,30 @@ async function walk(dir, match, out = [], failures = [], depth = 0) {
 // agent file's slug, or general-purpose) and the one-line brief it was given
 // (`description`). Only those two fields are kept. No meta file is no meta,
 // not a failure: the run just can't be put to an agent. One that can't be read
-// or parsed throws, and the caller reports it.
+// or parsed throws, and the caller reports it, and so does one that isn't a
+// regular file: it is opened without following a symlink and without waiting
+// on a FIFO, then checked, as the avatar route does (lib/avatars.mjs).
 const MAX_META_BYTES = 64 * 1024;
+const META_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const isSubagentFile = file => basename(dirname(file)) === 'subagents' && basename(file).startsWith('agent-');
 const field = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
 export async function readSubagentMeta(file) {
   const path = file.replace(/\.jsonl$/, '.meta.json');
-  let text;
+  let handle;
   try {
-    if ((await stat(path)).size > MAX_META_BYTES) throw new Error(`${path} is larger than a meta file should be`);
-    text = await readFile(path, 'utf8');
+    handle = await open(path, META_FLAGS);
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
+  }
+  let text;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${path} is not a regular file`);
+    if (info.size > MAX_META_BYTES) throw new Error(`${path} is larger than a meta file should be`);
+    text = await handle.readFile('utf8');
+  } finally {
+    await handle.close().catch(() => {});
   }
   const d = JSON.parse(text);
   if (d === null || typeof d !== 'object' || Array.isArray(d)) throw new Error(`${path} is not an object`);
@@ -108,6 +125,8 @@ export async function collectSessions({
     for (const file of jsonlFiles) {
       let info;
       try { info = await stat(file); } catch { failures.push(file); continue; }
+      // Listed as a regular file, but it could have been swapped since.
+      if (!info.isFile()) continue;
       if (info.mtimeMs < cutoff) continue;
       seen.add(file);
       let entry = cache?.get(file);

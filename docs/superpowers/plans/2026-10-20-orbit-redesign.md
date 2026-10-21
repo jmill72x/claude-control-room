@@ -236,7 +236,11 @@ is running:
 - Pi: the state the Pi watch (Vision's, every 5 minutes) last wrote, up or down. It counts
   only while the watch's own log is fresh, and otherwise reads "unknown". Reading that file
   as a fixed format needs Vision's OK.
-- Jarvis: see decision 4.
+- Jarvis: see decision 4. As built (2026-10-21), the chip reads the process list for a
+  `claude -n Jarvis` process rather than the agents list. Listed still means up, with no
+  heartbeat file. The agents poll's runs were seen starting the Keychain tool, and nothing
+  showed cleanly that they make no network call, so a minute-by-minute read doesn't lean
+  on them.
 
 Alerts: a failed job or a down service can push through the existing notifier. The push
 carries a count ("1 job failed"), never a label, as the push-alerts plan requires. Pepper's

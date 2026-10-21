@@ -5,6 +5,7 @@ import { useBoard } from './useBoard.js';
 import { parseRoute, routeHash, freshness, headerDate } from '../lib/orbit/page.js';
 import { boardTotals } from '../lib/orbit/board.js';
 import { Overview } from './Overview.jsx';
+import { HealthChips, HealthDetail } from './Health.jsx';
 import { BoardBand, BoardTab } from './Board.jsx';
 import { useBoardFilters } from './useBoardFilters.js';
 
@@ -37,6 +38,14 @@ export function OrbitApp() {
   // The item this page just added, so the board can say "Just added" when it
   // opens on that one, and "Linked item" for any other link.
   const [justAdded, setJustAdded] = useState(null);
+  // The health chip whose details are open, if any. Escape closes them.
+  const [chip, setChip] = useState(null);
+  useEffect(() => {
+    if (!chip) return undefined;
+    const onKey = e => { if (e.key === 'Escape') setChip(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chip]);
 
   const config = payload?.config?.data ?? null;
   const roster = config?.roster ?? EMPTY_ROSTER;
@@ -72,11 +81,14 @@ export function OrbitApp() {
               </a>
             </nav>
           </div>
-          <div className="o-statusrow">
+          <div className="o-statusrow" role="group" aria-label="System health">
+            <HealthChips env={payload?.health} fresh={fresh} open={chip} detailId="o-health-detail"
+              onToggle={key => setChip(open => (open === key ? null : key))} />
             <span className={`o-mono o-updated o-updated-${fresh.tone}`} role="status">
               <span className="o-dot" aria-hidden="true" />{fresh.label}
             </span>
           </div>
+          {chip && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail" />}
           {isBoard && <BoardBand board={board} roster={roster} totals={totals} filters={filters} />}
         </div>
       </header>

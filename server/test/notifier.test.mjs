@@ -89,7 +89,7 @@ test('cron alerts are counted, and each key deduped separately', async () => {
   };
   await runNotifier({ snapshot: two, config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].message, /2 items need attention/);
+  assert.match(h.sent[0].message, /^2 jobs failed — open the dashboard for detail$/);
 
   const three = {
     crons: { status: 'ok', data: [

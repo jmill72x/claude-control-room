@@ -1,6 +1,10 @@
 const DAY = 24 * 3600 * 1000;
 // Three quarters of the board's save cap.
 export const BOARD_WARN_SHARE = 0.75;
+// How long a service must stay down before it raises an alert: long enough
+// that a restart (launchd brings a KeepAlive job back within seconds, and the
+// lead's session has a weekly restart of its own) never does.
+export const SERVICE_DOWN_ALERT_MS = 5 * 60 * 1000;
 
 const listOf = envelope => (Array.isArray(envelope?.data) ? envelope.data : []);
 
@@ -70,6 +74,17 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
         kind: 'board',
         key: 'board:size'
       });
+    }
+  }
+
+  // An always-on service that has been down for five minutes (the health
+  // strip, lib/health.mjs): the lead's session or a KeepAlive job. Never the
+  // Pi, whose watch pages on every change itself, and never this server, which
+  // can't report itself down. Before the credits rules, which return early.
+  for (const s of snapshot.health?.data?.services ?? []) {
+    if ((s?.kind === 'session' || s?.kind === 'launchd') && s.state === 'down' &&
+        Number.isFinite(s.downSince) && now - s.downSince >= SERVICE_DOWN_ALERT_MS) {
+      alerts.push({ text: `${s.name} is not running`, kind: 'service', key: `service:${s.key}` });
     }
   }
 

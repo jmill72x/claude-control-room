@@ -91,6 +91,39 @@ button:disabled { cursor: default; }
 .o-updated-down { color: #FFB3A8; }
 .o-updated-down .o-dot { background: var(--bad); }
 
+/* ---- the health strip: a chip per source, and the details one opens ---- */
+
+.o-hchip {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; padding: 0 14px; box-sizing: border-box;
+  border-radius: 999px; border: 1px solid rgba(248, 247, 243, 0.16); background: rgba(248, 247, 243, 0.06);
+  color: var(--paper); font: inherit; font-size: 13px; cursor: pointer;
+}
+.o-hchip-open { border-color: rgba(248, 247, 243, 0.5); }
+.o-hchip-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--night-sub); }
+.o-tone-ok .o-hchip-dot { background: var(--ok); }
+.o-tone-bad .o-hchip-dot { background: var(--bad); }
+.o-hchip-label { font-weight: 600; }
+.o-hchip-value { color: var(--night-sub); }
+.o-hchip.o-tone-bad { border-color: var(--bad); background: rgba(255, 107, 92, 0.16); }
+.o-hchip.o-tone-bad .o-hchip-value { color: #FFB3A8; }
+.o-health-none { font-size: 13px; color: var(--night-sub); }
+.o-health-detail {
+  display: flex; flex-direction: column; gap: 2px; margin-top: -10px; padding: 12px 16px; border-radius: 14px;
+  background: rgba(248, 247, 243, 0.06); border: 1px solid rgba(248, 247, 243, 0.12);
+}
+.o-health-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; padding-bottom: 6px; }
+.o-health-head h2 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--paper); }
+.o-health-head span { font-size: 12px; color: var(--night-sub); }
+.o-health-row {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 8px 0; border-top: 1px solid rgba(248, 247, 243, 0.08); font-size: 13px;
+}
+.o-health-row .o-hchip-dot { width: 8px; height: 8px; }
+.o-health-what { min-width: 0; color: var(--paper); overflow-wrap: anywhere; }
+.o-health-what span { color: var(--night-sub); }
+.o-health-state { max-width: 45vw; font-size: 11.5px; text-align: right; color: var(--night-sub); overflow-wrap: anywhere; }
+.o-health-row.o-tone-bad .o-health-state { color: var(--bad); }
+
 .o-eyebrow-night { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--night-sub); }
 .o-sub-night { font-size: 13px; color: var(--night-sub); }
 

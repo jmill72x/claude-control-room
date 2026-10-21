@@ -63,3 +63,50 @@ test('an array-form calendar lists each entry rather than collapsing to "Every m
   assert.equal(formatSchedule([{ Weekday: 1, Hour: 9, Minute: 30 }], null), 'Mondays, 09:30');
   assert.equal(formatSchedule([], null), 'On demand', 'an empty array specifies no schedule at all');
 });
+
+// Day and Month were ignored, so a job for the 1st of each month read "Every
+// day, 06:00", once per calendar entry (2026-10-21). The next run was right;
+// only the words were wrong.
+test('a day of the month is said, and a month too', () => {
+  assert.equal(formatSchedule({ Day: 1, Hour: 6, Minute: 0 }, null), '1st of each month, 06:00');
+  assert.equal(formatSchedule({ Month: 1, Day: 1, Hour: 6, Minute: 30 }, null), '1st of Jan, 06:30');
+  assert.equal(formatSchedule({ Month: 2, Hour: 6, Minute: 0 }, null), 'Every day in Feb, 06:00');
+  assert.equal(formatSchedule({ Month: 3, Weekday: 1, Hour: 9, Minute: 0 }, null), 'Mondays in Mar, 09:00');
+  assert.equal(formatSchedule({ Day: 15, Minute: 5 }, null), '15th of each month, every hour at :05');
+  assert.equal(formatSchedule({ Day: 2, Hour: 3 }, null), '2nd of each month, 03:00–03:59, every minute');
+  assert.equal(formatSchedule({ Day: 23 }, null), '23rd of each month, every minute');
+  assert.equal(formatSchedule({ Weekday: 5, Day: 13, Hour: 9, Minute: 0 }, null), 'Fridays on the 13th of each month, 09:00');
+});
+
+test('ordinals: 11th to 13th, 21st, 22nd and 31st', () => {
+  const phrase = d => formatSchedule({ Day: d, Hour: 0, Minute: 0 }, null).split(' ')[0];
+  assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 31].map(phrase),
+    ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd', '31st']);
+});
+
+test('entries that differ only in their month share one phrase, months in order', () => {
+  const quarterly = [10, 1, 7, 4].map(Month => ({ Day: 1, Hour: 6, Minute: 30, Month }));
+  assert.equal(formatSchedule(quarterly, null), '1st of Jan, Apr, Jul and Oct, 06:30');
+  const rest = [2, 3, 5, 6, 8, 9, 11, 12].map(Month => ({ Day: 1, Hour: 6, Minute: 0, Month }));
+  assert.equal(formatSchedule(rest, null), '1st of Feb, Mar, May, Jun, Aug, Sep, Nov and Dec, 06:00');
+  // A monthless entry covers every month, so it never joins the group.
+  assert.equal(formatSchedule([{ Day: 1, Hour: 6, Minute: 0 }, { Day: 1, Hour: 6, Minute: 0, Month: 3 }], null),
+    '1st of each month, 06:00 · 1st of Mar, 06:00');
+  // Two entries that say the same thing are said once.
+  assert.equal(formatSchedule([{ Hour: 8, Minute: 0 }, { Hour: 8, Minute: 0 }], null), 'Every day, 08:00');
+  // Different times stay apart.
+  assert.equal(formatSchedule([{ Day: 1, Hour: 6, Minute: 0, Month: 1 }, { Day: 1, Hour: 7, Minute: 0, Month: 2 }], null),
+    '1st of Jan, 06:00 · 1st of Feb, 07:00');
+});
+
+test('entries that differ only in their weekday share one phrase: a run of days, or a list', () => {
+  const weekdays = [1, 2, 3, 4, 5].map(Weekday => ({ Weekday, Hour: 7, Minute: 30 }));
+  assert.equal(formatSchedule(weekdays, null), 'Mondays to Fridays, 07:30');
+  assert.equal(formatSchedule([{ Weekday: 4, Hour: 9, Minute: 0 }, { Weekday: 1, Hour: 9, Minute: 0 }], null), 'Mondays and Thursdays, 09:00');
+  assert.equal(formatSchedule([0, 2, 4].map(Weekday => ({ Weekday, Hour: 9, Minute: 0 })), null), 'Sundays, Tuesdays and Thursdays, 09:00');
+  // Different times stay apart, and an entry with both keys keeps its own.
+  assert.equal(formatSchedule([{ Weekday: 2, Hour: 16, Minute: 45 }, { Weekday: 5, Hour: 16, Minute: 45 }, { Weekday: 0, Hour: 11, Minute: 45 }], null),
+    'Tuesdays and Fridays, 16:45 · Sundays, 11:45');
+  assert.equal(formatSchedule([{ Weekday: 1, Month: 3, Hour: 9, Minute: 0 }, { Weekday: 2, Month: 3, Hour: 9, Minute: 0 }], null),
+    'Mondays in Mar, 09:00 · Tuesdays in Mar, 09:00');
+});

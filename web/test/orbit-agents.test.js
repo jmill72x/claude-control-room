@@ -125,6 +125,18 @@ test("Scheduled marks each calendar job due earlier today, named from config, an
   assert.equal(sched.marks[0].left, `${((7.5 / 24) * 100).toFixed(2)}%`);
 });
 
+// Whether a job ran since it fell due comes from its log (the crons panel's
+// lastRunAt, from job-status): a due time with no run logged since is hollow.
+test('a Scheduled mark is hollow when no run was logged since it fell due, and filled when one was', () => {
+  const due = at(21, 7, 30);
+  const lane = lastRunAt => todayView({ work, roster, crons: [{ ...crons[0], lastRunAt }], jobs, now: NOW }).lanes.at(-1).marks[0];
+  assert.deepEqual([lane(at(21, 7, 42)).hollow, lane(at(21, 7, 42)).title], [false, '7:30 AM · Morning digest · ran']);
+  assert.deepEqual([lane(at(20, 7, 41)).hollow, lane(at(20, 7, 41)).title], [true, '7:30 AM · Morning digest · no run logged since']);
+  assert.equal(lane(due - 60e3).hollow, false, 'a log written a minute before still counts: its age is rounded');
+  assert.equal(lane(due - 60e3 - 1).hollow, true);
+  assert.deepEqual([lane(undefined).hollow, lane(undefined).title], [false, '7:30 AM · Morning digest · scheduled']);
+});
+
 test('the hour labels run midnight to midnight, the first and last pinned inside', () => {
   const view = todayView({ work, roster, crons, jobs, now: NOW });
   assert.deepEqual(view.hours.map(h => h.label), ['12a', '3a', '6a', '9a', '12p', '3p', '6p', '9p', '12a']);

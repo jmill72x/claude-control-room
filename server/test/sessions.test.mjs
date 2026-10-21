@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, chmodSync } from 'node:fs';
-import { appendFile, mkdir, readdir, rename, unlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdtempSync, chmodSync, closeSync, constants, openSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFile, mkdir, readdir, rename, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectSessions } from '../collectors/sessions.mjs';
@@ -456,4 +457,68 @@ test("sessions' names are kept even for a session with no usage, and never taken
     assert.deepEqual([...out.sessionNames].sort(), [['sess-m', 'Lead'], ['sess-q', 'Quiet']], `pass ${pass + 1}`);
     assert.ok(!out.transcripts.some(t => t.sessionId === 'sess-q'), 'a session with no usage is still not a transcript');
   }
+});
+
+// Only regular files are read (the 2026-10-21 security review). A FIFO would block the
+// read that opens it, and the collector would never finish a pass again. If
+// one ever blocks here, it is opened for writing after two seconds, which ends
+// the read, so a regression fails on its time instead of hanging the run.
+const release = path => {
+  try { closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)); } catch { /* no reader */ }
+};
+function unblockLater(path, ms = 2000) {
+  const timer = setTimeout(() => release(path), ms);
+  return () => { clearTimeout(timer); release(path); };
+}
+
+test('a FIFO named like a transcript is skipped at once, never opened', async () => {
+  const root = freshDir();
+  const { project } = await sessionWithSubagents(root);
+  const fifo = join(project, 'sess-f.jsonl');
+  execFileSync('/usr/bin/mkfifo', [fifo]);
+  const done = unblockLater(fifo);
+  const started = Date.now();
+  try {
+    const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
+    assert.ok(Date.now() - started < 1000, 'the pass did not wait on the FIFO');
+    assert.equal(out.transcripts.length, 3, 'the three real transcripts still count');
+    assert.ok(!out.transcripts.some(t => t.filePath === fifo));
+    assert.deepEqual(out.unreadablePaths, []);
+  } finally {
+    done();
+  }
+});
+
+test('a meta file that is a FIFO is reported without waiting on it, and its transcript still counts', async () => {
+  const root = freshDir();
+  const { subagents } = await sessionWithSubagents(root);
+  const fifo = join(subagents, 'agent-a2.meta.json');
+  execFileSync('/usr/bin/mkfifo', [fifo]);
+  const done = unblockLater(fifo);
+  const started = Date.now();
+  try {
+    const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
+    assert.ok(Date.now() - started < 1000, 'the pass did not wait on the FIFO');
+    assert.deepEqual(out.unreadablePaths, [fifo]);
+    const a2 = out.transcripts.find(t => t.filePath.endsWith('agent-a2.jsonl'));
+    assert.equal(a2.meta, null);
+    assert.equal(a2.records.length, 1, 'the transcript itself was read');
+  } finally {
+    done();
+  }
+});
+
+test('symlinks are not followed: a linked transcript is skipped and a linked meta file is reported', async () => {
+  const root = freshDir();
+  const elsewhere = freshDir();
+  const { project, subagents } = await sessionWithSubagents(root);
+  await writeFile(join(elsewhere, 'real.jsonl'), metaLine('L', 'sess-l', 30));
+  await symlink(join(elsewhere, 'real.jsonl'), join(project, 'sess-l.jsonl'));
+  await writeFile(join(elsewhere, 'real.meta.json'), JSON.stringify({ agentType: 'builder', description: 'Linked' }));
+  const linkedMeta = join(subagents, 'agent-a2.meta.json');
+  await symlink(join(elsewhere, 'real.meta.json'), linkedMeta);
+  const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
+  assert.ok(!out.transcripts.some(t => t.filePath.endsWith('sess-l.jsonl')), 'the linked transcript was not read');
+  assert.deepEqual(out.unreadablePaths, [linkedMeta]);
+  assert.equal(out.transcripts.find(t => t.filePath.endsWith('agent-a2.jsonl')).meta, null);
 });

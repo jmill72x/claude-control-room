@@ -35,5 +35,15 @@
   "jobs": {
     "com.example.morning-brief": { "name": "Morning brief", "owner": "chief" },
     "com.example.nightly-backup": { "name": "Nightly backup", "owner": "ops" }
+  },
+  "health": {
+    "jobStatus": "/absolute/path/to/job-status",
+    "services": [
+      { "kind": "session", "name": "Chief of Staff", "session": "Chief", "launcher": "com.example.chief", "about": "the lead agent's session" },
+      { "kind": "self", "name": "Control Room", "label": "com.example.control-room", "about": "this page and the board" },
+      { "kind": "launchd", "name": "Tunnel", "label": "com.example.tunnel", "about": "the tunnel from this machine" },
+      { "kind": "launchd", "name": "Review page", "label": "com.example.review-page", "about": "a small web app" },
+      { "kind": "pi", "name": "NAS", "stateFile": "/absolute/path/to/watch.state", "log": "/absolute/path/to/watch.log", "watchJob": "com.example.nas-watch", "about": "the NAS, as this machine's watch sees it" }
+    ]
   }
 }

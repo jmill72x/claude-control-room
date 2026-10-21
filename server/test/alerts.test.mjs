@@ -253,3 +253,36 @@ test('the board alert is raised even when the automatic credits are readable', (
   const snapshot = boardAt(0.9, { accountCredits: { status: 'ok', data: { grants: [] } } });
   assert.equal(buildAlerts(snapshot, {}, now).filter(a => a.kind === 'board').length, 1);
 });
+
+// A down service (the health strip, lib/health.mjs): an alert after five
+// minutes down, for the lead's session and the KeepAlive jobs only.
+const svc = (kind, name, state, downSince) => ({ key: `${kind}:${name}`, kind, name, state, downSince });
+const healthEnv = services => ({ health: env({ jobs: { status: 'ok', list: [] }, services }) });
+
+test('a service down for five minutes raises an alert by name, keyed by service', () => {
+  const alerts = buildAlerts(healthEnv([svc('launchd', 'Tunnel', 'down', NOW - 5 * 60e3), svc('session', 'Lead', 'down', NOW - 9 * 60e3)]), {}, NOW);
+  assert.deepEqual(alerts.map(a => [a.kind, a.key, a.text]), [
+    ['service', 'service:launchd:Tunnel', 'Tunnel is not running'],
+    ['service', 'service:session:Lead', 'Lead is not running']
+  ]);
+});
+
+test('a service down for less than five minutes, or not down, raises nothing', () => {
+  const alerts = buildAlerts(healthEnv([
+    svc('launchd', 'Tunnel', 'down', NOW - 5 * 60e3 + 1),
+    svc('launchd', 'Review', 'unknown', null),
+    svc('launchd', 'Web', 'running', null),
+    svc('session', 'Lead', 'down', null)
+  ]), {}, NOW);
+  assert.deepEqual(alerts, []);
+});
+
+test('the NAS and this server never raise a service alert, however long they are down', () => {
+  const alerts = buildAlerts(healthEnv([svc('pi', 'NAS', 'down', NOW - DAY), svc('self', 'Control Room', 'down', NOW - DAY)]), {}, NOW);
+  assert.deepEqual(alerts, []);
+});
+
+test('a service alert is raised even when automatic credits return early', () => {
+  const alerts = buildAlerts({ ...healthEnv([svc('launchd', 'Tunnel', 'down', NOW - DAY)]), accountCredits: env({ grants: [] }) }, {}, NOW);
+  assert.deepEqual(alerts.map(a => a.key), ['service:launchd:Tunnel']);
+});

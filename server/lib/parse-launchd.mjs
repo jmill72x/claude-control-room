@@ -85,6 +85,14 @@ export function dueBetween(cal, from, to, cap = 200) {
 
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
+// The crons panel's order: failed first, then by next run. Used again after
+// job-status's verdicts are laid over launchd's (lib/health.mjs), since a
+// verdict can move a job between the two.
+export function cronOrder(a, b) {
+  if (a.ok !== b.ok) return a.ok ? 1 : -1;
+  return (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity);
+}
+
 function readableName(label) {
   const tail = label.split('.').pop();
   return tail || label;

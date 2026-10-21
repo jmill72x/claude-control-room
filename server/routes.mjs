@@ -109,7 +109,7 @@ export function parseIfMatch(header) {
   return tags.length ? tags : [''];
 }
 
-const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits', 'board'];
+const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits', 'board', 'health'];
 
 // What of config.json the page gets: only the fields it shows. The page used to
 // get the whole object, so anything added to config.json (a path, a command, a

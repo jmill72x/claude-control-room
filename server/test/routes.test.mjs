@@ -220,3 +220,21 @@ test("/api/dashboard carries the board's size against its cap", async () => {
   const payload = JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body);
   assert.deepEqual(payload.board.data, { bytes: 1000, cap: 1024 * 1024 });
 });
+
+// The health strip (Orbit plan, Phase 2): its panel goes to the page as the
+// collector built it, and its config block never does.
+test('/api/dashboard carries the health panel, and a down service as an alert, but never the health config', async () => {
+  const d = deps();
+  d.config.health = { jobStatus: '/secret/bin/job-status', services: [{ kind: 'launchd', name: 'Tunnel', label: 'com.example.tunnel' }] };
+  const now = Date.now();
+  d.cache.set('health', {
+    jobs: { status: 'ok', error: null, list: [] },
+    services: [{ key: 'launchd:Tunnel', kind: 'launchd', name: 'Tunnel', about: null, state: 'down', launchd: 'not running', reason: null, downSince: now - 6 * 60e3 }]
+  });
+  const payload = JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body);
+  assert.equal(payload.health.status, 'ok');
+  assert.equal(payload.health.data.services[0].state, 'down');
+  assert.deepEqual(payload.alerts.map(a => a.text), ['Tunnel is not running']);
+  assert.ok(!('health' in payload.config.data));
+  assert.ok(!JSON.stringify(payload).includes('/secret') && !JSON.stringify(payload).includes('com.example.tunnel'));
+});

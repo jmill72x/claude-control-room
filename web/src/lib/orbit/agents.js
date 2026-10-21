@@ -77,6 +77,10 @@ export function mapView({ work, roster, now }) {
 // "Mon 5:30 AM", or just the time when it is today.
 const whenLabel = (t, now) => (t >= startOfDay(now) && t < nextMidnight(now) ? clock(t) : `${WEEKDAYS[new Date(t).getDay()]} ${clock(t)}`);
 
+// A run logged up to a minute before a due time still counts for it:
+// job-status rounds a log's age to 36 seconds.
+export const RAN_GRACE_MS = 60 * 1000;
+
 export function todayView({ work, roster, crons, jobs, now }) {
   if (!ready(work, roster)) return null;
   const agents = roster.agents;
@@ -116,17 +120,25 @@ export function todayView({ work, roster, crons, jobs, now }) {
     if (a.key !== work.lead) lanes.push(lane({ ...a, index }, a.name, todays.filter(r => r.agent === a.key)));
   });
   // Scheduled: each calendar job's due times so far today. Whether it then ran
-  // comes with the health strip; until then these show the schedule only.
+  // comes from its log (the crons panel's `lastRunAt`, from job-status since the
+  // health strip): a due time with no run logged since is hollow. Without
+  // job-status, the marks show the schedule only.
   const due = [];
   for (const c of cronList) {
+    const lastRunAt = Number.isFinite(c?.lastRunAt) ? c.lastRunAt : null;
     for (const t of Array.isArray(c?.dueAt) ? c.dueAt : []) {
-      if (Number.isFinite(t) && t >= start && t <= now) due.push({ t, name: jobs?.[c.label]?.name ?? c.name ?? c.label });
+      if (Number.isFinite(t) && t >= start && t <= now) due.push({ t, lastRunAt, name: jobs?.[c.label]?.name ?? c.name ?? c.label });
     }
   }
   due.sort((a, b) => a.t - b.t);
+  const dueMark = e => {
+    const ran = e.lastRunAt === null ? null : e.lastRunAt >= e.t - RAN_GRACE_MS;
+    const word = ran === null ? 'scheduled' : ran ? 'ran' : 'no run logged since';
+    return { left: pos(e.t), d: 10, hollow: ran === false, title: `${clock(e.t)} · ${e.name} · ${word}` };
+  };
   lanes.push({
     key: 'scheduled', name: 'Scheduled', agent: null, color: '#4E5872', scheduled: true, count: due.length, note: '',
-    marks: due.map(e => ({ left: pos(e.t), d: 10, title: `${clock(e.t)} · ${e.name} · scheduled` }))
+    marks: due.map(dueMark)
   });
 
   const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => {
