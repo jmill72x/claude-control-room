@@ -7,6 +7,8 @@ import {
 } from '../lib/orbit/overview.js';
 import { Note } from './Note.jsx';
 import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
+import { Waiting } from './Waiting.jsx';
+import { youEvents } from '../lib/orbit/waiting.js';
 
 const DAY = 24 * 3600 * 1000;
 const money = v => (Number.isFinite(v) ? `$${Number.isInteger(v) ? v : v.toFixed(2)}` : null);
@@ -85,14 +87,15 @@ function UsageLimits({ payload, now }) {
 
 // ---- Next 24 hours ----
 
-function NextDay({ payload, now, roster }) {
+function NextDay({ payload, now, roster, items }) {
   const crons = envelopeOf(payload?.crons);
   const usage = envelopeOf(payload?.usage);
   const { events, ticks } = next24({
-    crons: crons.data, limits: usage.data?.limits, jobs: payload?.config?.data?.jobs ?? {}, now
+    crons: crons.data, limits: usage.data?.limits, jobs: payload?.config?.data?.jobs ?? {}, now, extra: youEvents(items, now)
   });
+  const yours = events.filter(e => e.kind === 'you').length;
   const colorOf = e => {
-    if (e.kind === 'reset') return '#C2410C';
+    if (e.kind === 'reset' || e.kind === 'you') return '#C2410C';
     const agent = agentOf(e.owner, roster);
     return agent ? agentColors(agent.index).day : '#4E5872';
   };
@@ -100,7 +103,9 @@ function NextDay({ payload, now, roster }) {
     <section aria-labelledby="o-next" className="o-panel">
       <div className="o-panel-head">
         <h2 id="o-next" className="o-h2 o-h2-day">Next 24 hours</h2>
-        <span className="o-sub">{events.length} thing{events.length === 1 ? '' : 's'}</span>
+        <span className="o-sub">
+          {events.length} thing{events.length === 1 ? '' : 's'}{yours > 0 ? ` · ${yours} of them ${yours === 1 ? 'is' : 'are'} you` : ''}
+        </span>
       </div>
       {crons.status === 'unavailable' && <Note>Scheduled jobs: {unavailable(crons)}</Note>}
       {events.length === 0 ? <Note>Nothing is scheduled in the next 24 hours.</Note> : (
@@ -111,8 +116,8 @@ function NextDay({ payload, now, roster }) {
             <span className="o-now" aria-hidden="true"><span /></span>
             {events.map(e => (
               <div key={`${e.t}-${e.name}`} role="listitem">
-                <span className="o-event-dot" aria-hidden="true" style={{ left: e.left, borderColor: colorOf(e) }} />
-                <span className={`o-event o-event-${e.row} o-event-${e.align}`} style={{ left: e.left }}>
+                <span className={`o-event-dot${e.kind === 'you' ? ' o-event-dot-you' : ''}`} aria-hidden="true" style={{ left: e.left, borderColor: colorOf(e) }} />
+                <span className={`o-event o-event-${e.row} o-event-${e.align}${e.kind === 'you' ? ' o-event-you' : ''}`} style={{ left: e.left }}>
                   <span className="o-mono o-event-time">{e.at}</span>
                   <span className="o-event-name">{e.name}</span>
                 </span>
@@ -219,19 +224,20 @@ function HeatMap({ payload }) {
   );
 }
 
-// The approved round 4 order: Usage limits beside the agent work map, Today agent by
-// agent, Latest runs, Next 24 hours, then Burn beside the week's heat map.
-// (Waiting on you goes on top in Phase 4.)
-export function Overview({ payload, now, roster }) {
+// The approved round 4 order: Waiting on you, Usage limits beside the agent work
+// map, Today agent by agent, Latest runs, Next 24 hours, then Burn beside the
+// week's heat map.
+export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem }) {
   return (
     <main className="o-wrap o-main">
+      <Waiting board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} />
       <div className="o-row">
         <UsageLimits payload={payload} now={now} />
         <AgentMap payload={payload} now={now} roster={roster} />
       </div>
       <TodayByAgent payload={payload} now={now} roster={roster} />
       <LatestRuns payload={payload} now={now} roster={roster} />
-      <NextDay payload={payload} now={now} roster={roster} />
+      <NextDay payload={payload} now={now} roster={roster} items={board.todos} />
       <div className="o-row">
         <Burn payload={payload} />
         <HeatMap payload={payload} />

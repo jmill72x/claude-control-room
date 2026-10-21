@@ -7,7 +7,7 @@ const DUE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // Days since 1970-01-01 for a YYYY-MM-DD string, or null if it is not one.
-const dayNumber = s => {
+export const dayNumber = s => {
   const m = typeof s === 'string' && DUE.exec(s);
   if (!m) return null;
   const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));

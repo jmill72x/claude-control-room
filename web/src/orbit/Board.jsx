@@ -226,6 +226,9 @@ function NewItemForm({ areas, onAdd, onCancel }) {
 
 // ---- the tab ----
 
+// What the focus box says about the item the board was opened on.
+const FOCUS_TITLES = { added: 'Just added', waiting: 'From Waiting on you', link: 'Linked item' };
+
 function Lane({ id, title, count, children, empty, footer }) {
   return (
     <section aria-labelledby={id} className="o-lane">
@@ -313,7 +316,7 @@ export function BoardTab({ board, roster, filters, focus, focusWhy, onOpen, onCl
       {focus && (
         <section aria-labelledby="o-focus" className="o-focus">
           <div className="o-panel-head">
-            <h2 id="o-focus" className="o-h2 o-h2-accent">{focusWhy === 'added' ? 'Just added' : 'Linked item'}</h2>
+            <h2 id="o-focus" className="o-h2 o-h2-accent">{FOCUS_TITLES[focusWhy] ?? FOCUS_TITLES.link}</h2>
             <button type="button" className="o-btn o-btn-quiet" onClick={onCloseFocus}>Close</button>
           </div>
           {focusItem

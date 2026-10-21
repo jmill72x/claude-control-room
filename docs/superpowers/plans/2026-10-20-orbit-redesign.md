@@ -311,6 +311,16 @@ and closed three of Ultron's 2026-10-21 findings (NEXT.md §9).
 - Jarvis fills in `ask` as he writes the board (his instructions change through Jarvis and
   Jeff). Until he does, the panel says that nothing is waiting.
 
+**Built 2026-10-21, where it differs from the above:** the panel is `toPush`, read every 5
+minutes from `toPush` in config (git-read's path, and each repo's path and owner), with
+`--untracked-files=no` added to the command, since untracked files never count. Each run
+has 10 s, then SIGKILL to its process group. A due-soon chip says Today, the weekday, Next
+<weekday> a week on, or Overdue with the date. The live board had 30 items with an `ask`
+on the day, so the cards show the first 9 (due soon, then to push, then decide or do) and
+then "Show all". A To push card has no "Open on the board"; its footer gives the branch and
+when it was checked. Without a reading, To push's count is "—", never 0, and when its tile
+is picked, a line names any repo that couldn't be read and any branch with no upstream.
+
 ## Phase 5: the flip (S)
 
 When Jeff says so, the new page becomes `index.html` and the old one `classic.html`. A week

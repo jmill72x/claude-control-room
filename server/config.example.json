@@ -45,5 +45,12 @@
       { "kind": "launchd", "name": "Review page", "label": "com.example.review-page", "about": "a small web app" },
       { "kind": "pi", "name": "NAS", "stateFile": "/absolute/path/to/watch.state", "log": "/absolute/path/to/watch.log", "watchJob": "com.example.nas-watch", "about": "the NAS, as this machine's watch sees it" }
     ]
+  },
+  "toPush": {
+    "gitRead": "/absolute/path/to/git-read",
+    "repos": [
+      { "path": "/absolute/path/to/projects/garden-app", "owner": "builder" },
+      { "path": "/absolute/path/to/projects/notes-site", "owner": "writer" }
+    ]
   }
 }

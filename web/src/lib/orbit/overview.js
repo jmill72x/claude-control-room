@@ -74,10 +74,12 @@ const resetName = label => (label === 'Current session' ? 'Session resets' : lab
 // in that time, soonest first. A job that runs every few minutes (launchd's
 // StartInterval) has no fixed next run, so it never appears. Names come from
 // config's `jobs` block, else the job's own short name; owner colours the dot.
+// `extra` holds events worked out elsewhere: Jeff's own items (waiting.js,
+// youEvents), each { t, name, owner, kind }.
 // Labels alternate above and below the line so neighbours don't collide, and
 // a label near either end lines up inward so the box doesn't clip it.
 export const EDGE_PCT = 9;
-export function next24({ crons, limits, jobs, now }) {
+export function next24({ crons, limits, jobs, now, extra = [] }) {
   const end = now + DAY;
   const within = t => Number.isFinite(t) && t > now && t <= end;
   const events = [];
@@ -103,6 +105,7 @@ export function next24({ crons, limits, jobs, now }) {
       events.push({ t: r.t, name: resetName(r.label), owner: null, kind: 'reset' });
     }
   }
+  for (const e of Array.isArray(extra) ? extra : []) if (within(e?.t)) events.push(e);
   events.sort((a, b) => a.t - b.t);
   const placed = events.map((e, i) => {
     const pct = ((e.t - now) / DAY) * 100;

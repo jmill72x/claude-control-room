@@ -35,9 +35,12 @@ export function OrbitApp() {
   // Every second for the countdown on the Overview; on the Board, every 10 s is
   // enough for "Updated", and typing stays smooth (the design pauses it there).
   const now = useTick(route.tab === 'board' ? 10_000 : 1000);
-  // The item this page just added, so the board can say "Just added" when it
-  // opens on that one, and "Linked item" for any other link.
-  const [justAdded, setJustAdded] = useState(null);
+  // Why the board was opened on an item: just added on this page, or from
+  // Waiting on you. A link from anywhere else is a "Linked item".
+  const [focusFrom, setFocusFrom] = useState(null);
+  // Waiting on you's picked tile, opened card and "Show all", kept here so Back
+  // from the board finds the panel as it was.
+  const [waiting, setWaiting] = useState({ filter: null, open: null, all: false });
   // The health chip whose details are open, if any. Escape closes them.
   const [chip, setChip] = useState(null);
   useEffect(() => {
@@ -60,10 +63,10 @@ export function OrbitApp() {
   }, [isBoard]);
 
   const openItem = (id, why) => {
-    setJustAdded(why === 'added' ? id : null);
+    setFocusFrom(why === 'added' || why === 'waiting' ? { id, why } : null);
     go({ tab: 'board', item: id });
   };
-  const focusWhy = route.item !== null && route.item === justAdded ? 'added' : 'link';
+  const focusWhy = route.item !== null && route.item === focusFrom?.id ? focusFrom.why : 'link';
 
   return (
     <div className="o-page">
@@ -105,7 +108,8 @@ export function OrbitApp() {
       {isBoard
         ? <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
             onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />
-        : <Overview payload={payload} now={now} roster={roster} />}
+        : <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
+            onOpenItem={id => openItem(id, 'waiting')} />}
     </div>
   );
 }

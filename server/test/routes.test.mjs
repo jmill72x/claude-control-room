@@ -238,3 +238,20 @@ test('/api/dashboard carries the health panel, and a down service as an alert, b
   assert.ok(!('health' in payload.config.data));
   assert.ok(!JSON.stringify(payload).includes('/secret') && !JSON.stringify(payload).includes('com.example.tunnel'));
 });
+
+// Waiting on you's To push tile (Orbit plan, Phase 4): its panel goes to the
+// page as the collector built it, and its config block (git-read's path and
+// the repos' paths) never does.
+test('/api/dashboard carries the toPush panel, but never the toPush config', async () => {
+  const d = deps();
+  d.config.toPush = { gitRead: '/secret/bin/git-read', repos: [{ path: '/secret/projects/garden-app', owner: 'builder' }] };
+  d.cache.set('toPush', {
+    configured: true,
+    repos: [{ name: 'garden-app', owner: 'builder', state: 'ok', branch: 'main', detached: false, upstream: true, staged: 2, ahead: 0, behind: 0, partial: false, checkedAt: 1 }]
+  });
+  const payload = JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body);
+  assert.equal(payload.toPush.status, 'ok');
+  assert.equal(payload.toPush.data.repos[0].staged, 2);
+  assert.ok(!('toPush' in payload.config.data));
+  assert.ok(!JSON.stringify(payload).includes('/secret'));
+});

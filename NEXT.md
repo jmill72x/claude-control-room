@@ -56,8 +56,8 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   week's totals in line, and no new poll transcripts 11 minutes later while the credits
   kept refreshing.
 
-- **Fixed in the Orbit Phase 2 change (staged 2026-10-21): a monthly or quarterly job's
-  schedule read "Every day".** `calendarPhrase()` ignored `Day` and `Month`. It now says
+- **Fixed in the Orbit Phase 2 change (`7f1b070`, live 2026-10-21): a monthly or
+  quarterly job's schedule read "Every day".** `calendarPhrase()` ignored `Day` and `Month`. It now says
   them, and entries that differ only in their month or only in their weekday share one
   phrase: "1st of Jan, Apr, Jul and Oct, 06:30", "Mondays to Fridays, 07:30".
 
@@ -311,34 +311,44 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   routine passes `-n <name>`, and its job in config names it (`"session": "<name>"`), so
   a top-level session whose `agent-name` matches is that job's run. Unverified: whether
   `claude -p -n` writes the `agent-name` line.
-- **Phase 2 is built and staged (2026-10-21), for Ultron's vet and then C&P.** The health
-  strip (README, "The Orbit page", "The health strip" and "Security"):
+- **Phase 2 is live** (`7f1b070`, restarted 2026-10-21 14:53 ET, then the live build;
+  every post-restart check passed: health ok, 15 jobs, the five service chips up or
+  running, no label or path in `health`, and every cron with `lastRunAt` from the crons
+  collector's second pass). The health strip (README, "The Orbit page", "The health
+  strip" and "Security"):
   - Jobs: Jarvis's `job-status --json --only jobs` (jarvis `d88dc9b`), every minute, 20 s
     for the whole call. The crons panel takes its verdicts and `lastRunAt` too, so a
     Scheduled mark goes hollow for a due time with no run logged since.
   - Jarvis: **the process list, not `claude agents --json`** (decision 4 kept in spirit:
     listed means up, no heartbeat file). That poll's runs start `security` (§2), and
     nothing showed cleanly that they make no network call, which Jarvis asked for before
-    a minute-by-minute read leaned on it. `com.jeff.jarvis`'s state and exit are a
-    detail, not a verdict.
-  - Control Room: its start, plus one `launchctl print` (runs, how the last run ended).
-    Tunnel and Review page: launchd's state, labelled "running". The Pi: the watch's state
-    file under Vision's contract (the NAS watcher's README), unknown unless the watch's own job
-    is OK. No Tailscale, AdGuard or Kuma chips (Vision).
-  - Pushes: "1 job failed" and "1 service is down" (after 5 minutes down), counted, never
-    named, never for the Pi or this server.
-  - Also in the change: the `calendarPhrase()` fix (§2) and Ultron's low from the Phase 3
-    vet (the sessions collector reads only regular files; a meta file is opened without
-    following a symlink or waiting on a FIFO).
-  - Tests: 556 server tests in local time and Tokyo (49 new, 46 of 46 mutations caught),
-    67 web logic tests (13 new, 16 of 16 caught), and playwright-cli at 390, 820 and
-    1440 px on a scratch server in four modes (all well, failures, no job-status, a
-    server from before Phase 2), plus the Phase 1 and 3 scripts again (unchanged but for
-    the clock and the new "ran" marks). One pass on the real machine, read-only: 144 ms,
-    15 jobs (none failed, 1 not run yet), Jarvis up, Control Room 8 runs with last stop
-    signal 15, Tunnel and Review page running, the Pi up, 2.2 KB on the page with no
-    label or path.
-  - After C&P: Jarvis adds the `health` block to `config.json`, one restart, then the live
-    web build. Until the block is there, the strip shows only "Jobs · not set up".
-- **Phase 4** (Waiting on you) waits on Jarvis filling `ask`, which the server already
-  checks.
+    a minute-by-minute read leaned on it.
+  - Control Room: its start, plus one `launchctl print`. Tunnel and Review page: launchd's
+    state, labelled "running". The Pi: the watch's state file under Vision's contract
+    (the NAS watcher's README), unknown unless the watch's own job is OK.
+  - Pushes: "1 job failed" and "1 service is down" (after 5 minutes down), counted,
+    never named, never for the Pi or this server.
+  - Self-restart reads "not run yet" until its first run, Sun 10-25. Still open: Jeff's
+    Safari checks.
+- **Phase 4 is built and staged (2026-10-21), for Ultron's vet and then C&P.** Waiting on
+  you at the top of the Overview, To push, and "You" events on Next 24 hours (README,
+  "The Orbit page", "To push" and "Security"; the plan's Phase 4 has what differs from
+  it):
+  - Items: an open item with an `ask` waits. Due soon is a `due` within 7 days or past
+    (dark for today, tomorrow and overdue); the rest are Decide or do. All cards show
+    the first 9, then "Show all". On 10-21 the live board would read 30: 4 due soon (1
+    overdue), 26 decide or do, and no "You" event, since no ask has a `time` yet.
+  - To push: `toPush` in config (Jarvis adds it after C&P; the block is in the report),
+    git-read on each repo every 5 minutes with 10 s each and SIGKILL to the process
+    group, `--untracked-files=no`, counts and branch names only. A branch with no
+    upstream never counts: Jarvis's own repo is on a build branch that is pushed but has
+    no upstream set, so it stays out of To push until it has one (asked of Jarvis, 10-21). One
+    read-only pass on the real machine: 10 repos in 356 ms, nothing to push, 1.9 KB to
+    the page, no path or commit id.
+  - Tests: 583 server tests and 80 web logic tests, in local time and Tokyo (27 and 13
+    new), 33 of 33 server and 42 of 42 web mutations caught in both. playwright-cli at
+    390, 820 and 1440 px on a scratch server in five modes (all set, a server from before
+    Phase 4, no `toPush` block, no asks, neither), plus the Phase 1, 2 and 3 scripts
+    again. No WebKit here, so Safari is Jeff's check.
+  - After C&P: Jarvis adds the `toPush` block to `config.json`, one restart, then the
+    live web build. Until the restart, the new page reads To push as "—".

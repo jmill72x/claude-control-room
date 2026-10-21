@@ -233,9 +233,9 @@ why `usage`, `agents`, and `plan` are the collectors that can go `unavailable` i
 A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 `docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Until it replaces this page (Phase
 5), it is a second page in the same build, at **`/orbit.html`**, and the page at `/` is
-unchanged. Its Overview runs in the approved order: Usage limits beside the agent work map,
-Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's heat map
-(Waiting on you goes on top in Phase 4). Phases 1 to 3 give it:
+unchanged. Its Overview runs in the approved order: Waiting on you, Usage limits beside
+the agent work map, Today agent by agent, Latest runs, Next 24 hours, then Burn beside the
+week's heat map. Phases 1 to 4 give it:
 
 - **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
   minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
@@ -254,6 +254,22 @@ Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's he
   NAS reads its watch's word ("up", or "down", "degraded", "Kuma down", "no SSH" and
   "backup late", all shown as not OK) while the watch itself is current, and "unknown"
   otherwise.
+- **Waiting on you (Phase 4),** at the top of the Overview: the count, then three tiles,
+  Due soon, Decide or do and To push. A tile shows only its cards; a second tap shows all
+  of them again. A board item waits on you when it carries an `ask` (what you do, why it
+  matters, and whether it's a decision or a task). It is due soon when its `due` date is
+  within 7 days or past: its chip says the weekday (Today, Next Wed a week on, Overdue
+  with the date) and the ask's time when it has one, and the card is dark when the item
+  is due today or tomorrow, or overdue. Any other item with an ask is Decide or do, by
+  priority, those in Doing first. To push has a card for each repo in config whose branch
+  has an upstream and either staged changes ("C&P") or commits the upstream doesn't have
+  ("Push"); a branch with no upstream never counts, and when that tile is picked a line
+  names those repos, and any repo that couldn't be read. All cards: due soon, then to
+  push, then decide or do, the first 9, then "Show all". A card opens in place, the width
+  of the panel: What you do, Why it matters, the owner's avatar and name, the priority
+  and area (for a repo, its branch and when it was checked), and "Open on the board",
+  which opens the Board tab on that item under "From Waiting on you". Back finds the panel
+  as it was left.
 - **Usage limits:** three rings (the session, the week and the model-scoped week) round
   the countdown to the session reset, each with a faint arc where its last window ended
   (`lastWindowPct`, below). The cloud-credit grants and the plan tier with its days left
@@ -276,7 +292,9 @@ Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's he
 - **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any
   limit reset, on a timeline. A job that runs every few minutes (launchd's
   `StartInterval`) has no fixed next run, so it never appears. Names come from config's
-  `jobs` block.
+  `jobs` block. An item that waits on you shows as "You: <title>" (a filled dot, in the
+  accent) when its `due` date at its ask's `time` falls within the 24 hours, in the
+  viewer's local time.
 - **Burn:** the tokens of the last 60 minutes, and the last 24 clock hours as bars stacked
   by model family (Opus, Fable, Sonnet, Haiku and Other), with each family's share.
 - **This week, hour by hour:** today and the six days before it, by local clock hour.
@@ -294,8 +312,9 @@ Every token figure is new tokens, each request counted once, as everywhere else 
 panel whose source is missing says so. Against a server from before Phase 1, Burn and the
 heat map say that it doesn't send hourly figures yet; against one from before Phase 3,
 the three agent panels say the same of agent runs; with no roster in config they say
-that no run has anyone to belong to; and against a server from before Phase 2 there is
-no health strip.
+that no run has anyone to belong to; against a server from before Phase 2 there is
+no health strip; and against one from before Phase 4, To push reads "—" and, when picked,
+says the server doesn't check the repos yet. A count that isn't known is never a zero.
 
 Where the new figures come from:
 
@@ -362,6 +381,22 @@ Where the new figures come from:
     watch's own job is OK (its log at most 15 minutes old and its last exit 0) or, when
     job-status doesn't answer, while the watch's log is at most 15 minutes old. The
     file is written only on a change, so its own age means nothing.
+- `toPush` (`server/collectors/to-push.mjs`, `server/lib/to-push.mjs`) is built every 5
+  minutes: `configured`, and for each repo in config, in order, its `name` (the folder's
+  name), `owner`, `state` (ok or error) and `checkedAt`; when read, `branch` (null when it
+  can't be shown), `detached`, `upstream` (whether the branch has one), `staged`, `ahead`,
+  `behind` (null with no upstream) and `partial` (git-read cut its output, so the counts
+  are a lower bound); when not, `why`, in fixed words. Nothing else of what git prints is
+  kept: no path, commit id or file name, and nothing it printed on stderr, which goes to
+  the service log once, when a failure starts or changes. The source is
+  `<toPush.gitRead> <repo> status --porcelain=v2 --branch --untracked-files=no`, one repo
+  after another, each run with 10 s for the whole run (then SIGKILL to its process group,
+  git included), at most 1 MiB of output, and only `HOME`, `PATH`, `TMPDIR`, `USER`,
+  `LOGNAME`, `LANG` and `LC_*` from the service's environment. git-read is the lead's
+  hardened read-only runner: it reads only repos under its own root, and runs
+  `/usr/bin/git` with no hooks, pager, fsmonitor, optional locks, or global or system
+  config, and redacts secret-shaped text. A staged change is an entry whose index column
+  isn't `.`; a merge conflict and an untracked file aren't.
 - `crons[]` takes job-status's verdict for each job it knows (`ok`, `state` and `last`),
   from an answer at most 3 minutes old, plus `lastRunAt`, when the job's log was last
   written. So the morning brief, this page, the classic page, the mod and the alerts
@@ -792,6 +827,16 @@ At most one `session`, one `self` and one `pi`. A bad entry is left out and name
 the service log at startup, as above. The labels a service chip names (and the
 launcher's) are left out of the Jobs list. None of this block reaches the page.
 
+### To push (the Orbit page)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `toPush.gitRead` | absolute path | The hardened git-read program, run every 5 minutes as `<path> <repo> status --porcelain=v2 --branch --untracked-files=no` for each repo, with 10 s for each run. Without it, or with no repos, To push reads "not set up". |
+| `toPush.repos` | list of `{ "path", "owner" }` | The repos to check, at most 20, in order. `path` is the repo's top folder (absolute); its folder's name is the repo's name on the page, and must be unique. `owner`, optional, is the roster key whose avatar the card shows. |
+
+A bad entry is left out and named once in the service log at startup. Only the folder's
+name, the owner, the branch and the counts reach the page; the paths stay on the server.
+
 `/avatars/<key>.png` (`server/lib/avatars.mjs`) serves only `<roster.avatarDir>/<key>.png`,
 and only for a key on the roster. It matches the raw request path against the key pattern
 without decoding it, refuses a symlink (`O_NOFOLLOW`), can't wait on a FIFO
@@ -912,7 +957,7 @@ in the ntfy app (iOS/Android) or at `https://ntfy.sh/<your-topic>` to receive pu
 The server binds `127.0.0.1`, and the tailnet reaches it only through Tailscale Serve.
 Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB). What
 reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
-field by field (the health strip's above).
+field by field (the health strip's and To push's above).
 
 What it runs, as the service's own user: `claude -p /usage` every 5 minutes (with
 `--strict-mcp-config`, `--permission-mode manual` and `--no-session-persistence`),
@@ -920,8 +965,11 @@ What it runs, as the service's own user: `claude -p /usage` every 5 minutes (wit
 Keychain tool, on 2026-10-21), `claude auth status --json` hourly, `launchctl
 list` and `plutil` on each LaunchAgent every minute, and for the health strip,
 `<health.jobStatus> --json --only jobs` and `ps` every minute and `launchctl print` for
-its own job once. **job-status runs from the path in `config.json`, which is a working
-tree: whatever is in it runs every minute, uncommitted edits included.**
+its own job once, and for To push, `<toPush.gitRead> <repo> status --porcelain=v2 --branch
+--untracked-files=no` for each repo in config every 5 minutes, one after another, each
+with 10 s and then SIGKILL to its process group. **job-status and git-read run from the
+paths in `config.json`, which are working trees: whatever is in them runs on that
+schedule, uncommitted edits included.**
 
 What it reads besides the transcripts: `~/.claude.json` (the cached usage response),
 the LaunchAgent plists, the avatar folder, the NAS watch's state file (a token) and the

@@ -16,6 +16,8 @@ import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { createHealth } from './collectors/health.mjs';
 import { readHealthConfig } from './lib/health.mjs';
+import { createToPush } from './collectors/to-push.mjs';
+import { readToPushConfig } from './lib/to-push.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
@@ -48,6 +50,9 @@ for (const problem of roster.problems) console.error(`config: ${problem}`);
 // (lib/health.mjs), checked the same way.
 const healthSettings = readHealthConfig(config);
 for (const problem of healthSettings.problems) console.error(`config: ${problem}`);
+// The To push tile's git-read path and repos (lib/to-push.mjs), checked the same way.
+const toPushSettings = readToPushConfig(config, roster.agents.map(a => a.key));
+for (const problem of toPushSettings.problems) console.error(`config: ${problem}`);
 const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
@@ -74,6 +79,10 @@ registry.register('agents', () => collectAgents(), 30 * 1000);
 const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT });
 registry.register('crons', async () => health.overlay(await collectCrons()), 60 * 1000);
 registry.register('health', () => health.collect(), 60 * 1000);
+// Waiting on you's To push tile (collectors/to-push.mjs): git-read on each repo
+// in config, one after another, every 5 minutes. Counts and branch names only.
+const toPush = createToPush({ settings: toPushSettings });
+registry.register('toPush', () => toPush.collect(), 5 * 60 * 1000);
 // Credits come from the CLI's cached usage response, which the usage collector's
 // own `/usage` poll refreshes every five minutes. Reading a local file is cheap,
 // so poll it every minute; the parser refuses a cache older than 30 minutes.
