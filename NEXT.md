@@ -45,13 +45,23 @@ a route that outlives an unprotected minute is a real exposure, not a theoretica
 The four review findings that used to be parked here were all fixed in `ee1e1df`
 (2026-09-11). These are the ones still open:
 
-- **P2: a transcript can outgrow what the sessions collector can read.** Each minute it
-  reads every transcript changed in the last 7 days whole, into one string: 174 files, about
-  3.8 s and about 700 MB in a fresh process (measured 2026-10-20). Node can't hold a string
-  longer than about 512 MiB, and Jarvis's transcript was 145 MB after about 31 hours, so at
-  that rate it overflows before his Sunday restart. Its read then fails, the file is listed
-  as unreadable, and his session drops out of every total. The fix is Phase 0 of the Orbit
-  plan (§9): read each file as a stream, and skip files that haven't changed.
+- **P2, fixed and staged 2026-10-20; live after C&P and a restart: a transcript could
+  outgrow what the sessions collector can read.** Each minute it read every transcript
+  changed in the last 7 days whole, into one string. Node can't hold a string longer than
+  about 512 MiB, and Jarvis's transcript was 145 MB after about 31 hours, so it would have
+  overflowed before his Sunday restart and dropped his session out of every total. Now each
+  file is streamed a line at a time, and read again only when its size, mtime or inode
+  changes (Orbit plan Phase 0, §9; README, "Transcripts are read as a stream").
+  - Measured side by side on the real transcripts, with one `now`: the new collector's
+    totals equal HEAD's exactly (56.538M new tokens, 2,212.0M cache reads, 175 files).
+  - A first pass takes 2.1 s and peaks at 276 MB (HEAD: 3.4 s and 1.55 GB). Later passes
+    take about 0.1 s.
+  - The same change has the `/usage` poll pass `--no-session-persistence`, so it stops
+    leaving a transcript every five minutes (2,022 in the week). After the restart, check
+    that no new poll transcripts appear in the claude-control-room project folders under
+    `~/.claude/projects`, and that the usage and credits panels stay current.
+  - Tests: `transcript-stream.test.mjs`, the cache tests in `sessions.test.mjs`, and
+    `collectors.test.mjs`.
 
 - **Done 2026-10-20 (`f16b659`, live since the 11:21 restart that day): token usage counts
   each API request once, not once per transcript line.** The week's new tokens read 3x
@@ -285,7 +295,9 @@ start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redes
 - Phase 5: the flip.
 - Phase 6: the OpenTelemetry cross-check.
 
-The plan waits on Jeff's OK and the seven decisions listed at its top. Phases 2 and 4 also
-wait on Jarvis (a narrow `job-status` mode, and filling the new board fields), on Vision
-(reading the Pi watch's state) and on Ultron (vetting the new reads). It supersedes the
-build notes in §8.3 to §8.5 wherever the two differ.
+Jeff approved the plan on 2026-10-20 (committed as `5c577e3`), and that evening answered
+its seven decisions: "Go with her picks", which is (a) on all seven. Phase 0 was built
+and staged the same night, and goes live after C&P and a restart (§2). Phases 2 and 4
+also wait on Jarvis (a narrow `job-status` mode, and filling the new board fields), on
+Vision (reading the Pi watch's state) and on Ultron (vetting the new reads). The plan
+supersedes the build notes in §8.3 to §8.5 wherever the two differ.

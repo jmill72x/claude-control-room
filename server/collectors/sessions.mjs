@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { TRANSCRIPT_ROOTS, parseTranscript, dropCopiedRequests } from '../lib/parse-transcript.mjs';
+import { TRANSCRIPT_ROOTS, parseTranscriptFile, dropCopiedRequests } from '../lib/parse-transcript.mjs';
 import { parseCoworkSession } from '../lib/cowork.mjs';
 
 // `failures` collects every directory we could not list. Swallowing these
@@ -33,12 +33,32 @@ async function walk(dir, match, out = [], failures = [], depth = 0) {
   return out;
 }
 
-export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 * 24 * 3600 * 1000 } = {}) {
+// Each transcript is read as a stream, a line at a time (parseTranscriptFile),
+// never whole: one string can't hold more than about 512 MiB, and a long-running
+// session's file grows past that within a week.
+//
+// `cache` is a Map the caller keeps from one pass to the next (server.mjs holds
+// one) so that a pass reads only the transcripts that changed since the last. Of
+// the week's files on 2026-10-20, 174 carried usage and 2,000 more were the
+// dashboard's own /usage polls, and nearly all of them were finished. An entry
+// keeps the file's size, mtime and inode as stat gave them before the read, plus
+// what the read found, and any difference in the three reads the file again.
+// Taking the stat before the read means a file written to during the read is
+// read again on the next pass, never kept short. A file that fails to read is not
+// kept, so it is tried and reported again every pass. With no cache, every file
+// is read every pass, as before.
+export async function collectSessions({
+  roots = TRANSCRIPT_ROOTS,
+  maxAgeMs = 7 * 24 * 3600 * 1000,
+  cache = null,
+  readTranscript = parseTranscriptFile
+} = {}) {
   const cutoff = Date.now() - maxAgeMs;
   const transcripts = [];
   const coworkSessions = [];
   const unavailableRoots = [];
   const unreadablePaths = [];
+  const seen = new Set();
 
   for (const { root, surface } of roots) {
     const failures = [];
@@ -54,20 +74,33 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
       let info;
       try { info = await stat(file); } catch { failures.push(file); continue; }
       if (info.mtimeMs < cutoff) continue;
-      // One unreadable file must cost us that file, not the whole panel.
-      let text;
-      try { text = await readFile(file, 'utf8'); } catch { failures.push(file); continue; }
-      const parsed = parseTranscript(text, surface);
-      if (parsed.records.length === 0) continue;
-      // Claude Code writes one transcript FILE per parent session plus one
-      // more per sub-agent it spawns, and every one of those files carries
-      // the SAME sessionId. collectSessions emits one entry per file, so
-      // sessionId alone cannot key these entries uniquely downstream — the
-      // file path can: readdir never yields the same path twice in a walk,
-      // and it is stable across polls (same file, same path) so a session
-      // row does not needlessly remount while nothing about it changed.
-      parsed.filePath = file;
-      transcripts.push(parsed);
+      seen.add(file);
+      let entry = cache?.get(file);
+      if (!entry || entry.size !== info.size || entry.mtimeMs !== info.mtimeMs || entry.ino !== info.ino) {
+        // One unreadable file must cost us that file, not the whole panel.
+        let read;
+        try {
+          read = await readTranscript(file, surface);
+        } catch {
+          cache?.delete(file);
+          failures.push(file);
+          continue;
+        }
+        const { oversizedLines = 0, ...parsed } = read;
+        // Claude Code writes one transcript FILE per parent session plus one
+        // more per sub-agent it spawns, and every one of those files carries
+        // the SAME sessionId. collectSessions emits one entry per file, so
+        // sessionId alone cannot key these entries uniquely downstream — the
+        // file path can: readdir never yields the same path twice in a walk,
+        // and it is stable across polls (same file, same path) so a session
+        // row does not needlessly remount while nothing about it changed.
+        entry = { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino, oversizedLines, transcript: { ...parsed, filePath: file } };
+        cache?.set(file, entry);
+      }
+      // A line too long to decode is a part of this file that went unread.
+      if (entry.oversizedLines > 0) failures.push(file);
+      if (entry.transcript.records.length === 0) continue;
+      transcripts.push(entry.transcript);
     }
     if (surface === 'Cowork') {
       for (const file of await walk(root, n => n.startsWith('local_') && n.endsWith('.json'), [], failures)) {
@@ -98,6 +131,14 @@ export async function collectSessions({ roots = TRANSCRIPT_ROOTS, maxAgeMs = 7 *
     for (const path of failures) {
       if (!unreadablePaths.includes(path)) unreadablePaths.push(path);
     }
+  }
+
+  // Forget the files that are gone or have aged out, so the cache never holds
+  // more than the week's files. Not after a pass that couldn't list a root: its
+  // files went unseen, not missing, and dropping them would mean reading them all
+  // again once the root is back.
+  if (cache && unavailableRoots.length === 0) {
+    for (const file of cache.keys()) if (!seen.has(file)) cache.delete(file);
   }
 
   if (roots.length > 0 && unavailableRoots.length === roots.length) {

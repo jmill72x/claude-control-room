@@ -11,10 +11,13 @@ const execFileAsync = promisify(execFile);
 // servers named by --mcp-config, and there are none. The permission mode is
 // pinned so the poll never inherits a looser default from the user's settings.
 // `manual` is its listed name; Claude Code 2.1.302 still takes the older
-// `default`, but only as an unlisted alias. Neither flag changes what /usage
-// prints.
+// `default`, but only as an unlisted alias. --no-session-persistence (print mode
+// only, which this is) keeps each poll from saving a transcript of its own: in
+// the week to 2026-10-20 they came to 2,022 files under ~/.claude/projects, each
+// one walked by the sessions collector. None of the three flags changes what
+// /usage prints.
 export const runUsageCli = async ({ exec = execFileAsync } = {}) => {
-  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual', '--no-session-persistence'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 };
 

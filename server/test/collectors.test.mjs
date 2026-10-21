@@ -36,6 +36,18 @@ test('usage poll never loads plugin servers', async () => {
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'manual', "never the user's own default mode");
 });
 
+// Each poll used to save a transcript of its own: 2,022 of them in the week to
+// 2026-10-20, every one walked by the sessions collector.
+test('usage poll saves no transcript of its own', async () => {
+  const calls = [];
+  await runUsageCli({ exec: async (file, args) => { calls.push(args); return { stdout: USAGE_TEXT }; } });
+  const [args] = calls;
+  assert.ok(args.includes('--no-session-persistence'), 'nothing written under ~/.claude/projects');
+  assert.equal(args[0], '-p', 'the flag works only in print mode, which this is');
+  assert.ok(args.includes('--strict-mcp-config'), 'still no plugin servers');
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'manual', 'still the manual mode');
+});
+
 test('collectAgents parses the JSON array', async () => {
   const json = JSON.stringify([{ pid: 1, cwd: '/x', kind: 'interactive', status: 'busy', name: 'a' }]);
   const out = await collectAgents({ run: async () => json });

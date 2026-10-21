@@ -1,8 +1,9 @@
 # Control Room redesign (Orbit, round 4): phased build plan
 
-**Status:** written 2026-10-20 by Pepper, for Jeff's OK. No app code has changed. When a
-phase starts, it gets a task-by-task plan of its own, in the format the other plans in this
-folder use.
+**Status:** written 2026-10-20 by Pepper. Jeff approved it the same day, and at 20:45 ET
+answered its seven decisions: "Go with her picks", so each one is (a). Phase 0 was built and
+staged that night. When a phase starts, it gets a task-by-task plan of its own, in the
+format the other plans in this folder use.
 
 **Goal:** build the round 4 "Orbit" design that Jeff approved on 2026-10-20 ("Add the health
 strip and start"). The result is one page with an Overview tab and a Board tab under a navy
@@ -19,11 +20,11 @@ not by porting its code, and none of its sample data enters this repo.
 
 | Phase | What ships | Effort | What Jeff sees afterwards | Waits on |
 |---|---|---|---|---|
-| 0 | Transcript reading that can't overflow | S | Nothing new. The token totals stay complete through Jarvis's long weeks | Jeff's C&P, a restart |
-| 1 | The new page, beside today's: header and tabs, Usage limits, Next 24 hours, Burn, the week's heat map, and the whole Board tab | L | `/orbit.html` on the iPad and iPhone, with real limits, burn and heat map, and the restyled board with add, edit and move | Decisions 1, 2, 5 and 6 |
-| 2 | The health strip | M | Jobs and five service chips under the title. Tap one for its details | Jarvis (a narrow job-status mode), Vision, Ultron, decision 4 |
-| 3 | The agent views | M | The agent work map, Today agent by agent and Latest runs, all from real runs | Decision 7 |
-| 4 | Waiting on you | M | The count, the three tiles and the cards at the top of the Overview, To push, and "You" events on Next 24 hours | Jarvis filling the new fields, Ultron, decision 3 |
+| 0 | Transcript reading that can't overflow | S | Nothing new. The token totals stay complete through Jarvis's long weeks | Built and staged 10-20; Jeff's C&P, then a restart |
+| 1 | The new page, beside today's: header and tabs, Usage limits, Next 24 hours, Burn, the week's heat map, and the whole Board tab | L | `/orbit.html` on the iPad and iPhone, with real limits, burn and heat map, and the restyled board with add, edit and move | — |
+| 2 | The health strip | M | Jobs and five service chips under the title. Tap one for its details | Jarvis (a narrow job-status mode), Vision, Ultron |
+| 3 | The agent views | M | The agent work map, Today agent by agent and Latest runs, all from real runs | — |
+| 4 | Waiting on you | M | The count, the three tiles and the cards at the top of the Overview, To push, and "You" events on Next 24 hours | Jarvis filling the new fields, Ultron |
 | 5 | The flip | S | `/` is the new page. The old one stays at `/classic.html` for a week, then goes | Jeff's word |
 | 6 | The OpenTelemetry cross-check (the approved usage-by-agent item) | M | Nothing, unless the two token counts disagree | Ultron vets the settings, Vision sets them |
 
@@ -35,7 +36,8 @@ Board tab), then 1b (Next 24 hours, Burn and the heat map).
 
 ## Decisions for Jeff
 
-Each one has Pepper's pick. "Go with your picks" is a complete answer.
+**Decided 2026-10-20, 20:45 ET.** Jeff's answer was "Go with her picks", so each decision
+below is its option (a), the one marked Chosen.
 
 1. **Which token figure the new panels show.** The mock's figures were counted with cache
    reads, and before the 10-20 fix that counts each request once. Its Sunday 10-18 reads
@@ -43,7 +45,7 @@ Each one has Pepper's pick. "Go with your picks" is a complete answer.
    that Sunday was 19.5M. With cache reads it was 662M.
    - (a) New tokens, the same figure as everywhere else on the dashboard and in the mod.
      Burn, the heat map, the node sizes and the per-run figures will read about 80 to 90
-     times smaller than the mock on a busy day. **Pick.**
+     times smaller than the mock on a busy day. **Chosen.**
    - (b) New tokens plus cache reads, which reads about 2.5 times smaller than the mock.
      But cache reads track how long a conversation has run, not how much work was done, and
      "tokens" would mean two different things on one page.
@@ -51,36 +53,36 @@ Each one has Pepper's pick. "Go with your picks" is a complete answer.
    from 20 to 1,073 characters (median 252), and the first sentence fit in 72 characters for
    only 19 of them.
    - (a) An optional `title` that Jarvis writes on every new item and backfills on the open
-     ones, with the first sentence as a fallback. **Pick.**
+     ones, with the first sentence as a fallback. **Chosen.**
    - (b) The fallback only, cut to 72 characters.
 3. **How an item says it is waiting on Jeff.**
    - (a) One optional `ask` field: what he does, why it matters, decide or do, and an
      optional time of day. Due soon is worked out from the item's `due` date, so an item
-     moves into it on its own as the day nears. **Pick.**
+     moves into it on its own as the day nears. **Chosen.**
    - (b) An explicit group field that Jarvis keeps current.
 4. **How the health strip knows Jarvis is up.** The services item on the board has been
    waiting on this.
    - (a) `claude agents --json`, which the dashboard already reads every 30 s, lists a
      session named Jarvis (jarvis-start runs `claude -n Jarvis`) with its process. Listed
      means up. It needs no new file and no change to Jarvis, and it stays green while he is
-     idle overnight. It can't tell whether Discord is connected. **Pick.**
+     idle overnight. It can't tell whether Discord is connected. **Chosen.**
    - (b) A file Jarvis touches every turn (the earlier pick). It needs a hook in his
      settings, and it reads as stale whenever he is idle.
 5. **Where the agents' names, avatars and the tag-to-owner map live.**
    - (a) In `server/config.json`, which is gitignored, with the avatars served from Jarvis's
-     avatar folder. The public repo keeps a neutral example. **Pick**, per "real info in
+     avatar folder. The public repo keeps a neutral example. **Chosen**, per "real info in
      the dashboard, anonymized in the repo".
    - (b) Committed: 256 px avatars under `web/public/avatars/`, and the map in code. The
      avatars are original art, so licensing isn't the concern. Anonymity is.
 6. **Deleting an item.** The design has no delete, so today's × goes.
    - (a) No delete, as designed. A dead item moves to Done, which is already the board's
-     rule. **Pick.**
+     rule. **Chosen.**
    - (b) Keep a delete behind a confirmation.
 7. **Where the agent views get their numbers first.** The approved OpenTelemetry item
    planned the Agents panel on OpenTelemetry, after Ultron and Vision.
    - (a) From the transcripts and the subagent meta files now (Phase 3), with OpenTelemetry
      added later as an independent cross-check (Phase 6). Nothing waits on three other
-     agents, and the views get a week of history on day one. **Pick.**
+     agents, and the views get a week of history on day one. **Chosen.**
    - (b) Wait for OpenTelemetry, which only counts sessions started after it is set up.
 
 The plan also sets these without asking. P0 and "no priority" stay, since the server
@@ -141,8 +143,8 @@ restart. The read then fails and the file is listed as unreadable. The page does
 the totals are incomplete, but every total is then missing Jarvis's own session.
 
 - Read each transcript line by line from a stream, never as one string.
-- Remember each file's parsed requests by size and modification time, so an unchanged file
-  isn't parsed again. The step that counts a copied request once runs across the remembered
+- Remember each file's parsed requests by size, modification time and inode, so an
+  unchanged file isn't parsed again. The step that counts a copied request once runs across the remembered
   results each time.
 - Tests: the streaming parser returns the same requests as today's on the existing
   fixtures. An unchanged file isn't read again, and a grown one is. Before and after are

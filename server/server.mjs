@@ -60,8 +60,10 @@ registry.register('accountCredits', () => collectAccountCredits(), 60 * 1000);
 // The subscription tier changes rarely — hourly is plenty, and it keeps
 // `claude auth status` off the CLI's back next to the 30s agents poll.
 registry.register('plan', () => collectPlan(), 60 * 60 * 1000);
+// Kept from pass to pass, so each minute reads only the transcripts that changed.
+const transcriptCache = new Map();
 registry.register('sessions', async () => {
-  const { transcripts, coworkSessions, unavailableRoots, unreadablePaths } = await collectSessions();
+  const { transcripts, coworkSessions, unavailableRoots, unreadablePaths } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
   // `?? []` collapsed "the agents source is unreadable" into "no agent is
   // running", which made every project read Idle as a statement of fact while

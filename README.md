@@ -62,6 +62,19 @@ sessions collector also counts a request found in two files once, in the earlier
 Until 2026-10-20 the lines were summed one by one, and the week read 3x too high:
 149.7M new tokens instead of 49.9M.
 
+**Transcripts are read as a stream, and only when they change.** The sessions
+collector reads each transcript a line at a time (`parseTranscriptFile` in
+`server/lib/parse-transcript.mjs`), never as one string. Node can't hold a string
+longer than about 512 MiB, and a long-running session's transcript gets there within
+a week: Jarvis's was 145 MB after 31 hours on 2026-10-20. Read whole, that file would
+have failed and dropped his session out of every total. The server also keeps each
+file's result between passes and reads a file again only when its size, mtime or
+inode changes, so a pass costs about a tenth of a second when little has changed.
+Measured 2026-10-20 on the real transcripts: a first pass took 2.1 s with a 276 MB
+peak, where the old whole-file reads took 3.4 s and peaked at 1.55 GB. A line too long
+to decode is skipped and the file is listed as not fully read. Its other lines still
+count.
+
 **Credits are read, not typed.** Every `claude -p "/usage"` — which the usage collector
 already runs every five minutes — refreshes `cachedUsageUtilization` in `~/.claude.json`
 with the account's full usage response, including every dollar-denominated credit
@@ -240,7 +253,7 @@ not being reachable) leaves every other panel intact.
 | Collector | Source | Interval |
 |---|---|---|
 | `usage` | `claude -p "/usage"` | 5 min |
-| `sessions` | Claude Code and Cowork transcript roots (`~/.claude/projects` and the Cowork session directory), incremental by mtime | 60 s |
+| `sessions` | Claude Code and Cowork transcript roots (`~/.claude/projects` and the Cowork session directory), each file streamed a line at a time and read again only when its size, mtime or inode changes | 60 s |
 | `agents` | `claude agents --json` | 30 s |
 | `crons` | `~/Library/LaunchAgents/*.plist` + `launchctl list` | 60 s |
 | `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 60 min |
@@ -249,6 +262,13 @@ not being reachable) leaves every other panel intact.
 The server holds no API key — there is nothing to hold. It shells out to the `claude`
 CLI the user is already logged into, and reads local files. It binds to
 `127.0.0.1` only; nothing about it is exposed to the network by the server itself.
+
+The `/usage` poll runs `claude -p "/usage" --strict-mcp-config --permission-mode
+manual --no-session-persistence`. The first flag starts no plugin servers: a failed
+plugin start is cached for 15 minutes across every session, and on 2026-10-17 that
+kept Jarvis's Discord connector down. The second keeps the poll out of any looser
+default mode. The third stops the poll saving a transcript every five minutes: 2,022
+of them in the week to 2026-10-20.
 
 ### What the ingest endpoints require
 
@@ -293,7 +313,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 382 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 433 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm run build    # produces web/dist, which the server serves
 ```
 

@@ -1,5 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { constants as bufferConstants } from 'node:buffer';
 
 export const TRANSCRIPT_ROOTS = [
   { root: join(homedir(), '.claude', 'projects'), surface: 'Code' },
@@ -48,54 +50,128 @@ export function requestKey(entry) {
   return JSON.stringify([requestId, messageId]);
 }
 
-export function parseTranscript(text, surface) {
+// One transcript's parser, fed a line at a time, so that no transcript has to be
+// held whole. A long session's file outgrows what one string can hold: Node stops
+// at about 512 MiB, and Jarvis's transcript was 145 MB after 31 hours on
+// 2026-10-20, so reading it whole would have failed within the week and dropped
+// his session out of every total. parseTranscript (a string) and
+// parseTranscriptStream (a file's bytes) both feed this, so the same bytes give
+// the same result either way.
+export function createTranscriptParser(surface) {
   const requests = [];
   const byKey = new Map();
   let sessionId = null, title = null, cwd = null, gitBranch = null;
 
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    let d;
-    try { d = JSON.parse(line); } catch { continue; }
+  return {
+    line(line) {
+      if (!line.trim()) return;
+      let d;
+      try { d = JSON.parse(line); } catch { return; }
+      // A line that holds JSON's null, or any other non-object, carries nothing
+      // to read. Reading a field off null used to throw and fail the whole pass.
+      if (d === null || typeof d !== 'object') return;
 
-    if (d.sessionId && !sessionId) sessionId = d.sessionId;
-    if (d.type === 'ai-title' && d.aiTitle) { title = d.aiTitle; continue; }
-    if (d.cwd && !cwd) cwd = d.cwd;
-    if (d.gitBranch && gitBranch === null) gitBranch = d.gitBranch === 'HEAD' ? null : d.gitBranch;
+      if (d.sessionId && !sessionId) sessionId = d.sessionId;
+      if (d.type === 'ai-title' && d.aiTitle) { title = d.aiTitle; return; }
+      if (d.cwd && !cwd) cwd = d.cwd;
+      if (d.gitBranch && gitBranch === null) gitBranch = d.gitBranch === 'HEAD' ? null : d.gitBranch;
 
-    const message = d.message;
-    if (!message || typeof message !== 'object' || !message.usage) continue;
-    const ts = Date.parse(d.timestamp ?? '');
-    if (!Number.isFinite(ts)) continue;
-    const key = requestKey(d);
-    const seen = key === null ? undefined : byKey.get(key);
-    if (seen) {
-      // A response's lines can be written mid-stream: on 2026-10-20, 266 of
-      // 7,433 multi-line responses had a smaller output_tokens on their early
-      // lines, never a larger one. Each field's largest reading is the final usage.
-      for (const f of USAGE_FIELDS) seen.usage[f] = Math.max(seen.usage[f], message.usage[f] ?? 0);
-      continue;
+      const message = d.message;
+      if (!message || typeof message !== 'object' || !message.usage) return;
+      const ts = Date.parse(d.timestamp ?? '');
+      if (!Number.isFinite(ts)) return;
+      const key = requestKey(d);
+      const seen = key === null ? undefined : byKey.get(key);
+      if (seen) {
+        // A response's lines can be written mid-stream: on 2026-10-20, 266 of
+        // 7,433 multi-line responses had a smaller output_tokens on their early
+        // lines, never a larger one. Each field's largest reading is the final usage.
+        for (const f of USAGE_FIELDS) seen.usage[f] = Math.max(seen.usage[f], message.usage[f] ?? 0);
+        return;
+      }
+      // The request keeps its first line's time and model. That time is also what
+      // tells an original from a copy in another file (see dropCopiedRequests).
+      const request = { ts, model: message.model ?? 'unknown', requestKey: key, usage: {} };
+      for (const f of USAGE_FIELDS) request.usage[f] = message.usage[f] ?? 0;
+      requests.push(request);
+      if (key !== null) byKey.set(key, request);
+    },
+
+    result() {
+      const records = [];
+      for (const { ts, model, requestKey: key, usage } of requests) {
+        const tokens = totalTokens(usage);
+        const cacheRead = cacheReadTokens(usage);
+        // A row with no new tokens but real cache-read volume (e.g. a turn that
+        // only replayed context) still carries data worth keeping, so the gate
+        // checks both fields rather than `tokens` alone.
+        if (tokens <= 0 && cacheRead <= 0) continue;
+        records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
+      }
+      return { sessionId, title, surface, cwd, gitBranch, records };
     }
-    // The request keeps its first line's time and model. That time is also what
-    // tells an original from a copy in another file (see dropCopiedRequests).
-    const request = { ts, model: message.model ?? 'unknown', requestKey: key, usage: {} };
-    for (const f of USAGE_FIELDS) request.usage[f] = message.usage[f] ?? 0;
-    requests.push(request);
-    if (key !== null) byKey.set(key, request);
-  }
+  };
+}
 
-  const records = [];
-  for (const { ts, model, requestKey: key, usage } of requests) {
-    const tokens = totalTokens(usage);
-    const cacheRead = cacheReadTokens(usage);
-    // A row with no new tokens but real cache-read volume (e.g. a turn that
-    // only replayed context) still carries data worth keeping, so the gate
-    // checks both fields rather than `tokens` alone.
-    if (tokens <= 0 && cacheRead <= 0) continue;
-    records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
-  }
+export function parseTranscript(text, surface) {
+  const parser = createTranscriptParser(surface);
+  for (const line of text.split('\n')) parser.line(line);
+  return parser.result();
+}
 
-  return { sessionId, title, surface, cwd, gitBranch, records };
+// The longest line that can still be decoded into one string.
+export const MAX_LINE_BYTES = bufferConstants.MAX_STRING_LENGTH;
+
+// A transcript read from its bytes (a file's read stream, or any async iterable
+// of Buffers), one line at a time. Lines are cut at '\n' bytes, as
+// text.split('\n') cuts the string: a newline byte never occurs inside a
+// multi-byte UTF-8 character, so each line decodes exactly as it would inside the
+// whole file, and a '\r' before the '\n' stays on its line (JSON.parse reads it as
+// whitespace). A line longer than maxLineBytes can't become a string either. It
+// is dropped and counted in `oversizedLines`, so the caller can report the file
+// as not fully read, and every other line of the file still counts.
+export async function parseTranscriptStream(chunks, surface, { maxLineBytes = MAX_LINE_BYTES } = {}) {
+  const parser = createTranscriptParser(surface);
+  let parts = [];
+  let length = 0;
+  let dropping = false;
+  let oversizedLines = 0;
+  const endLine = () => {
+    if (dropping) oversizedLines += 1;
+    else if (length > 0) parser.line((parts.length === 1 ? parts[0] : Buffer.concat(parts, length)).toString('utf8'));
+    parts = [];
+    length = 0;
+    dropping = false;
+  };
+
+  for await (const chunk of chunks) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let start = 0;
+    for (;;) {
+      const newline = buf.indexOf(0x0a, start);
+      const end = newline === -1 ? buf.length : newline;
+      if (!dropping && end > start) {
+        if (length + (end - start) > maxLineBytes) {
+          dropping = true;
+          parts = [];
+          length = 0;
+        } else {
+          parts.push(buf.subarray(start, end));
+          length += end - start;
+        }
+      }
+      if (newline === -1) break;
+      endLine();
+      start = newline + 1;
+    }
+  }
+  endLine(); // the last line, which may have no newline after it
+  return { ...parser.result(), oversizedLines };
+}
+
+// One transcript file, read in 1 MiB pieces. An open or read error rejects.
+export function parseTranscriptFile(path, surface, options) {
+  return parseTranscriptStream(createReadStream(path, { highWaterMark: 1024 * 1024 }), surface, options);
 }
 
 // The same request can also sit in two files. A forked subagent's transcript
