@@ -45,19 +45,17 @@ a route that outlives an unprotected minute is a real exposure, not a theoretica
 The four review findings that used to be parked here were all fixed in `ee1e1df`
 (2026-09-11). These are the ones still open:
 
-- **P2, fixed and staged 2026-10-20; live after C&P and a restart: token usage was counted
-  once per transcript line, not once per API request.** Claude Code writes a response as
-  one line per content block, each repeating the response's usage, and the parser summed
-  every line. Now `server/lib/parse-transcript.mjs` merges lines by `requestId` plus message
-  id (each usage field's largest reading, the first line's time and model; a line missing
-  either id counts alone), and `collectors/sessions.mjs` counts a request found in two files
-  once (a forked subagent's transcript opens with a copy of the parent's launching line).
-  README, "The token figures count each API request once". Measured on 2026-10-20 over the
-  real transcripts, HEAD and the fix side by side, read-only: the week's new tokens 149.7M →
-  49.9M (3.0x), Opus 121.8M → 42.9M, cache reads 4,481M → 1,838M (2.4x); with cache reads,
-  Jarvis's helpers since 10-13 went from 2,180M to 782M, matching Shuri's recount. No web
-  rebuild is needed: the page and the mod print what the server sends. Found by Shuri.
-  Tests: `parse-transcript.test.mjs`, `sessions.test.mjs`, `aggregate.test.mjs`.
+- **P2: a transcript can outgrow what the sessions collector can read.** Each minute it
+  reads every transcript changed in the last 7 days whole, into one string: 174 files, about
+  3.8 s and about 700 MB in a fresh process (measured 2026-10-20). Node can't hold a string
+  longer than about 512 MiB, and Jarvis's transcript was 145 MB after about 31 hours, so at
+  that rate it overflows before his Sunday restart. Its read then fails, the file is listed
+  as unreadable, and his session drops out of every total. The fix is Phase 0 of the Orbit
+  plan (§9): read each file as a stream, and skip files that haven't changed.
+
+- **Done 2026-10-20 (`f16b659`, live since the 11:21 restart that day): token usage counts
+  each API request once, not once per transcript line.** The week's new tokens read 3x
+  lower. README, "The token figures count each API request once".
 
 - **P2: the server lost its HTTP listener while staying alive.** From Sep 28 to Oct 2
   the process kept running, collectors still ticking, but held no listening socket,
@@ -214,8 +212,9 @@ bug were built the same day, committed and pushed, and live after the restart (t
    wanted "usage first ... the to dos as 2 instead of 3", so Projects now carries the CSS
    `order` and drops to the end (the keyboard still walks 01, 02, 03). Checked at 390, 820
    and 1440 px against a test server and on the live page at 390. The Usage column is about
-   1,800 px tall on a phone, so the board starts about two screens down; the redesign
-   Jeff may run (`/design`) is the place to shorten it. The labels still read 01, 03, 02.
+   1,800 px tall on a phone, so the board starts about two screens down. The Orbit redesign
+   (§9) replaces this layout, with the board in a tab of its own. The labels still read 01,
+   03, 02.
 3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
    "linkedin-post-agent" and over a third of the week's tokens land in "Projects" (37% on
    10-20, counted per request). Each subagent
@@ -226,25 +225,30 @@ bug were built the same day, committed and pushed, and live after the restart (t
    `agents` block to `/api/dashboard` (name, last run, last description, tokens this week).
    It builds on the per-request records (§2), which already credit a fork's copy of its
    launching line to the parent. Jeff said yes on 2026-10-20 to usage by agent through
-   Claude Code's OpenTelemetry export; Ultron vets that first, and it is the next piece of
-   work.
+   Claude Code's OpenTelemetry export; Ultron vets that first. **Now Phase 3 of the Orbit
+   plan (§9):** the agent views read the transcripts and meta files first, and
+   OpenTelemetry becomes a later cross-check (Phase 6), if Jeff agrees (its decision 7).
+   Also checked 10-20: a routine run started with `--agent` carries `agentSetting` on its
+   lines, and Jarvis's own session carries `agent-name` lines that read Jarvis.
 4. **Watch the always-on services** (S–M, not built). `collectors/crons.mjs` keeps only
    plists with a schedule, so the always-on ones never appear. Checked 10-19:
    `control-room`, `cloudflared.mini` and `linkedin-review` are `KeepAlive` and show a PID
    in `launchctl list`, so "PID and last exit" works for them. **`com.jeff.jarvis` is not:**
    it is `KeepAlive false`, runs `jarvis/bin/jarvis-start` once at load and exits, so it
-   shows no PID while Jarvis is perfectly alive. Its "is Jarvis up" signal has to come from
-   Jarvis (a heartbeat file he touches, or a process match on his session), which is a
-   decision for Jarvis/Vision before the alert is built. Plan: a `services` collector
-   listing `KeepAlive` plists from the same directory with PID, last exit and, for a
-   one-shot launcher, the agreed heartbeat; a "Services" block in column 02; a #pepper
-   alert only once the Jarvis signal exists.
+   shows no PID while Jarvis is perfectly alive. **Now Phase 2 of the Orbit plan (§9), the
+   health strip.** Every job's verdict comes from Jarvis's own job-status check, called in
+   a narrow mode he adds, not copied. For "is Jarvis up", the plan's pick (Jeff's decision
+   4) needs no heartbeat file: `claude agents --json`, which this server already reads every
+   30 s, lists the session named Jarvis (jarvis-start runs `claude -n Jarvis`) with its pid,
+   and it stays listed while he is idle.
 5. **Board fields for a co-owned board** (M). Add `created` (the P3 item on the board), an
    optional `owner` (agent name) and a done-lane archive (37 of 86 items are done). There is
    no Control Room tag: this dashboard's items sit under Bug, Feature and Infra, so the board
    can't group them. Plan: the store stamps `created` on items that lack it (never
    overwrites it); `owner` is a free-text field the page shows as a chip; "archive" moves
    done items older than 14 days into `todos-archive.json` behind a "show archived" link.
+   The Orbit plan (§9) takes `owner` and a done time (`doneAt`) into its Phase 1; `created`
+   and the archive stay here.
 6. **Source health / `/control-room doctor`** (M, §5 above). Also serve it as a small JSON
    status Jarvis can read for the morning brief, so "is the dashboard right?" is one GET.
 7. **Done (2026-10-19): the service log is timestamped.** Every `console` line and the
@@ -260,11 +264,28 @@ bug were built the same day, committed and pushed, and live after the restart (t
    date input plus Clear, offers a date beside the Idea and Doing add boxes, and has a
    per-viewer "Sort by: Due" switch. README, "The board's items". Tests:
    `server/test/due-date.test.mjs`; the page was checked in headless Chromium at 390 and
-   1440 px against a scratch server. Left open: (a) **not checked in Safari** (WebKit is not
-   installed for playwright), so the date input's look and the Clear button on iPhone/iPad
-   want a look from Jeff; (b) the Claude Code mod neither shows nor edits `due` (it keeps
-   it, since it spreads items when it changes them).
+   1440 px against a scratch server, and Jeff checked the date input in Safari on his
+   iPhone on 2026-10-20 ("Seems to be working"). Left open: the Claude Code mod neither
+   shows nor edits `due` (it keeps it, since it spreads items when it changes them).
 
 Also done the same day: the web page's cron sort (failed, then unknown, then the rest by
 next run, the mod's order, in `sortCrons()` in `web/src/lib/format.js`); before, an
 ingested cron with no `ok` ranked before or after a failure depending on the browser.
+
+## 9. The Orbit redesign (approved 2026-10-20)
+
+Jeff approved round 4 of the Orbit design on 2026-10-20 ("Add the health strip and
+start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redesign.md`:
+
+- Phase 0: transcript reading that can't overflow (§2).
+- Phase 1: the new page beside today's, Board tab included.
+- Phase 2: the health strip.
+- Phase 3: the agent views.
+- Phase 4: Waiting on you.
+- Phase 5: the flip.
+- Phase 6: the OpenTelemetry cross-check.
+
+The plan waits on Jeff's OK and the seven decisions listed at its top. Phases 2 and 4 also
+wait on Jarvis (a narrow `job-status` mode, and filling the new board fields), on Vision
+(reading the Pi watch's state) and on Ultron (vetting the new reads). It supersedes the
+build notes in §8.3 to §8.5 wherever the two differ.
