@@ -8,6 +8,11 @@ import { readRoster } from './lib/roster.mjs';
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
 // was read into memory in full.
 const MAX_BODY = 256 * 1024;
+// The board is the one body that grows without end: every PUT carries every
+// item ever written, Done included, and on 2026-10-21 it was 30% of 256 KB and
+// growing by a few KB a day. It gets 1 MiB of its own. The `board` panel
+// (server.mjs) reports its size against this, and past 75% an alert says so.
+export const BOARD_MAX_BODY = 1024 * 1024;
 
 const json = (res, code, body, headers = {}) => {
   res.writeHead(code, { 'Content-Type': 'application/json', ...headers });
@@ -104,7 +109,7 @@ export function parseIfMatch(header) {
   return tags.length ? tags : [''];
 }
 
-const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits'];
+const PANELS = ['usage', 'sessions', 'agents', 'crons', 'plan', 'accountCredits', 'ingestCrons', 'ingestProjects', 'ingestCredits', 'board'];
 
 // What of config.json the page gets: only the fields it shows. The page used to
 // get the whole object, so anything added to config.json (a path, a command, a
@@ -185,7 +190,7 @@ export function createHandler({ cache, todos, config }) {
           if (ifMatch === null && req.headers?.origin) {
             throw new HttpError(428, 'this page is out of date: reload it before editing the board');
           }
-          const body = await readBody(req);
+          const body = await readBody(req, BOARD_MAX_BODY);
           try {
             const saved = await todos.save(body, { ifMatch: Array.isArray(ifMatch) ? ifMatch : null });
             return json(res, 200, saved.todos, boardHeaders(saved.revision));

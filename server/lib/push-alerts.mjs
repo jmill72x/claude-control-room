@@ -8,8 +8,9 @@
 // An ALLOWLIST, deliberately. A denylist would send full text for any kind that
 // is missing, misspelled, or added later by someone who has not read this — so
 // the failure mode of a future mistake would be disclosure to a third party.
-// Anything not named here is counted, never quoted.
-const DISCLOSED_KINDS = new Set(['limit', 'projection', 'credits']);
+// Anything not named here is counted, never quoted. The board's alert is built
+// from two numbers alone (lib/alerts.mjs), so its percent can go out as written.
+const DISCLOSED_KINDS = new Set(['limit', 'projection', 'credits', 'board']);
 
 export function pushableFrom(alerts) {
   const keyed = (alerts ?? []).filter(a => typeof a?.key === 'string' && a.key);
@@ -49,6 +50,7 @@ export function observableSources(snapshot) {
     ...(ok('usage') ? ['limit', 'projection'] : []),
     ...(ok('crons') ? ['cron:launchd'] : []),
     ...(ok('ingestCrons') ? ['cron:ingest'] : []),
+    ...(ok('board') ? ['board'] : []),
     // Credits alerts read the ingested feed when it is current and fall back
     // to config (loaded at startup, always readable) otherwise. So the source
     // is observable when the feed is current or was never posted — but a

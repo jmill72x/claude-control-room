@@ -67,6 +67,24 @@ export function nextRun(cal, now) {
   return null;
 }
 
+// Each time a calendar job was due in (from, to], oldest first, at most `cap`
+// of them: a calendar that names only a weekday is due every minute of that day,
+// so the walk stops rather than list 1,440. These are the times launchd was due
+// to start the job, not proof that it ran: a Mac asleep at that minute starts
+// it on waking.
+export function dueBetween(cal, from, to, cap = 200) {
+  const out = [];
+  for (let t = from; out.length < cap;) {
+    const next = nextRun(cal, t);
+    if (next === null || next > to) break;
+    out.push(next);
+    t = next;
+  }
+  return out;
+}
+
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+
 function readableName(label) {
   const tail = label.split('.').pop();
   return tail || label;
@@ -87,6 +105,9 @@ export function buildCron({ label, plist, statusRow }, now = Date.now()) {
     label,
     schedule: formatSchedule(cal, interval),
     nextRunAt: nextRun(cal, now),
+    // When it was due over the last 7 days: the Orbit page's Scheduled lane
+    // shows today's, and the agent views name a routine's runs from them.
+    dueAt: cal ? dueBetween(cal, now - WEEK_MS, now) : [],
     ok,
     state: neverRan ? 'never' : ok ? 'ok' : 'failed',
     last: neverRan ? 'Not yet run' : ok ? 'OK' : `Failed · ${status}`

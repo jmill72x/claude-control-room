@@ -6,7 +6,8 @@ const KEY = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 // An agent's picture from /avatars/<key>.png, or a neutral initial: for an
 // owner the roster doesn't know, an item whose tag has no agent, a missing file
 // or a server that doesn't serve avatars yet. Decorative: the name is always
-// written beside it.
+// written beside it. `size` is pixels, or a CSS length such as '100%' for a
+// picture that fills its box (the work map), whose initial orbit.css sizes.
 export function Avatar({ agent, fallback = '', size = 32, tone = 'day' }) {
   const [failed, setFailed] = useState(false);
   const style = { width: size, height: size };
@@ -15,7 +16,7 @@ export function Avatar({ agent, fallback = '', size = 32, tone = 'day' }) {
   }
   const colors = agentColors(agent?.index ?? -1);
   return (
-    <span className={`o-avatar o-initial o-initial-${tone}`} style={{ ...style, fontSize: Math.round(size * 0.42), '--agent': colors[tone] }} aria-hidden="true">
+    <span className={`o-avatar o-initial o-initial-${tone}`} style={{ ...style, ...(typeof size === 'number' ? { fontSize: Math.round(size * 0.42) } : {}), '--agent': colors[tone] }} aria-hidden="true">
       {initialOf(agent?.name ?? fallback)}
     </span>
   );

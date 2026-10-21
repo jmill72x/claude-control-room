@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath, stat } from 'node:fs/promises';
 import { dirname, join, basename, resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { AGENT_KEY } from './lib/roster.mjs';
@@ -47,11 +47,18 @@ export const isInstant = v => {
   return Boolean(m) && isDueDate(m[1]) && Number.isFinite(Date.parse(v));
 };
 
+// C0 and C1 control characters (a newline, a tab, an escape) and the ones that
+// reorder text (U+202A-202E, U+2066-2069): a title and an ask are one-line
+// labels, and a direction override can make one read as something else.
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+const UNSAFE_SAYS = 'must not hold control characters or characters that reorder text';
+
 function checkFields(t) {
   const bad = message => new InvalidBoardError(`item ${JSON.stringify(t.id)}: ${message}`);
   if (!none(t.title) && (typeof t.title !== 'string' || chars(t.title) > 120)) {
     throw bad('title must be text of at most 120 characters, or empty for none');
   }
+  if (typeof t.title === 'string' && UNSAFE_CHARS.test(t.title)) throw bad(`title ${UNSAFE_SAYS}`);
   if (!none(t.owner) && (typeof t.owner !== 'string' || !AGENT_KEY.test(t.owner))) {
     throw bad('owner must be an agent key (lowercase letters, digits and hyphens), or empty for none');
   }
@@ -63,7 +70,9 @@ function checkFields(t) {
   if (typeof ask !== 'object' || Array.isArray(ask)) throw bad('ask must be an object with what, kind and optionally why and time, or null for none');
   for (const key of Object.keys(ask)) if (!ASK_FIELDS.has(key)) throw bad(`ask.${key} is not a field ask takes (what, why, kind, time)`);
   if (typeof ask.what !== 'string' || ask.what.trim() === '' || chars(ask.what) > 500) throw bad('ask.what must be text of 1 to 500 characters');
+  if (UNSAFE_CHARS.test(ask.what)) throw bad(`ask.what ${UNSAFE_SAYS}`);
   if (!none(ask.why) && (typeof ask.why !== 'string' || chars(ask.why) > 300)) throw bad('ask.why must be text of at most 300 characters');
+  if (typeof ask.why === 'string' && UNSAFE_CHARS.test(ask.why)) throw bad(`ask.why ${UNSAFE_SAYS}`);
   if (!ASK_KINDS.has(ask.kind)) throw bad('ask.kind must be "decide" or "do"');
   if (!none(ask.time) && !(typeof ask.time === 'string' && HHMM.test(ask.time))) throw bad('ask.time must be a 24-hour HH:MM time, or empty for none');
 }
@@ -233,8 +242,16 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
   // The write itself. Only ever called from inside serial().
   const writeUnlocked = async todos => {
     if (!Array.isArray(todos)) throw new InvalidBoardError('todos must be an array');
-    for (const t of todos) {
+    for (const [i, t] of todos.entries()) {
       if (t === null || typeof t !== 'object' || Array.isArray(t)) throw new InvalidBoardError('every item must be an object');
+      // The fields every reader takes for granted (the page, the mod, the morning
+      // brief): an id to find the item by, its text, and a tag that is text when
+      // there is one. A bad id names the item by its place in the list.
+      if (!((typeof t.id === 'string' && t.id !== '') || (typeof t.id === 'number' && Number.isFinite(t.id)))) {
+        throw new InvalidBoardError(`item ${i + 1}: id must be non-empty text or a number`);
+      }
+      if (typeof t.text !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: text must be text`);
+      if (t.tag !== undefined && typeof t.tag !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag must be text, or left out`);
       if (!LANES.has(t.lane)) throw new InvalidBoardError(`unknown lane: ${t.lane}`);
       if (t.priority != null && !PRIORITIES.has(t.priority)) throw new InvalidBoardError(`unknown priority: ${t.priority}`);
       if (t.due != null && t.due !== '' && !isDueDate(t.due)) {
@@ -370,6 +387,17 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
 
     async read() {
       return (await load()).todos;
+    },
+
+    // The board file's length in bytes, for the `board` panel that warns before
+    // it reaches the PUT cap; 0 before the first write.
+    async size() {
+      try {
+        return (await stat(path)).size;
+      } catch (err) {
+        if (err.code === 'ENOENT') return 0;
+        throw err;
+      }
     },
 
     async write(todos) {

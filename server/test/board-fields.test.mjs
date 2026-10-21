@@ -212,3 +212,54 @@ test('over HTTP, with the new fields on the board: a stale If-Match is 409, a br
     assert.equal(byId(onDisk(path), 'd').title, 'From curl');
   } finally { await s.close(); }
 });
+
+// ---- the hardening from the 2026-10-21 security review ----
+// Every item on the live board and in its 20 copies passed these on 2026-10-21,
+// so no write that works today is refused by them.
+
+const refused = async (list, pattern) => {
+  const path = tmp();
+  writeFileSync(path, JSON.stringify([{ id: 'keep', text: 'kept', lane: 'idea', tag: 'Ops' }]));
+  const store = createTodoStore(path);
+  await assert.rejects(() => store.write(list), err => err instanceof InvalidBoardError && pattern.test(err.message));
+  assert.deepEqual(onDisk(path), [{ id: 'keep', text: 'kept', lane: 'idea', tag: 'Ops' }], 'nothing was written');
+};
+
+test('an id must be text or a number', async () => {
+  for (const id of [undefined, '', null, true, { n: 1 }, [1]]) {
+    await refused([{ ...(id === undefined ? {} : { id }), text: 'x', lane: 'idea', tag: 'Ops' }], /item 1: id must be non-empty text or a number/);
+  }
+  const path = tmp();
+  const ok = await createTodoStore(path).write([{ id: 7, text: 'a', lane: 'idea', tag: 'Ops' }, { id: 'i-8', text: 'b', lane: 'idea' }]);
+  assert.equal(ok.length, 2);
+});
+
+test('text must be text, and a tag text or left out', async () => {
+  for (const text of [undefined, null, 5, { s: 'x' }]) {
+    await refused([{ id: 'a', ...(text === undefined ? {} : { text }), lane: 'idea' }], /item "a": text must be text/);
+  }
+  for (const tag of [null, 5, ['Ops']]) {
+    await refused([{ id: 'a', text: 'x', lane: 'idea', tag }], /item "a": tag must be text, or left out/);
+  }
+  const ok = await createTodoStore(tmp()).write([{ id: 'a', text: '', lane: 'idea', tag: '' }, { id: 'b', text: 'no tag', lane: 'idea' }]);
+  assert.equal(ok.length, 2, 'an empty text or tag, and no tag at all, are still fine');
+});
+
+test('a title or an ask may not hold control characters or ones that reorder text', async () => {
+  const bad = ['\u0000', '\u0007', '\t', '\n', '\u001b', '\u007f', '\u0085', '\u009f', '\u202a', '\u202e', '\u2066', '\u2069'];
+  for (const ch of bad) {
+    await refused([{ id: 'a', text: 'x', lane: 'idea', title: `Pay${ch}the bill` }], /item "a": title must not hold control characters/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: `Pay${ch}the bill`, kind: 'do' } }], /item "a": ask\.what must not hold control characters/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: 'Pay', why: `It${ch}lapses`, kind: 'do' } }], /item "a": ask\.why must not hold control characters/);
+  }
+  const fine = { id: 'a', text: 'Line one\nline two', lane: 'idea', title: 'Pay the bill — today 🙂 (ünïcode)', ask: { what: 'Pay it, then file the receipt', why: 'It lapses on the 3rd', kind: 'do' } };
+  assert.equal((await createTodoStore(tmp()).write([fine])).length, 1, "ordinary punctuation, accents and emoji are fine, and text keeps its newlines");
+});
+
+test("size() is the board file's length in bytes, and 0 before there is one", async () => {
+  const path = tmp();
+  const store = createTodoStore(path);
+  assert.equal(await store.size(), 0);
+  await store.write([{ id: 'a', text: 'héllo', lane: 'idea', tag: 'Ops' }]);
+  assert.equal(await store.size(), Buffer.byteLength(readFileSync(path)));
+});

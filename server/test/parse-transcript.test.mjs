@@ -243,3 +243,33 @@ test('dropping copies leaves its input alone and keeps lines that carry no ids',
   assert.equal(sub.records.length, 2, 'the input transcript is not mutated');
   assert.equal(out[2].records.length, 1);
 });
+
+// Who a session is (Orbit plan, Phase 3). A `claude -p --agent <slug>` run opens
+// with an `agent-setting` line; a session started as `claude -n <name>` carries
+// `agent-name` lines. Invented slugs and names, no real transcript content.
+const setting = slug => JSON.stringify({ type: 'agent-setting', agentSetting: slug, sessionId: 'sess-1' });
+const named = name => JSON.stringify({ type: 'agent-name', agentName: name, sessionId: 'sess-1' });
+const request = (id, ts) => line({ requestId: `req_${id}`, messageId: `msg_${id}`, ts, usage: { input_tokens: 5, output_tokens: 5 } });
+
+test('a run started with --agent says which agent it is', () => {
+  const out = parseTranscript([setting('builder'), request('A', '2026-10-20T10:00:00.000Z')].join('\n'), 'Code');
+  assert.equal(out.agentSetting, 'builder');
+  assert.equal(out.agentName, null);
+  assert.equal(out.records.length, 1, 'the setting line is not a request');
+});
+
+test('the first agent-setting line is the one kept, and a value that is not text is ignored', () => {
+  assert.equal(parseTranscript([setting('builder'), setting('scout')].join('\n'), 'Code').agentSetting, 'builder');
+  const odd = JSON.stringify({ type: 'agent-setting', agentSetting: 42 });
+  assert.equal(parseTranscript([odd, setting('scout')].join('\n'), 'Code').agentSetting, 'scout');
+  assert.equal(parseTranscript(request('A', '2026-10-20T10:00:00.000Z'), 'Code').agentSetting, null);
+});
+
+test("a named session's latest name is the one kept", () => {
+  const out = parseTranscript([named('Lead'), request('A', '2026-10-20T10:00:00.000Z'), named('Lead Two')].join('\n'), 'Code');
+  assert.equal(out.agentName, 'Lead Two');
+  assert.equal(out.agentSetting, null);
+  assert.equal(out.records.length, 1, 'name lines are not requests');
+  const odd = JSON.stringify({ type: 'agent-name', agentName: { nope: true } });
+  assert.equal(parseTranscript([named('Lead'), odd].join('\n'), 'Code').agentName, 'Lead');
+});

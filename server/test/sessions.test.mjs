@@ -366,3 +366,94 @@ test('a pass that cannot list one root keeps the cache for it, so its files are 
   assert.deepEqual(reads, [], 'nothing changed while the root was away');
   assert.equal(tokensOf(back), 8);
 });
+
+// The agent views (Orbit plan, Phase 3) read each subagent's .meta.json, the
+// file Claude Code writes beside its transcript, and the names top-level
+// sessions carry. Invented agent types, briefs and names throughout.
+const metaLine = (id, sessionId, seconds) => JSON.stringify({
+  type: 'assistant', timestamp: new Date(Date.now() - 3600_000 + seconds * 1000).toISOString(), sessionId,
+  cwd: '/Users/example/Projects/demo', requestId: `req_${id}`,
+  message: { id: `msg_${id}`, model: 'claude-opus-5', role: 'assistant', content: [{ type: 'text' }], usage: { input_tokens: 4, output_tokens: 6 } }
+}) + '\n';
+async function sessionWithSubagents(root) {
+  const project = join(root, '-Users-example-Projects-demo');
+  const subagents = join(project, 'sess-m', 'subagents');
+  await mkdir(subagents, { recursive: true });
+  await writeFile(join(project, 'sess-m.jsonl'),
+    JSON.stringify({ type: 'agent-name', agentName: 'Lead', sessionId: 'sess-m' }) + '\n' + metaLine('P', 'sess-m', 0));
+  await writeFile(join(subagents, 'agent-a1.jsonl'), metaLine('A', 'sess-m', 10));
+  await writeFile(join(subagents, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'builder', description: 'Build the thing', toolUseId: 't1', finished: true }));
+  await writeFile(join(subagents, 'agent-a2.jsonl'), metaLine('B', 'sess-m', 20));
+  return { project, subagents };
+}
+
+test("a subagent's meta file comes with its transcript, and a top-level transcript has none", async () => {
+  const root = freshDir();
+  await sessionWithSubagents(root);
+  const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
+  const byName = Object.fromEntries(out.transcripts.map(t => [t.filePath.split('/').pop(), t]));
+  assert.deepEqual(byName['agent-a1.jsonl'].meta, { agentType: 'builder', description: 'Build the thing' });
+  assert.equal(byName['agent-a1.jsonl'].subagent, true);
+  assert.equal(byName['agent-a2.jsonl'].meta, null, 'no meta file is no meta, not a failure');
+  assert.equal(byName['agent-a2.jsonl'].subagent, true);
+  assert.equal(byName['sess-m.jsonl'].meta, null);
+  assert.equal(byName['sess-m.jsonl'].subagent, false);
+  assert.deepEqual(out.unreadablePaths, []);
+});
+
+test('a meta file that does not parse is reported, its transcript still counts, and it is tried again next pass', async () => {
+  const root = freshDir();
+  const { subagents } = await sessionWithSubagents(root);
+  const broken = join(subagents, 'agent-a2.meta.json');
+  await writeFile(broken, '{"agentType": "builder", ');
+  const cache = new Map();
+  const reads = [];
+  const readMeta = async file => { reads.push(file); return (await import('../collectors/sessions.mjs')).readSubagentMeta(file); };
+  const first = await collectSessions({ roots: [{ root, surface: 'Code' }], cache, readMeta });
+  assert.deepEqual(first.unreadablePaths, [broken]);
+  const a2 = first.transcripts.find(t => t.filePath.endsWith('agent-a2.jsonl'));
+  assert.equal(a2.meta, null);
+  assert.equal(a2.records.length, 1, 'the transcript itself was read');
+  reads.length = 0;
+  const second = await collectSessions({ roots: [{ root, surface: 'Code' }], cache, readMeta });
+  assert.deepEqual(second.unreadablePaths, [broken], 'reported again, not hidden by the cache');
+  assert.equal(reads.filter(f => f.endsWith('agent-a2.jsonl')).length, 1, 'the broken one is tried again');
+  assert.equal(reads.filter(f => f.endsWith('agent-a1.jsonl')).length, 0, 'an unchanged one is not');
+});
+
+test('a meta file is read only when its transcript is', async () => {
+  const root = freshDir();
+  const { subagents } = await sessionWithSubagents(root);
+  const cache = new Map();
+  const reads = [];
+  const readMeta = async file => { reads.push(file); return { agentType: 'builder', description: 'x' }; };
+  await collectSessions({ roots: [{ root, surface: 'Code' }], cache, readMeta });
+  assert.equal(reads.length, 2, 'the two subagents, never the top-level transcript');
+  reads.length = 0;
+  await collectSessions({ roots: [{ root, surface: 'Code' }], cache, readMeta });
+  assert.deepEqual(reads, []);
+  await appendFile(join(subagents, 'agent-a1.jsonl'), metaLine('A2', 'sess-m', 30));
+  await collectSessions({ roots: [{ root, surface: 'Code' }], cache, readMeta });
+  assert.deepEqual(reads, [join(subagents, 'agent-a1.jsonl')]);
+});
+
+test("sessions' names are kept even for a session with no usage, and never taken from a subagent", async () => {
+  const root = freshDir();
+  const { project, subagents } = await sessionWithSubagents(root);
+  await writeFile(join(project, 'sess-q.jsonl'), JSON.stringify({ type: 'agent-name', agentName: 'Quiet', sessionId: 'sess-q' }) + '\n');
+  await writeFile(join(subagents, 'agent-a3.jsonl'),
+    JSON.stringify({ type: 'agent-name', agentName: 'Not a session name', sessionId: 'sess-m' }) + '\n' + metaLine('C', 'sess-m', 40));
+  // A subagent whose session has no top-level file, so no read order can let a
+  // parent's own name cover for it.
+  const orphan = join(project, 'sess-z', 'subagents');
+  await mkdir(orphan, { recursive: true });
+  await writeFile(join(orphan, 'agent-z1.jsonl'),
+    JSON.stringify({ type: 'agent-name', agentName: 'Orphan', sessionId: 'sess-z' }) + '\n' + metaLine('Z', 'sess-z', 50));
+  const cache = new Map();
+  for (let pass = 0; pass < 2; pass++) {
+    const out = await collectSessions({ roots: [{ root, surface: 'Code' }], cache });
+    assert.ok(out.sessionNames instanceof Map);
+    assert.deepEqual([...out.sessionNames].sort(), [['sess-m', 'Lead'], ['sess-q', 'Quiet']], `pass ${pass + 1}`);
+    assert.ok(!out.transcripts.some(t => t.sessionId === 'sess-q'), 'a session with no usage is still not a transcript');
+  }
+});

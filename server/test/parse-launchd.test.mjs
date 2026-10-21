@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLaunchctlList, nextRun, buildCron } from '../lib/parse-launchd.mjs';
+import { parseLaunchctlList, nextRun, buildCron, dueBetween } from '../lib/parse-launchd.mjs';
 
 test('parses labels, pids and exit statuses', () => {
   const text = [
@@ -171,4 +171,42 @@ test('nextRun on an array-form calendar is the soonest of its entries', () => {
   const next = nextRun([{ Hour: 20, Minute: 0 }, { Hour: 14, Minute: 0 }], now);
   assert.equal(new Date(next).getHours(), 14);
   assert.equal(nextRun([], now), null);
+});
+
+// When each calendar job was due over the last 7 days (Orbit plan, Phase 3: the
+// Scheduled lane, and naming a routine's runs). Local times, so they hold in
+// any time zone the tests run in.
+test('dueBetween lists each time a calendar job was due, oldest first, inside the span only', () => {
+  const now = Date.parse('2026-08-12T09:00:00');
+  const due = dueBetween({ Hour: 7, Minute: 30 }, now - 7 * 86400e3, now);
+  assert.equal(due.length, 7);
+  for (const t of due) {
+    const d = new Date(t);
+    assert.equal(d.getHours(), 7); assert.equal(d.getMinutes(), 30);
+    assert.ok(t > now - 7 * 86400e3 && t <= now);
+  }
+  assert.deepEqual(due, [...due].sort((a, b) => a - b));
+  assert.equal(due.at(-1), Date.parse('2026-08-12T07:30:00'));
+  // A due time exactly at either end: the start is left out, the end kept.
+  const at = Date.parse('2026-08-12T07:30:00');
+  assert.deepEqual(dueBetween({ Hour: 7, Minute: 30 }, at, at + 60e3), []);
+  assert.deepEqual(dueBetween({ Hour: 7, Minute: 30 }, at - 60e3, at), [at]);
+});
+
+test('dueBetween follows weekdays and array calendars, and stops at its cap', () => {
+  const now = Date.parse('2026-08-12T09:00:00'); // a Wednesday
+  assert.deepEqual(dueBetween({ Weekday: 1, Hour: 5, Minute: 30 }, now - 7 * 86400e3, now), [Date.parse('2026-08-10T05:30:00')]);
+  const twice = dueBetween([{ Weekday: 1, Hour: 7, Minute: 30 }, { Weekday: 2, Hour: 7, Minute: 30 }], now - 7 * 86400e3, now);
+  assert.deepEqual(twice, [Date.parse('2026-08-10T07:30:00'), Date.parse('2026-08-11T07:30:00')]);
+  assert.equal(dueBetween({ Minute: 0 }, now - 7 * 86400e3, now, 50).length, 50);
+  assert.deepEqual(dueBetween(null, now - 86400e3, now), []);
+});
+
+test("buildCron carries a calendar job's due times over the last 7 days, and an interval job's none", () => {
+  const now = Date.parse('2026-08-12T09:00:00');
+  const daily = buildCron({ label: 'com.example.daily', plist: { StartCalendarInterval: { Hour: 7, Minute: 30 } }, statusRow: { status: 0 } }, now);
+  assert.equal(daily.dueAt.length, 7);
+  assert.equal(daily.dueAt.at(-1), Date.parse('2026-08-12T07:30:00'));
+  const every = buildCron({ label: 'com.example.watch', plist: { StartInterval: 300 }, statusRow: { status: 0 } }, now);
+  assert.deepEqual(every.dueAt, []);
 });

@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { TRANSCRIPT_ROOTS, parseTranscriptFile, dropCopiedRequests } from '../lib/parse-transcript.mjs';
 import { parseCoworkSession } from '../lib/cowork.mjs';
 
@@ -33,6 +33,30 @@ async function walk(dir, match, out = [], failures = [], depth = 0) {
   return out;
 }
 
+// A subagent's transcript is <session>/subagents/agent-<id>.jsonl, and Claude
+// Code writes a .meta.json beside it naming the agent (`agentType`, such as an
+// agent file's slug, or general-purpose) and the one-line brief it was given
+// (`description`). Only those two fields are kept. No meta file is no meta,
+// not a failure: the run just can't be put to an agent. One that can't be read
+// or parsed throws, and the caller reports it.
+const MAX_META_BYTES = 64 * 1024;
+const isSubagentFile = file => basename(dirname(file)) === 'subagents' && basename(file).startsWith('agent-');
+const field = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+export async function readSubagentMeta(file) {
+  const path = file.replace(/\.jsonl$/, '.meta.json');
+  let text;
+  try {
+    if ((await stat(path)).size > MAX_META_BYTES) throw new Error(`${path} is larger than a meta file should be`);
+    text = await readFile(path, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const d = JSON.parse(text);
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) throw new Error(`${path} is not an object`);
+  return { agentType: field(d.agentType, 200), description: field(d.description, 1000) };
+}
+
 // Each transcript is read as a stream, a line at a time (parseTranscriptFile),
 // never whole: one string can't hold more than about 512 MiB, and a long-running
 // session's file grows past that within a week.
@@ -47,17 +71,28 @@ async function walk(dir, match, out = [], failures = [], depth = 0) {
 // read again on the next pass, never kept short. A file that fails to read is not
 // kept, so it is tried and reported again every pass. With no cache, every file
 // is read every pass, as before.
+//
+// A subagent's meta file is read along with its transcript, so only when the
+// transcript is. One that fails is reported and its entry not kept, so it is
+// tried and reported again next pass, as a failed transcript is.
+//
+// `sessionNames` maps each top-level session's id to its latest `agent-name`
+// (a session started as `claude -n <name>`), from every transcript read,
+// including those with no usage. A subagent's lines carry its parent's
+// sessionId, so this is how a subagent finds the session that started it.
 export async function collectSessions({
   roots = TRANSCRIPT_ROOTS,
   maxAgeMs = 7 * 24 * 3600 * 1000,
   cache = null,
-  readTranscript = parseTranscriptFile
+  readTranscript = parseTranscriptFile,
+  readMeta = readSubagentMeta
 } = {}) {
   const cutoff = Date.now() - maxAgeMs;
   const transcripts = [];
   const coworkSessions = [];
   const unavailableRoots = [];
   const unreadablePaths = [];
+  const sessionNames = new Map();
   const seen = new Set();
 
   for (const { root, surface } of roots) {
@@ -87,6 +122,16 @@ export async function collectSessions({
           continue;
         }
         const { oversizedLines = 0, ...parsed } = read;
+        const subagent = isSubagentFile(file);
+        let meta = null, metaFailed = false;
+        if (subagent) {
+          try {
+            meta = await readMeta(file);
+          } catch {
+            metaFailed = true;
+            failures.push(file.replace(/\.jsonl$/, '.meta.json'));
+          }
+        }
         // Claude Code writes one transcript FILE per parent session plus one
         // more per sub-agent it spawns, and every one of those files carries
         // the SAME sessionId. collectSessions emits one entry per file, so
@@ -94,8 +139,12 @@ export async function collectSessions({
         // file path can: readdir never yields the same path twice in a walk,
         // and it is stable across polls (same file, same path) so a session
         // row does not needlessly remount while nothing about it changed.
-        entry = { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino, oversizedLines, transcript: { ...parsed, filePath: file } };
-        cache?.set(file, entry);
+        entry = { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino, oversizedLines, transcript: { ...parsed, filePath: file, subagent, meta } };
+        if (metaFailed) cache?.delete(file);
+        else cache?.set(file, entry);
+      }
+      if (!entry.transcript.subagent && entry.transcript.sessionId && entry.transcript.agentName) {
+        sessionNames.set(entry.transcript.sessionId, entry.transcript.agentName);
       }
       // A line too long to decode is a part of this file that went unread.
       if (entry.oversizedLines > 0) failures.push(file);
@@ -153,5 +202,5 @@ export async function collectSessions({
     .map(t => ({ ...t, lastTs: t.records.reduce((max, r) => Math.max(max, r.ts), -Infinity) }));
   // A partially-read set understates every total, so say so rather than
   // presenting the remainder as complete.
-  return { transcripts: counted, coworkSessions, unavailableRoots, unreadablePaths };
+  return { transcripts: counted, coworkSessions, unavailableRoots, unreadablePaths, sessionNames };
 }

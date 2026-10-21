@@ -80,6 +80,11 @@ export function freshness({ serverTime = null, receivedAt = null, error = null, 
   return { tone: 'ok', label: `Updated ${ago(age)}` };
 }
 
+// ---- what a panel says in place of figures ----
+
+export const unavailable = env => `Unavailable: ${env?.error ?? 'no reading yet'}.`;
+export const PARTIAL = 'Some transcripts could not be read, so these figures are low.';
+
 // ---- the agents' colours ----
 
 // By place in config's roster: the design's eight, in the order it drew its

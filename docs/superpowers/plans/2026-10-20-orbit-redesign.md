@@ -278,6 +278,14 @@ The rules:
 The tests use invented sessions, meta files and agent names. This phase closes the board's
 Agents panel item.
 
+**Built 2026-10-21, where it differs from the above:** the block is `sessions.agentWork`,
+since `agents` already names the live-sessions panel, and today's run counts are worked out
+on the page in the viewer's day. A `--agent` run takes the name of its agent's own job that
+fell due in the 15 minutes before it started, and is otherwise a "Direct run". The morning
+brief and the weekly digest run with no `--agent` and no name, so they stay "Other"; NEXT.md
+§9 has the config hook that would change that. The same change raised the board's PUT cap
+and closed three of Ultron's 2026-10-21 findings (NEXT.md §9).
+
 ## Phase 4: Waiting on you (M)
 
 - The count, and three tiles. Tapping a tile shows only its cards.

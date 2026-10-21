@@ -225,21 +225,11 @@ bug were built the same day, committed and pushed, and live after the restart (t
    1,800 px tall on a phone, so the board starts about two screens down. The Orbit redesign
    (§9) replaces this layout, with the board in a tab of its own. The labels still read 01,
    03, 02.
-3. **An Agents panel** (M). Sessions are named by working directory, so Pepper's run shows as
-   "linkedin-post-agent" and over a third of the week's tokens land in "Projects" (37% on
-   10-20, counted per request). Each subagent
-   transcript has a `.meta.json` with `agentType` and the brief's `description` (checked
-   10-19), so the server can show, per agent, its last run, what it was asked and its tokens.
-   Plan: `collectors/sessions.mjs` already walks the transcripts; read the sibling
-   `agent-*.meta.json`, attribute tokens by `agentType` instead of cwd, and add an
-   `agents` block to `/api/dashboard` (name, last run, last description, tokens this week).
-   It builds on the per-request records (§2), which already credit a fork's copy of its
-   launching line to the parent. Jeff said yes on 2026-10-20 to usage by agent through
-   Claude Code's OpenTelemetry export; Ultron vets that first. **Now Phase 3 of the Orbit
-   plan (§9):** the agent views read the transcripts and meta files first, and
-   OpenTelemetry becomes a later cross-check (Phase 6), if Jeff agrees (its decision 7).
-   Also checked 10-20: a routine run started with `--agent` carries `agentSetting` on its
-   lines, and Jarvis's own session carries `agent-name` lines that read Jarvis.
+3. **An Agents panel** (M). **Built as Phase 3 of the Orbit plan (staged 2026-10-21,
+   §9):** the agent work map, Today agent by agent and Latest runs put runs to agents by a
+   subagent's `agentType`, a `--agent` run's `agent-setting` line and the lead session's
+   `agent-name`, never by working directory. Usage by agent through OpenTelemetry
+   (approved 2026-10-20) is Phase 6, a cross-check that Ultron vets first.
 4. **Watch the always-on services** (S–M, not built). `collectors/crons.mjs` keeps only
    plists with a schedule, so the always-on ones never appear. Checked 10-19:
    `control-room`, `cloudflared.mini` and `linkedin-review` are `KeepAlive` and show a PID
@@ -300,21 +290,36 @@ its seven decisions: "Go with her picks", which is (a) on all seven. The plan su
 the build notes in §8.3 to §8.5 wherever the two differ.
 
 - **Phase 0 is live** (`83a2e0e`, restarted 2026-10-20 21:47 ET, §2).
-- **Phase 1 is built and staged (2026-10-21), for Ultron's review and then C&P.** The new
-  page is at `/orbit.html` beside the classic one, with the header, Usage limits, Next 24
-  hours, Burn, the week's heat map and the whole Board tab (README, "The Orbit page").
-  Server: the hourly series, `lastWindowPct`, the board's `title`, `ask`, `owner` and
-  `doneAt`, the roster and `jobs` blocks in config, `/avatars/<key>.png`, and the config
-  allowlist on `/api/dashboard`. Tests: 469 server tests in local time and Tokyo (36 new,
-  47 of 48 mutations caught; the survivor is a redundant regular-file check in the avatar
-  route), 39 web logic tests (`cd web && npm test`, 62 of 62 mutations caught), one new
-  mod test, and playwright-cli checks at 390, 820 and 1440 px on a scratch server.
-  After C&P, in this order: Jarvis adds the real `roster` and `jobs` blocks to
-  `config.json` (safe once the allowlist is committed, since the running server read its
-  config at startup); one restart, which loads both; then the live web build (`npm run
-  build` in `web/`). Without the roster the page shows initials and no owner chips.
-- **Waiting on others for Phase 1:** Jarvis backfills `title` on the open items in one
-  pass and writes it on new ones (cards fall back to first sentences until then); Jeff's
-  Safari checks on the iPad and iPhone (Playwright has no WebKit here).
-- Phases 2 and 4 also wait on Jarvis (a narrow `job-status` mode, and filling `ask`), on
-  Vision (reading the Pi watch's state) and on Ultron (vetting the new reads).
+- **Phase 1 is live** (`3b78c2a`, restarted 2026-10-21 10:07 ET, then the live build;
+  every post-restart check passed). Jarvis added the `roster` and `jobs` blocks to
+  `config.json` and wrote `title` on every open item. Still open: Jeff's Safari checks on
+  the iPad and iPhone (Playwright has no WebKit here).
+- **Phase 3 is built and staged (2026-10-21), for Ultron's vet and then C&P.** The agent
+  work map, Today agent by agent and Latest runs, in the approved order (README, "The
+  Orbit page"). Server: `sessions.agentWork` (`lib/agent-work.mjs`), from the subagent meta
+  files and the `agent-setting` and `agent-name` lines, and `crons[].dueAt`. The same
+  change carries Ultron's 2026-10-21 board findings: a board PUT may carry 1 MiB (every
+  other write keeps 256 KB); a `board` panel and, from 75% of that, an alert that says only
+  the percent; type checks on `id`, `text` and `tag`; no control or text-direction
+  characters in `title`, `ask.what` and `ask.why`; and a fixed line on the page for a
+  `config.json` that can't be read. CSP and nosniff on the static pages wait for Phase 5.
+  Tests: 507 server tests in local time and Tokyo (38 new, 53 of 53 mutations caught), 54
+  web logic tests (15 new, 20 of 20 caught), and playwright-cli checks at 390, 820 and
+  1440 px on a scratch server (layout, no sideways scroll outside the two timelines, tap
+  targets, the Board tab's add, edit, move and 409, Reduce Motion, a server from before
+  Phase 3, no roster). Measured on the real transcripts, counts only: 64 runs in 7 days,
+  21.2M of the week's 60.3M new tokens on the map, built in 1 ms, 8.5 KB on the page.
+  After C&P: one restart (the server changed), then the live web build.
+- **What the map leaves out, by the plan's rules:** the 65 helpers of the session that
+  built Jarvis (2026-10-17 to 10-19), which wasn't started as `claude -n Jarvis` and so
+  isn't the lead's session; the morning brief and the weekly digest, which run with no
+  `--agent` and no name; and whatever Jeff runs himself. The totals elsewhere count all
+  of it. A hook that would put the brief and digest on Jarvis's lane, not built: the
+  routine passes `-n <name>`, and its job in config names it (`"session": "<name>"`), so
+  a top-level session whose `agent-name` matches is that job's run. Unverified: whether
+  `claude -p -n` writes the `agent-name` line.
+- **Phase 2** (the health strip) waits on Jarvis's narrow `job-status` mode, Vision's OK
+  to read the Pi watch's state, and Ultron. With it, a Scheduled mark turns hollow for a
+  job that hasn't run since it fell due. The `calendarPhrase()` fix (§2) goes first.
+- **Phase 4** (Waiting on you) waits on Jarvis filling `ask`, which the server already
+  checks.

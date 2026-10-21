@@ -179,3 +179,44 @@ test('GET /api/health answers ok without touching the cache, todos or config', a
   assert.equal(res.statusCode, 200);
   assert.deepEqual(JSON.parse(res.body), { ok: true });
 });
+
+// The board's own cap (the 2026-10-21 security review): it grows by every item ever
+// written, so its PUT may carry up to 1 MiB, while every other write keeps 256 KB.
+const boardOf = bytes => {
+  const item = n => ({ id: `i${n}`, text: 'x'.repeat(1000), lane: 'idea', tag: 'Note' });
+  const list = [];
+  while (JSON.stringify(list).length < bytes) list.push(item(list.length));
+  return list;
+};
+
+test('a board PUT may be larger than the 256 KB that other writes get', async () => {
+  const d = deps();
+  let saved = null;
+  d.todos.write = async v => { saved = v; };
+  const list = boardOf(600 * 1024);
+  const res = await call(createHandler(d), 'PUT', '/api/todos', list);
+  assert.equal(res.statusCode, 200);
+  assert.equal(saved.length, list.length);
+});
+
+test('a board PUT over 1 MiB is refused, and nothing is written', async () => {
+  const d = deps();
+  let saved = null;
+  d.todos.write = async v => { saved = v; };
+  const res = await call(createHandler(d), 'PUT', '/api/todos', boardOf(1024 * 1024 + 2000));
+  assert.equal(res.statusCode, 413);
+  assert.equal(saved, null);
+});
+
+test('an ingest POST keeps the 256 KB cap', async () => {
+  const d = deps();
+  const res = await call(createHandler(d), 'POST', '/api/ingest/projects', `[{"name":"${'x'.repeat(260 * 1024)}"}]`);
+  assert.equal(res.statusCode, 413);
+});
+
+test("/api/dashboard carries the board's size against its cap", async () => {
+  const d = deps();
+  d.cache.set('board', { bytes: 1000, cap: 1024 * 1024 });
+  const payload = JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body);
+  assert.deepEqual(payload.board.data, { bytes: 1000, cap: 1024 * 1024 });
+});

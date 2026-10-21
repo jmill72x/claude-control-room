@@ -1,21 +1,15 @@
 import { useEffect, useState } from 'react';
 import { envelopeOf } from '../lib/format.js';
-import { compactTokens, agentColors } from '../lib/orbit/page.js';
+import { compactTokens, agentColors, unavailable, PARTIAL } from '../lib/orbit/page.js';
 import { agentOf } from '../lib/orbit/board.js';
 import {
   ringView, sessionCountdown, next24, burnBars, burnShares, heatRows, SHADES
 } from '../lib/orbit/overview.js';
+import { Note } from './Note.jsx';
+import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
 
 const DAY = 24 * 3600 * 1000;
 const money = v => (Number.isFinite(v) ? `$${Number.isInteger(v) ? v : v.toFixed(2)}` : null);
-
-// A panel whose source is missing, failed, or not sent by the server that is
-// running says so, in place of figures.
-function Note({ children, dark = false }) {
-  return <p className={`o-note${dark ? ' o-note-dark' : ''}`}>{children}</p>;
-}
-
-const unavailable = env => `Unavailable: ${env.error ?? 'no reading yet'}.`;
 
 // ---- Usage limits ----
 
@@ -141,7 +135,6 @@ function hourlyOf(payload) {
   return { env, hourly: env.data?.hourly ?? null, partial: (env.data?.unreadablePaths?.length ?? 0) > 0 };
 }
 const NOT_SENT = 'The server running now does not send hourly figures. They arrive with its next restart.';
-const PARTIAL = 'Some transcripts could not be read, so these figures are low.';
 
 function Burn({ payload }) {
   const { env, hourly, partial } = hourlyOf(payload);
@@ -226,10 +219,18 @@ function HeatMap({ payload }) {
   );
 }
 
+// The approved round 4 order: Usage limits beside the agent work map, Today agent by
+// agent, Latest runs, Next 24 hours, then Burn beside the week's heat map.
+// (Waiting on you goes on top in Phase 4.)
 export function Overview({ payload, now, roster }) {
   return (
     <main className="o-wrap o-main">
-      <UsageLimits payload={payload} now={now} />
+      <div className="o-row">
+        <UsageLimits payload={payload} now={now} />
+        <AgentMap payload={payload} now={now} roster={roster} />
+      </div>
+      <TodayByAgent payload={payload} now={now} roster={roster} />
+      <LatestRuns payload={payload} now={now} roster={roster} />
       <NextDay payload={payload} now={now} roster={roster} />
       <div className="o-row">
         <Burn payload={payload} />

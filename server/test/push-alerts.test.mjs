@@ -130,3 +130,16 @@ test('a stale automatic-credits read makes credits unobservable, so a grant key 
   assert.ok(!observableSources({ accountCredits: { status: 'stale' } }).has('credits'));
   assert.ok(observableSources({ accountCredits: { status: 'ok' } }).has('credits'));
 });
+
+test("the board's size alert goes out as it is written: it carries only a percent", () => {
+  const out = pushableFrom([{ text: 'The board is at 78% of its save limit', kind: 'board', key: 'board:size' }]);
+  assert.deepEqual(out, [{ keys: ['board:size'], title: 'Control Room', message: 'The board is at 78% of its save limit' }]);
+});
+
+test('the board alert is forgotten only while the board can be read', () => {
+  const sent = { 'board:size': 1 };
+  assert.ok(observableSources({ board: { status: 'ok' } }).has('board'));
+  assert.ok(!observableSources({ board: { status: 'unavailable' } }).has('board'));
+  assert.deepEqual(prune(sent, [], observableSources({ board: { status: 'ok' } })), {}, 'the board shrank: next time it notifies again');
+  assert.deepEqual(prune(sent, [], observableSources({})), sent, 'no reading: kept');
+});

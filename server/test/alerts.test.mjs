@@ -230,3 +230,26 @@ test('a promo that has already expired no longer warns that it "expires in 0 day
   const config = { warnThreshold: 85, credits: { promoExpiresOn: new Date(NOW - 9 * DAY).toISOString() } };
   assert.equal(buildAlerts({}, config, NOW).filter(a => a.key === 'credits:promo').length, 0);
 });
+
+// The board's size against its save cap (a review, 2026-10-21). The alert says a
+// percent and nothing else: no item's text ever reaches it.
+const boardAt = (share, extra = {}) => ({ board: { status: 'ok', data: { bytes: Math.round(share * 1048576), cap: 1048576 } }, ...extra });
+
+test('the board past three quarters of its save cap raises an alert carrying the percent', () => {
+  const alerts = buildAlerts(boardAt(0.78), {}, Date.now());
+  const board = alerts.filter(a => a.kind === 'board');
+  assert.deepEqual(board, [{ text: 'The board is at 78% of its save limit', kind: 'board', key: 'board:size' }]);
+});
+
+test('below three quarters there is no board alert, and a missing or odd reading raises none', () => {
+  assert.equal(buildAlerts(boardAt(0.74), {}, Date.now()).filter(a => a.kind === 'board').length, 0);
+  assert.equal(buildAlerts({}, {}, Date.now()).filter(a => a.kind === 'board').length, 0);
+  assert.equal(buildAlerts({ board: { data: { bytes: 900, cap: 0 } } }, {}, Date.now()).filter(a => a.kind === 'board').length, 0);
+  assert.equal(buildAlerts({ board: { data: { bytes: '900', cap: 1000 } } }, {}, Date.now()).filter(a => a.kind === 'board').length, 0);
+});
+
+test('the board alert is raised even when the automatic credits are readable', () => {
+  const now = Date.now();
+  const snapshot = boardAt(0.9, { accountCredits: { status: 'ok', data: { grants: [] } } });
+  assert.equal(buildAlerts(snapshot, {}, now).filter(a => a.kind === 'board').length, 1);
+});

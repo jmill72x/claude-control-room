@@ -233,7 +233,9 @@ why `usage`, `agents`, and `plan` are the collectors that can go `unavailable` i
 A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 `docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Until it replaces this page (Phase
 5), it is a second page in the same build, at **`/orbit.html`**, and the page at `/` is
-unchanged. Phase 1 gives it:
+unchanged. Its Overview runs in the approved order: Usage limits beside the agent work map,
+Today agent by agent, Latest runs, Next 24 hours, then Burn beside the week's heat map
+(Waiting on you goes on top in Phase 4). Phases 1 and 3 give it:
 
 - **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
   minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
@@ -243,6 +245,20 @@ unchanged. Phase 1 gives it:
   the countdown to the session reset, each with a faint arc where its last window ended
   (`lastWindowPct`, below). The cloud-credit grants and the plan tier with its days left
   are chips.
+- **Agent work map (Phase 3):** the roster's first agent (the lead) at the centre and the
+  others evenly round it, clockwise from the top. A node's area follows the agent's tokens
+  over 7 days, with a floor so an idle agent still shows; its badge is its runs today,
+  and the lead's counts every run today. An agent with a request in the last hour gets a
+  pulse, and dots run along its line (none with Reduce Motion on).
+- **Today, agent by agent (Phase 3):** a lane for the lead's helpers, one for each other
+  agent, and one for Scheduled, on today's midnight-to-midnight axis with a line at now.
+  Each run is a dot at its start, sized by its tokens against the day's largest run, and
+  its tooltip holds its time, task and tokens. An agent with no run today says so, with its
+  next scheduled job when it has one. Scheduled marks each calendar job's due times so far
+  today; whether it then ran comes with the health strip (Phase 2). On a phone the lanes
+  scroll sideways inside the panel, with the names pinned, and open with now in view.
+- **Latest runs (Phase 3):** the 10 most recent runs, each with its time (and weekday
+  when it wasn't today), the agent, its task and its tokens.
 - **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any
   limit reset, on a timeline. A job that runs every few minutes (launchd's
   `StartInterval`) has no fixed next run, so it never appears. Names come from config's
@@ -261,8 +277,10 @@ unchanged. Phase 1 gives it:
   and Area) and the move buttons. There is no delete: a dead item moves to Done.
 
 Every token figure is new tokens, each request counted once, as everywhere else here. A
-panel whose source is missing says so, and against a server from before Phase 1, Burn and
-the heat map say that it doesn't send hourly figures yet.
+panel whose source is missing says so. Against a server from before Phase 1, Burn and the
+heat map say that it doesn't send hourly figures yet; against one from before Phase 3,
+the three agent panels say the same of agent runs; and with no roster in config they say
+that no run has anyone to belong to.
 
 Where the new figures come from:
 
@@ -276,6 +294,34 @@ Where the new figures come from:
   it isn't known.
 - A card's owner is the item's `owner`, or else the agent whose area its tag is (config's
   `roster.tagOwners`). With neither, the card shows the tag's initial.
+- `sessions.agentWork` (`server/lib/agent-work.mjs`) is built each minute from the same
+  parse. It holds `lead` (the roster's first key), `agents` (each roster agent's
+  `tokens7d` and `lastActivity`) and `runs` (the last 7 days, newest first: `agent`,
+  `helper`, `direct`, `task`, `tokens`, `start` and `last`). Who ran comes only from what
+  Claude Code writes:
+  - a subagent (`<session>/subagents/agent-*.jsonl`) is the run of the agent its
+    `.meta.json` names (`agentType`), when that agent is on the roster, and its task is
+    the brief's one-line `description`. The collector reads only those two fields, and
+    only when it reads the transcript;
+  - any other subagent (general-purpose, Explore, a fork) under the lead's own session is
+    one of the lead's helpers. That session is the top-level one whose `agent-name` line
+    (it was started as `claude -n <name>`) is the lead's name or key, in any case;
+  - a run started as `claude -p --agent <slug>` (its `agent-setting` line) is that
+    agent's run. It takes the name of the agent's own job (config's `jobs`, matched by
+    `owner`) that fell due within the 15 minutes before it started; with none it is a
+    "Direct run";
+  - the lead's own session counts towards the lead's tokens but is not a run, and
+    anything else (an agent not on the roster, an unnamed session, a subagent with no
+    meta file) stays off these panels. The totals elsewhere still count it.
+
+  A run's time is its first request and its tokens the sum of its requests. A task line
+  loses any control or text-direction character and is cut to 120 characters. A meta
+  file that can't be read is listed with the unreadable paths, and the panels then say
+  their figures are low.
+- `crons[].dueAt` (`server/lib/parse-launchd.mjs`) lists the times each calendar job was
+  due over the last 7 days, from its `StartCalendarInterval`. They are the times launchd
+  was due to start it, not proof that it ran: a Mac asleep at that minute starts the job
+  when it wakes.
 
 Saving keeps this page's protections (`web/src/orbit/useBoard.js`): `If-Match` on every
 PUT, one save at a time, a 409 or 428 re-reads the board, and the board is re-read when
@@ -375,8 +421,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 469 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 39 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 507 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 54 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 
@@ -505,10 +551,10 @@ edit of `todos.json` changes it like any other write.
 
 | Field | Required | Values |
 |---|---|---|
-| `id` | yes | any string or number, unique on the board (the page makes a UUID) |
-| `text` | yes | free text |
+| `id` | yes | non-empty text or a number, unique on the board (the page makes a UUID) |
+| `text` | yes | free text (it may be empty) |
 | `lane` | yes | `idea`, `doing` or `done` |
-| `tag` | no | free text; tags that differ only by case are unified on every write |
+| `tag` | no | free text, or left out (not `null`); tags that differ only by case are unified on every write |
 | `priority` | no | `P0` to `P3`; absent or `null` means none |
 | `due` | no | a plain local date `YYYY-MM-DD` (US Eastern, the mini's clock), no time of day; absent, `null` or `""` means none |
 | `title` | no | a short label for the card, at most 120 characters; absent or `""` means none. Without one, the Orbit page shows the first sentence of `text`, cut at a word to 72 characters |
@@ -516,11 +562,19 @@ edit of `todos.json` changes it like any other write.
 | `owner` | no | an agent key (lowercase letters, digits and hyphens) that overrides the tag's owner; absent or `""` means none |
 | `doneAt` | no | when the item was finished, kept by the server (below); a writer may send one, as an ISO 8601 date and time with its offset |
 
-The server checks `lane`, `priority`, `due`, `title`, `ask`, `owner` and `doneAt` on every
-write. A bad one (an unknown lane, `P4`, a due date like `10/21` or `2026-02-30`, an `ask`
-whose `kind` is `maybe`) is refused with **400** and a message naming the item and the
-field, and nothing is written. Every field is stored and returned exactly as sent, except
-`doneAt`; other fields an item carries are kept too.
+The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`, `owner`
+and `doneAt` on every write. A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
+`P4`, a due date like `10/21` or `2026-02-30`, an `ask` whose `kind` is `maybe`) is refused
+with **400** and a message naming the item and the field, and nothing is written. `title`,
+`ask.what` and `ask.why` may not hold control characters (a newline or a tab included) or
+the characters that reorder text (U+202A to U+202E and U+2066 to U+2069). Every field is
+stored and returned exactly as sent, except `doneAt`; other fields an item carries are
+kept too.
+
+A board PUT may carry up to **1 MiB**, since every write sends every item ever kept, Done
+included; every other write keeps the 256 KB limit. The `board` panel reports the board
+file's size against that cap each minute, and from 75% an alert says so
+(`The board is at 78% of its save limit`), in time to archive the done lane.
 
 `doneAt` is worked out against the board each write replaces: an item that enters Done
 without one gets the write's time; an item still in Done that arrives without one gets its
@@ -646,7 +700,10 @@ Real configuration lives in `server/config.json`, which is gitignored because it
 personal figures (spend, plan pricing). `server/config.example.json` is the checked-in
 template — copy it to `server/config.json` and fill in real values before running the
 server for the first time (if it's missing, the server falls back to the built-in
-defaults shown below rather than failing to start).
+defaults shown below rather than failing to start). If it is there but can't be read or
+parsed, the page says only `config.json could not be read; the service log says why`, and
+the log line (`config: …`) has the error: a parse error quotes the file around the fault,
+and that must not reach every device on the tailnet.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -743,7 +800,7 @@ changes. Discord gets the same title and text as ntfy, so the rules below apply 
 both. An alert that lands on either channel counts as notified: a channel that is down
 can't make the next run post it again on the one that worked.
 
-**Only three kinds of alert are quoted in full — everything else is counted, never
+**Only four kinds of alert are quoted in full — everything else is counted, never
 quoted:**
 
 | kind | pushed as |
@@ -751,9 +808,10 @@ quoted:**
 | `limit` | full text — e.g. `Weekly · all models at 88%` |
 | `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
+| `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
 | anything else (including `cron`) | **counted, never quoted** — e.g. `1 item needs attention — open the dashboard for detail` |
 
-This is an **allowlist**, deliberately: only the three kinds above are named as safe to
+This is an **allowlist**, deliberately: only the four kinds above are named as safe to
 quote. A kind that is missing, misspelled, or added later by someone who has not read
 this rule is counted rather than disclosed, so the failure mode of a future mistake is
 over-redaction, not a private name leaving the machine. Cron alerts never include a job
@@ -768,8 +826,8 @@ Each alert notifies once per condition, keyed on its subject rather than its wor
 (a limit's percentage moves every poll; the key does not), and a persisted set of
 already-notified keys survives a service restart. If a condition clears and later
 returns, it notifies again — but "cleared" is only believed when the alert's own
-source was readable that run. Launchd crons, ingested crons, usage and the ingested
-credits feed are tracked as separate sources, so a poster gap or a cold start where
+source was readable that run. Launchd crons, ingested crons, usage, the board's size and
+the ingested credits feed are tracked as separate sources, so a poster gap or a cold start where
 one feed is absent or stale keeps that feed's keys rather than re-pushing them when it
 comes back.
 
@@ -801,6 +859,11 @@ on:
   The per-request count needs every line of a response to carry its `requestId` and
   message id: if a release drops either, the lines count one by one again and the token
   figures read 2–3x high with no error anywhere
+- for the Orbit page's agent views: a subagent's `.meta.json` beside its transcript (its
+  `agentType` and `description`), the `agent-setting` line a `claude -p --agent` run opens
+  with, and the `agent-name` lines of a session started as `claude -n <name>`. If a release
+  renames any of them, runs drop off those panels (they fall to "anything else") while
+  every total stays right
 - `launchctl list`'s column format and `plutil`'s JSON conversion of `.plist` files
 - the shape of `cachedUsageUtilization` in `~/.claude.json`, and the codename of each
   credit bucket (the cloud-session grant is `iguana_necktie` as of 2026-09-28)

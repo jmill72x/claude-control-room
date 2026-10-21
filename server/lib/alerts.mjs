@@ -1,4 +1,6 @@
 const DAY = 24 * 3600 * 1000;
+// Three quarters of the board's save cap.
+export const BOARD_WARN_SHARE = 0.75;
 
 const listOf = envelope => (Array.isArray(envelope?.data) ? envelope.data : []);
 
@@ -51,6 +53,22 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
         text: `${limit.label} projected to reach ${projected}% by reset`,
         kind: 'projection',
         key: `projection:${limit.label}`
+      });
+    }
+  }
+
+  // The board's size against its save cap (routes.mjs, BOARD_MAX_BODY). A PUT
+  // past the cap is refused whole, so this warns while there is room to act,
+  // such as archiving the done lane. Only the percent is said, never an item.
+  // Before the credits rules, which return early.
+  const board = snapshot.board?.data;
+  if (Number.isFinite(board?.bytes) && Number.isFinite(board?.cap) && board.cap > 0) {
+    const share = board.bytes / board.cap;
+    if (share >= BOARD_WARN_SHARE) {
+      alerts.push({
+        text: `The board is at ${Math.round(share * 100)}% of its save limit`,
+        kind: 'board',
+        key: 'board:size'
       });
     }
   }

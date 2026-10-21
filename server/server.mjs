@@ -19,11 +19,12 @@ import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
 import { loadConfig } from './lib/config.mjs';
-import { createHandler } from './routes.mjs';
+import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
+import { buildAgentWork } from './lib/agent-work.mjs';
 import { buildProjects, agentsReadable } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 
@@ -70,7 +71,7 @@ registry.register('plan', () => collectPlan(), 60 * 60 * 1000);
 // Kept from pass to pass, so each minute reads only the transcripts that changed.
 const transcriptCache = new Map();
 registry.register('sessions', async () => {
-  const { transcripts, coworkSessions, unavailableRoots, unreadablePaths } = await collectSessions({ cache: transcriptCache });
+  const { transcripts, coworkSessions, unavailableRoots, unreadablePaths, sessionNames } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
   // `?? []` collapsed "the agents source is unreadable" into "no agent is
   // running", which made every project read Idle as a statement of fact while
@@ -80,6 +81,10 @@ registry.register('sessions', async () => {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
     hourly: buildHourly(transcripts, now),
+    // The agent views on the Orbit page (lib/agent-work.mjs). The schedules name
+    // a routine's runs; before the first crons pass they are not read yet, and
+    // those runs go unnamed for that minute.
+    agentWork: buildAgentWork({ transcripts, sessionNames, roster, crons: cache.get('crons', now).data, now }),
     unavailableRoots,
     unreadablePaths,
     projects: buildProjects({
@@ -90,6 +95,10 @@ registry.register('sessions', async () => {
     }, now)
   };
 }, 60 * 1000);
+
+// The board's size against its PUT cap (routes.mjs), so an alert warns at 75%
+// while there is still room to archive the done lane. A stat, nothing more.
+registry.register('board', async () => ({ bytes: await todos.size(), cap: BOARD_MAX_BODY }), 60 * 1000);
 
 const SENT_PATH = join(HERE, 'data', 'notified.json');
 const readSent = async () => {

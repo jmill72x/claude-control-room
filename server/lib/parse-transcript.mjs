@@ -61,6 +61,11 @@ export function createTranscriptParser(surface) {
   const requests = [];
   const byKey = new Map();
   let sessionId = null, title = null, cwd = null, gitBranch = null;
+  // Who the session is, for the agent views (lib/agent-work.mjs). A run started
+  // as `claude -p --agent <slug>` opens with an `agent-setting` line naming the
+  // agent; a session started as `claude -n <name>` writes `agent-name` lines,
+  // again whenever it is renamed, so the latest one is its name now.
+  let agentSetting = null, agentName = null;
 
   return {
     line(line) {
@@ -73,6 +78,14 @@ export function createTranscriptParser(surface) {
 
       if (d.sessionId && !sessionId) sessionId = d.sessionId;
       if (d.type === 'ai-title' && d.aiTitle) { title = d.aiTitle; return; }
+      if (d.type === 'agent-setting') {
+        if (agentSetting === null && typeof d.agentSetting === 'string') agentSetting = d.agentSetting;
+        return;
+      }
+      if (d.type === 'agent-name') {
+        if (typeof d.agentName === 'string') agentName = d.agentName;
+        return;
+      }
       if (d.cwd && !cwd) cwd = d.cwd;
       if (d.gitBranch && gitBranch === null) gitBranch = d.gitBranch === 'HEAD' ? null : d.gitBranch;
 
@@ -108,7 +121,7 @@ export function createTranscriptParser(surface) {
         if (tokens <= 0 && cacheRead <= 0) continue;
         records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
       }
-      return { sessionId, title, surface, cwd, gitBranch, records };
+      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records };
     }
   };
 }
