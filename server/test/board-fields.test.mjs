@@ -256,6 +256,29 @@ test('a title or an ask may not hold control characters or ones that reorder tex
   assert.equal((await createTodoStore(tmp()).write([fine])).length, 1, "ordinary punctuation, accents and emoji are fine, and text keeps its newlines");
 });
 
+// The invisible ones too (the 2026-10-21 security review): a zero-width space,
+// word joiner or byte-order mark can hide text inside a label, and the direction
+// marks can move the punctuation round it.
+test('a title or an ask may not hold a zero-width space, word joiner, byte-order mark or direction mark', async () => {
+  const bad = ['\u200b', '\u2060', '\ufeff', '\u200e', '\u200f', '\u061c'];
+  for (const ch of bad) {
+    await refused([{ id: 'a', text: 'x', lane: 'idea', title: `Pay${ch}the bill` }], /item "a": title must not hold control characters, invisible characters or characters that change text direction/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: `Pay${ch}the bill`, kind: 'do' } }], /item "a": ask\.what must not hold/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: 'Pay', why: `It${ch}lapses`, kind: 'do' } }], /item "a": ask\.why must not hold/);
+  }
+});
+
+test('the joiners stay fine in a title or an ask, so combined emoji and joined letters can be typed', async () => {
+  // U+200D joins a person and a laptop into one emoji; U+200C keeps two letters apart.
+  const coder = '\u{1f9d1}\u200d\u{1f4bb}';
+  const item = { id: 'a', text: `Pasted\u200btext`, lane: 'idea', title: `Ship it ${coder}`, ask: { what: `Pay\u200cit`, why: `Due\u200dsoon`, kind: 'do' } };
+  assert.equal((await createTodoStore(tmp()).write([item])).length, 1);
+  // Their visible neighbours stay fine too (a no-break space, a hair space, a hyphen,
+  // an en dash, an Arabic semicolon and a presentation form), and so does the detail text.
+  const near = ['\u00a0', '\u200a', '\u2010', '\u2013', '\u061b', '\ufefe'];
+  assert.equal((await createTodoStore(tmp()).write([{ id: 'b', text: 'x', lane: 'idea', title: `A${near.join('')}B` }])).length, 1);
+});
+
 test("size() is the board file's length in bytes, and 0 before there is one", async () => {
   const path = tmp();
   const store = createTodoStore(path);

@@ -224,21 +224,49 @@ test("ps's elapsed time", () => {
   assert.equal(parseEtime(undefined), null);
 });
 
+// `ps -o pid=,uid=,stat=,etime=,command=`, as this user (uid 501 here).
+const ME = 501;
+
 test('a session is the claude process started with its name, however the name is passed', () => {
   const ps = [
-    '  101 2-00:00:00 claude -n Lead --channels plugin:chat --add-dir /tmp',
-    '  102    05:00 /usr/local/bin/claude --name Lead',
-    '  103    01:00 /Users/example/.local/share/claude/versions/9.9.9 --name=Lead -p',
-    '  104    09:00 claude -n Leader',
-    '  105    09:00 grep -n Lead notes.txt',
-    '  106    09:00 node claude -n Lead',
-    '  107    09:00 claude --resume abc',
+    '  101   501 Ss   2-00:00:00 claude -n Lead --channels plugin:chat --add-dir /tmp',
+    '  102   501 S+      05:00 /usr/local/bin/claude --name Lead',
+    '  103   501 R       01:00 /Users/example/.local/share/claude/versions/9.9.9 --name=Lead -p',
+    '  104   501 S       09:00 claude -n Leader',
+    '  105   501 S       09:00 grep -n Lead notes.txt',
+    '  106   501 S       09:00 node claude -n Lead',
+    '  107   501 S       09:00 claude --resume abc',
     'garbage line'
   ].join('\n');
-  const found = findSession(ps, 'Lead', NOW);
+  const found = findSession(ps, 'Lead', NOW, ME);
   assert.equal(found.count, 3);
   assert.equal(found.startedAt, NOW - 2 * 24 * H);
-  assert.deepEqual(findSession(ps, 'Nobody', NOW), { count: 0, startedAt: null });
+  assert.deepEqual(findSession(ps, 'Nobody', NOW, ME), { count: 0, startedAt: null });
+});
+
+test("only this user's running processes count: not another user's, a stopped one or a zombie", () => {
+  const ps = [
+    '  201     0 Ss   3-00:00:00 claude -n Lead',
+    '  202   502 S    3-00:00:00 claude -n Lead',
+    '  203   501 T    3-00:00:00 claude -n Lead',
+    '  204   501 T+   3-00:00:00 claude -n Lead',
+    '  205   501 Z    3-00:00:00 claude -n Lead',
+    '  206   501 Ss      10:00 claude -n Lead',
+    '  207   501 I       20:00 claude --name Lead',
+    '  208   501 U+      30:00 claude --name=Lead'
+  ].join('\n');
+  // Idle (I) and waiting (U) are alive; the oldest counted one gives the start.
+  assert.deepEqual(findSession(ps, 'Lead', NOW, ME), { count: 3, startedAt: NOW - 30 * 60e3 });
+  // As the other user, only that user's own process counts.
+  assert.deepEqual(findSession(ps, 'Lead', NOW, 502), { count: 1, startedAt: NOW - 3 * 24 * H });
+  // Only stopped and zombie ones: the session is down, not up.
+  assert.deepEqual(findSession(ps.split('\n').slice(2, 5).join('\n'), 'Lead', NOW, ME), { count: 0, startedAt: null });
+});
+
+test('without a uid to count by, findSession refuses rather than count everyone or no one', () => {
+  for (const uid of [undefined, null, '501', 1.5]) {
+    assert.throws(() => findSession('  1   501 S   00:01 claude -n Lead', 'Lead', NOW, uid), /uid/);
+  }
 });
 
 // ---- the services, as the page gets them ----

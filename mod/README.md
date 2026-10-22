@@ -122,7 +122,7 @@ write shows the server's error and the list the server actually holds.
 
 ```bash
 cd mod
-claude plugin test        # 52 tests
+claude plugin test        # 53 tests
 claude plugin validate .
 ```
 

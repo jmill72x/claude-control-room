@@ -18,6 +18,7 @@ import { createHealth } from './collectors/health.mjs';
 import { readHealthConfig } from './lib/health.mjs';
 import { createToPush } from './collectors/to-push.mjs';
 import { readToPushConfig } from './lib/to-push.mjs';
+import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
@@ -53,6 +54,14 @@ for (const problem of healthSettings.problems) console.error(`config: ${problem}
 // The To push tile's git-read path and repos (lib/to-push.mjs), checked the same way.
 const toPushSettings = readToPushConfig(config, roster.agents.map(a => a.key));
 for (const problem of toPushSettings.problems) console.error(`config: ${problem}`);
+// job-status and git-read run on a timer, so each must be a program only this user
+// can change (lib/program-check.mjs). One that isn't is left out like a bad entry,
+// and that feature reads "not set up" until it is fixed and the service restarts.
+const programProblems = await vetPrograms([
+  ['health.jobStatus', healthSettings, 'jobStatus'],
+  ['toPush.gitRead', toPushSettings, 'gitRead']
+]);
+for (const problem of programProblems) console.error(`config: ${problem}`);
 const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
 const registry = createRegistry(cache);
@@ -167,7 +176,7 @@ const server = createServer(async (req, res) => {
   } catch (err) {
     console.error('request failed', req.method, req.url, err);
     if (res.headersSent) return res.end();
-    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.writeHead(500, { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' });
     res.end(JSON.stringify({ error: 'internal error' }));
   }
 });

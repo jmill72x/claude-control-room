@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { resolveStaticPath, createStaticHandler } from '../lib/static.mjs';
+import { resolveStaticPath, createStaticHandler, CONTENT_SECURITY_POLICY, PAGE_HEADERS } from '../lib/static.mjs';
 
 // A web root with a sibling directory holding a secret, mirroring the real
 // layout (web/dist next to server/config.json).
@@ -22,9 +22,15 @@ const fixture = () => {
   return { base, dist };
 };
 
+// Like Node's: headers go once, and a second writeHead throws (ERR_HTTP_HEADERS_SENT).
 const mockRes = () => {
-  const res = { statusCode: 200, headers: {}, body: null };
-  res.writeHead = (code, hdrs) => { res.statusCode = code; Object.assign(res.headers, hdrs ?? {}); };
+  const res = { statusCode: 200, headers: {}, body: null, headersSent: false };
+  res.writeHead = (code, hdrs) => {
+    if (res.headersSent) throw Object.assign(new Error('headers already sent'), { code: 'ERR_HTTP_HEADERS_SENT' });
+    res.headersSent = true;
+    res.statusCode = code;
+    res.headers = { ...(hdrs ?? {}) };
+  };
   res.end = body => { res.body = body === undefined ? '' : String(body); };
   return res;
 };
@@ -108,4 +114,37 @@ test('resolved paths never leave the web root', () => {
     if (p === null) continue;
     assert.ok(p === root || p.startsWith(root + sep), `${url} resolved to ${p}`);
   }
+});
+
+// The pages' policy and nosniff (the 2026-10-21 security review, before Orbit Phase 5).
+test("the pages' policy is the review's, plus no form submits, with nothing looser added", () => {
+  assert.equal(CONTENT_SECURITY_POLICY, "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+  assert.deepEqual(PAGE_HEADERS, { 'Content-Security-Policy': CONTENT_SECURITY_POLICY, 'X-Content-Type-Options': 'nosniff' });
+  assert.doesNotMatch(CONTENT_SECURITY_POLICY, /unsafe|data:|blob:|\*/);
+});
+
+test('every answer carries the policy and nosniff: both pages, their assets, the fallback and the refusals', async () => {
+  const { dist } = fixture();
+  writeFileSync(join(dist, 'orbit.html'), '<!doctype html>orbit');
+  writeFileSync(join(dist, 'assets', 'app.css'), 'body{}');
+  writeFileSync(join(dist, 'assets', 'font.woff2'), 'wOF2');
+  const types = {
+    '/': 'text/html', '/index.html': 'text/html', '/orbit.html': 'text/html',
+    '/assets/app.js': 'text/javascript', '/assets/app.css': 'text/css', '/assets/font.woff2': 'font/woff2',
+    '/some/client/route': 'text/html', '/../../server/config.json': 'text/plain'
+  };
+  for (const [url, type] of Object.entries(types)) {
+    const res = await get(dist, url);
+    assert.equal(res.headers['Content-Security-Policy'], CONTENT_SECURITY_POLICY, url);
+    assert.equal(res.headers['X-Content-Type-Options'], 'nosniff', url);
+    // With nosniff the browser keeps to the type sent, so each must be the real one.
+    assert.equal(res.headers['Content-Type'], type, url);
+  }
+  // No build at all: the 404 says so, with the same headers.
+  const empty = mkdtempSync(join(tmpdir(), 'ccr-static-empty-'));
+  const none = await get(empty, '/');
+  assert.equal(none.statusCode, 404);
+  assert.equal(none.body, 'not built');
+  assert.equal(none.headers['Content-Security-Policy'], CONTENT_SECURITY_POLICY);
+  assert.equal(none.headers['X-Content-Type-Options'], 'nosniff');
 });

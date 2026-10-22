@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { open, stat } from 'node:fs/promises';
+import { open, stat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { PYTHON, pythonArgs, programEnv } from '../lib/program-check.mjs';
 import {
   parseJobStatus, overlayCrons, buildJobs, jobVerdict, parseLaunchctlPrint, findSession,
   sessionView, selfView, launchdView, piView, stampDown, PI_LOG_FRESH_MS
@@ -18,10 +19,25 @@ export const JOB_STATUS_TIMEOUT_MS = 20 * 1000;
 // print` per job and a read of each plist: no network, Keychain, tmux or
 // board), and ps. `launchctl print` for this server's own job runs once, at
 // the first pass that gets an answer.
-export const runJobStatus = (path, timeout = JOB_STATUS_TIMEOUT_MS) =>
-  exec(path, ['--json', '--only', 'jobs'], { timeout, maxBuffer: 1024 * 1024 }).then(r => r.stdout);
+//
+// job-status is a Python script, run as `/usr/bin/python3 -I <path> --json
+// --only jobs` with the short environment git-read gets (lib/program-check.mjs),
+// and at its time limit it gets SIGKILL, which a script can't ignore (the
+// 2026-10-21 security review). job-status captures what its own `launchctl print`
+// runs write, so our pipes close when it dies. python3 would report a missing
+// script as its own exit code 2, so the path is looked at first and a missing one
+// reads as such.
+export async function runJobStatus(path, timeout = JOB_STATUS_TIMEOUT_MS, env = programEnv()) {
+  await access(path, constants.R_OK);
+  const { stdout } = await exec(PYTHON, pythonArgs(path, ['--json', '--only', 'jobs']), {
+    timeout, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, env
+  });
+  return stdout;
+}
+// Each process's owner and state come with it, so only this user's live ones
+// count as the lead (lib/health.mjs, findSession).
 export const runPs = () =>
-  exec('/bin/ps', ['-axww', '-o', 'pid=,etime=,command='], {
+  exec('/bin/ps', ['-axww', '-o', 'pid=,uid=,stat=,etime=,command='], {
     timeout: 10000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' }
   }).then(r => r.stdout);
 export const runLaunchctlPrint = label =>
@@ -72,7 +88,9 @@ export function createHealth({
   readToken = readStateToken,
   logMtime = mtimeOf,
   log = console.error,
-  now = () => Date.now()
+  now = () => Date.now(),
+  // Whose processes count as the lead's session: the user this server runs as.
+  uid = process.getuid()
 }) {
   let answer = null;
   let printed = null;
@@ -148,7 +166,7 @@ export function createHealth({
       for (const service of settings.services) {
         if (service.kind === 'session') {
           let found = null;
-          try { found = findSession(await ps(), service.session, at); } catch { found = null; }
+          try { found = findSession(await ps(), service.session, at, uid); } catch { found = null; }
           views.push(sessionView(service, found, service.launcher ? byLabel.get(service.launcher) ?? null : null));
         } else if (service.kind === 'self') {
           if (!printed) {

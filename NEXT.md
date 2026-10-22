@@ -231,7 +231,7 @@ bug were built the same day, committed and pushed, and live after the restart (t
    1,800 px tall on a phone, so the board starts about two screens down. The Orbit redesign
    (§9) replaces this layout, with the board in a tab of its own. The labels still read 01,
    03, 02.
-3. **An Agents panel** (M). **Built as Phase 3 of the Orbit plan (staged 2026-10-21,
+3. **An Agents panel** (M). **Built as Phase 3 of the Orbit plan (live 2026-10-21,
    §9):** the agent work map, Today agent by agent and Latest runs put runs to agents by a
    subagent's `agentType`, a `--agent` run's `agent-setting` line and the lead session's
    `agent-name`, never by working directory. Usage by agent through OpenTelemetry
@@ -292,17 +292,18 @@ its seven decisions: "Go with her picks", which is (a) on all seven. The plan su
 the build notes in §8.3 to §8.5 wherever the two differ.
 
 - **Phase 0 is live** (`83a2e0e`, restarted 2026-10-20 21:47 ET, §2).
+- **Jeff's Safari checks passed on the iPhone and iPad on 2026-10-21** ("Orbit looks good
+  on both iPhone & ipad"), covering Phases 1 to 4. Playwright has no WebKit here, so his
+  devices are the Safari check.
 - **Phase 1 is live** (`3b78c2a`, restarted 2026-10-21 10:07 ET, then the live build;
   every post-restart check passed). Jarvis added the `roster` and `jobs` blocks to
-  `config.json` and wrote `title` on every open item. Still open: Jeff's Safari checks on
-  the iPad and iPhone (Playwright has no WebKit here).
+  `config.json` and wrote `title` on every open item.
 - **Phase 3 is live** (`8a41768`, restarted 2026-10-21 11:31 ET, then the live build;
   every post-restart check passed, and the first board save after it returned 200). The
   agent work map, Today agent by agent and Latest runs (README, "The Orbit page"), with
   Ultron's board findings: the 1 MiB board cap and its 75% alert, type checks, no control
   or text-direction characters in `title` and `ask`, and a fixed line for an unreadable
-  `config.json`. CSP and nosniff on the static pages wait for Phase 5. Still open: Jeff's
-  Safari checks.
+  `config.json`. CSP and nosniff on the static pages are in the hardening fix below.
 - **What the map leaves out, by the plan's rules:** the 65 helpers of the session that
   built Jarvis (2026-10-17 to 10-19), which wasn't started as `claude -n Jarvis` and so
   isn't the lead's session; the morning brief and the weekly digest, which run with no
@@ -328,27 +329,55 @@ the build notes in §8.3 to §8.5 wherever the two differ.
     (the NAS watcher's README), unknown unless the watch's own job is OK.
   - Pushes: "1 job failed" and "1 service is down" (after 5 minutes down), counted,
     never named, never for the Pi or this server.
-  - Self-restart reads "not run yet" until its first run, Sun 10-25. Still open: Jeff's
-    Safari checks.
-- **Phase 4 is built and staged (2026-10-21), for Ultron's vet and then C&P.** Waiting on
-  you at the top of the Overview, To push, and "You" events on Next 24 hours (README,
-  "The Orbit page", "To push" and "Security"; the plan's Phase 4 has what differs from
-  it):
+  - Self-restart reads "not run yet" until its first run, Sun 10-25.
+- **Phase 4 is live** (`26edb73`, restarted 2026-10-21 17:56 ET, then the live build;
+  every post-restart check passed: To push read 10 repos, all ok and none to push, with no
+  path, `.git` or git-read output in the payload, and the panel counted 31 asks: 4 due
+  soon and 27 to decide or do). Waiting on you at the top of the Overview, To push, and
+  "You" events on Next 24 hours (README, "The Orbit page", "To push" and "Security"; the
+  plan's Phase 4 has what differs from it):
   - Items: an open item with an `ask` waits. Due soon is a `due` within 7 days or past
     (dark for today, tomorrow and overdue); the rest are Decide or do. All cards show
-    the first 9, then "Show all". On 10-21 the live board would read 30: 4 due soon (1
-    overdue), 26 decide or do, and no "You" event, since no ask has a `time` yet.
-  - To push: `toPush` in config (Jarvis adds it after C&P; the block is in the report),
-    git-read on each repo every 5 minutes with 10 s each and SIGKILL to the process
-    group, `--untracked-files=no`, counts and branch names only. A branch with no
-    upstream never counts: Jarvis's own repo is on a build branch that is pushed but has
-    no upstream set, so it stays out of To push until it has one (asked of Jarvis, 10-21). One
-    read-only pass on the real machine: 10 repos in 356 ms, nothing to push, 1.9 KB to
-    the page, no path or commit id.
-  - Tests: 583 server tests and 80 web logic tests, in local time and Tokyo (27 and 13
-    new), 33 of 33 server and 42 of 42 web mutations caught in both. playwright-cli at
-    390, 820 and 1440 px on a scratch server in five modes (all set, a server from before
-    Phase 4, no `toPush` block, no asks, neither), plus the Phase 1, 2 and 3 scripts
-    again. No WebKit here, so Safari is Jeff's check.
-  - After C&P: Jarvis adds the `toPush` block to `config.json`, one restart, then the
-    live web build. Until the restart, the new page reads To push as "—".
+    the first 9, then "Show all". A "You" event needs an ask with a `time`.
+  - To push: `toPush` in config, git-read on each repo every 5 minutes with 10 s each
+    and SIGKILL to the process group, `--untracked-files=no`, counts and branch names
+    only. A branch with no upstream never counts; Jarvis's own repo has tracked its
+    build branch's upstream since 10-21, so it counts like the others.
+- **The hardening before Phase 5 is built and staged (2026-10-21), and Ultron's vet is in:
+  OK to commit and restart, with no critical, high or medium finding; his three lows
+  are folded into the same staged change. It waits on Jeff's C&P.** Ultron's leftovers
+  from his 10-21 vets (README, "Security", "The program check" and "The board's items"):
+  - A Content-Security-Policy, Ultron's (`default-src 'self'; object-src 'none';
+    base-uri 'none'; frame-ancestors 'none'`) plus `form-action 'none'`, since
+    `default-src` doesn't cover forms and the one form (the Board's New item) stops its
+    own submit. nosniff on everything the static handler sends (both pages, their
+    assets, the fallback and the refusals) and on every API answer. A server with no
+    build now answers 404 "not built" as it was meant to, not an empty 200.
+  - The lead's chip counts only the service user's own processes that are alive (`ps`
+    with `uid=` and `stat=`; a stopped `T` or zombie `Z` one doesn't count).
+  - job-status gets SIGKILL at its 20 s limit.
+  - job-status and git-read start as `/usr/bin/python3 -I <path>` with the same short
+    environment (git-read's list plus `xcrun_nocache=1`). At startup each launcher and
+    the package it imports (`../jarvis`, everything in it) must pass the program check:
+    this user's own, in folders owned by this user or root, none of it group- or
+    world-writable. A launcher that passes runs from its real path; one that fails is
+    left out with a `config:` line. The real launchers and package pass.
+  - `title` and `ask` also refuse the zero-width space (U+200B), the word joiner
+    (U+2060), the byte-order mark (U+FEFF) and the direction marks (U+200E, U+200F,
+    U+061C). The joiners U+200C and U+200D stay allowed (Jarvis's call on Ultron's
+    advice), since U+200D sits inside combined emoji. None of the 177 items on the live
+    board (98 titles, 29 asks) held any of the wider set, read-only, 10-21.
+  - Checks: 610 server tests and 80 web tests, in local time and Tokyo; 54 of 54
+    mutations caught; the mod kit's 53 tests. Headless Chromium on two scratch servers
+    with the same invented data, HEAD's code and this one: the classic page and
+    `/orbit.html` (Overview, Board, an opened card on each) at 390 and 1440 px render the
+    same on both, with no policy violation and no console error; the New item form
+    (by its button and by Enter) and the classic page's add box still add items; and an
+    injected inline `<style>`, `<script>`, `style` attribute, `eval` and a form that
+    really submits are blocked on the new one only. One read-only pass on the real
+    machine with the real settings in memory: both launchers and the package pass the
+    check, job-status under `-I` with the short environment answers as with the whole
+    one (19 jobs), To push reads all 10 repos, and the lead counts 1, as before.
+  - After C&P: one restart (Jarvis's rollout), then nothing to build; the scratch build
+    of the web is identical to the live one. Check the service log for `config:` lines
+    after the restart. Phase 5 then waits only on Jeff's word.

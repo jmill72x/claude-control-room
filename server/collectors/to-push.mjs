@@ -1,16 +1,20 @@
 import { spawn } from 'node:child_process';
+import { access } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { parseStatus, repoView } from '../lib/to-push.mjs';
+import { PYTHON, pythonArgs, programEnv } from '../lib/program-check.mjs';
 
 // The To push collector (Orbit plan, Phase 4). Every 5 minutes, for each repo
 // in config, one after another:
 //
-//   <toPush.gitRead> <repo> status --porcelain=v2 --branch --untracked-files=no
+//   /usr/bin/python3 -I <toPush.gitRead> <repo> status --porcelain=v2 --branch --untracked-files=no
 //
-// git-read is the lead's hardened read-only git runner: it reads only repos
-// under its own root, runs /usr/bin/git with no hooks, pager, fsmonitor,
-// optional locks, or global or system config, and redacts secret-shaped text
-// from what git prints. Untracked files never count, so git isn't asked to list
-// them. Only the counts and the branch name are kept (lib/to-push.mjs).
+// git-read is the lead's hardened read-only git runner, a Python script started
+// in isolated mode (lib/program-check.mjs): it reads only repos under its own
+// root, runs /usr/bin/git with no hooks, pager, fsmonitor, optional locks, or
+// global or system config, and redacts secret-shaped text from what git prints.
+// Untracked files never count, so git isn't asked to list them. Only the counts
+// and the branch name are kept (lib/to-push.mjs).
 
 export const GIT_READ_TIMEOUT_MS = 10 * 1000;
 // git-read cuts what git prints at 200,000 characters; anything near this is
@@ -19,24 +23,22 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 4096;
 export const STATUS_ARGS = ['status', '--porcelain=v2', '--branch', '--untracked-files=no'];
 
-// git-read's environment: the same short list git-read passes on to git, so
-// nothing else in this service's environment (a PYTHON* variable, a GIT_* one)
-// reaches the script or git.
-const PASSED_ENV = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'LANG'];
-export const childEnv = (env = process.env) =>
-  Object.fromEntries(Object.entries(env).filter(([k, v]) => typeof v === 'string' && (PASSED_ENV.includes(k) || k.startsWith('LC_'))));
-
 const failure = (message, extra) => Object.assign(new Error(message), extra);
 
 // One run. The child gets its own process group, so on a timeout SIGKILL ends
 // git-read and the git it started, not only the script. The time limit covers
 // the whole run, and the promise settles at it even if something still holds
-// the output open.
-export function runGitRead(gitRead, repo, { timeout = GIT_READ_TIMEOUT_MS, maxBytes = MAX_OUTPUT_BYTES, env = childEnv() } = {}) {
+// the output open. Its environment is the short list in lib/program-check.mjs,
+// so nothing else of this service's (a PYTHON* variable, a GIT_* one, what moves
+// xcrun's shim) reaches python3, git-read or git. python3 would report a missing
+// script as its exit code 2, git-read's own word for a refusal, so the path is
+// looked at first and a missing or unreadable one fails as such (ENOENT, EACCES).
+export async function runGitRead(gitRead, repo, { timeout = GIT_READ_TIMEOUT_MS, maxBytes = MAX_OUTPUT_BYTES, env = programEnv() } = {}) {
+  await access(gitRead, constants.R_OK);
   return new Promise((resolvePromise, rejectPromise) => {
     let child;
     try {
-      child = spawn(gitRead, [repo, ...STATUS_ARGS], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+      child = spawn(PYTHON, pythonArgs(gitRead, [repo, ...STATUS_ARGS]), { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
     } catch (err) {
       rejectPromise(err);
       return;

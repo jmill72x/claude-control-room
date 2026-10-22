@@ -246,21 +246,28 @@ export function parseEtime(value) {
 }
 
 // The Claude Code processes started with this session name (`-n <name>`,
-// `--name <name>` or `--name=<name>`), from `ps -o pid=,etime=,command=`. Only
-// the count and the oldest one's start leave this function.
-export function findSession(raw, name, now) {
+// `--name <name>` or `--name=<name>`), from `ps -o pid=,uid=,stat=,etime=,command=`.
+// Only `uid`'s own processes count (the user this server runs as), and only live
+// ones: a stopped (T) or zombie (Z) process can't be the lead at work, so it is left
+// out (the 2026-10-21 security review). Only the count and the oldest one's start
+// leave this function. Without a uid to count by, it throws, and the collector then
+// reads the lead as unknown rather than down.
+export function findSession(raw, name, now, uid) {
+  if (!Number.isInteger(uid)) throw new TypeError('findSession needs the uid whose processes count');
   let count = 0;
   let startedAt = null;
   for (const line of String(raw ?? '').split('\n')) {
-    const m = /^\s*(\d+)\s+(\S+)\s+(\S.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S.*)$/.exec(line);
     if (!m) continue;
-    const argv = m[3].trim().split(/\s+/);
+    const [, , owner, state, etime, command] = m;
+    if (Number(owner) !== uid || /^[TZ]/.test(state)) continue;
+    const argv = command.trim().split(/\s+/);
     if (basename(argv[0]) !== 'claude' && !argv[0].includes('/claude/versions/')) continue;
     const named = argv.some((w, i) => i > 0 &&
       (((w === '-n' || w === '--name') && argv[i + 1] === name) || w === `--name=${name}`));
     if (!named) continue;
     count++;
-    const age = parseEtime(m[2]);
+    const age = parseEtime(etime);
     if (age !== null) startedAt = Math.min(startedAt ?? Infinity, Math.round((now - age) / 1000) * 1000);
   }
   return { count, startedAt };

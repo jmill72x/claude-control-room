@@ -5,11 +5,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, closeSync, openSync, constants } from 'node:fs';
 import { symlink } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHealth, readStateToken, runJobStatus, JOB_STATUS_TIMEOUT_MS } from '../collectors/health.mjs';
-import { readHealthConfig } from '../lib/health.mjs';
+import { createHealth, readStateToken, runJobStatus, runPs, JOB_STATUS_TIMEOUT_MS } from '../collectors/health.mjs';
+import { readHealthConfig, findSession } from '../lib/health.mjs';
 
 const NOW = Date.parse('2026-10-21T15:00:00Z');
 const fresh = () => mkdtempSync(join(tmpdir(), 'ccr-health-'));
@@ -33,7 +33,8 @@ const REPORT = JSON.stringify({
     entry('com.example.control-room', { state: 'running', last_exit: null, max_age_hours: null })
   ]
 });
-const PS = '  77 1-02:00:00 claude -n Lead --channels plugin:chat\n  78 00:10 /bin/zsh -l\n';
+// `ps -o pid=,uid=,stat=,etime=,command=`, as the user the harness runs as (501).
+const PS = '  77   501 Ss   1-02:00:00 claude -n Lead --channels plugin:chat\n  78   501 S       00:10 /bin/zsh -l\n';
 const PRINT = '\tstate = running\n\truns = 3\n\tlast exit code = 1\n';
 
 function harness(over = {}) {
@@ -50,6 +51,7 @@ function harness(over = {}) {
     logMtime: async path => { calls.log.push(path); return NOW - 60e3; },
     log: line => calls.logged.push(line),
     now: () => NOW,
+    uid: 501,
     ...over
   });
   return { health, calls };
@@ -191,7 +193,7 @@ test('ps failing makes the lead unknown, and a session gone makes it down, count
   let at = NOW;
   const { health } = harness({ ps: () => ps(), now: () => at });
   assert.equal((await health.collect()).services[0].state, 'unknown');
-  ps = async () => '  78 00:10 /bin/zsh -l\n';
+  ps = async () => '  78   501 S       00:10 /bin/zsh -l\n';
   at = NOW + 60e3;
   const down = (await health.collect()).services[0];
   assert.deepEqual([down.state, down.downSince], ['down', NOW + 60e3]);
@@ -201,15 +203,98 @@ test('ps failing makes the lead unknown, and a session gone makes it down, count
 
 // ---- the real process and file reads ----
 
-test('the whole job-status call is bounded: a script that hangs is stopped and reported as a timeout', async () => {
-  const dir = fresh();
-  const script = join(dir, 'job-status');
-  writeFileSync(script, '#!/bin/sh\nsleep 5\n');
-  chmodSync(script, 0o755);
+// job-status is a Python script, so the stand-ins below are too.
+const pyScript = (dir, lines, name = 'job-status') => {
+  const path = join(dir, name);
+  writeFileSync(path, ['#!/usr/bin/python3', ...lines].join('\n') + '\n');
+  chmodSync(path, 0o644);
+  return path;
+};
+
+test('the whole job-status call is bounded: a script that ignores SIGTERM is killed with SIGKILL at the limit', async () => {
+  const script = pyScript(fresh(), ['import signal, time', 'signal.signal(signal.SIGTERM, signal.SIG_IGN)', 'time.sleep(6)']);
   assert.equal(JOB_STATUS_TIMEOUT_MS, 20000);
   const started = Date.now();
-  await assert.rejects(runJobStatus(script, 300), err => err.killed === true);
-  assert.ok(Date.now() - started < 2000, 'stopped at its timeout, not when the script ended');
+  await assert.rejects(runJobStatus(script, 1000), err => err.killed === true && err.signal === 'SIGKILL');
+  assert.ok(Date.now() - started < 3000, 'stopped at its timeout, not when the script ended');
+});
+
+test('job-status runs as /usr/bin/python3 -I <path> --json --only jobs: no PYTHON* variable, user site-packages or script folder counts', async () => {
+  const dir = fresh();
+  const planted = join(dir, 'planted');
+  const script = pyScript(dir, [
+    'import json, os, sys',
+    'here = os.path.dirname(os.path.realpath(__file__))',
+    'paths = [os.path.realpath(p) for p in sys.path if p]',
+    'print(json.dumps({"argv": sys.argv[1:], "isolated": sys.flags.isolated, "noUserSite": sys.flags.no_user_site,',
+    '  "ignoreEnv": sys.flags.ignore_environment, "here": here in paths, "planted": any(p.endswith("/planted") for p in paths)}))'
+  ]);
+  const saved = process.env.PYTHONPATH;
+  process.env.PYTHONPATH = planted;
+  try {
+    const seen = JSON.parse(await runJobStatus(script));
+    assert.deepEqual(seen, { argv: ['--json', '--only', 'jobs'], isolated: 1, noUserSite: 1, ignoreEnv: 1, here: false, planted: false });
+  } finally {
+    if (saved === undefined) delete process.env.PYTHONPATH;
+    else process.env.PYTHONPATH = saved;
+  }
+});
+
+test("job-status gets the short environment git-read gets, plus xcrun_nocache, and nothing else of this service's", async () => {
+  const script = pyScript(fresh(), ['import json, os', 'print(json.dumps(dict(os.environ)))']);
+  const saved = { ...process.env };
+  Object.assign(process.env, { CCR_JOBSTATUS_TEST: 'not for job-status', xcrun_db: '/tmp/forged', TOOLCHAINS: 'elsewhere' });
+  try {
+    const seen = JSON.parse(await runJobStatus(script));
+    assert.equal(seen.xcrun_nocache, '1');
+    assert.equal(seen.HOME, process.env.HOME);
+    for (const leaked of ['CCR_JOBSTATUS_TEST', 'xcrun_db', 'TOOLCHAINS']) assert.ok(!(leaked in seen), `${leaked} reached job-status`);
+  } finally {
+    for (const k of ['CCR_JOBSTATUS_TEST', 'xcrun_db', 'TOOLCHAINS']) {
+      if (k in saved) process.env[k] = saved[k];
+      else delete process.env[k];
+    }
+  }
+});
+
+test('a missing or unreadable job-status is said as such, not as python3 failing to open it', async () => {
+  const dir = fresh();
+  await assert.rejects(runJobStatus(join(dir, 'nowhere')), err => err.code === 'ENOENT');
+  const locked = pyScript(dir, ['print("{}")'], 'locked');
+  chmodSync(locked, 0o000);
+  await assert.rejects(runJobStatus(locked), err => err.code === 'EACCES');
+});
+
+test("the lead is counted by this server's own uid", async () => {
+  const { health } = harness({ uid: 502 });
+  assert.equal((await health.collect()).services[0].state, 'down', "uid 501's session is not uid 502's");
+  const { health: mine } = harness({ uid: undefined, ps: async () => `  77 ${process.getuid()} Ss   01:00 claude -n Lead\n` });
+  assert.equal((await mine.collect()).services[0].state, 'up', 'by default, the uid this process runs as');
+});
+
+const waitFor = async (check, what) => {
+  for (let i = 0; i < 100; i++) {
+    if (await check()) return;
+    await new Promise(r => setTimeout(r, 30));
+  }
+  assert.fail(what);
+};
+
+test('with the real ps: a process started as `claude -n <name>` counts, and not while it is stopped', async () => {
+  const name = `ccr-test-${process.pid}`;
+  // node, shown to ps as `claude -e … -- -n <name>` through argv0.
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', '-n', name], { argv0: 'claude', stdio: 'ignore' });
+  const count = async uid => findSession(await runPs(), name, Date.now(), uid).count;
+  try {
+    await waitFor(async () => (await count(process.getuid())) === 1, 'ps never listed it');
+    assert.equal(await count(process.getuid() + 1), 0, "another uid's processes don't count");
+    process.kill(child.pid, 'SIGSTOP');
+    await waitFor(async () => (await count(process.getuid())) === 0, 'a stopped process still counted');
+    process.kill(child.pid, 'SIGCONT');
+    await waitFor(async () => (await count(process.getuid())) === 1, 'it never counted again after SIGCONT');
+  } finally {
+    child.kill('SIGKILL');
+  }
 });
 
 test("the state file's token is read from a small regular file, and nothing else is opened for reading", async () => {

@@ -365,12 +365,14 @@ Where the new figures come from:
   verdict); this server's `startedAt`, `runs` and `lastStop`; a KeepAlive job's
   `launchd` state and `reason`; the NAS's `label`, `line`, `checkedAt` and `why`. The
   sources:
-  - Jobs: `<health.jobStatus> --json --only jobs`, a narrow mode of the lead's own
-    job-status check that runs only `launchctl print` per job and reads the plists. Its
-    verdict per job is its `ok`, with log age judged against the schedule; the list is
-    every job it reports except the labels a service chip speaks for.
-  - The lead: `ps -axww -o pid=,etime=,command=`, for a `claude` process started with
-    `-n <session>` (or `--name`). Only the count and the oldest one's start are kept.
+  - Jobs: `/usr/bin/python3 -I <health.jobStatus> --json --only jobs`, with the short
+    environment described under "The program check", a narrow mode of the lead's own
+    job-status check that runs only `launchctl print` per job and reads the plists. Its verdict per job is its `ok`, with log age judged against the schedule; the
+    list is every job it reports except the labels a service chip speaks for.
+  - The lead: `ps -axww -o pid=,uid=,stat=,etime=,command=`, for a `claude` process started
+    with `-n <session>` (or `--name`) that is the service's own user's and is alive: one
+    that is stopped (`T`) or a zombie (`Z`) doesn't count. Only the count and the oldest
+    one's start are kept.
   - This server: its own start, and `launchctl print gui/<uid>/<label>` once, at the
     first pass that gets an answer, for `runs` and how the run before it ended (a signal
     or an exit code). Neither can change while this run lives. Nothing else in that
@@ -389,10 +391,11 @@ Where the new figures come from:
   are a lower bound); when not, `why`, in fixed words. Nothing else of what git prints is
   kept: no path, commit id or file name, and nothing it printed on stderr, which goes to
   the service log once, when a failure starts or changes. The source is
-  `<toPush.gitRead> <repo> status --porcelain=v2 --branch --untracked-files=no`, one repo
-  after another, each run with 10 s for the whole run (then SIGKILL to its process group,
-  git included), at most 1 MiB of output, and only `HOME`, `PATH`, `TMPDIR`, `USER`,
-  `LOGNAME`, `LANG` and `LC_*` from the service's environment. git-read is the lead's
+  `/usr/bin/python3 -I <toPush.gitRead> <repo> status --porcelain=v2 --branch
+  --untracked-files=no`, one repo after another, each run with 10 s for the whole run
+  (then SIGKILL to its process group, git included), at most 1 MiB of output, and only
+  `HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME`, `LANG` and `LC_*` from the service's
+  environment, plus `xcrun_nocache=1`. git-read is the lead's
   hardened read-only runner: it reads only repos under its own root, and runs
   `/usr/bin/git` with no hooks, pager, fsmonitor, optional locks, or global or system
   config, and redacts secret-shaped text. A staged change is an entry whose index column
@@ -495,14 +498,16 @@ commands, and where it draws.
 - Node.js (developed against v26; anything reasonably current should work)
 - The `claude` CLI installed and already authenticated (`claude auth status` should
   show a logged-in session)
+- `/usr/bin/python3` (the Command Line Tools), which runs the health strip's job-status
+  and To push's git-read, and the tests' stand-ins for them
 - macOS, since crons are read from `launchd` and `plutil`, and Cowork sessions are read
   from a macOS-specific path — this has not been ported to another OS
 
 ### Tests and build
 
 ```bash
-cd server && npm test      # 507 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 54 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 610 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 80 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 
@@ -646,10 +651,12 @@ The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`
 and `doneAt` on every write. A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
 `P4`, a due date like `10/21` or `2026-02-30`, an `ask` whose `kind` is `maybe`) is refused
 with **400** and a message naming the item and the field, and nothing is written. `title`,
-`ask.what` and `ask.why` may not hold control characters (a newline or a tab included) or
-the characters that reorder text (U+202A to U+202E and U+2066 to U+2069). Every field is
-stored and returned exactly as sent, except `doneAt`; other fields an item carries are
-kept too.
+`ask.what` and `ask.why` may not hold control characters (a newline or a tab included),
+the characters that reorder text (U+202A to U+202E and U+2066 to U+2069), the zero-width
+space (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF) or the direction
+marks (U+200E, U+200F and U+061C); `text` may. The joiners U+200C and U+200D are allowed,
+since U+200D sits inside combined emoji. Every field is stored and returned exactly as
+sent, except `doneAt`; other fields an item carries are kept too.
 
 A board PUT may carry up to **1 MiB**, since every write sends every item ever kept, Done
 included; every other write keeps the 256 KB limit. The `board` panel reports the board
@@ -816,7 +823,7 @@ A bad entry is left out and named once in the service log at startup (`config: �
 
 | Field | Type | Meaning |
 |---|---|---|
-| `health.jobStatus` | absolute path | The job-status program, run every minute as `<path> --json --only jobs`, with 20 s for the whole call. Without it, Jobs reads "not set up" and the KeepAlive jobs "unknown". |
+| `health.jobStatus` | absolute path | The job-status program, a Python script, run every minute as `/usr/bin/python3 -I <path> --json --only jobs`, with 20 s for the whole call and then SIGKILL. It and the package it imports must pass the program check below. Without it, Jobs reads "not set up" and the KeepAlive jobs "unknown". |
 | `health.services` | list | The service chips, in order after Jobs. Each has a `kind`, a `name` (the chip's word, unique, at most 40 characters) and an optional `about` line (at most 120) for its details. |
 | … `kind: "session"` | `session`, `launcher` | `session`: the name the lead's session was started with (`claude -n <name>`, no spaces). `launcher`, optional: the label of the job that starts it, shown as a detail. |
 | … `kind: "self"` | `label` | This server's own launchd label. |
@@ -831,11 +838,39 @@ launcher's) are left out of the Jobs list. None of this block reaches the page.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `toPush.gitRead` | absolute path | The hardened git-read program, run every 5 minutes as `<path> <repo> status --porcelain=v2 --branch --untracked-files=no` for each repo, with 10 s for each run. Without it, or with no repos, To push reads "not set up". |
+| `toPush.gitRead` | absolute path | The hardened git-read program, a Python script, run every 5 minutes as `/usr/bin/python3 -I <path> <repo> status --porcelain=v2 --branch --untracked-files=no` for each repo, with 10 s for each run. It and the package it imports must pass the program check below. Without it, or with no repos, To push reads "not set up". |
 | `toPush.repos` | list of `{ "path", "owner" }` | The repos to check, at most 20, in order. `path` is the repo's top folder (absolute); its folder's name is the repo's name on the page, and must be unique. `owner`, optional, is the roster key whose avatar the card shows. |
 
 A bad entry is left out and named once in the service log at startup. Only the folder's
 name, the owner, the branch and the counts reach the page; the paths stay on the server.
+
+**The program check** (`server/lib/program-check.mjs`). job-status and git-read run on a
+timer, so at startup each must be code only the service's own user can change. Each is a
+launcher of a few lines that puts its repo's top folder on `sys.path` and imports the
+package beside its own folder, `../jarvis`, where the code that runs lives. The launcher,
+the package folder and everything in it (each `.py` file, the compiled copies in
+`__pycache__`, any sub-package) must each be, at its real path (symlinks followed), a
+regular file or folder that user owns and that neither its group nor anyone else may
+write, and every folder above it must be owned by that user or root and be writable by
+neither. Mode bits only; an ACL isn't read. A package of more than 500 entries, or
+nested more than 4 deep, is refused rather than walked. A launcher that passes is run
+from its real path from then on, so every run starts the file that was checked. One that
+fails is left out like any bad entry, with one line in the service log
+(`config: toPush.gitRead imports ../jarvis/git_read.py, which can be changed by other
+users (group- or world-writable), so it is left out`), and its part of the page reads
+"not set up" until it is fixed and the service restarts.
+
+Both run as `/usr/bin/python3 -I <path> …`: isolated mode reads no `PYTHON*` variable and
+puts neither the script's own folder nor the user's site-packages on `sys.path`, and it
+turns off the per-user cache of compiled code that Apple's python3 keeps under
+`~/Library/Caches`, so the package's compiled copies can come only from its own
+`__pycache__`. Each must therefore be a Python script for `/usr/bin/python3` that puts
+its own package on `sys.path`, as the lead's two do. Both get the same short
+environment: `HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME`, `LANG` and `LC_*` from the
+service's, nothing else, plus `xcrun_nocache=1`. `/usr/bin/python3` is xcrun's shim,
+which reads variables that move it (`DEVELOPER_DIR`, `SDKROOT`, `TOOLCHAINS` and a lookup
+cache); none of them comes through, and the shim looks python3 up afresh. A path that
+goes missing later fails as missing, since the file is looked at before python3 starts.
 
 `/avatars/<key>.png` (`server/lib/avatars.mjs`) serves only `<roster.avatarDir>/<key>.png`,
 and only for a key on the roster. It matches the raw request path against the key pattern
@@ -959,17 +994,33 @@ Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB). W
 reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
 field by field (the health strip's and To push's above).
 
+Everything the static handler sends (both pages, their scripts, styles and fonts, the
+single-page fallback and its refusals) carries `Content-Security-Policy: default-src
+'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`
+and `X-Content-Type-Options: nosniff`, and every API answer carries nosniff too, so a
+browser never reads JSON, a board item's text included, as a page or a script. The build
+needs nothing looser: it has no inline `<script>`, `<style>` or `style=""` (React's style
+props are set through the CSSOM, which the policy doesn't govern), no `data:` or `blob:`
+URL, no `eval`, it fetches only `/api/`, and its one form (the Board's New item) is
+handled in the page, which stops the browser's own submit; `form-action 'none'` blocks
+any form that would really submit, since `default-src` doesn't cover forms. A change that
+adds any of those is blocked in the browser, so check a new page in a browser for policy
+violations before it ships.
+
 What it runs, as the service's own user: `claude -p /usage` every 5 minutes (with
 `--strict-mcp-config`, `--permission-mode manual` and `--no-session-persistence`),
 `claude agents --json` every 30 seconds (whose runs were seen starting `security`, the
 Keychain tool, on 2026-10-21), `claude auth status --json` hourly, `launchctl
 list` and `plutil` on each LaunchAgent every minute, and for the health strip,
-`<health.jobStatus> --json --only jobs` and `ps` every minute and `launchctl print` for
-its own job once, and for To push, `<toPush.gitRead> <repo> status --porcelain=v2 --branch
---untracked-files=no` for each repo in config every 5 minutes, one after another, each
-with 10 s and then SIGKILL to its process group. **job-status and git-read run from the
-paths in `config.json`, which are working trees: whatever is in them runs on that
-schedule, uncommitted edits included.**
+`/usr/bin/python3 -I <health.jobStatus> --json --only jobs` (20 s, then SIGKILL) and `ps`
+every minute and `launchctl print` for its own job once, and for To push, `/usr/bin/python3
+-I <toPush.gitRead> <repo> status --porcelain=v2 --branch --untracked-files=no` for each
+repo in config every 5 minutes, one after another, each with 10 s and then SIGKILL to its
+process group, both with the short environment under "The program check". **job-status
+and git-read run from the paths in `config.json`, which are working trees: whatever is in
+them runs on that schedule, uncommitted edits included.** At startup each, and the
+package it imports, must pass the program check (Configuration, To push), which refuses
+code anyone but the service's own user (or root, for the folders above) could change.
 
 What it reads besides the transcripts: `~/.claude.json` (the cached usage response),
 the LaunchAgent plists, the avatar folder, the NAS watch's state file (a token) and the

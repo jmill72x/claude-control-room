@@ -14,8 +14,12 @@ const MAX_BODY = 256 * 1024;
 // (server.mjs) reports its size against this, and past 75% an alert says so.
 export const BOARD_MAX_BODY = 1024 * 1024;
 
+// nosniff on every answer (the 2026-10-21 security review): a browser keeps to the
+// JSON type, so no answer, a board item's text included, is ever read as a page.
+const API_HEADERS = { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' };
+
 const json = (res, code, body, headers = {}) => {
-  res.writeHead(code, { 'Content-Type': 'application/json', ...headers });
+  res.writeHead(code, { ...API_HEADERS, ...headers });
   res.end(JSON.stringify(body));
 };
 
@@ -228,7 +232,7 @@ export function createHandler({ cache, todos, config }) {
       if (status === 413) {
         // The client is still uploading; answer and hang up rather than
         // reading the rest of a body already refused.
-        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+        res.writeHead(413, { ...API_HEADERS, Connection: 'close' });
         return res.end(JSON.stringify({ error: String(err.message) }));
       }
       return json(res, status, { error: String(err?.message ?? err) });

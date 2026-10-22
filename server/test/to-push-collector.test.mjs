@@ -1,21 +1,23 @@
 // The To push collector (collectors/to-push.mjs): what it runs, how a run is
-// bounded, what a failure looks like on the page and in the log. git-read is
-// stood in for by small invented scripts; every path, repo and branch is invented.
+// bounded, what a failure looks like on the page and in the log. git-read is a
+// Python script run as /usr/bin/python3 -I, so it is stood in for by small
+// invented Python scripts; every path, repo and branch is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  createToPush, runGitRead, whyNotRead, childEnv, STATUS_ARGS, GIT_READ_TIMEOUT_MS
+  createToPush, runGitRead, whyNotRead, STATUS_ARGS, GIT_READ_TIMEOUT_MS
 } from '../collectors/to-push.mjs';
 import { readToPushConfig } from '../lib/to-push.mjs';
+import { programEnv } from '../lib/program-check.mjs';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'ccr-topush-'));
-const script = (dir, body, name = 'git-read') => {
+const script = (dir, lines, name = 'git-read') => {
   const path = join(dir, name);
-  writeFileSync(path, `#!/bin/sh\n${body}\n`);
-  chmodSync(path, 0o755);
+  writeFileSync(path, ['#!/usr/bin/python3', ...lines].join('\n') + '\n');
+  chmodSync(path, 0o644);
   return path;
 };
 const alive = pid => {
@@ -30,27 +32,30 @@ const gone = async pid => {
 
 test('git-read is asked for the status of one repo, untracked files left out', async () => {
   const dir = fresh();
-  const out = await runGitRead(script(dir, 'printf "%s\\n" "$@"'), '/home/example/projects/garden-app');
+  const out = await runGitRead(script(dir, ['import sys', 'print("\\n".join(sys.argv[1:]))']), '/home/example/projects/garden-app');
   assert.deepEqual(out.trim().split('\n'), ['/home/example/projects/garden-app', 'status', '--porcelain=v2', '--branch', '--untracked-files=no']);
   assert.deepEqual(STATUS_ARGS, ['status', '--porcelain=v2', '--branch', '--untracked-files=no']);
 });
 
-test("git-read gets only HOME, PATH, TMPDIR, USER, LOGNAME, LANG and LC_* from this service's environment", async () => {
-  const env = childEnv({
+test("git-read gets only HOME, PATH, TMPDIR, USER, LOGNAME, LANG and LC_* from this service's environment, plus xcrun_nocache", async () => {
+  const env = programEnv({
     HOME: '/home/example', PATH: '/usr/bin:/bin', TMPDIR: '/tmp/x', USER: 'example', LOGNAME: 'example', LANG: 'C', LC_ALL: 'C',
-    PYTHONPATH: '/evil', PYTHONSTARTUP: '/evil.py', GIT_DIR: '/elsewhere', GIT_CONFIG_GLOBAL: '/evil.gitconfig', NODE_OPTIONS: '--x', SOME_TOKEN: 'abc'
+    PYTHONPATH: '/evil', PYTHONSTARTUP: '/evil.py', GIT_DIR: '/elsewhere', GIT_CONFIG_GLOBAL: '/evil.gitconfig', NODE_OPTIONS: '--x', SOME_TOKEN: 'abc',
+    DEVELOPER_DIR: '/elsewhere', TOOLCHAINS: 'x', xcrun_db: '/tmp/forged'
   });
-  assert.deepEqual(Object.keys(env).sort(), ['HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'TMPDIR', 'USER']);
+  assert.deepEqual(Object.keys(env).sort(), ['HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'TMPDIR', 'USER', 'xcrun_nocache']);
   const dir = fresh();
-  const seen = await runGitRead(script(dir, 'env'), '/home/example/projects/garden-app', { env });
+  const dump = ['import os', 'for k, v in sorted(os.environ.items()): print(k + "=" + v)'];
+  const seen = await runGitRead(script(dir, dump), '/home/example/projects/garden-app', { env });
   assert.match(seen, /^HOME=\/home\/example$/m);
-  assert.doesNotMatch(seen, /PYTHONPATH|PYTHONSTARTUP|GIT_DIR|GIT_CONFIG_GLOBAL|NODE_OPTIONS|SOME_TOKEN/);
+  assert.match(seen, /^xcrun_nocache=1$/m);
+  assert.doesNotMatch(seen, /PYTHONPATH|PYTHONSTARTUP|GIT_DIR|GIT_CONFIG_GLOBAL|NODE_OPTIONS|SOME_TOKEN|DEVELOPER_DIR|TOOLCHAINS|xcrun_db/);
   // By default it is this process's own environment, filtered the same way.
-  assert.deepEqual(childEnv(), childEnv(process.env));
   process.env.CCR_TOPUSH_TEST = 'not for git-read';
   try {
-    const plain = await runGitRead(script(dir, 'env', 'env-default'), '/r');
+    const plain = await runGitRead(script(dir, dump, 'env-default'), '/r');
     assert.doesNotMatch(plain, /CCR_TOPUSH_TEST/);
+    assert.match(plain, /^xcrun_nocache=1$/m);
   } finally {
     delete process.env.CCR_TOPUSH_TEST;
   }
@@ -61,7 +66,13 @@ test('a run that hangs is killed at its time limit, git and all: SIGKILL to its 
   const pidFile = join(dir, 'child.pid');
   // The script starts a child of its own (as git-read starts git) and waits,
   // both ignoring SIGTERM, so only SIGKILL ends them.
-  const path = script(dir, `trap '' TERM\n/bin/sleep 30 &\necho $! > '${pidFile}'\nwait`);
+  const path = script(dir, [
+    'import signal, subprocess',
+    'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+    "child = subprocess.Popen(['/bin/sleep', '30'])",
+    `open(${JSON.stringify(pidFile)}, 'w').write(str(child.pid))`,
+    'child.wait()'
+  ]);
   assert.equal(GIT_READ_TIMEOUT_MS, 10000);
   const started = Date.now();
   await assert.rejects(runGitRead(path, '/home/example/projects/garden-app', { timeout: 400 }), err => err.timedOut === true);
@@ -75,7 +86,11 @@ test('the time limit holds even when something outside the group keeps the outpu
   const dir = fresh();
   const pidFile = join(dir, 'escaped.pid');
   // A grandchild in a session of its own holds stdout open after the script exits 0.
-  const path = script(dir, `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); open(my $f, ">", "${pidFile}"); print $f $$; close $f; sleep 3' &\nexit 0`);
+  const path = script(dir, [
+    'import subprocess',
+    "held = subprocess.Popen(['/bin/sleep', '3'], start_new_session=True)",
+    `open(${JSON.stringify(pidFile)}, 'w').write(str(held.pid))`
+  ]);
   const started = Date.now();
   try {
     await assert.rejects(runGitRead(path, '/home/example/projects/garden-app', { timeout: 400 }), err => err.timedOut === true);
@@ -88,22 +103,32 @@ test('the time limit holds even when something outside the group keeps the outpu
 
 test('more output than an answer can be is refused, and the run is stopped', async () => {
   const dir = fresh();
-  await assert.rejects(runGitRead(script(dir, 'yes | head -c 5000'), '/r', { maxBytes: 1024 }), err => err.tooBig === true);
+  await assert.rejects(runGitRead(script(dir, ['import sys', 'sys.stdout.write("y\\n" * 2500)']), '/r', { maxBytes: 1024 }), err => err.tooBig === true);
 });
 
 test("a refusal comes back with git-read's exit code and what it printed on stderr", async () => {
   const dir = fresh();
-  const path = script(dir, "echo 'git-read: refused: the repo must be under /secret/root' >&2\nexit 2");
+  const path = script(dir, ['import sys', 'sys.stderr.write("git-read: refused: the repo must be under /secret/root\\n")', 'sys.exit(2)']);
   await assert.rejects(runGitRead(path, '/r'), err => err.exitCode === 2 && /secret\/root/.test(err.stderr));
 });
 
-test('a git-read that is missing or not executable fails to start', async () => {
+test('a git-read that is missing or unreadable is said as such, not as python3 failing to open it', async () => {
   const dir = fresh();
+  // python3 would exit 2 for a missing script, which is git-read's own word for a refusal.
   await assert.rejects(runGitRead(join(dir, 'nowhere'), '/r'), err => err.code === 'ENOENT');
-  const plain = join(dir, 'plain');
-  writeFileSync(plain, '#!/bin/sh\necho hi\n');
-  chmodSync(plain, 0o644);
-  await assert.rejects(runGitRead(plain, '/r'), err => err.code === 'EACCES');
+  const locked = script(dir, ['print("# branch.head main")'], 'locked');
+  chmodSync(locked, 0o000);
+  await assert.rejects(runGitRead(locked, '/r'), err => err.code === 'EACCES');
+});
+
+test('git-read runs as /usr/bin/python3 -I, so no user site-packages or script folder counts', async () => {
+  const dir = fresh();
+  const out = await runGitRead(script(dir, [
+    'import json, os, sys',
+    'here = os.path.dirname(os.path.realpath(__file__))',
+    'print(json.dumps({"isolated": sys.flags.isolated, "noUserSite": sys.flags.no_user_site, "here": here in [os.path.realpath(p) for p in sys.path if p]}))'
+  ]), '/r');
+  assert.deepEqual(JSON.parse(out), { isolated: 1, noUserSite: 1, here: false });
 });
 
 test('each kind of failure has fixed words for the page', () => {

@@ -255,3 +255,29 @@ test('/api/dashboard carries the toPush panel, but never the toPush config', asy
   assert.ok(!('toPush' in payload.config.data));
   assert.ok(!JSON.stringify(payload).includes('/secret'));
 });
+
+// nosniff on every API answer (the 2026-10-21 security review): a browser must never
+// read a JSON answer, a board item's text included, as a page or a script.
+test('every API answer carries nosniff, the refusals and errors included', async () => {
+  const sent = async (method, url, body, headers, d = deps()) => (await call(createHandler(d), method, url, body, headers));
+  const broken = deps();
+  broken.todos.read = async () => { throw new Error('todos.json is corrupt'); };
+  const cases = [
+    [200, await sent('GET', '/api/dashboard')],
+    [200, await sent('GET', '/api/todos')],
+    [200, await sent('GET', '/api/health')],
+    [200, await sent('PUT', '/api/todos', [{ id: 1, text: 'a', lane: 'idea' }])],
+    [404, await sent('GET', '/api/nope')],
+    [400, await sent('POST', '/api/ingest/crons', '{not json')],
+    [403, await sent('POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'https://evil.example' })],
+    [413, await sent('POST', '/api/ingest/crons', `[{"name":"${'x'.repeat(300 * 1024)}"}]`)],
+    [415, await sent('POST', '/api/ingest/crons', [{ name: 'x' }], { 'content-type': 'text/plain' })],
+    [428, await sent('PUT', '/api/todos', [{ id: 1, text: 'a', lane: 'idea' }], { origin: 'http://127.0.0.1:8322' })],
+    [500, await sent('GET', '/api/todos', undefined, {}, broken)]
+  ];
+  for (const [status, res] of cases) {
+    assert.equal(res.statusCode, status);
+    assert.equal(res.headers['X-Content-Type-Options'], 'nosniff', `the ${status} answer`);
+    assert.equal(res.headers['Content-Type'], 'application/json', `the ${status} answer`);
+  }
+});
