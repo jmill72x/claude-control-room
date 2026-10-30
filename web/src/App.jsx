@@ -66,16 +66,21 @@ export default function App() {
     />
   );
 
-  // Projects: session-derived plus anything ingested. `running` that is neither
-  // true nor false means the agents source could not be read — which is not the
+  // Projects: session-derived plus anything ingested. The server stopped
+  // polling `claude agents --json` on 2026-10-30, so its rows carry no `running`
+  // key: absent means "not tracked", and the column then counts projects only.
+  // A `running: null` (an ingested row whose state is unknown) is still not the
   // same fact as "idle", and must not be summarised as one.
   const ingestProjects = arrayFrom(payload?.ingestProjects);
   const sessionProjects = Array.isArray(sessionData?.projects) ? sessionData.projects : [];
   const projects = [...sessionProjects, ...ingestProjects.items];
-  const runningUnknown = projects.some(p => p.running !== true && p.running !== false);
+  const runningUnknown = projects.some(p => p.running === null);
+  const runningTracked = projects.some(p => p.running === true || p.running === false);
   const projectSummary = runningUnknown
     ? `${projects.length} total · running unknown`
-    : `${projects.filter(p => p.running).length} running · ${projects.length} total`;
+    : runningTracked
+      ? `${projects.filter(p => p.running === true).length} running · ${projects.length} total`
+      : `${projects.length} total`;
 
   const cronsEnv = payload?.crons;
   const launchdCrons = arrayFrom(cronsEnv);
@@ -211,7 +216,7 @@ export default function App() {
           )}
           {runningUnknown && projects.length > 0 && (
             <StatusNote status="stale" fetchedAt={null} label="Running state unknown"
-              detail="the running agents could not be read, so no project below is claimed idle" />
+              detail="a project's running state could not be read, so it is not claimed idle" />
           )}
           <ProjectRows projects={projects} />
           <div className="ccr-subhead">

@@ -38,7 +38,7 @@ never a zero or an empty bar standing in for missing data.
 | Pace tick + projection on each limit bar | `/usage` history (see below) plus an observed window length | Real, but the session bar has no fallback — see below |
 | Sparklines on each limit bar | Same history store | Real; needs at least two readings, else says so |
 | Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
-| Projects (column 02) | `claude agents --json` + Cowork session metadata + transcript logs + git branch | Real |
+| Projects (column 02) | Cowork session metadata + transcript logs + git branch | Real; no running/idle state since 2026-10-30 (the `claude agents --json` poll was dropped, see [How often the server starts `claude`](#how-often-the-server-starts-claude)) |
 | Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
 | Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Below 1024px wide it is the second column on screen, after Usage and ahead of Projects. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done), and a per-viewer "Sort by Due" switch puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
@@ -216,17 +216,49 @@ bars, which still parse strictly and throw on drift.
 usage/cost endpoints and the Admin API exist for Console organizations only; this
 account is a Max subscription with no Console org behind it. The only place this
 machine's actual usage percentages and reset timestamps exist is the text that
-`claude -p "/usage"` prints to a terminal, the only place a live agent/session list
-exists is `claude agents --json`, and the only place the plan tier exists at all —
-even a lagging, coarse version of it — is `claude auth status --json`.
+`claude -p "/usage"` prints to a terminal, and the only place the plan tier exists at
+all — even a lagging, coarse version of it — is `claude auth status --json`.
 
 So the server runs those commands non-interactively on a timer, parses the output, and
 caches the result. This is deliberate and is the documented reason it works this way —
 **do not "fix" this into an API call.** If Anthropic ships a usage API for consumer
 accounts, that would be a real improvement; until then, shelling out to the CLI the
 user is already authenticated with is the only source that exists, and it is exactly
-why `usage`, `agents`, and `plan` are the collectors that can go `unavailable` if
+why `usage` and `plan` are the collectors that can go `unavailable` if
 `claude` isn't on the service's `PATH` (see [Running it](#running-it)).
+
+### How often the server starts `claude`
+
+Each of those commands starts a short-lived `claude` that loads the machine's one
+shared sign-in. Open Claude Code bugs (anthropics/claude-code#102265, #88583) show that
+a short-lived `claude` which exits in the middle of a token renewal, or loses a renewal
+race, can blank that sign-in for every Claude process on the machine; the 2026-10-21
+sign-in lapse may have been one (not verified). So since 2026-10-30 the server starts
+as few as it can:
+
+| Run | Before 2026-10-30 | Since |
+|---|---|---|
+| `claude agents --json` | every 30 s (120 an hour) | never: the poll is gone |
+| `claude -p "/usage"` | every 5 min (12 an hour) | unchanged: every 5 min (12 an hour) |
+| `claude auth status --json` | hourly (1 an hour) | daily, and once at start |
+| **All** | **about 133 an hour** | **about 12 an hour**, plus one a day |
+
+The agents poll fed only the classic page's Projects column (and the mod's Projects
+tab), which now list projects with their last activity and no running/idle state. The
+Orbit page never used it; its "is the lead's session up" check reads `ps`.
+
+The `/usage` poll stays at five minutes on purpose. An hourly schedule (hourly, plus a
+reading on each side of every reset and every 15 minutes near a limit, about 1.5 runs
+an hour) was built and rejected by Jeff on 2026-10-30: the session limit is a
+five-hour window, and bars that move once an hour don't track it. The pace code (15
+minutes, three polls, see the next section), the last-window arc and the credits
+parser's 30-minute limit all assume this cadence, so a slower poll would have to
+revisit each of them.
+
+Reading the limits from `cachedUsageUtilization` in `~/.claude.json` instead, with no
+`claude` at all, was considered and left out: watched for 15 minutes on 2026-10-30, that
+cache changed only at this poll's own runs, so nothing else on the machine keeps it
+fresh, and it doesn't hold the drivers block either.
 
 ## The Orbit page (being built beside this one)
 
@@ -445,9 +477,8 @@ not being reachable) leaves every other panel intact.
 |---|---|---|
 | `usage` | `claude -p "/usage"` | 5 min |
 | `sessions` | Claude Code and Cowork transcript roots (`~/.claude/projects` and the Cowork session directory), each file streamed a line at a time and read again only when its size, mtime or inode changes | 60 s |
-| `agents` | `claude agents --json` | 30 s |
 | `crons` | `~/Library/LaunchAgents/*.plist` + `launchctl list` | 60 s |
-| `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 60 min |
+| `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 24 h |
 | `ingest` | inbound `POST` to `/api/ingest/{crons,projects,credits}`, no timer | — |
 
 The server holds no API key — there is nothing to hold. It shells out to the `claude`
@@ -551,7 +582,7 @@ curl -s http://127.0.0.1:8322/api/dashboard \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print({k: v.get('status') for k,v in d.items() if isinstance(v, dict)})"
 ```
 
-`usage`, `sessions`, `agents`, and `crons` should all read `ok`. If any of them says
+`usage`, `sessions`, and `crons` should all read `ok`. If any of them says
 `unavailable`, check `~/Library/Logs/control-room.log` (both stdout and stderr are
 routed there per the plist). **The single most common cause is that `claude` is not on
 the launchd service's `PATH`** — launchd services do not inherit your shell's PATH, so
@@ -892,7 +923,7 @@ remaining plan field, is either typed in by hand or pushed in via
 it current; that's a deliberate scope cut (see spec §12), not an oversight.
 
 **The plan tier is no longer a config field — it's read from `claude auth status
---json`'s `subscriptionType`, on an hourly timer (the `plan` collector,
+--json`'s `subscriptionType`, on a daily timer (the `plan` collector,
 `server/collectors/plan.mjs`).** That command's output also carries the signed-in
 email, org id, and org name; only `subscriptionType` is extracted; the rest is
 discarded at the parse boundary and never cached, logged, or returned by the API.
@@ -1008,9 +1039,9 @@ adds any of those is blocked in the browser, so check a new page in a browser fo
 violations before it ships.
 
 What it runs, as the service's own user: `claude -p /usage` every 5 minutes (with
-`--strict-mcp-config`, `--permission-mode manual` and `--no-session-persistence`),
-`claude agents --json` every 30 seconds (whose runs were seen starting `security`, the
-Keychain tool, on 2026-10-21), `claude auth status --json` hourly, `launchctl
+`--strict-mcp-config`, `--permission-mode manual` and `--no-session-persistence`; see
+[How often the server starts `claude`](#how-often-the-server-starts-claude)),
+`claude auth status --json` daily, `launchctl
 list` and `plutil` on each LaunchAgent every minute, and for the health strip,
 `/usr/bin/python3 -I <health.jobStatus> --json --only jobs` (20 s, then SIGKILL) and `ps`
 every minute and `launchctl print` for its own job once, and for To push, `/usr/bin/python3
@@ -1035,7 +1066,6 @@ on:
   position** so a reordering doesn't silently swap two numbers — but a genuinely
   reworded or restructured output can still break the parser. A parse failure marks the
   `usage` panel `stale` rather than fabricating zeros, but it will still need a fix.
-- the JSON shape of `claude agents --json`
 - the JSON shape of `claude auth status --json`, specifically that `subscriptionType`
   keeps existing and keeps meaning the plan tier
 - the on-disk layout of Claude Code and Cowork transcripts under `~/.claude/projects`
@@ -1060,7 +1090,7 @@ that's the first thing to suspect.
 The re-verification procedure is §2 of the design spec at
 `docs/superpowers/specs/2026-08-05-claude-control-room-design.md` — it documents
 exactly what was directly checked on this machine on 2026-08-05 (sample `/usage`
-output, the `claude agents --json` shape, the transcript file layout for both roots,
+output, the `claude agents --json` shape (no longer used), the transcript file layout for both roots,
 what's confirmed absent) and is the starting point for re-verifying any of it after a
 CLI update.
 

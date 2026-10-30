@@ -61,13 +61,21 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   them, and entries that differ only in their month or only in their weekday share one
   phrase: "1st of Jan, Apr, Jul and Oct, 06:30", "Mondays to Fridays, 07:30".
 
-- **P3, found 2026-10-21: the `claude agents --json` poll reads the Keychain every 30 s.**
-  Sampling the process table while the live service ran it caught its runs starting
-  `security` (the Keychain tool), which fits the CLI loading its sign-in on every run.
-  Whether a run also makes a network call couldn't be shown either way: each one lasts
-  about 0.1 s. The poll feeds only the classic page's Projects column, so it can go with
-  the classic page after Phase 5, or be replaced by `ps` sooner. The health strip doesn't
-  use it (§9).
+- **Staged 2026-10-30, waits on Jeff's C&P and a restart: the server starts `claude`
+  about 12 times an hour instead of about 133.** Jeff's "go" of 10-30. Open Claude Code
+  bugs (#102265, #88583) show a short-lived `claude` that exits mid-renewal can blank the
+  shared sign-in; a likely, unverified trigger of the 10-21 lapse. The 30 s
+  `claude agents --json` poll is gone (the classic page's and the mod's Projects list
+  projects with no running state, and say "N total"), and `claude auth status` runs
+  daily. `/usage` stays every 5 minutes: an hourly schedule was built and Jeff rejected
+  it the same day ("the usage bars can't be updating that infrequently with a 5 hr
+  window"); its code is not in the change. README, "How often the server starts
+  `claude`". This closes the P3 "agents poll reads the Keychain every 30 s" (found
+  2026-10-21 by sampling the live service's children starting `security`). Checks after
+  the restart: `/api/dashboard` has no `agents` key; `usage`, `plan` and
+  `accountCredits` read ok; ten minutes of sampling the service's children shows two
+  `claude -p /usage` and no `claude agents`. Needs `npm run build` in `web/` for the
+  classic page (a live deploy, so after the C&P).
 
 - **Done 2026-10-20 (`f16b659`, live since the 11:21 restart that day): token usage counts
   each API request once, not once per transcript line.** The week's new tokens read 3x
@@ -99,8 +107,8 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   showing zero.
 - **Open-task counts per project** are `null` end-to-end. No source on this machine
   (agents JSON, session logs, anything else) reliably supplies one.
-- **Plan tier** comes from `claude auth status --json`'s `subscriptionType`, on an
-  hourly timer. It's real but coarse, and has been observed to lag an actual plan
+- **Plan tier** comes from `claude auth status --json`'s `subscriptionType`, on a
+  daily timer (hourly until 2026-10-30). It's real but coarse, and has been observed to lag an actual plan
   change by a couple of days.
 - **Renewal date and seat count** are hand-entered in `server/config.json`
   (`plan.renews`, `plan.cycle`, `plan.seats`) — nothing on this machine exposes
@@ -122,7 +130,8 @@ The four surfaces this depends on, any of which can shift silently:
 
 1. `claude -p "/usage"` text output (parsed by label, not position, but a reworded
    or restructured panel can still break the parser)
-2. `claude agents --json` output shape
+2. `claude auth status --json`'s `subscriptionType` (`claude agents --json` was
+   the second surface until 2026-10-30, when its poll was dropped)
 3. the two transcript roots (Claude Code's `~/.claude/projects/**/*.jsonl` and the
    Cowork local-agent-mode session directory)
 4. `launchctl list` output plus the `~/Library/LaunchAgents/*.plist` files it reads
@@ -153,7 +162,7 @@ expired, etc.).
 
 This is the highest-value follow-up on the table because it's aimed at the
 project's central fact, not an edge case: every source this dashboard reads —
-`/usage` text, `claude agents --json`, `claude auth status --json`, the
+`/usage` text, `claude auth status --json`, the
 transcript file layout, `launchctl`'s output — is undocumented and
 unversioned (see "Fragility warning" above), and any of it can change in any
 Claude Code release without notice. The question isn't whether a parser will
@@ -343,9 +352,9 @@ the build notes in §8.3 to §8.5 wherever the two differ.
     and SIGKILL to the process group, `--untracked-files=no`, counts and branch names
     only. A branch with no upstream never counts; Jarvis's own repo has tracked its
     build branch's upstream since 10-21, so it counts like the others.
-- **The hardening before Phase 5 is built and staged (2026-10-21), and Ultron's vet is in:
-  OK to commit and restart, with no critical, high or medium finding; his three lows
-  are folded into the same staged change. It waits on Jeff's C&P.** Ultron's leftovers
+- **The hardening before Phase 5 is live (`bbd31de`, restarted 23:06 ET 2026-10-21),
+  after Ultron's vet: no critical, high or medium finding; his three lows were folded
+  into the same change.** Left: Jeff's Safari look. Ultron's leftovers
   from his 10-21 vets (README, "Security", "The program check" and "The board's items"):
   - A Content-Security-Policy, Ultron's (`default-src 'self'; object-src 'none';
     base-uri 'none'; frame-ancestors 'none'`) plus `form-action 'none'`, since

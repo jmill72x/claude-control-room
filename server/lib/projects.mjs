@@ -1,31 +1,21 @@
 import { basename } from 'node:path';
 import { formatRelative } from './humanize.mjs';
 
-// `agentsAvailable: false` means `claude agents --json` could not be read. That
-// is not "nothing is running" — it is "we do not know what is running", and the
-// two must not collapse into the same `running: false` the page prints as Idle
-// against every project at once. It also fires at startup by construction:
-// registry.startAll runs every collector in the same tick, so the first sessions
-// run always reads an empty agents cache.
-// Only a current, successful read of `claude agents --json` says anything
-// about what is running now. `stale` covers both a refresh that FAILED after
-// once succeeding (data kept, error set) and one that simply aged out; either
-// way the list is a memory, not an observation, and must read as unknown.
-export const agentsReadable = envelope => envelope?.status === 'ok';
-
-export function buildProjects(
-  { agents = [], agentsAvailable = true, coworkSessions = [], transcripts = [] },
-  now = Date.now()
-) {
+// Projects for the classic page's column 02, from transcripts and Cowork
+// session metadata only. Whether a project is running used to come from
+// `claude agents --json`, polled every 30 s; that poll was dropped on
+// 2026-10-30 because each run started a short-lived `claude` that loads the
+// shared sign-in (README, "How often the server starts claude"). So these rows
+// carry no `running` field at all: absent means "not tracked", which the page
+// shows as no state, unlike `null` (an ingested project whose state is unknown).
+export function buildProjects({ coworkSessions = [], transcripts = [] }, now = Date.now()) {
   const projects = new Map();
-  const unknown = !agentsAvailable;
-
   // Keyed by tool AND name: /Projects/docs (Code) and /CoworkSpace/docs (Cowork)
   // are different projects that happen to share a basename.
   const touch = (name, tool) => {
     const key = `${tool}:${name}`;
     if (!projects.has(key)) {
-      projects.set(key, { name, tool, running: unknown ? null : false, lastTs: null, branch: null, tasks: null });
+      projects.set(key, { name, tool, lastTs: null, branch: null, tasks: null });
     }
     return projects.get(key);
   };
@@ -35,12 +25,6 @@ export function buildProjects(
     if (typeof ts !== 'number' || !Number.isFinite(ts)) return;
     if (p.lastTs === null || ts > p.lastTs) p.lastTs = ts;
   };
-
-  for (const a of agents) {
-    if (!a.cwd) continue;
-    const p = touch(basename(a.cwd), 'Code');
-    if (a.status === 'busy') p.running = true;
-  }
 
   for (const t of transcripts) {
     if (!t.cwd) continue;
@@ -63,15 +47,11 @@ export function buildProjects(
       return {
         name: p.name,
         tool: p.tool,
-        running: p.running,
         detail: p.branch ? `${edited} · ${p.branch}` : edited,
         tasks: p.tasks,
         lastTs: p.lastTs
       };
     })
-    .sort((a, b) => {
-      if (a.running !== b.running) return a.running === true ? -1 : 1;
-      return (b.lastTs ?? -Infinity) - (a.lastTs ?? -Infinity);
-    })
+    .sort((a, b) => (b.lastTs ?? -Infinity) - (a.lastTs ?? -Infinity))
     .map(({ lastTs, ...rest }) => rest);
 }

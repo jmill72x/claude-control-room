@@ -10,8 +10,7 @@ import { buildUsagePanel } from './lib/usage-panel.mjs';
 import { createCache } from './cache.mjs';
 import { createRegistry } from './collectors/registry.mjs';
 import { collectUsage } from './collectors/usage.mjs';
-import { collectAgents } from './collectors/agents.mjs';
-import { collectPlan } from './collectors/plan.mjs';
+import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { createHealth } from './collectors/health.mjs';
@@ -30,7 +29,7 @@ import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
 import { buildAgentWork } from './lib/agent-work.mjs';
-import { buildProjects, agentsReadable } from './lib/projects.mjs';
+import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 
 // Before anything logs, so every line in the service log carries its time.
@@ -69,6 +68,9 @@ const registry = createRegistry(cache);
 const history = createHistory({ dir: join(HERE, 'data') });
 await history.warm();
 
+// Every five minutes: the usage bars track a five-hour window, so an hourly
+// poll was tried and rejected (2026-10-30). The pace code and the credits
+// cache's 30-minute limit are both built on this cadence.
 registry.register('usage', async () => {
   const parsed = await collectUsage({ history });
   const now = Date.now();
@@ -81,7 +83,6 @@ registry.register('usage', async () => {
     historyStatus: history.status()
   });
 }, 5 * 60 * 1000);
-registry.register('agents', () => collectAgents(), 30 * 1000);
 // The health strip (collectors/health.mjs): job-status every minute, whose
 // verdicts the crons panel then takes over launchd's own, so the morning brief,
 // the page, the mod and the alerts agree on every job.
@@ -96,18 +97,16 @@ registry.register('toPush', () => toPush.collect(), 5 * 60 * 1000);
 // own `/usage` poll refreshes every five minutes. Reading a local file is cheap,
 // so poll it every minute; the parser refuses a cache older than 30 minutes.
 registry.register('accountCredits', () => collectAccountCredits(), 60 * 1000);
-// The subscription tier changes rarely — hourly is plenty, and it keeps
-// `claude auth status` off the CLI's back next to the 30s agents poll.
-registry.register('plan', () => collectPlan(), 60 * 60 * 1000);
+// The subscription tier changes rarely, and the CLI itself lags a plan change by
+// days, so once a day (and once at start) is plenty. Each run is a short-lived
+// `claude` that loads the shared sign-in (README, "How often the server starts
+// claude"); nothing else reads this panel on a clock.
+registry.register('plan', () => collectPlan(), PLAN_INTERVAL_MS);
 // Kept from pass to pass, so each minute reads only the transcripts that changed.
 const transcriptCache = new Map();
 registry.register('sessions', async () => {
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths, sessionNames } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
-  // `?? []` collapsed "the agents source is unreadable" into "no agent is
-  // running", which made every project read Idle as a statement of fact while
-  // the header still said ok. Pass the distinction through instead.
-  const agentsEnvelope = cache.get('agents', now);
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
@@ -119,8 +118,6 @@ registry.register('sessions', async () => {
     unavailableRoots,
     unreadablePaths,
     projects: buildProjects({
-      agents: agentsEnvelope.data ?? [],
-      agentsAvailable: agentsReadable(agentsEnvelope),
       coworkSessions,
       transcripts
     }, now)

@@ -18,7 +18,7 @@ Three tabs, switched with `1`, `2` and `3`:
 | Tab | Contents |
 |---|---|
 | Usage | Plan and renewal, credits (grants with what's left and when they expire, usage credits), the three limit bars with resets, pace and a sparkline, this week by surface, project and model, drivers, recent sessions |
-| Projects | Every project with its running state, then every cron with its schedule, next run and last result, failing first |
+| Projects | Every project with its last activity (no running state since 2026-10-30, when the server stopped polling `claude agents`), then every cron with its schedule, next run and last result, failing first |
 | To-dos | The board grouped by stage or tag, sorted by priority. Select an item to change its priority, move its stage, edit it, delete it with a confirmation, or hand it to Claude with **Work on it**. Done items are counted and hidden until you ask for them |
 
 Alerts from the dashboard show at the top of every tab. A line under the tabs

@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectUsage, runUsageCli } from '../collectors/usage.mjs';
-import { collectAgents } from '../collectors/agents.mjs';
 import { collectPlan } from '../collectors/plan.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 
@@ -46,20 +45,6 @@ test('usage poll saves no transcript of its own', async () => {
   assert.equal(args[0], '-p', 'the flag works only in print mode, which this is');
   assert.ok(args.includes('--strict-mcp-config'), 'still no plugin servers');
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'manual', 'still the manual mode');
-});
-
-test('collectAgents parses the JSON array', async () => {
-  const json = JSON.stringify([{ pid: 1, cwd: '/x', kind: 'interactive', status: 'busy', name: 'a' }]);
-  const out = await collectAgents({ run: async () => json });
-  assert.equal(out[0].status, 'busy');
-});
-
-test('collectAgents rejects invalid JSON rather than returning empty', async () => {
-  await assert.rejects(() => collectAgents({ run: async () => 'not json' }));
-});
-
-test('collectAgents rejects valid JSON that is not an array', async () => {
-  await assert.rejects(() => collectAgents({ run: async () => JSON.stringify({ pid: 1 }) }));
 });
 
 // `claude auth status --json` also returns an email, org id, and org name.

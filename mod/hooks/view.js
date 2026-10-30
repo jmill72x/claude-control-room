@@ -181,10 +181,11 @@ export function paneTree(el, st, act, ctx) {
     out.push(keyed('projects-summary', [heading('Projects', sessions.status === 'unavailable' ? '—' : summary)]))
     out.push(...envNote(sessions))
     items.forEach((p, i) => {
-      const state = p.running === true ? 'running' : p.running === false ? 'idle' : 'unknown'
+      // No `running` key: not tracked (model.js projectList), so no state is said.
+      const state = p.running === undefined ? '' : p.running === true ? 'running' : p.running === false ? 'idle' : 'unknown'
       out.push(keyed(`project-${i}`, [
         spread(
-          row([text(state === 'running' ? '●' : state === 'idle' ? '○' : '?', colored(state === 'running' ? 'success' : undefined)), text(p.name, { bold: true }), dim(String(p.tool ?? '').toUpperCase())]),
+          row([text(state === 'running' ? '●' : state === 'idle' ? '○' : state === 'unknown' ? '?' : '·', colored(state === 'running' ? 'success' : undefined)), text(p.name, { bold: true }), dim(String(p.tool ?? '').toUpperCase())]),
           text(state, state === 'running' ? { color: 'success' } : state === 'unknown' ? { color: 'warning' } : { dimColor: true })
         ),
         dim(`  ${p.detail ?? ''}`)

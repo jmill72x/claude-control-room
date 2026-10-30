@@ -166,15 +166,20 @@ export function cronSummary(list) {
   return `${failing} failing · ${list.length} scheduled` + (unknown > 0 ? ` · ${unknown} unknown` : '')
 }
 
-// `running` that is neither true nor false means the agents source could not
-// be read, which is not the same fact as idle.
+// A missing `running` is not tracked: the server stopped polling running agents
+// on 2026-10-30, so its projects carry none, and only the count is said.
+// `running: null` (an ingested row) means it could not be read, which is not
+// the same fact as idle.
 export function projectList(payload) {
   const items = [...listOf({ data: envelopeOf(payload, 'sessions').data?.projects }), ...listOf(envelopeOf(payload, 'ingestProjects'))]
-  const runningUnknown = items.some(p => p.running !== true && p.running !== false)
+  const runningUnknown = items.some(p => p.running === null)
+  const runningTracked = items.some(p => p.running === true || p.running === false)
   const summary = runningUnknown
     ? `${items.length} total · running unknown`
-    : `${items.filter(p => p.running === true).length} running · ${items.length} total`
-  return { items, summary, runningUnknown }
+    : runningTracked
+      ? `${items.filter(p => p.running === true).length} running · ${items.length} total`
+      : `${items.length} total`
+  return { items, summary, runningUnknown, runningTracked }
 }
 
 // The account's own usage response wins; hand-entered figures (the ingest
@@ -328,8 +333,9 @@ function planBullet(payload, now) {
 function projectsBullet(payload, now) {
   const env = envelopeOf(payload, 'sessions')
   if (env.status === 'unavailable') return `- **Projects** ${unavailable(env)}`
-  const { items, runningUnknown } = projectList(payload)
+  const { items, runningUnknown, runningTracked } = projectList(payload)
   if (runningUnknown) return `- **Projects** ${items.length} total, running unknown${staleMark(env, now)}`
+  if (!runningTracked) return `- **Projects** ${items.length} total${staleMark(env, now)}`
   const running = items.filter(p => p.running === true).map(p => md(p.name))
   return `- **Projects** ${running.length} of ${items.length} running${running.length ? `: ${running.join(', ')}` : ''}${staleMark(env, now)}`
 }

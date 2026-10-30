@@ -175,6 +175,16 @@ test('a stale panel is marked with its age', () => {
   expect(summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })).toContain('- **Crons** 1 of 4 failing: nightly · 1 unknown *(stale · 12m ago)*')
 })
 
+// Since 2026-10-30 the server sends projects with no `running` key at all.
+test('projects with no running state are counted only, never called unknown or idle', () => {
+  const p = clone(PAYLOAD) as any
+  for (const project of p.sessions.data.projects) delete project.running
+  expect(projectList(p).summary).toBe('3 total')
+  expect(projectList(p).runningUnknown).toBe(false)
+  const line = summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' }).split('\n').find(l => l.startsWith('- **Projects**'))
+  expect(line).toBe('- **Projects** 3 total')
+})
+
 test('a running state that could not be read is said, not counted as idle', () => {
   const p = clone(PAYLOAD) as any
   p.sessions.data.projects[1].running = null

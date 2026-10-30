@@ -4,6 +4,9 @@ import { planTierLabel } from '../lib/plan-tier.mjs';
 
 const exec = promisify(execFile);
 
+// Daily since 2026-10-30 (hourly before). See the note where server.mjs registers it.
+export const PLAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 export const runPlanCli = async () => {
   const { stdout } = await exec('claude', ['auth', 'status', '--json'], { timeout: 30000, maxBuffer: 1024 * 1024 });
   return stdout;
