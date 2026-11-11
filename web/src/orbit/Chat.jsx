@@ -5,11 +5,12 @@ import { Avatar } from './Avatar.jsx';
 import { attachmentUrl } from './chatApi.js';
 import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
+import { holdReload } from './buildWatch.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
-  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles
+  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -46,7 +47,7 @@ export function ChatTab({ chat, now, lead }) {
 // ---- pairing (§2.2) ----
 
 function Pairing({ chat, now }) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => defaultDeviceName(window.navigator));
   const p = chat.pairing;
   const submit = e => {
     e.preventDefault();
@@ -62,7 +63,7 @@ function Pairing({ chat, now }) {
             <p className="o-chat-p">Messages with Jarvis stay on the tailnet. Give this device a name, then approve the code it shows.</p>
             <label className="o-field">
               <span className="o-chat-label">Device name</span>
-              <input className="o-input o-chat-input" value={name} maxLength={40} autoComplete="off" placeholder="Jeff's iPhone" onChange={e => setName(e.target.value)} />
+              <input className="o-input o-chat-input" value={name} maxLength={40} autoComplete="off" placeholder="iPhone" onChange={e => setName(e.target.value)} />
             </label>
             <button type="submit" className="o-cbtn o-cbtn-primary" disabled={!name.trim()}>Get a code</button>
           </form>
@@ -328,6 +329,12 @@ function Composer({ chat, coarse, replyTo, onClearReply, addRef }) {
     el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight / 3))}px`;
   }, []);
   useEffect(fit, [text, fit]);
+  // A new build's reload (buildWatch.js) waits while anything here is unsent.
+  const unsent = text !== '' || files.length > 0 || preparing > 0;
+  useEffect(() => {
+    holdReload('composer', unsent);
+    return () => holdReload('composer', false);
+  }, [unsent]);
 
   const canSend = (text.trim().length > 0 || files.length > 0) && preparing === 0 && text.length <= MAX_TEXT;
   const send = () => {

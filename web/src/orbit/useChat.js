@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
+import { holdReload } from './buildWatch.js';
+import { hasUnsent } from '../lib/orbit/build.js';
 import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
@@ -31,6 +33,13 @@ export function useChat({ active }) {
   const [pairing, setPairing] = useState(null); // { name, code, expiresAt, state }
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // A new build's reload waits while a message is still on its way (or failed
+  // and not yet retried or discarded): its files live only in this page.
+  const unsent = hasUnsent(messages);
+  useEffect(() => {
+    holdReload('chat-unsent', unsent);
+    return () => holdReload('chat-unsent', false);
+  }, [unsent]);
   const esRef = useRef(null);
   const reopenRef = useRef(null);
   const aliveRef = useRef(true);

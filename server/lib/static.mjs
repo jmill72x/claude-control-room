@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
+import { resolve, relative, extname, sep } from 'node:path';
 
 const MIME = {
   '.html': 'text/html',
@@ -54,7 +54,15 @@ export function resolveStaticPath(webDir, url) {
   return full;
 }
 
+// Vite names every file under assets/ by its content, so those may be kept; every
+// other file (the pages, sw.js, the manifest, build.json) keeps its name across
+// builds, so a browser must ask again before reusing one. Without this, the
+// home-screen app could reopen on an old page after a build (2026-11-11).
+export const REVALIDATE = Object.freeze({ 'Cache-Control': 'no-cache' });
+const cacheHeaders = file => (file.startsWith('assets' + sep) ? {} : REVALIDATE);
+
 export function createStaticHandler(webDir) {
+  const root = resolve(webDir);
   const indexPath = resolve(webDir, 'index.html');
 
   return async function serveStatic(req, res) {
@@ -65,7 +73,7 @@ export function createStaticHandler(webDir) {
     }
     try {
       const body = await readFile(file);
-      res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream', ...PAGE_HEADERS });
+      res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream', ...cacheHeaders(relative(root, file)), ...PAGE_HEADERS });
       return res.end(body);
     } catch {
       // Single-page app: an unknown path is a client route, not a missing file.
@@ -78,7 +86,7 @@ export function createStaticHandler(webDir) {
         res.writeHead(404, { 'Content-Type': 'text/plain', ...PAGE_HEADERS });
         return res.end('not built');
       }
-      res.writeHead(200, { 'Content-Type': 'text/html', ...PAGE_HEADERS });
+      res.writeHead(200, { 'Content-Type': 'text/html', ...REVALIDATE, ...PAGE_HEADERS });
       return res.end(shell);
     }
   };

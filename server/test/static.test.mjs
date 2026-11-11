@@ -95,6 +95,21 @@ test('legitimate assets still serve with their content type', async () => {
   assert.equal(manifest.headers['Content-Type'], 'application/manifest+json', 'the home-screen manifest has its own type');
 });
 
+// 2026-11-11: the home-screen app kept an old page after a build. Files that keep
+// their name across builds must be asked for again; content-named assets need not.
+test('the pages, sw.js, the manifest and build.json are revalidated; hashed assets are not', async () => {
+  const { dist } = fixture();
+  writeFileSync(join(dist, 'sw.js'), '//');
+  writeFileSync(join(dist, 'build.json'), '{"build":"x"}');
+  for (const url of ['/', '/index.html', '/sw.js', '/manifest.webmanifest', '/build.json', '/some/client/route']) {
+    const res = await get(dist, url);
+    assert.equal(res.statusCode, 200, url);
+    assert.equal(res.headers['Cache-Control'], 'no-cache', url);
+  }
+  const asset = await get(dist, '/assets/app.js');
+  assert.equal(asset.headers['Cache-Control'], undefined);
+});
+
 test('a traversal that stays inside the root is allowed', () => {
   const { dist } = fixture();
   const p = resolveStaticPath(dist, '/assets/../index.html');

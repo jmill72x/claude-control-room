@@ -313,7 +313,9 @@ plan and Phase 1b of the Jarvis OS plan give it:
   when the time has passed but the job isn't failed, or scheduled when no run time is
   known), then "next" with the first run after today. Interval jobs never appear.
 - **The home-screen icon (Jarvis OS 1b):** `web/public/manifest.webmanifest` (name
-  "Control Room", standalone, navy) and `apple-touch-icon.png`, linked from `index.html`.
+  "Control Room", standalone, navy) and `apple-touch-icon.png`, linked from `index.html`;
+  the manifest also lists `icon-192.png` and `icon-512.png`, drawn to the same look by
+  `node web/scripts/make-icons.mjs` (no dependencies).
   In standalone mode Safari shows no Back button; the tabs and "Open on the board" work
   without one, and the hash route survives a relaunch. A board item waits on you when it carries an `ask` (what you do, why it
   matters, and whether it's a decision or a task). It is due soon when its `due` date is
@@ -925,10 +927,23 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 695 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 117 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 749 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 136 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
+
+**Each build reloads open pages, once (2026-11-11).** The build gets an id, compiled into
+the page as `__BUILD_ID__` and written as `web/dist/build.json` (a plugin in
+`web/vite.config.js`). The Orbit page (`web/src/orbit/buildWatch.js`) reads `/build.json`
+at start, whenever it comes back into view and every minute while shown; when the id there
+differs from its own, it reloads, but not while the composer has text or files, a message
+is still sending (or failed and not yet retried or discarded), or a focused field has
+something typed in it: then it looks again every 5 s. It notes the id it reloaded for in
+session storage and never reloads twice for one id, so a cached old page can't loop. The
+dev server has no id and never reloads. The static handler sends `Cache-Control: no-cache`
+on every file outside `assets/` (whose names carry their content's hash), so a reload
+fetches the new page. `web/public/sw.js` has no fetch handler, so it never serves an old
+one.
 
 (`server/package.json` also exposes `npm run build` as a convenience alias that runs
 the web build from the server directory.)

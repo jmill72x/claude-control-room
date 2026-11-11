@@ -608,8 +608,30 @@ build; then on each device, from the home-screen icon (re-added once Serve is on
 Settings in the Chat tab, Turn on notifications. **Post-restart checks:** the log says
 `push: notifications on` (no `push:` problem line); `GET /api/push/key` with a paired
 cookie answers the key; after Jeff turns it on, `devices.json` shows `push` on his device
-and a message from Jarvis while the app is closed arrives as "New message". The manifest
-still has only the 180 px icon (the spec also wants 192 and 512; not added).
+and a message from Jarvis while the app is closed arrives as "New message". The 192 and
+512 px manifest icons came with `jos/polish` (below).
+
+**The polish batch is staged on `jos/polish` (from main 329c4f5, 2026-11-11), after the
+chat went live on Jeff's iPhone that morning.** Three fixes for what he hit: (1) the pairing
+screen's name box starts filled from the user agent (`defaultDeviceName` in
+`web/src/lib/orbit/chat.js`: iPhone, iPad, also an iPad that reports a Mac, Mac, else "This
+device"), so "Get a code" is enabled at once; (2) the page reloads itself once after a new
+build (README "Tests and build" has how: build.json, `__BUILD_ID__`,
+`web/src/orbit/buildWatch.js`), waiting while the composer, an unsent message or a typed-in
+field holds it; the static handler now sends `Cache-Control: no-cache` on everything but
+`assets/`; (3) `icon-192.png` and `icon-512.png`, drawn by `web/scripts/make-icons.mjs` from
+the 180's measured geometry. **Go-live:** C&P, then the web build alone takes (1)-(3) live,
+build.json included; the no-cache header waits for the next restart (Vision), and nothing
+breaks without it, since the watcher fetches with `no-store`. The first build with the
+watcher still needs one swipe-away on each device (the open page predates it); every build
+after that reloads by itself. **Verified:** server 749 tests (local and Tokyo) and web
+136, each new test mutation-checked; headless Chromium on a scratch build at 390 px (name
+"iPhone", button enabled, no overflow; Mac UA gives "Mac"), and the watcher end to end (same
+id no reload, new id one reload, the old page coming back does not loop, a typed-in field
+holds it and it reloads within 5 s of leaving). **Unverified:** the composer and unsent-message
+holds in a browser (their logic is unit-tested, the wiring not), and anything on real iOS:
+whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
+use of the 192/512 icons (it uses the apple-touch-icon).
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,

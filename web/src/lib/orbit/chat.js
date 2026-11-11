@@ -17,6 +17,19 @@ export const hhmm = at => {
   return Number.isNaN(d.getTime()) ? '--:--' : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 
+// ---- pairing ----
+
+// The pairing screen's name box starts filled (2026-11-11): with only a
+// placeholder, "Get a code" stayed greyed out and looked broken. From the user
+// agent: iPadOS reports itself as a Mac, so a Mac with a touch screen is an iPad.
+export function defaultDeviceName({ userAgent = '', maxTouchPoints = 0 } = {}) {
+  const ua = String(userAgent);
+  if (/\biPhone\b/.test(ua)) return 'iPhone';
+  if (/\biPad\b/.test(ua)) return 'iPad';
+  if (/\bMacintosh\b/.test(ua)) return Number(maxTouchPoints) > 1 ? 'iPad' : 'Mac';
+  return 'This device';
+}
+
 // ---- the message list ----
 
 // An id for a send, unique per page load: the server dedups on it, so a retry of
