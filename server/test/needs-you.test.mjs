@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkNeedsYou, recordNeedsYou, activeWaits, needsYouView, needsYouAlerts, waitKey, createNeedsYouStore, needsYouLogLine,
-  NEEDS_YOU_MAX, NEEDS_YOU_TTL_MS, NEEDS_YOU_ALERT_MS
+  isStaleEvent, noteSeen, NEEDS_YOU_SEEN_MAX, NEEDS_YOU_MAX, NEEDS_YOU_TTL_MS, NEEDS_YOU_ALERT_MS
 } from '../lib/needs-you.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, observableSources } from '../lib/push-alerts.mjs';
@@ -19,23 +19,26 @@ const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
 const hook = (extra = {}) => ({ session_id: SID, transcript_path: '/private/somewhere/x.jsonl', cwd: '/private/somewhere', hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash', ...extra });
 
 test('the hook\'s JSON is read down to the event, the session and the kind of wait; nothing else is kept', () => {
-  assert.deepEqual(checkNeedsYou(hook()), { ok: true, value: { event: 'Notification', sessionId: SID, kind: 'permission' } });
+  assert.deepEqual(checkNeedsYou(hook()), { ok: true, value: { event: 'Notification', sessionId: SID, kind: 'permission', at: null } });
   assert.equal(checkNeedsYou(hook({ notification_type: 'idle_prompt' })).value.kind, 'idle');
   assert.equal(checkNeedsYou(hook({ notification_type: 'elicitation_dialog' })).value.kind, 'question');
   assert.equal(checkNeedsYou(hook({ notification_type: 'auth_success' })).value.kind, null, 'a notification nobody must answer opens nothing');
   assert.equal(checkNeedsYou(hook({ notification_type: undefined })).value.kind, null);
   assert.equal(checkNeedsYou(hook({ hook_event_name: 'PermissionRequest', notification_type: undefined, tool_name: 'Bash', tool_input: { command: 'rm -rf /' } })).value.kind, 'permission');
   for (const event of ['PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionEnd']) {
-    assert.deepEqual(checkNeedsYou(hook({ hook_event_name: event })).value, { event, sessionId: SID, kind: null }, event);
+    assert.deepEqual(checkNeedsYou(hook({ hook_event_name: event })).value, { event, sessionId: SID, kind: null, at: null }, event);
   }
   const value = checkNeedsYou(hook()).value;
-  assert.deepEqual(Object.keys(value).sort(), ['event', 'kind', 'sessionId'], 'no message, path, cwd or tool input survives the check');
-  // The README's hook entry sends exactly these three fields, with notification_type
-  // null for an event that has none (jq's `{a,b,c}` on a body without `c`).
-  assert.deepEqual(checkNeedsYou({ hook_event_name: 'SessionEnd', session_id: SID, notification_type: null }).value, { event: 'SessionEnd', sessionId: SID, kind: null });
-  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'idle_prompt' }).value, { event: 'Notification', sessionId: SID, kind: 'idle' });
-  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, notification_type: null }).value, { event: 'Stop', sessionId: SID, kind: null });
-  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: null }).value, { event: 'Notification', sessionId: SID, kind: null }, 'a Notification with no type is accepted and opens nothing');
+  assert.deepEqual(Object.keys(value).sort(), ['at', 'event', 'kind', 'sessionId'], 'no message, path, cwd or tool input survives the check');
+  // The README's hook entry sends exactly these four fields, with notification_type
+  // null for an event that has none (jq's `{a,b,c}` on a body without `c`), and `at`
+  // from jq's `(now*1000|floor)`.
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'SessionEnd', session_id: SID, notification_type: null, at: NOW }).value, { event: 'SessionEnd', sessionId: SID, kind: null, at: NOW });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'idle_prompt', at: NOW }).value, { event: 'Notification', sessionId: SID, kind: 'idle', at: NOW });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, notification_type: null, at: NOW }).value, { event: 'Stop', sessionId: SID, kind: null, at: NOW });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: null, at: NOW }).value, { event: 'Notification', sessionId: SID, kind: null, at: NOW }, 'a Notification with no type is accepted and opens nothing');
+  // The 11-11 entry, with no `at`, still posts: its events are taken in arrival order.
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, notification_type: null }).value, { event: 'Stop', sessionId: SID, kind: null, at: null });
 });
 
 test('a bad hook body says what is wrong', () => {
@@ -50,6 +53,8 @@ test('a bad hook body says what is wrong', () => {
   assert.match(bad(hook({ session_id: '../etc' })), /session_id/);
   assert.match(bad(hook({ notification_type: 'Permission Prompt' })), /notification_type/);
   assert.match(bad(hook({ notification_type: 7 })), /notification_type/);
+  for (const at of [NOW + 0.5, -1, '1794380000000', Number.MAX_SAFE_INTEGER + 2, true, {}]) assert.match(bad(hook({ at })), /at must be/, String(at));
+  assert.equal(checkNeedsYou(hook({ at: 0 })).value.at, 0);
 });
 
 const opening = (sid, kind = 'permission') => ({ event: 'Notification', sessionId: sid, kind });
@@ -133,15 +138,60 @@ test('a wait five minutes old is an alert, counted in words, never quoted, and a
 
 test('the store: record, view and size, in memory', () => {
   const store = createNeedsYouStore({ whoFor: id => (id === SID ? 'Atlas' : null) });
-  assert.equal(store.record(checkNeedsYou(hook()).value, NOW), 1);
-  assert.equal(store.record(checkNeedsYou(hook({ session_id: 'other', notification_type: 'idle_prompt' })).value, NOW + MIN), 2);
+  assert.deepEqual(store.record(checkNeedsYou(hook()).value, NOW), { open: 1, stale: false });
+  assert.equal(store.record(checkNeedsYou(hook({ session_id: 'other', notification_type: 'idle_prompt' })).value, NOW + MIN).open, 2);
   assert.deepEqual(store.view(NOW + MIN).map(w => [w.who, w.kind]), [['Atlas', 'permission'], [null, 'idle']]);
-  assert.equal(store.record(checkNeedsYou(hook({ hook_event_name: 'Stop' })).value, NOW + 2 * MIN), 1);
+  assert.equal(store.record(checkNeedsYou(hook({ hook_event_name: 'Stop' })).value, NOW + 2 * MIN).open, 1);
   assert.equal(store.size(NOW + 2 * MIN), 1);
   assert.equal(store.size(NOW + 2 * MIN + NEEDS_YOU_TTL_MS), 0);
-  assert.equal(createNeedsYouStore().record(checkNeedsYou(hook()).value, NOW), 1, 'with no lookup, who is nobody');
+  assert.equal(createNeedsYouStore().record(checkNeedsYou(hook()).value, NOW).open, 1, 'with no lookup, who is nobody');
   assert.equal(needsYouLogLine({ event: 'Notification', kind: 'permission' }, 2), 'needs-you: Notification (permission), 2 open');
   assert.equal(needsYouLogLine({ event: 'Stop', kind: null }, 0), 'needs-you: Stop, 0 open');
+  assert.equal(needsYouLogLine({ event: 'Notification', kind: 'idle' }, 0, true), 'needs-you: Notification (idle), older than the last event seen, ignored, 0 open');
+});
+
+test('async posts out of order: an event older than the newest seen for its session changes nothing', () => {
+  const store = createNeedsYouStore();
+  const ev = (event, at, extra = {}) => checkNeedsYou(hook({ hook_event_name: event, at, ...extra })).value;
+  // The prompt opens at t, the person answers, the clear runs at t+2 s and lands
+  // first; the "waiting" post from t lands after it and must not reopen the card.
+  assert.deepEqual(store.record(ev('PostToolUse', NOW + 2000), NOW + 2100), { open: 0, stale: false });
+  assert.deepEqual(store.record(ev('Notification', NOW), NOW + 2200), { open: 0, stale: true });
+  assert.deepEqual(store.view(NOW + 2200), [], 'no stale Waiting card');
+  // A later prompt is newer than the clear, so it opens; the same `at` again is not older.
+  assert.deepEqual(store.record(ev('Notification', NOW + 5000), NOW + 5100), { open: 1, stale: false });
+  assert.deepEqual(store.record(ev('Notification', NOW + 5000), NOW + 5200), { open: 1, stale: false });
+  // A clear older than that prompt is ignored too: the wait stays.
+  assert.deepEqual(store.record(ev('Stop', NOW + 4000), NOW + 5300), { open: 1, stale: true });
+  assert.equal(store.size(NOW + 5300), 1);
+  // Order is per session: another session's older `at` is its own business.
+  assert.deepEqual(store.record(ev('Notification', NOW + 1, { session_id: 'other', notification_type: 'idle_prompt' }), NOW + 5400), { open: 2, stale: false });
+  // An event with no `at` (the 11-11 entry) can't be ordered, so it is taken, and
+  // it leaves the newest `at` as it was.
+  assert.deepEqual(store.record(ev('Stop', undefined), NOW + 5500), { open: 1, stale: false });
+  assert.deepEqual(store.record(ev('Notification', NOW + 4500), NOW + 5600), { open: 1, stale: true }, 'still older than the prompt at +5 s');
+});
+
+test('the newest-seen times lapse with the waits and are capped', () => {
+  const v = (sid, at) => ({ event: 'Stop', sessionId: sid, kind: null, at });
+  let seen = noteSeen(new Map(), v(SID, NOW + 9000), NOW);
+  assert.equal(isStaleEvent(seen, v(SID, NOW)), true);
+  assert.equal(isStaleEvent(seen, v('other', NOW)), false);
+  assert.equal(isStaleEvent(seen, { ...v(SID, null) }), false, 'no `at`, never stale');
+  assert.equal(noteSeen(seen, v('x', null), NOW + NEEDS_YOU_TTL_MS - 1).has(SID), true);
+  assert.equal(noteSeen(seen, v('x', null), NOW + NEEDS_YOU_TTL_MS).has(SID), false, 'gone with the 30 minutes a wait lives');
+  assert.equal(noteSeen(seen, v(SID, null), NOW + MIN).get(SID).at, NOW + 9000, 'an event with no `at` leaves the newest as it was');
+  assert.equal(NEEDS_YOU_SEEN_MAX, 200);
+  seen = new Map();
+  for (let i = 0; i < 205; i++) seen = noteSeen(seen, v(`s${i}`, NOW), NOW + i);
+  assert.equal(seen.size, 200);
+  assert.equal(seen.has('s4'), false);
+  assert.equal(seen.has('s5'), true);
+  // A session seen again moves to the back, so it is not the next to go.
+  seen = noteSeen(seen, v('s5', NOW + 1), NOW + 300);
+  seen = noteSeen(seen, v('new', NOW), NOW + 301);
+  assert.equal(seen.has('s5'), true);
+  assert.equal(seen.has('s6'), false);
 });
 
 // ---- the route ----
@@ -192,6 +242,15 @@ test('POST /api/ingest/needs-you records a wait the dashboard then lists, with n
   const cleared = await call(h, 'POST', '/api/ingest/needs-you', hook({ hook_event_name: 'PostToolUse' }));
   assert.deepEqual(JSON.parse(cleared.body), { ok: true, open: 0 });
   assert.deepEqual(JSON.parse((await call(h, 'GET', '/api/dashboard')).body).needsYou, []);
+  // A "waiting" post that lands after the clear that followed it is answered, logged
+  // and ignored.
+  const late = await call(h, 'POST', '/api/ingest/needs-you', hook({ hook_event_name: 'Stop', at: Date.now() }));
+  assert.deepEqual(JSON.parse(late.body), { ok: true, open: 0 });
+  const stale = await call(h, 'POST', '/api/ingest/needs-you', hook({ at: Date.now() - 3000 }));
+  assert.equal(stale.statusCode, 200);
+  assert.deepEqual(JSON.parse(stale.body), { ok: true, open: 0, stale: true });
+  assert.equal(d.logged.at(-1), 'needs-you: Notification (permission), older than the last event seen, ignored, 0 open');
+  assert.deepEqual(JSON.parse((await call(h, 'GET', '/api/dashboard')).body).needsYou, []);
 });
 
 test('a wait older than five minutes is an alert on the dashboard and a counted push', async () => {
@@ -236,4 +295,31 @@ test('the ingest keeps the board\'s guards and says what is wrong; without a sto
   const bare = createHandler({ cache: d.cache, todos: d.todos, config: d.config });
   assert.equal((await call(bare, 'POST', '/api/ingest/needs-you', hook())).statusCode, 503);
   assert.deepEqual(JSON.parse((await call(bare, 'GET', '/api/dashboard')).body).needsYou, []);
+});
+
+// ---- the README's hook entry ----
+
+test('the README\'s hook entry: every command sends `at`, ends in `|| true`, and its body passes the check', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+  const section = readme.slice(readme.indexOf('### A session waiting on you'));
+  const entry = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)[1]);
+  const commands = Object.values(entry.hooks).flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)));
+  assert.equal(commands.length, 5);
+  for (const c of commands) {
+    assert.match(c, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,notification_type,at:\(now\*1000\|floor\)\}' \| curl -s /, c);
+    assert.match(c, / >\/dev\/null \|\| true$/, c);
+  }
+  // Where macOS's jq is there, the filter itself: the hook's JSON in, a body the
+  // check takes out, with `at` in milliseconds now.
+  const { existsSync } = await import('node:fs');
+  if (!existsSync('/usr/bin/jq')) return;
+  const { execFileSync } = await import('node:child_process');
+  const filter = commands[0].match(/^\/usr\/bin\/jq -c '([^']+)'/)[1];
+  const before = Date.now();
+  const out = JSON.parse(execFileSync('/usr/bin/jq', ['-c', filter], { input: JSON.stringify(hook()) }).toString());
+  assert.deepEqual(Object.keys(out).sort(), ['at', 'hook_event_name', 'notification_type', 'session_id']);
+  const checked = checkNeedsYou(out);
+  assert.equal(checked.ok, true, checked.error);
+  assert.ok(checked.value.at >= before - 1000 && checked.value.at <= Date.now() + 1000, 'milliseconds, not seconds');
 });

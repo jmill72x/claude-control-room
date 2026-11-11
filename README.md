@@ -545,15 +545,22 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
 ### A session waiting on you
 
 `POST /api/ingest/needs-you` takes the JSON a Claude Code hook receives on stdin and
-records that the session it names waits for a person, or has moved on. It reads three
+records that the session it names waits for a person, or has moved on. It reads four
 fields and keeps one: `hook_event_name` (`Notification` or `PermissionRequest` open a
 wait; `PostToolUse`, `UserPromptSubmit`, `Stop` and `SessionEnd` end it; anything else is
 400), `session_id` (kept, in memory only, to match the clear), and for a Notification its
 `notification_type` (`permission_prompt`, `idle_prompt` and `elicitation_dialog` open a
-wait; any other type, such as `auth_success`, ends one). The message text, the tool's
-input, the transcript path and the working directory are never read, and the hook entry
-below filters them out before sending (a body of exactly those three fields, with
-`notification_type` null for events that have none, is the normal case). At most 20 waits
+wait; any other type, such as `auth_success`, ends one), and `at`, when the hook ran
+(whole milliseconds since 1970; optional). The message text, the tool's input, the
+transcript path and the working directory are never read, and the hook entry below
+filters them out before sending (a body of exactly those four fields, with
+`notification_type` null for events that have none, is the normal case). The hooks run
+async, so their posts can land out of order: a "waiting" post arriving after the clear
+that followed it would leave a stale card. So the server keeps the newest `at` it has
+taken for each session (in memory, for 30 minutes, at most 200 sessions) and ignores an
+event older than that, answering `{ ok: true, open, stale: true }` and logging it
+(`needs-you: Notification (permission), older than the last event seen, ignored, 0 open`).
+An event with no `at` can't be ordered, so it is always taken, as before. At most 20 waits
 are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
 
 `/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
@@ -572,17 +579,17 @@ host's own loopback address:
 ```json
 {
   "hooks": {
-    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 1 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }]
+    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 1 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
   }
 }
 ```
 
-Each hook filters before it sends: `jq` keeps the three fields the server reads, so the
-message text, the tool's input and the transcript path never leave the session (the
+Each hook filters before it sends: `jq` keeps the three fields the server reads and adds
+`at` (jq's `now` is in seconds, hence `now*1000|floor`), so the message text, the tool's input and the transcript path never leave the session (the
 server drops anything else anyway). The path is spelled out because a hook runs with a
 short PATH: macOS ships `/usr/bin/jq` (checked on the Serve host); a Homebrew jq would be
 `/opt/homebrew/bin/jq`, and there isn't one on that machine. `"async": true` runs the hook
@@ -593,8 +600,12 @@ hook runs as the process leaves and shares a 1.5 s budget. The `Notification` ma
 names the three types that open a wait, so a sign-in or a plugin notice posts nothing. The
 `PermissionRequest` event is not hooked: its payload is unconfirmed against the docs for
 2.1.321, and the `Notification` hook with `permission_prompt` is the documented path; the
-server still accepts a `PermissionRequest` post as an opening event. A hook that can't
-reach the server exits 0 (curl's `-s`, output dropped) and the session goes on.
+server still accepts a `PermissionRequest` post as an opening event. Each command ends in
+`|| true`, so the hook always exits 0 and the session goes on: without it, a curl that
+can't reach the server exits 7 (curl's `-s` only silences curl's own messages), and the
+pipe's status is curl's alone, so a jq failure was never seen either way. A post that
+fails (no server, or jq's empty output, which the server answers with a 400) records
+nothing; it leaves no trace in the session, only a missing line in the service log.
 
 ### Acknowledging a known miss
 

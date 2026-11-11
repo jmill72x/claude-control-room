@@ -281,15 +281,16 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
 
       // A Claude Code hook posting that a session waits for a person, or moved on
       // (lib/needs-you.mjs). The ingest guards; the body is the hook's own JSON, of
-      // which three fields are read and the session's id is the only one kept.
+      // which four fields are read and the session's id is the only one kept (with
+      // the newest `at` per session, to drop a post that arrives out of order).
       if (path === '/api/ingest/needs-you' && req.method === 'POST') {
         guardWrite(req);
         if (!needsYou.record) throw new HttpError(503, 'needs-you is not set up on this server');
         const checked = checkNeedsYou(await readBody(req));
         if (!checked.ok) throw new HttpError(400, checked.error);
-        const open = needsYou.record(checked.value, Date.now());
-        log(needsYouLogLine(checked.value, open));
-        return json(res, 200, { ok: true, open });
+        const { open, stale } = needsYou.record(checked.value, Date.now());
+        log(needsYouLogLine(checked.value, open, stale));
+        return json(res, 200, stale ? { ok: true, open, stale: true } : { ok: true, open });
       }
 
       const ingest = path.match(/^\/api\/ingest\/(crons|projects|credits)$/);

@@ -31,8 +31,14 @@ const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const fail = error => ({ ok: false, error });
 const pass = value => ({ ok: true, value });
 
-// The hook's JSON, down to the three fields read: { event, sessionId, kind }.
-// `kind` is null for a clear, and for a Notification that opens nothing.
+// At most this many sessions' newest event times are kept for ordering, each for
+// as long as a wait lives.
+export const NEEDS_YOU_SEEN_MAX = 200;
+
+// The hook's JSON, down to the four fields read: { event, sessionId, kind, at }.
+// `kind` is null for a clear, and for a Notification that opens nothing. `at` is
+// when the hook ran (epoch ms, the hook entry's `(now*1000|floor)`), or null from
+// an entry that sends none; the hooks run async, so posts can arrive out of order.
 export function checkNeedsYou(body) {
   if (!isObject(body)) return fail('the body must be the hook\'s JSON object');
   const event = body.hook_event_name;
@@ -47,7 +53,9 @@ export function checkNeedsYou(body) {
     if (type !== undefined && type !== null && (typeof type !== 'string' || !WORD.test(type))) return fail('notification_type must be a word');
     kind = Object.hasOwn(WAIT_KINDS, type ?? '') ? WAIT_KINDS[type] : null;
   }
-  return pass({ event, sessionId: body.session_id, kind });
+  const at = body.at ?? null;
+  if (at !== null && !(Number.isSafeInteger(at) && at >= 0)) return fail('at must be a time in whole milliseconds since 1970');
+  return pass({ event, sessionId: body.session_id, kind, at });
 }
 
 // The list after one event. An opening event with a kind replaces the session's
@@ -91,16 +99,42 @@ export function needsYouAlerts(waits, now) {
   return out;
 }
 
+// Out-of-order posts. `seen` maps a session to the newest `at` taken for it (and
+// when that arrived). An event whose `at` is older than that is stale: an async
+// "waiting" post landing after the clear that followed it would otherwise leave a
+// wait nobody has. An event with no `at` can't be ordered, so it always counts.
+export const isStaleEvent = (seen, value) =>
+  value.at !== null && seen.has(value.sessionId) && value.at < seen.get(value.sessionId).at;
+
+// The map after a taken event: its `at` noted, lapsed entries dropped, the oldest
+// going first past NEEDS_YOU_SEEN_MAX.
+export function noteSeen(seen, value, now) {
+  const next = new Map([...seen].filter(([, e]) => now - e.receivedAt < NEEDS_YOU_TTL_MS));
+  if (value.at === null) return next;
+  next.delete(value.sessionId);
+  next.set(value.sessionId, { at: value.at, receivedAt: now });
+  while (next.size > NEEDS_YOU_SEEN_MAX) next.delete(next.keys().next().value);
+  return next;
+}
+
 // The store: in memory only. A restart forgets every wait, and the next hook
-// event (or the hook's clear) sets it straight.
+// event (or the hook's clear) sets it straight. `record` answers { open, stale }:
+// a stale event changes nothing.
 export function createNeedsYouStore({ whoFor = () => null } = {}) {
   let list = [];
+  let seen = new Map();
   return {
-    record: (value, now = Date.now()) => { list = recordNeedsYou(list, value, now); return list.length; },
+    record: (value, now = Date.now()) => {
+      if (isStaleEvent(seen, value)) return { open: activeWaits(list, now).length, stale: true };
+      seen = noteSeen(seen, value, now);
+      list = recordNeedsYou(list, value, now);
+      return { open: list.length, stale: false };
+    },
     view: (now = Date.now()) => needsYouView(list, whoFor, now),
     size: (now = Date.now()) => activeWaits(list, now).length
   };
 }
 
 // The log's line: the event and the kind, never the session.
-export const needsYouLogLine = (value, open) => `needs-you: ${value.event}${value.kind ? ` (${value.kind})` : ''}, ${open} open`;
+export const needsYouLogLine = (value, open, stale = false) =>
+  `needs-you: ${value.event}${value.kind ? ` (${value.kind})` : ''}${stale ? ', older than the last event seen, ignored' : ''}, ${open} open`;
