@@ -105,8 +105,11 @@ export function runPoster(file, args, { input }) {
 // channel that is down make every five-minute run post it again on the one
 // that works. Each channel's own result is attached for callers; runNotifier
 // reads only `sent`.
-export async function sendAlert({ topic, title, message, ntfy = publish, discord = publishDiscord }) {
-  const viaNtfy = await ntfy({ topic, title, message });
+// `ntfyMessage`, when given, is what ntfy gets in place of `message`: ntfy shows on a
+// lock screen, so the chat's alerts send it generic words and keep the details for
+// #pepper (approvals, Ultron L10).
+export async function sendAlert({ topic, title, message, ntfyMessage = null, ntfy = publish, discord = publishDiscord }) {
+  const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message });
   const viaDiscord = await discord({ title, message });
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
 }

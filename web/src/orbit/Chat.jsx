@@ -10,7 +10,8 @@ import { holdReload } from './buildWatch.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine,
+  quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho
 } from '../lib/orbit/chat.js';
 
@@ -176,7 +177,11 @@ function Thread({ chat, now, lead, onSettings }) {
   }, [chat, hasOlder, loadingOlder, messages.length]);
 
   const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now);
-  const cards = [...chat.permissions.values()].map(p => permissionView(p, now)).filter(p => p && p.view !== 'closed');
+  // Every card but a closed one past its 10 minutes: an answered card stays to say
+  // what was sent, until dismissed.
+  const approvalContext = { approver: chat.device?.approver === true, approvals: chat.status?.approvals ?? null };
+  const cards = [...chat.permissions.values()].map(p => permissionView(p, now, approvalContext))
+    .filter(p => p && !(p.view === 'closed' && now - (p.answeredAt ?? p.openedAt) >= 10 * 60e3));
 
   return (
     <div className={`o-chat o-chat-thread-page${dragging > 0 ? ' o-chat-dropping' : ''}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
@@ -269,44 +274,102 @@ function Row({ m, list, lead, chat, onReply, onView }) {
   );
 }
 
-// ---- permission cards (§2.1) ----
+// ---- permission cards (approvals design §5.3) ----
+
+// One field of the preview, as text: what Claude Code marked as hidden is set
+// apart (never rendered as anything but text).
+function FieldText({ text }) {
+  return markerSegments(text).map((seg, i) => (seg.marker
+    ? <mark key={i} className="o-chat-card-marker">{seg.text}</mark>
+    : <span key={i}>{seg.text}</span>));
+}
 
 function PermissionCard({ p, chat, now }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
-  const expired = p.view === 'expired';
-  const age = Math.max(0, Math.floor((now - p.openedAt) / 1000));
+  const [armedAt, setArmedAt] = useState(null);
+  // The armed Allow falls back after 4 s, re-rendered by its own timer.
+  useEffect(() => {
+    if (armedAt === null) return undefined;
+    const t = setTimeout(() => setArmedAt(null), ALLOW_ARM_MS);
+    return () => clearTimeout(t);
+  }, [armedAt]);
+  const age = Math.max(0, Math.floor((now - (p.relayedAt ?? p.openedAt)) / 1000));
   const answer = async behavior => {
     setBusy(behavior);
     setError(null);
+    setArmedAt(null);
     const r = await chat.verdict(p.requestId, behavior);
     setBusy(null);
     if (!r.ok) setError(r.error);
   };
+  const onAllow = () => {
+    if (allowArmed(armedAt, Date.now())) answer('allow');
+    else setArmedAt(Date.now());
+  };
+  // Enter never answers a card: only a tap (or Space) does.
+  const noEnter = e => { if (e.key === 'Enter') e.preventDefault(); };
+  const fields = cardFields(p);
+  const label = { open: 'Jarvis asks', expired: 'Expired request', terminal: 'Answer at the terminal', closed: 'Answered here' }[p.view] ?? 'Jarvis asks';
   return (
-    <section className={`o-chat-card${expired ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`}>
+    <section className={`o-chat-card${p.view !== 'open' ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`} onKeyDown={noEnter}>
       <div className="o-chat-card-head">
-        <span className="o-chat-label">{expired ? 'Expired request' : 'Jarvis asks'}</span>
+        <span className="o-chat-label">{label}</span>
         <span className="o-chat-sub">{age < 60 ? `${age} s ago` : `${Math.floor(age / 60)} min ago`}</span>
       </div>
       <h3 className="o-chat-card-tool o-mono">{p.tool}</h3>
-      {p.description && <p className="o-chat-card-desc">{p.description}</p>}
-      {p.inputPreview
-        ? <pre className="o-mono o-chat-card-input" tabIndex={0} aria-label="The full input">{p.inputPreview}</pre>
-        : <p className="o-chat-sub">No input preview.</p>}
-      {expired
-        ? (
-          <div className="o-chat-card-expired-note">
-            <span>This request expired after 10 minutes. It may already be answered in Discord.</span>
-            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
+      {p.why && <p className="o-chat-card-why">{p.why}</p>}
+      {fields.length
+        ? fields.map(([k, v]) => (
+          <div key={k} className="o-chat-card-field">
+            <span className="o-chat-card-key o-mono">{k}</span>
+            <pre className="o-mono o-chat-card-input" tabIndex={0} aria-label={`The ${k}`}><FieldText text={v} /></pre>
           </div>
-        )
-        : (
+        ))
+        : <p className="o-chat-sub">No input preview.</p>}
+      {hasMarker(p) && <p className="o-chat-card-hidden">Part of this request is hidden or cut short, so it can only be denied here.</p>}
+      {p.description && (
+        <div className="o-chat-card-summary">
+          <span className="o-chat-card-key">Jarvis's own summary</span>
+          <p className="o-chat-card-desc">{p.description}</p>
+        </div>
+      )}
+      {p.view === 'closed' && (
+        <div className="o-chat-card-expired-note">
+          <span>{sentLine(p)}</span>
+          <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
+        </div>
+      )}
+      {p.view === 'expired' && (
+        <div className="o-chat-card-expired-note">
+          <span>This request expired here after 10 minutes. Answer it in Discord or at the terminal.</span>
+          <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
+        </div>
+      )}
+      {p.view === 'terminal' && (
+        <div className="o-chat-card-expired-note">
+          <span>{p.state === 'late' ? 'This one reached the page late.' : 'This request repeats an earlier one.'} It can only be answered at the terminal.</span>
+          <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
+        </div>
+      )}
+      {p.view === 'open' && (
+        <>
+          {!p.canAllow && (
+            <div className="o-chat-card-denyonly">
+              <span>Allow this one at the terminal or in Discord.</span>
+              {p.denyOnly?.length > 0 && <ul>{p.denyOnly.map(r => <li key={r}>{r}</li>)}</ul>}
+            </div>
+          )}
           <div className="o-chat-card-actions">
             <button type="button" className="o-cbtn o-cbtn-deny" disabled={busy !== null} onClick={() => answer('deny')}>{busy === 'deny' ? 'Denying…' : 'Deny'}</button>
-            <button type="button" className="o-cbtn o-cbtn-allow" disabled={busy !== null} onClick={() => answer('allow')}>{busy === 'allow' ? 'Allowing…' : 'Allow once'}</button>
+            {p.canAllow && (
+              <button type="button" className={`o-cbtn o-cbtn-allow${armedAt !== null ? ' o-cbtn-armed' : ''}`} disabled={busy !== null} onClick={onAllow}>
+                {busy === 'allow' ? 'Allowing…' : armedAt !== null ? 'Tap again to allow' : 'Allow once'}
+              </button>
+            )}
           </div>
-        )}
+        </>
+      )}
       {error && <p className="o-chat-card-error" role="alert">Couldn't answer: {error}</p>}
     </section>
   );

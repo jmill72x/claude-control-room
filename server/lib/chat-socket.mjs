@@ -102,7 +102,13 @@ export function toInbound(m, { eventOk = () => false } = {}) {
   if (m.from === 'jeff' && m.kind === 'chat') {
     return { type: 'message', seq: m.seq, id: m.id, at: m.at, text: m.text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
   }
-  if (m.kind === 'verdict') return { type: 'verdict', seq: m.seq, requestId: m.meta?.requestId ?? null, behavior: m.meta?.behavior ?? m.text, device: m.device ?? null };
+  // A verdict only from the owner's side and naming its request (L8): the store makes
+  // them from a device's tap alone, and anything else in the store is never one.
+  if (m.kind === 'verdict') {
+    const behavior = m.meta?.behavior;
+    if (m.from !== 'jeff' || typeof m.meta?.requestId !== 'string' || (behavior !== 'allow' && behavior !== 'deny')) return null;
+    return { type: 'verdict', seq: m.seq, requestId: m.meta.requestId, behavior, answeredAt: Number.isSafeInteger(m.meta.answeredAt) ? m.meta.answeredAt : null, device: m.device ?? null };
+  }
   return null;
 }
 // The name the tests and older callers know.
@@ -126,6 +132,8 @@ export function summaryLine(events) {
 // event is ever delivered.
 export function createSocketRouter({
   store, events = null, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS, inboundBufferMax = INBOUND_BUFFER_MAX,
+  // The approvals gate (lib/approvals.mjs); without one, permission requests are refused.
+  approvals = null,
   verifyRestart = async () => ({ ok: false, reason: 'no verifier' }),
   // Check every hello without the current token, not only after a bye (set once
   // config's chat.channelServer is).
@@ -242,6 +250,9 @@ export function createSocketRouter({
         client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null, events };
         const { token } = client;
         endInbound(holder ? 'superseded' : 'replaced');
+        // A new channel process: the requests the old one relayed can't be answered
+        // through this one (L7). The holder's own re-hello keeps them.
+        if (!holder) store.newPermissionSession?.();
         if (silenceTimer !== null) { clearTimer(silenceTimer); silenceTimer = null; }
         if (byeAt !== null) {
           // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.
@@ -456,11 +467,20 @@ export function createSocketRouter({
         return res.end(data);
       }
       if (req.method === 'POST' && path === '/v1/permission-request') {
-        const body = await readBody(req);
+        // Approvals off (config, or the kill file): refused, which the channel takes as
+        // final, so the prompt stays in the terminal and Discord only.
+        if (!approvals || approvals.mode() === 'off') throw new HttpError(403, 'approvals are off on this server');
+        const body = await readBody(req, 512 * 1024);
         if (!isObject(body)) throw new HttpError(400, 'the body must be an object');
         let p;
-        try { p = await store.openPermission({ requestId: body.requestId, tool: body.tool, description: body.description, inputPreview: body.inputPreview }); } catch (err) { throw new HttpError(400, err.message); }
-        onEvent({ kind: 'permission-opened', requestId: p.requestId, tool: p.tool });
+        try {
+          p = await store.openPermission(
+            { requestId: body.requestId, tool: body.tool, description: body.description, inputPreview: body.inputPreview, relayedAt: body.relayedAt ?? null, cut: body.cut === true },
+            { assess: q => approvals.assess(q) }
+          );
+        } catch (err) { throw new HttpError(400, err.message); }
+        approvals.noteOpenCount?.(store.openPermissions().length);
+        onEvent({ kind: 'permission-opened', requestId: p.requestId, tool: p.tool, state: p.state });
         return json(res, 200, { requestId: p.requestId, state: p.state, openedAt: p.openedAt });
       }
       return json(res, 404, { error: 'not found' });

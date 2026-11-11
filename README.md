@@ -764,8 +764,8 @@ three pieces, each with its own router:
   event first, then a replay after `Last-Event-ID` or `?after=` with the seq as each
   event's id, then live `message`, `edit`, `state`, `permission` and `permission-closed`
   events, a `: ping` and a `status` every 20 s), the verdict (`POST
-  /api/chat/permission/<id> {behavior}`, single use, first answer wins, logged with the
-  device's name) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
+  /api/chat/permission/<id> {behavior, shown}`, single use, first answer wins, logged with the
+  device's name; its rules are under "Approvals as buttons" below) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
   minutes unanswered, offline after 45 s without a heartbeat, or 20 s once the channel's
   inbound stream has closed from its end; it also names the asking device, `device: {id,
   name}`, for the settings sheet's "this device" mark).
@@ -836,10 +836,8 @@ three pieces, each with its own router:
   stream's `status` events: online (a dot), "Jarvis is offline since HH:MM. Messages wait
   here and reach him when he's back.", "Delivered N m ago, no answer yet", or "waiting on
   you", which the open cards decide on the page between pings (offline wins over it). An open permission request
-  is a card pinned over the composer: the tool, the description, the full input preview in
-  a scrollable monospace block, and Deny and Allow once as two equal buttons (`POST
-  /api/chat/permission/<id>`); after 10 minutes the card reads "may already be answered in
-  Discord" with a Dismiss. The settings sheet (the dots button in the banner) lists the
+  is a card pinned over the composer (see "Approvals as buttons" below for its layout and
+  rules). The settings sheet (the dots button in the banner) lists the
   paired devices with "this device" marked, a two-tap Revoke, and a field to approve
   another device's code. The tab keeps the Orbit page's strict policy (no inline script or
   style attributes; the composer's height is set through the CSSOM), 44 px targets, Reduce
@@ -933,7 +931,8 @@ second factor the Serve proxy adds, never the credential, since a local process 
 it. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
-log and pushed like an alert (ntfy and the feed). A refused channel and a takeover push at
+log and pushed like an alert: the details to #pepper, and to ntfy (which shows on a lock
+screen) only the generic "A chat security event on the Control Room: details in #pepper". A refused channel and a takeover push at
 most once per kind per 10 minutes (`server/lib/chat-alert-limit.mjs`), since a channel
 stuck in a restart loop would otherwise push on every try: the rest are held back and
 counted, the count riding on the kind's next push ("… (and 3 more held back in the last 10
@@ -947,6 +946,118 @@ started by mistake never pulls the live one's socket away; a problem there keeps
 off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-limit.test.mjs`, over real temp Unix
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
+
+### Approvals as buttons (Jarvis OS; built, switched off)
+
+Design and decisions: `docs/design/2026-11-11-jarvis-os-approvals.md` (with Ultron's 11-11
+findings folded in). Claude Code's channel permission relay sends a tool-approval prompt
+of the lead's session to the terminal, the Discord DM and the Jarvis OS channel at once,
+and applies whichever answer comes first. The page can show such a prompt as a card and
+send Deny or Allow once. Everything here is off until three switches agree:
+
+- **The server's mode,** config `chat.approvals`: `"off"` (the default, and any value it
+  doesn't understand), `"deny"` (cards with Deny only) or `"on"` (Deny and Allow once).
+  While off, `POST /v1/permission-request` and the verdict route both answer 403, which
+  the channel reads as final, so the prompt stays in the terminal and Discord. Every start
+  with approvals on is alerted, and so is any start whose mode differs from the last one
+  (kept in `data/chat/approvals-mode.json`).
+- **The kill file** `~/.local/state/jarvis-os/approvals-off`, checked on every request: while
+  it exists the server is off, without a restart. Its creation and removal are alerted.
+- **The channel's own mode,** set by `jarvis-start` on claude's exec (Jarvis's repo):
+  `JARVIS_CHANNEL_PERMISSION_RELAY` is unset unless the flag file
+  `~/.local/state/jarvis-os/approvals-enabled` exists (then `deny`: the channel relays
+  and delivers only Deny), and it is `allow` only when the second flag `approvals-allow`
+  exists too. Only the owner creates the flags; the server's mode alone can never let
+  Allow through.
+
+**A request** (`POST /v1/permission-request {requestId, tool, description, inputPreview,
+relayedAt, cut}` from the channel) keeps each field whole up to 16,100 code points (Claude
+Code sends each top-level field of a preview up to 3,500; the channel keeps 16,000 and
+marks its own cut, and the extra 100 leave room for that marker); a longer one is cut,
+marked "⋯ N code points cut by the Control Room ⋯" and Deny-only. Expiry is 10 minutes from
+`relayedAt` (when the channel got the prompt); a request more than 2 minutes old on
+arrival is `late`, shown with "answer at the terminal" and no buttons. Requests are keyed
+by the channel session and id: a hello from a new channel process expires every open one
+(the holder's own re-hello keeps them), and an id seen again in the same session opens a
+`repeat` entry nobody can answer here (Claude Code drops channel verdicts for a repeated
+id). The description is model text: one that looks like it holds a credential
+(`secret-shape.mjs`) is replaced on disk by a fixed line, and the card shows it from
+memory only. The preview stays in memory and is dropped after 24 hours.
+
+**The card** (Chat tab) leads with the real thing: the tool, then the preview's fields
+parsed from its JSON, the command, file path or address first, each in a monospace block
+that wraps, never cut by the page; then the description under "Jarvis's own summary", in a
+quieter style. Every field is a text node, never Markdown or a link. When a classifier
+block for the same tool came just before (see the hook below), the card says why it is
+asking ("Auto mode refused this Bash call (Data Exfiltration), so Claude Code is asking
+you"). Deny is one tap; Allow once is a two-step press ("Tap again to allow", 4 s). A
+Deny-only card shows its reasons and "Allow this one at the terminal or in Discord" in
+place of Allow. After a tap it reads "Deny sent from <device> at 14:02. Claude Code uses
+it if the prompt was still open": the page never knows more, because there is no
+"closed" signal from Claude Code.
+
+**The verdict route** (`POST /api/chat/permission/<id> {behavior, shown}`) checks, in
+order: the write guard; the mode (off answers 403 to anyone); the device cookie and login
+(a refusal with no device behind it is counted apart and can lock nobody out, alerted past
+10 in 10 minutes); the device's lockout (10 refused taps in 10 minutes lock it out of
+verdicts for 10 minutes, alerted); its limits (6 a minute, 30 an hour); the `Origin`
+(required, `https`, one of `allowedHosts`) and `Sec-Fetch-Site` (when sent,
+`same-origin`); `shown`, the sha256 of `JSON.stringify([tool, description, inputPreview])`
+as delivered, which must match; for Allow, mode `on`, the device's approver mark, and no
+Deny-only reason at that moment. Every refusal changes nothing. The verdict line carries
+`answeredAt`, the tool, the hash and whether the request was Deny-only; the channel's
+inbound stream sends a verdict only when it is the owner's and names its request, and the
+channel drops one older than 120 s. More than 3 allows in 5 minutes, or more than 5 open
+requests at once (which also makes cards Deny-only for 10 minutes), are alerted.
+
+**Deny-only (`server/lib/approvals.mjs`, `denyOnlyReasons`)** is an allowlist, not a
+security boundary: it makes the riskiest requests need the terminal or Discord. Allow may
+be offered only when none of these holds: a field carries an elision, `[REDACTED]`,
+`(value unserializable)` or a cut; the preview isn't a JSON object; config's
+`chat.approvalsDenyOnly` patterns match; Bash is anything but one plain command (no
+`` ; | & $ ` > < ( ) ``, newline, quotes, backslash, globs or braces, no `-c`, `--output`,
+`--pre`) whose first word is one of `ls cat head tail wc grep rg diff stat file pwd date
+echo touch mkdir which du df` or `git status|diff|log|show|rev-parse`; any path named
+(normalised for `~`, `..`, case and the real path of its parent; a relative path with `..`
+is out) is under `.claude/`, `.mcp.json`, `.git/`, `.github/workflows`,
+`machine-setup/git-hooks`, `~/Projects/jarvis/`, `server/config.json`, `bin/chat-pair`,
+`~/.local/state/jarvis-os/`, `~/.ssh`, a shell startup file (`~/.zshenv` and the rest),
+`~/Library/LaunchAgents` or a system folder; Edit, Write and NotebookEdit the same, with
+an absolute path; Read, Glob and Grep of the channels folder, `~/.ssh`, `.env` files or
+keys; WebFetch of anything but a plain `https` address with no query string on a short
+list of documentation sites; and any tool not named here. The page can Deny anything.
+After a classifier block in the lead's session, every card is Deny-only for 15 minutes.
+
+**Approvers.** Every paired device sees cards and may Deny; only a device with the
+approver mark may Allow. The mark is set only on the Serve host, over the admin socket:
+`bin/chat-pair approver "<device name or id>" on|off` (`--devices` shows it); each change
+is alerted, and a revoke clears it.
+
+**Who can answer.** The relay reaches only the session that loaded the channel, the lead's.
+Its prompts can be answered at the terminal, in the Discord DM, through Remote Control
+(`--remote-control`), and on the page; the first answer wins. In auto mode most prompts
+are the classifier's fallbacks, so any surface can approve what auto mode refused: the
+owner accepted that risk (2026-11-11), and the Deny-only window below narrows it.
+
+**The classifier-block hook.** A `PermissionDenied` hook (auto mode's refusals only) posts
+to the needs-you ingest, which is loopback only. It decides nothing: it runs `async`, its
+output is ignored, and the server only logs it and, for the lead's session (or one the
+sessions panel can't name; another agent's own `--agent` run doesn't count), makes page
+cards Deny-only for 15 minutes. Only the tool's name and the classifier's reason are read
+(the reason only as a bracketed rule name or one of two fixed phrases); the tool's input
+never leaves the session. The entry, for `~/.claude/settings.json` (the owner adds it):
+
+```json
+{
+  "hooks": {
+    "PermissionDenied": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,reason,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
+  }
+}
+```
+
+The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
+`server/test/approvals.test.mjs`, plus the PermissionDenied ingest in
+`server/test/needs-you.test.mjs`.
 
 ### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
 

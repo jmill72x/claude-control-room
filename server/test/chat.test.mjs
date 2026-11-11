@@ -16,6 +16,7 @@ import { createDeviceStore, readCookie, cookieHeader, newCode, COOKIE_NAME, PAIR
 import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS, SESSION_HEADER } from '../lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig, chatState, dispositionFor, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
 import { secretShapes } from '../lib/secret-shape.mjs';
+import { createApprovals, shownHash } from '../lib/approvals.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
@@ -166,7 +167,6 @@ test('permissions: opened as a message, first answer wins, expiry at 10 minutes,
     assert.ok(isMessageId(p.messageId));
     assert.equal(store.get(p.messageId).kind, 'permission');
     assert.deepEqual(store.get(p.messageId).meta, { requestId: 'ABCDE', tool: 'Bash' });
-    assert.equal(await store.openPermission({ requestId: 'ABCDE', tool: 'Bash', description: 'again' }), p, 'a repeated id is the same request');
     await assert.rejects(store.openPermission({ requestId: 'bad id!' }), /requestId/);
     assert.equal(store.openPermissions().length, 1);
     assert.equal((await store.answerPermission('ABCDE', 'maybe', 'phone')).status, 400);
@@ -178,7 +178,9 @@ test('permissions: opened as a message, first answer wins, expiry at 10 minutes,
     const second = await store.answerPermission('ABCDE', 'deny', 'ipad');
     assert.equal(second.status, 409, 'first answer wins');
     const verdict = store.list({ after: 0 }).find(m => m.kind === 'verdict');
-    assert.deepEqual([verdict.from, verdict.text, verdict.replyTo, verdict.device, verdict.meta], ['jeff', 'allow', p.messageId, 'phone', { requestId: 'ABCDE', behavior: 'allow' }]);
+    assert.deepEqual([verdict.from, verdict.text, verdict.replyTo, verdict.device], ['jeff', 'allow', p.messageId, 'phone']);
+    assert.deepEqual(verdict.meta, { requestId: 'ABCDE', behavior: 'allow', answeredAt: clock.t, tool: 'Bash', shown: verdict.meta.shown, denyOnly: false });
+    assert.match(verdict.meta.shown, /^[a-f0-9]{64}$/);
     assert.deepEqual(events, ['message', 'permission', 'message', 'permission-closed']);
     // Expiry.
     const q = await store.openPermission({ requestId: 'FGHIJ', tool: 'Edit', description: 'edit a file', inputPreview: 'secret-ish' });
@@ -191,7 +193,8 @@ test('permissions: opened as a message, first answer wins, expiry at 10 minutes,
     assert.equal(store.permission('FGHIJ').inputPreview, null, 'the preview is gone after a day');
     void q;
     const longPreview = await store.openPermission({ requestId: 'KLMNO', tool: 'Bash', description: 'd', inputPreview: 'x'.repeat(5000) });
-    assert.equal(longPreview.inputPreview.length, 3500, 'capped at 3,500 code points');
+    assert.equal(longPreview.inputPreview, 'x'.repeat(5000), 'kept whole up to 16,000 code points (Ultron H1)');
+    assert.equal(longPreview.cut, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -380,6 +383,9 @@ const sse = text => text.split('\n\n').filter(b => b.trim()).map(block => {
 });
 
 const env = {};
+const PAGE_HOST = 'jos.example.test';
+// What the page sends with a verdict: its own https origin and Host.
+const pageHeaders = { host: PAGE_HOST, origin: `https://${PAGE_HOST}`, 'sec-fetch-site': 'same-origin' };
 before(async () => {
   env.dir = await mkdtemp(join(tmpdir(), 'chat-srv-'));
   env.clock = { t: 1794380000000 };
@@ -390,8 +396,11 @@ before(async () => {
   await env.store.load();
   env.devices = createDeviceStore({ path: join(env.dir, 'devices.json'), now, onEvent });
   await env.devices.load();
-  env.socket = createSocketRouter({ store: env.store, now, onEvent, log: () => {}, pingMs: 60 });
-  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: {}, now, onEvent, log: () => {}, pingMs: 60 });
+  // Approvals on, so the verdict routes are reachable here (test/approvals.test.mjs
+  // holds the rules); the page's name is the one allowed host.
+  env.approvals = createApprovals({ mode: 'on', now, onEvent, home: '/home/owner', realpath: () => null });
+  env.socket = createSocketRouter({ store: env.store, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals });
+  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals });
   env.admin = createAdminRouter({ devices: env.devices, onEvent });
   env.sockPath = join(env.dir, 'channel.sock');
   env.adminPath = join(env.dir, 'admin.sock');
@@ -527,7 +536,7 @@ test('pairing over TCP and the admin socket: the first device by chat-pair, the 
   env.phone = cookies[0].split(';')[0];
   const mine = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.equal(mine.status, 200);
-  assert.deepEqual(mine.json.device, paired.json.device, 'the status names the asking device');
+  assert.deepEqual(mine.json.device, { ...paired.json.device, approver: false }, 'the status names the asking device, not yet an approver');
   // A paired device asking /api/pair/status hears so: no device cookie set again,
   // only the pairing cookie cleared.
   const already = await tcp({ path: '/api/pair/status', headers: { cookie: env.phone } });
@@ -707,22 +716,34 @@ test('a permission request from the channel reaches the page as an event; the ve
   const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 300 });
   const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
   await new Promise(r => setTimeout(r, 40));
-  const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Bash', description: 'run the tests', inputPreview: 'npm test' } });
+  const preview = '{"command":"ls"}';
+  const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Bash', description: 'list the files', inputPreview: preview, relayedAt: env.clock.t } });
   assert.equal(opened.status, 200, opened.text);
   assert.equal(opened.json.state, 'open');
   assert.equal((await unix({ method: 'POST', path: '/v1/heartbeat' })).json.openPermissions, 1);
   const status = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.equal(status.json.state, 'waiting on you');
   assert.equal(status.json.openPermission.requestId, 'ABCDE');
-  assert.equal(status.json.openPermission.inputPreview, 'npm test');
-  const badBehavior = await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: { cookie: env.ipad }, body: { behavior: 'maybe' } });
-  assert.equal(badBehavior.status, 400);
-  assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', body: { behavior: 'allow' } })).status, 401);
-  const verdict = await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: { cookie: env.ipad }, body: { behavior: 'allow' } });
-  assert.deepEqual(verdict.json, { ok: true, state: 'allowed' });
-  const second = await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: { cookie: env.phone }, body: { behavior: 'deny' } });
+  assert.equal(status.json.openPermission.inputPreview, preview);
+  assert.deepEqual(status.json.openPermission.fields, [['command', 'ls']]);
+  assert.equal(status.json.openPermission.canAllow, true);
+  assert.deepEqual(status.json.approvals, { mode: 'on', denyOnlyUntil: null });
+  const shown = shownHash('Bash', 'list the files', preview);
+  const tap = (cookie, body, headers = pageHeaders) => tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: { ...headers, cookie }, body });
+  assert.equal((await tap(env.ipad, { behavior: 'maybe', shown })).status, 400);
+  assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: pageHeaders, body: { behavior: 'allow', shown } })).status, 401);
+  // Not an approver yet: Allow is refused, and nothing changes.
+  const notYet = await tap(env.ipad, { behavior: 'allow', shown });
+  assert.equal(notYet.status, 403);
+  assert.match(notYet.json.error, /may not allow/);
+  assert.equal(env.store.permission('ABCDE').state, 'open');
+  const mark = await call({ socketPath: env.adminPath, method: 'POST', path: '/admin/approver', body: { device: 'ipad', on: true } });
+  assert.equal(mark.status, 200, mark.text);
+  const verdict = await tap(env.ipad, { behavior: 'allow', shown });
+  assert.deepEqual(verdict.json, { ok: true, state: 'allowed', answeredAt: env.clock.t });
+  const second = await tap(env.phone, { behavior: 'deny', shown });
   assert.equal(second.status, 409);
-  assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ZZZZZ', headers: { cookie: env.phone }, body: { behavior: 'deny' } })).status, 404);
+  assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ZZZZZ', headers: { ...pageHeaders, cookie: env.phone }, body: { behavior: 'deny', shown } })).status, 404);
   const ev = env.events.find(e => e.kind === 'verdict');
   assert.deepEqual(ev, { kind: 'verdict', requestId: 'ABCDE', behavior: 'allowed', device: 'ipad', tool: 'Bash' });
   const page = sse((await live).text);
@@ -730,9 +751,11 @@ test('a permission request from the channel reaches the page as an event; the ve
   assert.deepEqual(page.filter(e => e.event === 'permission-closed').map(e => e.data.state), ['allowed']);
   assert.deepEqual(page.filter(e => e.event === 'message').map(e => e.data.kind), ['permission', 'verdict']);
   const sock = ndjson((await inbound).text);
-  assert.deepEqual(sock.filter(l => l.type === 'verdict').map(l => [l.requestId, l.behavior, l.device]), [['ABCDE', 'allow', 'ipad']]);
+  assert.deepEqual(sock.filter(l => l.type === 'verdict').map(l => [l.requestId, l.behavior, l.device, l.answeredAt]), [['ABCDE', 'allow', 'ipad', env.clock.t]]);
   assert.ok(!sock.some(l => l.type === 'message'), 'the permission message itself is not inbound: the channel asked it');
   assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } })).json.state, 'online');
+  // Leave the shared devices as they were.
+  await call({ socketPath: env.adminPath, method: 'POST', path: '/admin/approver', body: { device: 'ipad', on: false } });
 });
 
 test('status: online, waiting on you, slow after 10 minutes unanswered, offline when the heartbeat is stale', async () => {

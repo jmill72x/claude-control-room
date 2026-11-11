@@ -17,6 +17,7 @@ import { HEARTBEAT_FRESH_MS } from './chat-socket.mjs';
 import { readFile } from 'node:fs/promises';
 import { checkSubscription } from './webpush.mjs';
 import { readAllowedHosts } from './host-guard.mjs';
+import { verdictOriginProblem } from './approvals.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -76,7 +77,7 @@ const readRaw = (req, limit) => new Promise((resolve, reject) => {
 });
 
 // The chat status (§2.6): online, waiting on you, offline or slow, and since when.
-export function chatState({ socket, store, now }) {
+export function chatState({ socket, store, now, approvals = null }) {
   const open = store.openPermissions();
   const lastJarvis = store.lastJarvisAt();
   const lastJeff = store.lastJeffAt();
@@ -85,7 +86,12 @@ export function chatState({ socket, store, now }) {
   else if (open.length > 0) { state = 'waiting on you'; since = Math.min(...open.map(p => p.openedAt)); }
   else if (lastJeff && (!lastJarvis || lastJarvis < lastJeff) && now - lastJeff >= SLOW_AFTER_MS) { state = 'slow'; since = lastJeff; }
   else { state = 'online'; since = socket.helloAt; }
-  return { state, since: since ?? null, channelConnected: socket.channelConnected, lastHeartbeatAt: socket.lastHeartbeatAt, lastJarvisMessageAt: lastJarvis, openPermission: open.length > 0 ? store.publicPermission(open[0]) : null, openPermissions: open.length };
+  const pub = p => (approvals ? { ...store.publicPermission(p), ...approvals.view(p, now) } : store.publicPermission(p));
+  return {
+    state, since: since ?? null, channelConnected: socket.channelConnected, lastHeartbeatAt: socket.lastHeartbeatAt, lastJarvisMessageAt: lastJarvis,
+    openPermission: open.length > 0 ? pub(open[0]) : null, openPermissions: open.length,
+    approvals: approvals ? approvals.status(now) : { mode: 'off', denyOnlyUntil: null }
+  };
 }
 
 // Where a tap on a notification goes, from the subscribing page's Origin: kept only
@@ -105,7 +111,8 @@ export function notificationOrigin(raw, allowedHosts) {
 
 // `push` is the push service (lib/chat-push.mjs), or null while notifications are
 // off: its key, and the loopback hosts a scratch push service may use (tests only).
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS, push = null }) {
+// `approvals` is the gate (lib/approvals.mjs); without one, every verdict is refused.
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS, push = null, approvals = null }) {
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const notifyHosts = new Set(readAllowedHosts(config).names);
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
@@ -155,13 +162,17 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     }
   }
 
+  // A request as the page gets it: the store's fields plus the gate's view (mode, the
+  // reasons it is Deny-only now, whether Allow may be offered).
+  const pubPermission = p => (approvals ? { ...store.publicPermission(p), ...approvals.view(p, now()) } : { ...store.publicPermission(p), mode: 'off', canAllow: false });
+  const state = () => chatState({ socket: socket.status(), store, now: now(), approvals });
   const writeEvent = (res, name, id, data) => { try { res.write(`event: ${name}\n${id !== null ? `id: ${id}\n` : ''}data: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } };
   const eventFor = event => {
     if (event.type === 'message') return ['message', event.message.seq, publicMessage(event.message)];
     if (event.type === 'edit') return ['edit', null, publicMessage(event.message)];
     if (event.type === 'state') return ['state', null, { id: event.message.id, state: event.message.state }];
-    if (event.type === 'permission') return ['permission', null, store.publicPermission(event.request)];
-    if (event.type === 'permission-closed') return ['permission-closed', null, store.publicPermission(event.request)];
+    if (event.type === 'permission') return ['permission', null, pubPermission(event.request)];
+    if (event.type === 'permission-closed') return ['permission-closed', null, pubPermission(event.request)];
     return null;
   };
 
@@ -299,11 +310,11 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const lastId = Number.parseInt(req.headers?.['last-event-id'] ?? url.searchParams.get('after') ?? '', 10);
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
         res.write(`retry: 3000\n\n`);
-        writeEvent(res, 'status', null, chatState({ socket: socket.status(), store, now: now() }));
+        writeEvent(res, 'status', null, state());
         if (Number.isInteger(lastId)) {
           for (const m of store.list({ after: lastId, limit: 100 })) writeEvent(res, 'message', m.seq, publicMessage(m));
         }
-        for (const p of store.openPermissions()) writeEvent(res, 'permission', null, store.publicPermission(p));
+        for (const p of store.openPermissions()) writeEvent(res, 'permission', null, pubPermission(p));
         const unsubscribe = store.subscribe(event => { const e = eventFor(event); if (e) writeEvent(res, ...e); });
         const entry = { res, deviceId: device.id, stop: () => { clearInterval(timer); unsubscribe(); } };
         // Each ping re-checks the device: a revoke from any path ends the stream
@@ -311,7 +322,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const timer = setInterval(() => {
           if (!devices.isActive(device.id)) { closeStreams(device.id, 'revoked'); return; }
           try { res.write(': ping\n\n'); } catch { /* gone */ }
-          writeEvent(res, 'status', null, chatState({ socket: socket.status(), store, now: now() }));
+          writeEvent(res, 'status', null, state());
         }, pingMs);
         streams.add(entry);
         req.on('close', () => { streams.delete(entry); entry.stop(); streamClosedAt.set(device.id, now()); });
@@ -348,22 +359,12 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
 
       // ---- verdicts and status ----
       const perm = /^\/api\/chat\/permission\/([A-Za-z0-9_-]{1,64})$/.exec(path);
-      if (req.method === 'POST' && perm) {
-        guardWrite(req);
-        const device = requireDevice(req);
-        const body = await readBody(req);
-        if (!isRequestId(perm[1])) throw new HttpError(400, 'bad request id');
-        const r = await store.answerPermission(perm[1], isObject(body) ? body.behavior : null, device.name);
-        if (!r.ok) throw new HttpError(r.status, r.error);
-        log(`chat: permission ${perm[1]} ${r.request.state} by ${device.name}`);
-        onEvent({ kind: 'verdict', requestId: perm[1], behavior: r.request.state, device: device.name, tool: r.request.tool });
-        return json(res, 200, { ok: true, state: r.request.state });
-      }
+      if (req.method === 'POST' && perm) return await verdict(req, res, perm[1]);
       if (req.method === 'GET' && path === '/api/chat/status') {
         const device = requireDevice(req);
         // `device` is the asking device's own id and name (the Chat tab's settings
         // sheet marks "this device" with it); never another device's.
-        return json(res, 200, { ...chatState({ socket: socket.status(), store, now: now() }), seq: store.seq, epoch: store.epoch, streams: streams.size, device: { id: device.id, name: device.name } }, { 'Cache-Control': 'no-store' });
+        return json(res, 200, { ...state(), seq: store.seq, epoch: store.epoch, streams: streams.size, device: { id: device.id, name: device.name, approver: device.approver === true } }, { 'Cache-Control': 'no-store' });
       }
       return json(res, 404, { error: 'not found' });
     } catch (err) {
@@ -375,6 +376,43 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     }
   }
 
+  // A verdict (design §5.1 step 7, with Ultron's order): the write guard, the mode
+  // (off answers 403 to anyone), the device (a refusal with no device locks nobody
+  // out), its lockout and limits, the Origin rule, then the body: Allow needs mode
+  // "on" and an approver device, and the store checks the request is open, the
+  // `shown` hash matches and nothing makes it Deny-only now. Every refusal after the
+  // device is known counts toward its lockout, and changes nothing.
+  async function verdict(req, res, requestId) {
+    guardWrite(req);
+    if (!approvals || approvals.mode() === 'off') throw new HttpError(403, 'approvals are off on this server');
+    let device;
+    try { device = requireDevice(req); } catch (err) { approvals.noteAnonymousRefusal(); throw err; }
+    const refuse = (status, error) => { approvals.noteRefusal(device.id, device.name); log(`chat: a verdict from ${device.name} was refused (${status}: ${error})`); return new HttpError(status, error); };
+    const limited = approvals.check(device.id);
+    if (limited) throw refuse(limited.status, limited.error);
+    const originProblem = verdictOriginProblem(req.headers, notifyHosts);
+    if (originProblem) throw refuse(403, originProblem);
+    approvals.noteTap(device.id);
+    const body = await readBody(req);
+    const behavior = isObject(body) ? body.behavior : null;
+    const shown = isObject(body) && typeof body.shown === 'string' ? body.shown : null;
+    if (behavior !== 'allow' && behavior !== 'deny') throw refuse(400, 'behavior must be allow or deny');
+    if (!/^[a-f0-9]{64}$/.test(shown ?? '')) throw refuse(400, 'shown must be the hash of what the card showed');
+    if (behavior === 'allow') {
+      if (approvals.mode() !== 'on') throw refuse(403, 'approvals are Deny only for now; allow this one at the terminal or in Discord');
+      if (device.approver !== true) throw refuse(403, 'this device may not allow; answer at the terminal or in Discord');
+    }
+    const r = await store.answerPermission(requestId, behavior, device.name, {
+      shown, requireShown: true,
+      allowProblem: p => { const why = approvals.reasonsNow(p); return why.length ? `allow this one at the terminal or in Discord: ${why[0]}` : null; }
+    });
+    if (!r.ok) throw refuse(r.status, r.error);
+    log(`chat: permission ${requestId} ${r.request.state} by ${device.name}`);
+    if (behavior === 'allow') approvals.noteAllow();
+    onEvent({ kind: 'verdict', requestId, behavior: r.request.state, device: device.name, tool: r.request.tool });
+    return json(res, 200, { ok: true, state: r.request.state, answeredAt: r.request.answeredAt });
+  }
+
   // Which paths this router owns.
   const owns = path => path.startsWith('/api/chat/') || path.startsWith('/api/pair/') || path.startsWith('/api/push/') || path === '/api/devices' || path.startsWith('/api/devices/');
   // How many devices hold a stream open now (the push rule later: none in 10 s means push).
@@ -384,12 +422,14 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // null if it never had one in this run: the 10 s rule (lib/chat-push.mjs).
   const lastStream = id => ([...streams].some(s => s.deviceId === id) ? 'open' : streamClosedAt.get(id) ?? null);
 
-  return { handler, owns, streaming, lastStream, sweepUploads, chatState: () => chatState({ socket: socket.status(), store, now: now() }), HEARTBEAT_FRESH_MS };
+  return { handler, owns, streaming, lastStream, sweepUploads, chatState: () => state(), HEARTBEAT_FRESH_MS };
 }
 
 // The admin socket's router: `bin/chat-pair <code>` on the machine approves the
-// pending code (the first device, with nothing paired yet to approve from), and
-// lists the devices. Reachable only through the 0600 admin socket.
+// pending code (the first device, with nothing paired yet to approve from), lists
+// the devices, and sets a device's approver mark (`chat-pair approver <name> on|off`,
+// alerted through the device store's onEvent). Reachable only through the 0600 admin
+// socket.
 export function createAdminRouter({ devices, onEvent = () => {} }) {
   return async function handler(req, res) {
     const path = new URL(req.url, 'http://unix').pathname;
@@ -400,6 +440,12 @@ export function createAdminRouter({ devices, onEvent = () => {} }) {
         if (!r.ok) throw new HttpError(r.status, r.error);
         onEvent({ kind: 'pairing-approved', by: 'chat-pair', name: r.name });
         return json(res, 200, { ok: true, name: r.name });
+      }
+      if (req.method === 'POST' && path === '/admin/approver') {
+        const body = await readBody(req);
+        const r = await devices.setApprover(isObject(body) ? body.device : null, isObject(body) ? body.on : null);
+        if (!r.ok) throw new HttpError(r.status, r.error);
+        return json(res, 200, { ok: true, changed: r.changed, device: r.device });
       }
       if (req.method === 'GET' && path === '/admin/devices') return json(res, 200, { devices: devices.list(), pending: devices.pendingCode() !== null });
       return json(res, 404, { error: 'not found' });

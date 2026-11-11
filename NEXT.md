@@ -417,6 +417,64 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Approvals as buttons (board 2422f9d1): built 2026-11-11, switched off, staged.** Design
+with Jeff's decisions and Ultron's fixes: `docs/design/2026-11-11-jarvis-os-approvals.md`
+(section 0); reference: README "Approvals as buttons". This repo: branch `jos/approvals`
+(from `jos/approvals-design`, main cb4f470): `server/lib/approvals.mjs` (mode, kill file,
+Deny-only allowlist, Origin rule, limits, lockout, block window), the store's keyed
+requests, the verdict route, the approver mark (`bin/chat-pair approver`), the
+`PermissionDenied` ingest, generic ntfy text, the card. The lead's repo: branch
+`jos/approvals-channel` (from build/v1, worktree `~/Projects/.worktrees/jarvis-approvals`):
+channel 0.4.3 (deny/allow modes, 16k fields with a cut marker, `relayedAt`, late verdicts
+dropped, 11-minute forget) and `jarvis-start` (`env -u`, the two flags, #pepper alerts).
+Nothing is on: no config, no flags, no hook, no restart, no web build, release worktree and
+reviewed hash unmoved.
+
+*Switch-on runbook (Jeff, 2026-11-11: Allow at go-live, both flags at once).* Each step
+waits on the one before; the server always goes before the channel (Ultron H2).
+
+1. Ultron re-reads both branches; Jeff's C&P for each (Jarvis commits).
+2. Restart the Control Room with no `chat.approvals` in config (Vision or Jeff:
+   `launchctl kickstart -k gui/$(id -u)/net.milleradvisorypartners.control-room`). Checks:
+   the log says `chat: approvals off`; on the mini,
+   `curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8322/api/chat/permission/abcde -H 'Content-Type: application/json' -d '{"behavior":"allow"}'`
+   prints `403`. Then the web build (`cd web && npm run build`), which changes the live
+   page at once.
+3. Approvers (Jeff, on the mini): `~/Projects/claude-control-room/bin/chat-pair --devices`,
+   then `bin/chat-pair approver "<name>" on` for the iPhone, the iPad and the Mac (pair the
+   Mac first if it isn't listed; at most 4 devices). Each change posts to #pepper.
+4. Server on: Jarvis, with Jeff's OK, backs up `server/config.json` and adds
+   `"approvals": "on"` inside its `chat` block; restart as in 2. Checks: the log says
+   `chat: approvals on`; #pepper gets "chat approvals are on (Deny and Allow once) at this
+   start".
+5. The hook (Jarvis with Jeff): add README "Approvals as buttons"'s `PermissionDenied`
+   entry to `~/.claude/settings.json`. Check: the next auto-mode refusal logs
+   `needs-you: PermissionDenied (<tool>), page approvals are Deny only for 15 minutes`.
+6. The channel: merge `jos/approvals-channel` into build/v1, move the release worktree to
+   that commit after Ultron's re-vet, and record the new reviewed hash (the go-live doc's
+   step 3b, Jeff or Vision). Vision confirms the launchd environment has no
+   `JARVIS_CHANNEL_PERMISSION_RELAY` (moot for claude now that `env -u` clears it).
+7. Both flags (Jeff, on the mini):
+   `(umask 077; : > ~/.local/state/jarvis-os/approvals-enabled; : > ~/.local/state/jarvis-os/approvals-allow)`.
+8. `~/Projects/jarvis/bin/jarvis-start --restart` from a terminal outside the jarvis
+   session (Jeff). Checks: `~/Library/Logs/jarvis.log` says `permission relay deny and
+   allow`; #pepper gets "Jarvis started with the permission relay deny and allow".
+9. Live checks (design §9.3), harmless commands only: a prompt shows the card, the DM and
+   the push within seconds; Deny from the page closes the terminal dialog; Allow once from
+   a marked device works; Allow from an unmarked one is refused; a `sudo` request shows
+   Deny only; `touch ~/.local/state/jarvis-os/approvals-off` hides the next card (then `rm`).
+
+*Fallback, Deny only first:* skip `approvals-allow` in step 7 and use `"approvals": "deny"`
+in step 4; after about 3 clean days, create `approvals-allow`, set `"on"`, and restart both.
+*Rollback:* `touch ~/.local/state/jarvis-os/approvals-off` (page side, at once, alerted);
+`rm` the two flags and `jarvis-start --restart` (channel side); `chat.approvals` back to
+`"off"` and restart.
+
+*Unverified:* WebKit (headless checks were Chromium only, at 390 and 1440 px); whether a
+subagent's prompt relays and whether both channels get each request (design A0-3, first
+live prompt settles it); the `PermissionDenied` payload against a live block (built from
+the hooks reference, 2026-11-11).
+
 **Phase 2, the Feed tab (board fbc77b53), staged on `jos/feed` (from main 80c0569,
 2026-11-11), not committed, not live; its writer is staged in the lead's repo on
 `jos/feed-log` (from build/v1).** README "The Feed" describes both halves. Server:

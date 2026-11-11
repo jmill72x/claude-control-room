@@ -9,11 +9,14 @@
 //
 // Permission requests and verdicts are messages too (kinds `permission` and
 // `verdict`), so replay carries them; the open requests also live in memory with
-// their state, expire after 10 minutes, and lose their input preview after 24 h.
+// their state, expire 10 minutes after the channel relayed them, and lose their input
+// preview after 24 h (the approvals rules: lib/approvals.mjs).
 // Attachments are files under `files/<random id>`, named only by that id.
 import { open, readFile, writeFile, mkdir, readdir, rename, stat, unlink, chmod } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import { capField, parsePreview, shownHash, TOOL_MAX, LATE_AFTER_MS } from './approvals.mjs';
+import { secretShapes } from './secret-shape.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 // `event` (lib/events.mjs): a templated line from `system` for the lead's session.
@@ -98,7 +101,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   const messages = [];          // in seq order
   const byId = new Map();
   const byClientId = new Map();
-  const permissions = new Map(); // requestId -> request
+  const permissions = new Map(); // uid -> request (see "permissions" below)
   const listeners = new Set();
   let seq = 0;
   let epoch = null;
@@ -263,45 +266,112 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   // ---- permissions ----
+  // A request is keyed by the channel session it came in on and its id (L7): a new
+  // channel session (`newPermissionSession`, a hello from a new process) expires every
+  // open request, and an id seen again in the same session opens a fresh entry marked
+  // `repeat`, which nobody can answer here (Claude Code drops channel verdicts for a
+  // repeated id). The routes find a request by id: always its newest entry.
+
+  let permSession = 0;
+  let permUid = 0;
+  const latest = new Map();   // requestId -> uid of its newest entry
+  const seenIds = new Set();  // `${session}:${requestId}`
 
   function prunePermissions() {
     const at = now();
-    for (const [id, p] of permissions) {
-      if (p.state === 'open' && at - p.openedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; emit({ type: 'permission-closed', request: p }); }
+    for (const [uid, p] of permissions) {
+      if (p.state === 'open' && at - p.relayedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; emit({ type: 'permission-closed', request: p }); }
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
-      if (at - p.openedAt >= 7 * DAY) permissions.delete(id);
+      if (at - p.openedAt >= 7 * DAY) {
+        permissions.delete(uid);
+        if (latest.get(p.requestId) === uid) latest.delete(p.requestId);
+      }
     }
   }
 
-  async function openPermission({ requestId, tool, description, inputPreview }) {
+  // A new channel session: every open request expires (its channel process, and the
+  // prompt ids it knew, are gone or can't be told from a new one's).
+  function newPermissionSession() {
+    permSession++;
+    for (const p of permissions.values()) {
+      if (p.state !== 'open') continue;
+      p.state = 'expired';
+      emit({ type: 'permission-closed', request: p });
+    }
+    return permSession;
+  }
+
+  // `assess(p)` (lib/approvals.mjs) answers { denyOnly, why } for the stored fields.
+  // Fields are kept whole up to FIELD_MAX code points; a longer one is cut, marked and
+  // flagged. `relayedAt` is when the channel got the prompt: expiry counts from it,
+  // and a request older than LATE_AFTER_MS on arrival is `late` (answer at the terminal).
+  async function openPermission({ requestId, tool, description, inputPreview, relayedAt = null, cut = false }, { assess = () => ({ denyOnly: [], why: null }) } = {}) {
     if (!isRequestId(requestId)) throw new Error('requestId must be an id of at most 64 characters');
-    if (permissions.has(requestId)) return permissions.get(requestId);
-    const clean = v => (typeof v === 'string' ? Array.from(v).slice(0, 3500).join('') : '');
-    const p = { requestId, tool: clean(tool).slice(0, 200), description: clean(description), inputPreview: clean(inputPreview), openedAt: now(), state: 'open', answeredBy: null, answeredAt: null, messageId: null };
-    permissions.set(requestId, p);
-    const m = await append({ from: 'jarvis', kind: 'permission', text: p.description, meta: { requestId, tool: p.tool } });
+    prunePermissions();
+    const at = now();
+    const key = `${permSession}:${requestId}`;
+    const repeat = seenIds.has(key);
+    seenIds.add(key);
+    const t = capField(tool, TOOL_MAX), d = capField(description), ip = capField(inputPreview);
+    // When the channel had it: never later than now, and a clock far ahead is ignored.
+    const ra = Number.isSafeInteger(relayedAt) && relayedAt <= at + 5e3 ? Math.min(relayedAt, at) : at;
+    const late = at - ra > LATE_AFTER_MS;
+    const p = {
+      requestId, tool: t.text, description: d.text, inputPreview: ip.text,
+      cut: Boolean(cut) || t.cut || d.cut || ip.cut,
+      openedAt: at, relayedAt: ra, session: permSession,
+      state: repeat ? 'repeat' : late ? 'late' : 'open',
+      answeredBy: null, answeredAt: null, messageId: null, denyOnly: [], why: null
+    };
+    try { const a = assess(p) ?? {}; p.denyOnly = Array.isArray(a.denyOnly) ? a.denyOnly : []; p.why = typeof a.why === 'string' ? a.why : null; } catch { p.denyOnly = ['it could not be checked']; }
+    const uid = ++permUid;
+    permissions.set(uid, p);
+    latest.set(requestId, uid);
+    // The description is model text: one that looks like it holds a secret never
+    // reaches the disk (L12); the card still shows it from memory.
+    const onDisk = secretShapes(p.description).length ? 'Jarvis asked for a permission (its summary looked like it held a secret, so it is not kept)' : p.description;
+    const m = await append({ from: 'jarvis', kind: 'permission', text: onDisk, meta: { requestId, tool: p.tool } });
     p.messageId = m.id;
     emit({ type: 'permission', request: p });
     return p;
   }
 
-  // First answer wins; an unknown, expired or repeated id answers nothing.
-  async function answerPermission(requestId, behavior, by) {
+  const findPermission = id => { const uid = latest.get(id); return uid === undefined ? null : permissions.get(uid) ?? null; };
+
+  // First answer wins; an unknown, closed, late or repeated id answers nothing.
+  // `shown` must be the hash of what the card showed; `allowOk(p)` answers null or
+  // the reason Allow is out (the gate's), checked here, inside the store's order.
+  async function answerPermission(requestId, behavior, by, { shown = null, requireShown = false, allowProblem = () => null } = {}) {
     prunePermissions();
-    const p = permissions.get(requestId);
+    const p = findPermission(requestId);
     if (!p) return { ok: false, status: 404, error: 'no such request' };
-    if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}` };
+    if (p.state === 'repeat' || p.state === 'late') return { ok: false, status: 409, error: 'this one can only be answered at the terminal' };
+    if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
+    const hash = shownHash(p.tool, p.description, p.inputPreview);
+    if ((requireShown || shown !== null) && shown !== hash) return { ok: false, status: 409, error: 'the request changed; reload' };
+    if (behavior === 'allow') {
+      const why = allowProblem(p);
+      if (why) return { ok: false, status: 403, error: why };
+    }
     p.state = behavior === 'allow' ? 'allowed' : 'denied';
     p.answeredBy = typeof by === 'string' ? by.slice(0, 40) : null;
     p.answeredAt = now();
-    await append({ from: 'jeff', kind: 'verdict', text: behavior, replyTo: p.messageId, device: p.answeredBy, meta: { requestId, behavior } });
+    await append({ from: 'jeff', kind: 'verdict', text: behavior, replyTo: p.messageId, device: p.answeredBy, meta: { requestId, behavior, answeredAt: p.answeredAt, tool: p.tool, shown: hash, denyOnly: p.denyOnly.length > 0 } });
     emit({ type: 'permission-closed', request: p });
     return { ok: true, request: p };
   }
 
   const openPermissions = () => { prunePermissions(); return [...permissions.values()].filter(p => p.state === 'open'); };
-  const publicPermission = p => ({ requestId: p.requestId, tool: p.tool, description: p.description, inputPreview: p.inputPreview, openedAt: p.openedAt, state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId });
+  const publicPermission = p => {
+    const parsed = parsePreview(p.inputPreview);
+    return {
+      requestId: p.requestId, tool: p.tool, description: p.description, inputPreview: p.inputPreview,
+      fields: parsed ? parsed.fields : null, cut: Boolean(p.cut), why: p.why ?? null, denyOnly: p.denyOnly ?? [],
+      openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS,
+      state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId
+    };
+  };
 
   // ---- attachments ----
 
@@ -384,8 +454,9 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     // The page's "slow" state: an answer to an event is not an answer to the owner.
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
-    openPermission, answerPermission, openPermissions, publicPermission,
-    permission: id => { prunePermissions(); return permissions.get(id) ?? null; },
+    openPermission, answerPermission, openPermissions, publicPermission, newPermissionSession,
+    permission: id => { prunePermissions(); return findPermission(id); },
+    get permissionSession() { return permSession; },
     putAttachment, attachment, pruneAttachments, pruneOrphans, removeAttachment,
     attachmentPath: id => (isAttachmentId(id) ? join(filesDir, id) : null)
   };

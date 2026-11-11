@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -254,10 +254,17 @@ export function useChat({ active }) {
   const discard = useCallback(clientId => setMessages(list => list.filter(m => !(m.clientId === clientId && !Number.isInteger(m.seq)))), []);
 
   // ---- verdicts ----
+  // The verdict carries the hash of the request as this page received it, so a
+  // card that went stale (the request changed under the same id) is refused.
+  const permissionsRef = useRef(permissions);
+  permissionsRef.current = permissions;
   const verdict = useCallback(async (requestId, behavior) => {
     try {
-      const r = await api.answerPermission(requestId, behavior);
-      setPermissions(map => { const p = map.get(requestId); return p ? upsertPermission(map, { ...p, state: r.state }) : map; });
+      const held = permissionsRef.current.get(requestId);
+      if (!held) return { ok: false, error: 'this request is no longer on the page' };
+      const shown = await sha256Hex(shownInput(held));
+      const r = await api.answerPermission(requestId, behavior, shown);
+      setPermissions(map => { const p = map.get(requestId); return p ? upsertPermission(map, { ...p, state: r.state, answeredBy: device?.name ?? p.answeredBy ?? null, answeredAt: r.answeredAt ?? Date.now() }) : map; });
       return { ok: true };
     } catch (err) {
       if (err?.status === 401) unpaired();
@@ -265,7 +272,7 @@ export function useChat({ active }) {
       // own event tells the card what happened.
       return { ok: false, error: String(err?.message ?? err) };
     }
-  }, [unpaired]);
+  }, [unpaired, device]);
   const dismissPermission = useCallback(requestId => setPermissions(map => { const next = new Map(map); next.delete(requestId); return next; }), []);
 
   // ---- pairing (§2.2) ----

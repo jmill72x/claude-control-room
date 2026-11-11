@@ -252,6 +252,17 @@ test('a permission request pushes "Jarvis needs an approval", urgent, to every d
   } finally { await t.close(); }
 });
 
+test('a request the page cannot answer (late on arrival, or a repeated id) pushes nothing', async () => {
+  const t = await pushEnv();
+  try {
+    const phone = await t.device('phone');
+    await t.env.store.openPermission({ requestId: 'abcde', tool: 'Bash', description: 'd', inputPreview: '{}', relayedAt: 1 });
+    await t.svc.idle();
+    assert.equal(t.opened(phone).length, 0, 'late');
+    assert.equal(t.env.store.permission('abcde').state, 'late');
+  } finally { await t.close(); }
+});
+
 test('approval pushes: at most one per device each 15 s; one held is pushed at the window\'s end while a request is open', async () => {
   const t = await pushEnv();
   try {

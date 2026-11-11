@@ -24,6 +24,12 @@ export const NEEDS_YOU_ALERT_MS = 5 * 60e3;
 export const WAIT_KINDS = { permission_prompt: 'permission', idle_prompt: 'idle', elicitation_dialog: 'question' };
 export const OPENING_EVENTS = new Set(['Notification', 'PermissionRequest']);
 export const CLEARING_EVENTS = new Set(['PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
+// Auto mode's classifier refused a tool call (approvals, decision 3): logged and handed
+// to the approvals gate, which makes page cards Deny-only for a while. It opens and
+// clears no wait, and decides nothing in Claude Code (the hook runs async).
+export const BLOCK_EVENTS = new Set(['PermissionDenied']);
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,80}$/;
+export const BLOCK_REASON_MAX = 300;
 
 const SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/;
 const WORD = /^[a-z_]{1,40}$/;
@@ -42,8 +48,8 @@ export const NEEDS_YOU_SEEN_MAX = 200;
 export function checkNeedsYou(body) {
   if (!isObject(body)) return fail('the body must be the hook\'s JSON object');
   const event = body.hook_event_name;
-  if (typeof event !== 'string' || !(OPENING_EVENTS.has(event) || CLEARING_EVENTS.has(event))) {
-    return fail(`hook_event_name must be one of ${[...OPENING_EVENTS, ...CLEARING_EVENTS].join(', ')}`);
+  if (typeof event !== 'string' || !(OPENING_EVENTS.has(event) || CLEARING_EVENTS.has(event) || BLOCK_EVENTS.has(event))) {
+    return fail(`hook_event_name must be one of ${[...OPENING_EVENTS, ...CLEARING_EVENTS, ...BLOCK_EVENTS].join(', ')}`);
   }
   if (typeof body.session_id !== 'string' || !SESSION_ID.test(body.session_id)) return fail('session_id must be an id of at most 80 letters, digits, hyphens and underscores');
   let kind = null;
@@ -55,6 +61,13 @@ export function checkNeedsYou(body) {
   }
   const at = body.at ?? null;
   if (at !== null && !(Number.isSafeInteger(at) && at >= 0)) return fail('at must be a time in whole milliseconds since 1970');
+  if (BLOCK_EVENTS.has(event)) {
+    // The tool's name and the classifier's reason, only as far as the approvals card
+    // uses them (lib/approvals.mjs, blockReasonWords); never the tool's input.
+    const tool = typeof body.tool_name === 'string' && TOOL_NAME.test(body.tool_name) ? body.tool_name : null;
+    const reason = typeof body.reason === 'string' ? body.reason.slice(0, BLOCK_REASON_MAX) : null;
+    return pass({ event, sessionId: body.session_id, kind: null, at, tool, reason });
+  }
   return pass({ event, sessionId: body.session_id, kind, at });
 }
 

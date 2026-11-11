@@ -82,7 +82,7 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
     if (!d) return null;
     const at = now();
     if (!d.lastSeenAt || at - d.lastSeenAt > 60e3) { d.lastSeenAt = at; serial(persist); }
-    return { id: d.id, name: d.name, login: d.login ?? null };
+    return { id: d.id, name: d.name, login: d.login ?? null, approver: d.approver === true };
   }
 
   // Step 1: a new device asks to pair. One pending at a time; a stale one is replaced.
@@ -127,7 +127,7 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
       if (!pending || !pairToken || !same(sha256(pairToken), pending.pairSha256)) return { ok: true, state: 'none' };
       if (now() - pending.createdAt >= PAIR_CODE_TTL_MS) { pending = null; return { ok: true, state: 'expired' }; }
       if (!pending.approved) return { ok: true, state: 'pending', expiresAt: pending.createdAt + PAIR_CODE_TTL_MS };
-      const device = { id: randomBytes(8).toString('hex'), name: pending.name, createdAt: now(), lastSeenAt: now(), login: pending.login, tokenSha256: sha256(pending.token), revokedAt: null };
+      const device = { id: randomBytes(8).toString('hex'), name: pending.name, createdAt: now(), lastSeenAt: now(), login: pending.login, tokenSha256: sha256(pending.token), revokedAt: null, approver: false };
       devices.push(device);
       await persist();
       const token = pending.token;
@@ -143,6 +143,8 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
       const d = devices.find(x => x.id === id && !x.revokedAt);
       if (!d) return { ok: false, status: 404, error: 'no such device' };
       d.revokedAt = now();
+      // A revoke clears the approver mark too: a device paired again starts without it.
+      d.approver = false;
       // Its push subscription goes with it: a revoked device hears nothing more.
       d.push = null;
       // An approved pairing not yet collected goes too: whichever device asked for
@@ -154,7 +156,24 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
     });
   }
 
-  const list = () => devices.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt ?? null, revokedAt: d.revokedAt ?? null, push: Boolean(d.push) }));
+  const list = () => devices.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt ?? null, revokedAt: d.revokedAt ?? null, push: Boolean(d.push), approver: d.approver === true }));
+
+  // The "may approve" mark (G7): set only from this machine (the admin socket), by an
+  // active device's id or its exact name; every change is reported. Answers the device.
+  function setApprover(which, on, by = 'chat-pair on this machine') {
+    return serial(async () => {
+      if (typeof on !== 'boolean') return { ok: false, status: 400, error: 'on must be true or false' };
+      const named = typeof which === 'string' ? active().filter(x => x.id === which || x.name === which) : [];
+      if (named.length === 0) return { ok: false, status: 404, error: 'no such active device' };
+      if (named.length > 1) return { ok: false, status: 409, error: 'more than one active device has that name; use its id' };
+      const d = named[0];
+      if ((d.approver === true) === on) return { ok: true, changed: false, device: { id: d.id, name: d.name, approver: on } };
+      d.approver = on;
+      await persist();
+      onEvent({ kind: 'approver-changed', device: { id: d.id, name: d.name }, on, by });
+      return { ok: true, changed: true, device: { id: d.id, name: d.name, approver: on } };
+    });
+  }
 
   // A device's Web Push subscription (lib/webpush.mjs checked it): one per device,
   // `null` to drop it. An endpoint another active device holds moves here, so one
@@ -186,5 +205,5 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
   // Whether a device is still paired: what an open stream re-checks on every ping.
   const isActive = id => active().some(d => d.id === id);
 
-  return { load, authenticate, start, approve, status, revoke, list, isActive, setPush, dropPush, pushTargets, hasPush, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
+  return { load, authenticate, start, approve, status, revoke, list, isActive, setApprover, setPush, dropPush, pushTargets, hasPush, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
 }

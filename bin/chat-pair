@@ -2,8 +2,11 @@
 // Approve a pairing code for the chat from this machine (jarvis-os-chat-spec.md,
 // §2.2): the first device, when no paired device exists to approve from.
 //
-//   bin/chat-pair <CODE>        approve the code the new device shows
-//   bin/chat-pair --devices     list the paired devices
+//   bin/chat-pair <CODE>                      approve the code the new device shows
+//   bin/chat-pair --devices                   list the paired devices
+//   bin/chat-pair approver <device> on|off    mark a device as one that may Allow
+//                                             a permission (by its name or id); every
+//                                             change is alerted, and a revoke clears it
 //
 // Talks to the Control Room over its admin socket (JARVIS_OS_ADMIN_SOCKET, default
 // ~/.local/state/jarvis-os/admin.sock, 0600). Exit 0 on success, 1 on a refusal, 2
@@ -15,7 +18,11 @@ import { join } from 'node:path';
 const socketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(homedir(), '.local', 'state', 'jarvis-os', 'admin.sock');
 const arg = process.argv[2];
 if (!arg || arg === '-h' || arg === '--help') {
-  console.error('usage: chat-pair <CODE> | --devices');
+  console.error('usage: chat-pair <CODE> | --devices | approver <device> on|off');
+  process.exit(2);
+}
+if (arg === 'approver' && (process.argv.length !== 5 || !['on', 'off'].includes(process.argv[4]))) {
+  console.error('usage: chat-pair approver <device name or id> on|off');
   process.exit(2);
 }
 
@@ -36,9 +43,14 @@ try {
   if (arg === '--devices') {
     const { status, body } = await call('GET', '/admin/devices');
     if (status !== 200) { console.error(body.error ?? `HTTP ${status}`); process.exit(1); }
-    for (const d of body.devices) console.log(`${d.id}  ${d.name}${d.revokedAt ? '  (revoked)' : ''}  paired ${new Date(d.createdAt).toISOString()}  seen ${d.lastSeenAt ? new Date(d.lastSeenAt).toISOString() : 'never'}`);
+    for (const d of body.devices) console.log(`${d.id}  ${d.name}${d.revokedAt ? '  (revoked)' : ''}${d.approver ? '  (approver)' : ''}  paired ${new Date(d.createdAt).toISOString()}  seen ${d.lastSeenAt ? new Date(d.lastSeenAt).toISOString() : 'never'}`);
     if (body.devices.length === 0) console.log('no devices');
     if (body.pending) console.log('a pairing is pending: chat-pair <CODE> approves it');
+  } else if (arg === 'approver') {
+    const on = process.argv[4] === 'on';
+    const { status, body } = await call('POST', '/admin/approver', { device: process.argv[3], on });
+    if (status !== 200) { console.error(body.error ?? `HTTP ${status}`); process.exit(1); }
+    console.log(`${body.device.name}: ${on ? 'may now allow permissions' : 'may no longer allow permissions'}${body.changed ? '' : ' (unchanged)'}`);
   } else {
     const { status, body } = await call('POST', '/admin/approve', { code: String(arg).trim().toUpperCase() });
     if (status !== 200) { console.error(body.error ?? `HTTP ${status}`); process.exit(1); }

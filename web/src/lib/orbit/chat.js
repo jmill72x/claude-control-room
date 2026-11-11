@@ -151,14 +151,68 @@ export function effectiveStatus(status, permissions, now = Date.now()) {
 
 // ---- permission cards ----
 
-// A card's state as the page shows it: `open` with Allow and Deny, `expired` with
-// the note that Discord may have answered it, or `closed` (allowed or denied; the
-// card goes). `now` decides expiry on the page too, between the server's events.
-export function permissionView(p, now = Date.now()) {
+// A card's state as the page shows it (approvals design §5.3):
+//   open      Deny, and Allow once when `canAllow` (below)
+//   expired   10 minutes after the channel relayed it (`expiresAt`), on the page too
+//   terminal  late on arrival or a repeated id: shown, answered only at the terminal
+//   closed    allowed or denied: the "sent" line (`sentLine`) and a Dismiss
+// `approver` is this device's mark and `approvals` the status's `{ mode,
+// denyOnlyUntil }`: Allow is offered only when the server says the request may be
+// allowed, this device is an approver, and no Deny-only window is running now.
+export function permissionView(p, now = Date.now(), { approver = false, approvals = null } = {}) {
   if (!p) return null;
-  const state = p.state === 'open' && now - p.openedAt >= PERMISSION_TTL_MS ? 'expired' : p.state;
-  if (state === 'allowed' || state === 'denied') return { ...p, view: 'closed', state };
-  return { ...p, view: state === 'expired' ? 'expired' : 'open', state };
+  const expiresAt = Number.isFinite(p.expiresAt) ? p.expiresAt : (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS;
+  const state = p.state === 'open' && now >= expiresAt ? 'expired' : p.state;
+  if (state === 'allowed' || state === 'denied') return { ...p, view: 'closed', state, canAllow: false };
+  if (state === 'late' || state === 'repeat') return { ...p, view: 'terminal', state, canAllow: false };
+  if (state === 'expired') return { ...p, view: 'expired', state, canAllow: false };
+  const windowOn = Number.isFinite(approvals?.denyOnlyUntil) && approvals.denyOnlyUntil > now;
+  const reasons = [...(Array.isArray(p.denyOnly) ? p.denyOnly : [])];
+  if (windowOn && !reasons.some(r => /auto mode blocked/.test(r))) reasons.push('auto mode blocked something in the last 15 minutes');
+  if (approvals?.mode === 'deny' && !reasons.length) reasons.push('approvals are Deny only for now');
+  const canAllow = p.canAllow === true && approver === true && approvals?.mode !== 'deny' && !windowOn && reasons.length === 0;
+  return { ...p, view: 'open', state, canAllow, denyOnly: reasons };
+}
+
+// What a card shows of the preview: its fields as the server parsed them (what
+// runs or changes first), or the whole text under "input" when it isn't JSON.
+export function cardFields(p) {
+  if (Array.isArray(p?.fields) && p.fields.length) return p.fields.filter(f => Array.isArray(f) && f.length === 2).map(([k, v]) => [String(k), String(v)]);
+  return p?.inputPreview ? [['input', String(p.inputPreview)]] : [];
+}
+
+// The parts of a field the page can't vouch for, split out so the card can mark
+// them: Claude Code's elision, its credential mask and unserializable value, and
+// the channel's and the server's cuts, and a hidden character the server made
+// visible (⟦U+202E⟧).
+const MARKER = /(⋯ \d+ code points elided ⋯|\[REDACTED\]|\(value unserializable\)|⋯ \d+ code points cut by the (?:channel|Control Room) ⋯|⟦U\+[0-9A-F]{4,6}⟧)/;
+export function markerSegments(text) {
+  const parts = String(text ?? '').split(MARKER);
+  return parts.map((t, i) => ({ text: t, marker: i % 2 === 1 })).filter(x => x.text !== '');
+}
+export const hasMarker = p => cardFields(p).some(([, v]) => MARKER.test(v)) || MARKER.test(String(p?.description ?? ''));
+
+// What the server compares a verdict against (Ultron L11): the fields exactly as
+// they were delivered, never as rendered.
+export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '']);
+export async function sha256Hex(text, subtle = globalThis.crypto?.subtle) {
+  if (!subtle) throw new Error('this page cannot check what it showed here (no secure context)');
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Allow once is a two-step press: the first tap arms it for 4 seconds, and only a
+// tap while armed sends.
+export const ALLOW_ARM_MS = 4000;
+export const allowArmed = (armedAt, now = Date.now()) => Number.isFinite(armedAt) && now - armedAt >= 0 && now - armedAt < ALLOW_ARM_MS;
+
+// "Deny sent from iPhone at 14:02. ..." The page can't know more: Claude Code
+// never says whether it used the answer.
+export function sentLine(p) {
+  const word = p?.state === 'allowed' ? 'Allow' : 'Deny';
+  const from = p?.answeredBy ? ` from ${p.answeredBy}` : '';
+  const at = Number.isFinite(p?.answeredAt) ? ` at ${hhmm(p.answeredAt)}` : '';
+  return `${word} sent${from}${at}. Claude Code uses it if the prompt was still open.`;
 }
 
 // The map of requests after a status: when the server counts no open request, a

@@ -324,3 +324,47 @@ test('the README\'s hook entry: every command sends `at`, ends in `|| true`, and
   assert.equal(checked.ok, true, checked.error);
   assert.ok(checked.value.at >= before - 1000 && checked.value.at <= Date.now() + 1000, 'milliseconds, not seconds');
 });
+
+// ---- the classifier-block hook (approvals, decision 3) ----
+
+test('a PermissionDenied post is read down to the session, the tool name and the reason, opens and clears no wait, and goes to the approvals gate', async () => {
+  const denied = (extra = {}) => ({ hook_event_name: 'PermissionDenied', session_id: SID, permission_mode: 'auto', tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/build' }, tool_use_id: 'toolu_x', reason: '[Irreversible Local Destruction]', at: 1794380000000, ...extra });
+  assert.deepEqual(checkNeedsYou(denied()).value, { event: 'PermissionDenied', sessionId: SID, kind: null, at: 1794380000000, tool: 'Bash', reason: '[Irreversible Local Destruction]' });
+  assert.equal(checkNeedsYou(denied({ tool_name: 'a b' })).value.tool, null, 'an odd tool name is dropped');
+  assert.equal(checkNeedsYou(denied({ reason: 'x'.repeat(1000) })).value.reason.length, 300);
+  assert.equal(checkNeedsYou(denied({ reason: 7 })).value.reason, null);
+  const d = deps();
+  const blocks = [];
+  const h = createHandler({ ...d, onBlock: v => { blocks.push(v); return true; } });
+  await call(h, 'POST', '/api/ingest/needs-you', hook());
+  const res = await call(h, 'POST', '/api/ingest/needs-you', denied());
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(JSON.parse(res.body), { ok: true, block: true });
+  assert.equal(blocks.length, 1);
+  assert.ok(!JSON.stringify(blocks).includes('rm -rf'), 'the tool input never reaches the gate');
+  assert.equal(JSON.parse((await call(h, 'GET', '/api/dashboard')).body).needsYou.length, 1, 'the open wait is untouched');
+  assert.equal(d.logged.at(-1), 'needs-you: PermissionDenied (Bash), page approvals are Deny only for 15 minutes');
+  const none = createHandler(d);
+  assert.deepEqual(JSON.parse((await call(none, 'POST', '/api/ingest/needs-you', denied())).body), { ok: true, block: false });
+  const remote = await call(h, 'POST', '/api/ingest/needs-you', denied(), { 'x-forwarded-for': '100.64.0.9' });
+  assert.equal(remote.statusCode, 403, 'loopback only, like every ingest');
+});
+
+test('the README\'s PermissionDenied hook entry: async, filtered by jq to five fields, ends in `|| true`, and its body passes the check', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+  const section = readme.slice(readme.indexOf('### Approvals as buttons'));
+  const entry = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)[1]);
+  assert.deepEqual(Object.keys(entry.hooks), ['PermissionDenied']);
+  const [h] = entry.hooks.PermissionDenied[0].hooks;
+  assert.equal(h.async, true, 'it can never decide anything');
+  assert.match(h.command, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,tool_name,reason,at:\(now\*1000\|floor\)\}' \| curl -s -m 3 -X POST http:\/\/127\.0\.0\.1:8322\/api\/ingest\/needs-you /);
+  assert.match(h.command, / >\/dev\/null \|\| true$/);
+  const { existsSync } = await import('node:fs');
+  if (!existsSync('/usr/bin/jq')) return;
+  const { execFileSync } = await import('node:child_process');
+  const filter = h.command.match(/^\/usr\/bin\/jq -c '([^']+)'/)[1];
+  const out = JSON.parse(execFileSync('/usr/bin/jq', ['-c', filter], { input: JSON.stringify({ hook_event_name: 'PermissionDenied', session_id: SID, tool_name: 'Bash', tool_input: { command: 'secret stuff' }, reason: '[Data Exfiltration]', transcript_path: '/x' }) }).toString());
+  assert.deepEqual(Object.keys(out).sort(), ['at', 'hook_event_name', 'reason', 'session_id', 'tool_name']);
+  assert.equal(checkNeedsYou(out).ok, true);
+});

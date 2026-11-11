@@ -32,7 +32,8 @@ export const latestMessages = limit => get(`/api/chat/messages?limit=${limit}`);
 export const messagesAfter = (seq, limit) => get(`/api/chat/messages?after=${seq}&limit=${limit}`);
 export const messagesBefore = (id, limit) => get(`/api/chat/messages?before=${encodeURIComponent(id)}&limit=${limit}`);
 export const sendMessage = ({ clientId, text, replyTo = null, attachmentIds = [] }) => post('/api/chat/messages', { clientId, text, replyTo, attachmentIds });
-export const answerPermission = (requestId, behavior) => post(`/api/chat/permission/${encodeURIComponent(requestId)}`, { behavior });
+// `shown` is the sha256 of what the card showed (lib/orbit/chat.js, shownInput).
+export const answerPermission = (requestId, behavior, shown) => post(`/api/chat/permission/${encodeURIComponent(requestId)}`, { behavior, shown });
 
 // A photo's bytes, raw, with its type and name; the answer is `{id, name, type, bytes}`.
 export const uploadAttachment = (blob, name) =>

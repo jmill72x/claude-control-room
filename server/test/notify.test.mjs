@@ -202,3 +202,15 @@ test('the default runner settles with the exit code, even when the poster leaves
   assert.deepEqual(await publishDiscord({ title: 'Control Room', message: input, run: viaFalse }),
     { sent: false, reason: 'discord-post exited 1' });
 });
+
+test('sendAlert: ntfyMessage, when given, replaces the text ntfy gets; #pepper keeps the details (approvals, L10)', async () => {
+  const got = {};
+  await sendAlert({
+    topic: 't', title: 'Control Room', message: 'a permission was allowed from iPhone (Bash)', ntfyMessage: 'A chat security event: details in #pepper',
+    ntfy: async m => { got.ntfy = m.message; return { sent: true }; },
+    discord: async m => { got.discord = m.message; return { sent: true }; }
+  });
+  assert.deepEqual(got, { ntfy: 'A chat security event: details in #pepper', discord: 'a permission was allowed from iPhone (Bash)' });
+  await sendAlert({ topic: 't', title: 'x', message: 'same', ntfy: async m => { got.plain = m.message; return { sent: true }; }, discord: async () => ({ sent: true }) });
+  assert.equal(got.plain, 'same', 'without it, both get the message');
+});

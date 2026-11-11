@@ -39,6 +39,7 @@ import { createEvents, readEventsConfig } from './lib/events.mjs';
 import { createEventSocketRouter } from './lib/event-socket.mjs';
 import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
+import { createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { homedir } from 'node:os';
@@ -211,7 +212,11 @@ registry.register('notifier', async () => {
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
 
-const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
+// Approvals (lib/approvals.mjs): the mode from config (off unless "deny" or "on"), the
+// kill file beside the sockets, and the classifier-block window fed by the needs-you
+// ingest. Made once the chat is on; until then a block is only logged.
+let approvals = null;
+const api = createHandler({ cache, todos, config, acks: ackStore, needsYou, onBlock: value => approvals?.noteBlock(value) ?? false });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
 // owner's `login` and the Host check enforces (lib/chat-routes.mjs, readChatConfig);
@@ -254,8 +259,9 @@ if (chatSettings.on && socketsReady) {
   await chmod(chatDir, 0o700);
   // A refused channel or a takeover pushes at most once per kind per 10 minutes,
   // with a count of the ones held back (lib/chat-alert-limit.mjs).
+  // ntfy shows on a lock screen: it gets generic words, #pepper the details (L10).
   const chatAlerts = createAlertLimiter({
-    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message }),
+    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyMessage: 'A chat security event on the Control Room: details in #pepper' }),
     onError: err => console.error('chat: alert failed', err?.message ?? err)
   });
   const chatEvents = async event => {
@@ -272,11 +278,19 @@ if (chatSettings.on && socketsReady) {
       'pairing-failed': 'a chat pairing failed on three wrong codes',
       'permission-opened': `the lead asked for a permission (${event.tool ?? 'a tool'})`,
       verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`,
-      'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`
+      'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`,
+      'approver-changed': `${event.device?.name ?? 'a device'} ${event.on ? 'may now allow' : 'may no longer allow'} permissions (by ${event.by})`,
+      'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}`,
+      'approvals-kill': `the approvals kill file was ${event.on ? 'created: page approvals are off' : 'removed: page approvals follow config again'}`,
+      'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
+      'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
+      'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
+      'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: page approvals are Deny only for 10 minutes`
     };
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
-    if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden'].includes(event.kind)) {
+    if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
+      'approver-changed', 'approvals-mode', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
@@ -297,14 +311,34 @@ if (chatSettings.on && socketsReady) {
   events = createEvents({ store: chatStore, ledgerPath: join(HERE, 'data', 'events.json'), killSwitchPath: eventsOffPath, sources: eventsSettings.sources, triagePerDay: eventsSettings.triagePerDay });
   await events.load();
   console.log(`events: on${events.killed() ? ' (the kill switch is on: events are stored, never delivered)' : ''}, ${eventsSettings.sources.size} socket source${eventsSettings.sources.size === 1 ? '' : 's'} allowed`);
-  const socketRouter = createSocketRouter({ store: chatStore, events, onEvent: chatEvents, verifyRestart: createChannelVerifier({ channelServer: channelServer.path, launchPath }), verifyEveryHello: Boolean(channelServer.path) });
+  // Blocks count from the lead's session, or from one the sessions panel can't name;
+  // another agent's own run (`--agent`) is not the lead's prompt.
+  const leadName = roster.agents[0]?.name ?? null;
+  const approvalSettings = readApprovalsConfig(config);
+  for (const problem of approvalSettings.problems) console.error(`config: ${problem}`);
+  approvals = createApprovals({
+    mode: approvalSettings.mode, patterns: approvalSettings.patterns, killPath: join(stateDir, 'approvals-off'), onEvent: chatEvents,
+    isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; }
+  });
+  approvals.killed();
+  console.log(`chat: approvals ${approvals.configured}${approvals.mode() !== approvals.configured ? ' (the kill file holds them off)' : ''}`);
+  // Alerted at every start with approvals on, and at any start whose mode differs from
+  // the last start's (kept in data/chat/approvals-mode.json), off included.
+  const modePath = join(chatDir, 'approvals-mode.json');
+  let lastMode = null;
+  try { lastMode = JSON.parse(await readFile(modePath, 'utf8'))?.mode ?? null; } catch { lastMode = null; }
+  if (approvals.configured !== 'off' || (lastMode !== null && lastMode !== approvals.configured)) {
+    await chatEvents({ kind: 'approvals-mode', mode: approvals.mode(), previous: lastMode });
+  }
+  if (lastMode !== approvals.configured) await writeFile(modePath, JSON.stringify({ mode: approvals.configured }), { mode: 0o600 }).catch(err => console.error(`chat: could not note the approvals mode (${err?.code ?? err})`));
+  const socketRouter = createSocketRouter({ store: chatStore, events, approvals, onEvent: chatEvents, verifyRestart: createChannelVerifier({ channelServer: channelServer.path, launchPath }), verifyEveryHello: Boolean(channelServer.path) });
   // Web Push (lib/chat-push.mjs): on with config's `push.subject` and the VAPID key
   // in the Keychain; otherwise a `push:` line says why and the chat runs without it.
   const { vapid, problems: pushProblems } = await loadVapid({ config });
   for (const problem of pushProblems) console.error(`push: ${problem}`);
   if (vapid) console.log('push: notifications on');
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push });
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }

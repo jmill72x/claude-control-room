@@ -772,6 +772,19 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-card-actions .o-cbtn { min-height: 48px; font-size: 1em; }
 .o-chat-card-expired-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; font-size: 0.9em; color: var(--c-sub); }
 .o-chat-card-error { margin: 0; font-size: 0.85em; color: var(--c-bad); }
+/* Approvals (docs/design/2026-11-11-jarvis-os-approvals.md): the preview's fields lead,
+   what is hidden is marked, Jarvis's own summary is quieter, Deny-only says why. */
+.o-chat-card-why { margin: 0; font-size: 0.9em; font-weight: 600; color: var(--c-amber); }
+.o-chat-card-field { display: flex; flex-direction: column; gap: 4px; }
+.o-chat-card-key { font-size: 0.75em; font-weight: 600; letter-spacing: 0.02em; color: var(--c-sub); }
+.o-chat-card-marker { background: none; color: var(--c-bad); font-weight: 700; outline: 1px dashed var(--c-bad); outline-offset: 1px; border-radius: 3px; }
+.o-chat-card-hidden { margin: 0; font-size: 0.85em; font-weight: 600; color: var(--c-bad); }
+.o-chat-card-summary { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--c-rule); }
+.o-chat-card-summary .o-chat-card-desc { font-size: 0.88em; color: var(--c-sub); overflow-wrap: anywhere; max-height: 20vh; overflow: auto; }
+.o-chat-card-denyonly { display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; color: var(--c-sub); }
+.o-chat-card-denyonly ul { margin: 0; padding-left: 18px; }
+.o-chat-card-actions > :only-child { grid-column: 1 / -1; }
+.o-chat-card-actions .o-cbtn-armed { outline: 3px solid var(--c-amber); outline-offset: 2px; }
 
 /* the composer */
 /* The bottom block sticks: an open permission card is always in view over the composer. */

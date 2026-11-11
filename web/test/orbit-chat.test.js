@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -264,4 +264,61 @@ test('intake: photos and PDFs only, a PDF under 10 MB, four at most across both,
   assert.deepEqual(intake([pdf], MAX_FILES).take, []);
   assert.deepEqual(intake([], 0), { take: [], note: null });
   assert.deepEqual(intake(undefined), { take: [], note: null });
+});
+
+// ---- approvals (docs/design/2026-11-11-jarvis-os-approvals.md) ----
+
+test('a card offers Allow only when the server says so, this device is an approver, and no Deny-only window runs', () => {
+  const p = { requestId: 'r1', tool: 'Bash', description: 'd', inputPreview: '{"command":"ls"}', openedAt: T0, relayedAt: T0, expiresAt: T0 + PERMISSION_TTL_MS, state: 'open', denyOnly: [], canAllow: true };
+  const on = { mode: 'on', denyOnlyUntil: null };
+  assert.equal(permissionView(p, T0, { approver: true, approvals: on }).canAllow, true);
+  assert.equal(permissionView(p, T0, { approver: false, approvals: on }).canAllow, false, 'not an approver');
+  assert.equal(permissionView(p, T0).canAllow, false, 'nothing known: no Allow');
+  assert.equal(permissionView({ ...p, canAllow: false, denyOnly: ['x'] }, T0, { approver: true, approvals: on }).canAllow, false);
+  const deny = permissionView(p, T0, { approver: true, approvals: { mode: 'deny', denyOnlyUntil: null } });
+  assert.equal(deny.canAllow, false);
+  assert.deepEqual(deny.denyOnly, ['approvals are Deny only for now']);
+  const block = permissionView(p, T0, { approver: true, approvals: { mode: 'on', denyOnlyUntil: T0 + 1 } });
+  assert.equal(block.canAllow, false, 'a window that began after the card opened');
+  assert.deepEqual(block.denyOnly, ['auto mode blocked something in the last 15 minutes']);
+  assert.equal(permissionView(p, T0 + 1, { approver: true, approvals: { mode: 'on', denyOnlyUntil: T0 + 1 } }).canAllow, true, 'over');
+  // Expiry from expiresAt (counted from relayedAt on the server), and the terminal's own.
+  assert.equal(permissionView({ ...p, expiresAt: T0 + 5 }, T0 + 5).view, 'expired');
+  assert.equal(permissionView({ ...p, expiresAt: undefined, relayedAt: T0 - PERMISSION_TTL_MS }, T0).view, 'expired');
+  for (const state of ['late', 'repeat']) {
+    const v = permissionView({ ...p, state }, T0, { approver: true, approvals: on });
+    assert.deepEqual([v.view, v.canAllow], ['terminal', false], state);
+  }
+});
+
+test('the card leads with the parsed fields, and marks what it cannot vouch for', () => {
+  assert.deepEqual(cardFields({ fields: [['command', 'ls'], ['description', 'pad']] }), [['command', 'ls'], ['description', 'pad']]);
+  assert.deepEqual(cardFields({ fields: null, inputPreview: 'raw text' }), [['input', 'raw text']]);
+  assert.deepEqual(cardFields({}), []);
+  assert.deepEqual(markerSegments('ls ⋯ 12 code points elided ⋯ x'), [{ text: 'ls ', marker: false }, { text: '⋯ 12 code points elided ⋯', marker: true }, { text: ' x', marker: false }]);
+  assert.deepEqual(markerSegments('[REDACTED]'), [{ text: '[REDACTED]', marker: true }]);
+  assert.deepEqual(markerSegments('a⟦U+202E⟧b').map(x => x.marker), [false, true, false]);
+  assert.deepEqual(markerSegments('y ⋯ 5 code points cut by the channel ⋯').map(x => x.marker), [false, true]);
+  assert.deepEqual(markerSegments('<b>not html</b>'), [{ text: '<b>not html</b>', marker: false }], 'text stays text');
+  assert.equal(hasMarker({ fields: [['command', 'cat (value unserializable)']] }), true);
+  assert.equal(hasMarker({ fields: [['command', 'ls']], description: 'x [REDACTED]' }), true);
+  assert.equal(hasMarker({ fields: [['command', 'ls']], description: 'x' }), false);
+});
+
+test('the shown hash is sha256 over JSON.stringify([tool, description, inputPreview]) as delivered, the server\'s own rule', async () => {
+  const p = { tool: 'Bash', description: 'list\nfiles', inputPreview: '{"command":"ls"}' };
+  assert.equal(shownInput(p), JSON.stringify(['Bash', 'list\nfiles', '{"command":"ls"}']));
+  const { createHash } = await import('node:crypto');
+  assert.equal(await sha256Hex(shownInput(p)), createHash('sha256').update(shownInput(p)).digest('hex'));
+  await assert.rejects(sha256Hex('x', null), /secure context/);
+});
+
+test('Allow once is armed by the first tap for 4 seconds; the "sent" line never says done', () => {
+  assert.equal(allowArmed(null, T0), false);
+  assert.equal(allowArmed(T0, T0), true);
+  assert.equal(allowArmed(T0, T0 + ALLOW_ARM_MS - 1), true);
+  assert.equal(allowArmed(T0, T0 + ALLOW_ARM_MS), false);
+  assert.equal(allowArmed(T0 + 10, T0), false, 'a clock that went back');
+  assert.equal(sentLine({ state: 'allowed', answeredBy: 'iPhone', answeredAt: T0 }), 'Allow sent from iPhone at 09:05. Claude Code uses it if the prompt was still open.');
+  assert.equal(sentLine({ state: 'denied' }), 'Deny sent. Claude Code uses it if the prompt was still open.');
 });

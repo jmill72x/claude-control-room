@@ -197,6 +197,8 @@ export function createPushService({
       if (m.from !== 'jarvis' || m.kind !== 'chat') return; // notices, permissions, verdicts and the owner's own
       for (const target of devices.pushTargets()) considerChat(target, m.at ?? now());
     } else if (event.type === 'permission') {
+      // Only a request the page can answer: a late or repeated one is the terminal's.
+      if (event.request?.state !== 'open') return;
       for (const target of devices.pushTargets()) considerApproval(target);
     }
   }

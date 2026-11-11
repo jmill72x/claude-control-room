@@ -7,7 +7,7 @@ import { readRoster } from './lib/roster.mjs';
 import {
   applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine
 } from './lib/acks.mjs';
-import { checkNeedsYou, needsYouLogLine } from './lib/needs-you.mjs';
+import { checkNeedsYou, needsYouLogLine, BLOCK_EVENTS } from './lib/needs-you.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -154,7 +154,8 @@ const NO_ACKS = { read: async () => [], add: null, remove: null };
 // The waits (lib/needs-you.mjs) without a store: none, and the ingest says so.
 const NO_NEEDS_YOU = { view: () => [], record: null };
 
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log }) {
+// `onBlock` hears a classifier block from the needs-you ingest (lib/approvals.mjs).
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null }) {
   const panels = now => {
     const payload = {};
     for (const key of PANELS) payload[key] = cache.get(key, now);
@@ -308,6 +309,12 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
         if (!needsYou.record) throw new HttpError(503, 'needs-you is not set up on this server');
         const checked = checkNeedsYou(await readBody(req));
         if (!checked.ok) throw new HttpError(400, checked.error);
+        if (BLOCK_EVENTS.has(checked.value.event)) {
+          // Log only, for the approvals gate: no wait opens or clears.
+          const took = onBlock ? onBlock(checked.value) === true : false;
+          log(`needs-you: ${checked.value.event}${checked.value.tool ? ` (${checked.value.tool})` : ''}, ${took ? 'page approvals are Deny only for 15 minutes' : 'not the lead\'s session or approvals off, noted only'}`);
+          return json(res, 200, { ok: true, block: took });
+        }
         const { open, stale } = needsYou.record(checked.value, Date.now());
         log(needsYouLogLine(checked.value, open, stale));
         return json(res, 200, stale ? { ok: true, open, stale: true } : { ok: true, open });
