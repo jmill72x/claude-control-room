@@ -629,10 +629,16 @@ three pieces, each with its own router:
   requests (the channel asks again) and nothing else.
 - **The channel's socket** (`server/lib/chat-socket.mjs`): socket API v1 on
   `~/.local/state/jarvis-os/channel.sock` (`JARVIS_OS_SOCKET`), 0600 in a 0700 folder,
-  as the spec's §1.5 lists it: `hello` (answers `{cursor, epoch, seq, token}`), `inbound` (an
-  ndjson stream of the owner's messages and verdicts after a seq, a ping every 15 s),
-  `ack` (`{seq, epoch}`; the epoch is required, 400 without it, and one that isn't current
-  is refused with 409), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
+  as the spec's §1.5 lists it: `hello` (takes `{pid, version, startedAt}`, `startedAt` in
+  epoch milliseconds; answers `{cursor, epoch, seq, token}`), `inbound` (an ndjson stream of
+  the owner's messages and verdicts after a seq, a ping every 15 s; it replays the whole
+  backlog after `after`, a page of 100 at a time until the store has no more, listening for
+  live messages before the replay starts and holding them until it ends, so each seq is sent
+  once and none falls in between), `ack` (`{seq, epoch}`; the epoch is required, 400 without
+  it, and one that isn't current is refused with 409; the cursor moves only as far as this
+  session's streams have sent, or as far as the `after` the channel asked from, never to a
+  seq that was never written to it), `bye` (a clean exit: the place is free at once, the
+  inbound stream ends with `{"type":"bye"}`, logged, never pushed), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
   `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
   `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
   `status`. **One client at a time, held by a session token:** `hello` answers a random
@@ -643,7 +649,11 @@ three pieces, each with its own router:
   with its token (a reconnect) and gets a new one, the old one dead. Once the heartbeat is
   stale a `hello` without the token takes over: that is logged and pushed like an alert
   (`client-replaced`), the old inbound stream gets one last line `{"type":"replaced"}`
-  before its socket closes, and the old token is dead. `status` carries the connection's
+  before its socket closes, and the old token is dead. The holder's own re-hello, or a
+  second inbound stream it opens, ends its old stream with `{"type":"superseded"}` instead.
+  A holder whose inbound stream has closed from its end and that has then gone 20 s without
+  a heartbeat (one missed, with slack) counts as stale too, so a crashed channel's restart
+  waits 20 s, not 45; with a stream open the 45 s rule alone applies. `status` carries the connection's
   state and version, never the client's pid. The socket can't make a message from the
   owner and can't answer a permission. A reply or edit whose text looks like a credential
   is refused with the pattern's name, never the text; no error body ever echoes a message.
@@ -666,7 +676,8 @@ three pieces, each with its own router:
   events, a `: ping` and a `status` every 20 s), the verdict (`POST
   /api/chat/permission/<id> {behavior}`, single use, first answer wins, logged with the
   device's name) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
-  minutes unanswered, offline after 45 s without a heartbeat).
+  minutes unanswered, offline after 45 s without a heartbeat, or 20 s once the channel's
+  inbound stream has closed from its end).
 
 The cookie is `__Host-jos` (32 random bytes, only its sha256 on file; HttpOnly, Secure,
 SameSite=Strict, 400 days). A browser accepts a `__Host-` cookie over HTTPS only, so until

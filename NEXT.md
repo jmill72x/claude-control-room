@@ -470,6 +470,24 @@ chat block (a second process 409 on hello, inbound and ack; an ack without an ep
 status without a pid; pairing 403 without the login header; `chat-pair`; a revoke ending a
 `-N` stream at once; a second server refusing the live sockets; a 0755 override folder, log
 mode and a missing login each keeping the chat off).
+**The channel's end-to-end run (Jarvis's jarvis-channel against this server, 11-11): 9 of 9
+scenarios pass; four contract fixes made on the branch the same night.** (1, high) inbound
+replayed one page of 100 and an ack of the next live message then marked the rest delivered
+(100 of 130 arrived, 30 lost): the replay now pages through the whole backlog, listening for
+live messages first and holding them until it ends (dedup by seq), and an ack moves the cursor
+only as far as this session's streams have sent or the `after` the channel asked from (my call:
+clamp, not refuse, since the channel reads any 409 as "say hello again" and would loop; the
+clamp is logged). (2) `POST /v1/bye` (token required) frees the place at once and ends the
+stream with `{"type":"bye"}`, logged, never pushed; and a holder whose stream closed from its
+end and then went 20 s without a heartbeat is stale (a crash restarts in 20 s, not 45; a
+takeover then is still alerted). (3) the holder's own re-hello, or its second stream, ends the
+old stream with `{"type":"superseded"}`; `replaced` now means a takeover only. (4) spec §1.5
+edited: `startedAt` in epoch ms, `bye`, the paging replay, the ack clamp, `superseded`, and the
+socket bullet as `chat-listen.mjs` does it. **The channel should now:** call `bye` on stdin
+EOF, treat `superseded` like the end of a stream (reconnect with its token), and may drop its
+replay-window workaround (the cut at cursor + 100). Tests: `server/test/chat-socket.test.mjs`
+(6, including 250 queued messages over three pages), 688 server tests in local time and Tokyo,
+25 of 25 mutations caught.
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,

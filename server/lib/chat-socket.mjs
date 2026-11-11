@@ -13,7 +13,18 @@
 // and gets a new one. After the heartbeat has gone stale a hello without the token
 // takes over, reported as `client-replaced` (alerted, since a takeover is what a
 // hostile local process would do); the old inbound stream, if any, gets one last
-// line `{"type":"replaced"}` and its socket closes, and the old token is dead.
+// line `{"type":"replaced"}` and its socket closes, and the old token is dead. The
+// holder's own re-hello, or a second inbound stream it opens, ends its old stream
+// with `{"type":"superseded"}` instead: nobody else took anything.
+//
+// A clean exit says `POST /v1/bye` (2026-11-11, the channel's end-to-end run): the
+// place is free at once, logged and never alerted. A holder whose inbound stream
+// has closed (not by this server) and that has then missed a heartbeat is gone too
+// (a crash): stale after 20 s instead of 45, so its restart is let in sooner.
+//
+// Inbound replay pages through everything after `after`, not one page of 100, and
+// an ack moves the cursor only as far as this session's streams have actually sent
+// (the end-to-end run lost 30 of 130 queued messages to both).
 //
 // Errors are `{error}` with fixed words: never the text of a message.
 import { json, readBody, HttpError } from '../routes.mjs';
@@ -24,6 +35,9 @@ import { readFile } from 'node:fs/promises';
 
 export const HEARTBEAT_FRESH_MS = 45e3;
 export const INBOUND_PING_MS = 15e3;
+// The channel's heartbeat comes every 15 s; one missed, with 5 s of slack.
+export const HEARTBEAT_MISSED_MS = 20e3;
+export const REPLAY_PAGE = 100;
 export const SESSION_HEADER = 'x-session-token';
 const newToken = () => randomBytes(32).toString('base64url');
 const same = (a, b) => {
@@ -45,9 +59,19 @@ export function inboundEvent(m) {
 }
 
 export function createSocketRouter({ store, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS }) {
-  let client = null;   // { pid, version, startedAt, helloAt, lastHeartbeatAt, token }
+  // { pid, version, startedAt, helloAt, lastHeartbeatAt, token, sentSeq, streamClosedAt }
+  // sentSeq: how far this session's inbound streams have gone (every seq up to it was
+  // written to one, or lay at or below the `after` the channel asked from), the most
+  // an ack may move the cursor to. streamClosedAt: when its inbound stream closed by
+  // itself (the channel's end), null while one is open or none was ever opened.
+  let client = null;
   let inbound = null;  // { res, stop }
-  const fresh = at => client !== null && at - client.lastHeartbeatAt < HEARTBEAT_FRESH_MS;
+  const fresh = at => {
+    if (client === null) return false;
+    const age = at - client.lastHeartbeatAt;
+    if (age >= HEARTBEAT_FRESH_MS) return false;
+    return !(client.streamClosedAt !== null && age >= HEARTBEAT_MISSED_MS);
+  };
   // Whether the request carries the current client's token.
   const holds = req => {
     const t = req.headers?.[SESSION_HEADER];
@@ -94,35 +118,73 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         } else if (client) {
           log('chat: the channel said hello again');
         }
-        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken() };
-        endInbound('replaced');
+        // startedAt is the channel process's start in epoch milliseconds (kept, not served).
+        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null };
+        endInbound(holder ? 'superseded' : 'replaced');
         return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq, token: client.token });
       }
       if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
       // Everything from here on is the current client's alone.
       requireHolder(req);
+      if (req.method === 'POST' && path === '/v1/bye') {
+        // A clean exit (stdin EOF): the place is free now, not in 45 s. Logged, not alerted.
+        client = null;
+        endInbound('bye');
+        log('chat: the channel said bye');
+        return json(res, 200, { ok: true });
+      }
       if (req.method === 'POST' && path === '/v1/heartbeat') {
         client.lastHeartbeatAt = now();
         return json(res, 200, { ok: true, openPermissions: store.openPermissions().length });
       }
       if (req.method === 'GET' && path === '/v1/inbound') {
-        const after = Number.parseInt(url.searchParams.get('after') ?? '', 10);
-        endInbound('replaced');
+        const asked = Number.parseInt(url.searchParams.get('after') ?? '', 10);
+        // A stream the holder already has is its own: superseded, not replaced.
+        endInbound('superseded');
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        const session = client;
+        session.streamClosedAt = null;
         const send = ev => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* gone */ } };
-        for (const m of store.list({ after: Number.isInteger(after) ? after : store.deliveredSeq, limit: 100 })) {
+        // `after` is the channel's word that it has everything up to it; past the
+        // store's last seq it can claim nothing.
+        let done = Math.min(Number.isInteger(asked) && asked >= 0 ? asked : store.deliveredSeq, store.seq);
+        if (done > session.sentSeq) session.sentSeq = done;
+        // Each message once, in seq order: what this stream has gone past is skipped.
+        const deliver = m => {
+          if (m.seq <= done) return;
+          done = m.seq;
           const ev = inboundEvent(m);
           if (ev) send(ev);
-        }
+          if (done > session.sentSeq) session.sentSeq = done;
+        };
+        // Live messages are listened for before the replay starts and held until it
+        // ends, so none falls between the two; the seq check drops the overlap.
+        let held = [];
         const unsubscribe = store.subscribe(event => {
           if (event.type !== 'message') return;
-          const ev = inboundEvent(event.message);
-          if (ev) send(ev);
+          if (held) held.push(event.message);
+          else deliver(event.message);
         });
+        // The whole backlog, a page at a time, until the store has nothing after it.
+        for (;;) {
+          const page = store.list({ after: done, limit: REPLAY_PAGE });
+          if (page.length === 0) break;
+          for (const m of page) deliver(m);
+        }
+        const waiting = held;
+        held = null;
+        for (const m of waiting) deliver(m);
         const timer = setInterval(() => send({ type: 'ping' }), pingMs);
         const stop = () => { clearInterval(timer); unsubscribe(); };
         inbound = { res, stop };
-        req.on('close', () => { if (inbound?.res === res) { inbound = null; stop(); } });
+        req.on('close', () => {
+          if (inbound?.res !== res) return;
+          inbound = null;
+          stop();
+          // The channel's end closed it: if heartbeats stop too, the process is gone.
+          // (After a bye or a new hello, `session` is no longer the client: harmless.)
+          session.streamClosedAt = now();
+        });
         return undefined;
       }
       if (req.method === 'POST' && path === '/v1/ack') {
@@ -133,7 +195,11 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         // since been reset moves nothing.
         if (body.epoch === undefined || body.epoch === null) throw new HttpError(400, 'epoch is required: the one hello gave');
         if (String(body.epoch) !== String(store.epoch)) throw new HttpError(409, 'that epoch is not current: the store was reset since; say hello again');
-        return json(res, 200, { deliveredSeq: await store.ack(body.seq), epoch: store.epoch });
+        // Only as far as this session's streams have sent: a seq never written to the
+        // channel is never marked delivered, whatever the ack says.
+        const upTo = Math.min(body.seq, client.sentSeq);
+        if (upTo < body.seq) log(`chat: an ack for seq ${body.seq} moved the cursor only to ${upTo}, as far as was sent`);
+        return json(res, 200, { deliveredSeq: await store.ack(upTo), epoch: store.epoch });
       }
       if (req.method === 'GET' && path === '/v1/unanswered') {
         return json(res, 200, { messages: store.unanswered().map(publicMessage) });

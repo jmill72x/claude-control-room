@@ -273,7 +273,7 @@ test('pairing: a code and a pairing cookie, three wrong tries, approval, the coo
     const devices = createDeviceStore({ path: join(dir, 'devices.json'), now: () => clock.t, onEvent: e => events.push(e.kind) });
     assert.equal(await devices.load(), 0);
     assert.equal((await devices.start('')).status, 400);
-    const s = await devices.start("  Jeff's ‮phone  ");
+    const s = await devices.start("  Jeff's \u202ephone  ");
     assert.equal(s.ok, true);
     assert.match(s.code, /^[A-HJ-KM-NP-Z]{6}$/);
     assert.equal(s.expiresAt, clock.t + 10 * MIN);
@@ -748,13 +748,13 @@ test('status: online, waiting on you, slow after 10 minutes unanswered, offline 
   assert.ok(!('pid' in page.json) && !page.text.includes('"pid"'));
 });
 
-test('a replaced inbound stream gets one last line and closes; a revoke shuts the device out and ends its streams at once, or on the next ping; the login header is a second factor on every route, pairing included', async () => {
+test('a superseded inbound stream gets one last line and closes; a revoke shuts the device out and ends its streams at once, or on the next ping; the login header is a second factor on every route, pairing included', async () => {
   const first = unixStream({ path: '/v1/inbound?after=0', ms: 400 });
   await new Promise(r => setTimeout(r, 40));
   const second = unixStream({ path: '/v1/inbound?after=999', ms: 100 });
   const got = await first;
   const lines = ndjson(got.text);
-  assert.deepEqual(lines.at(-1), { type: 'replaced' });
+  assert.deepEqual(lines.at(-1), { type: 'superseded' }, 'the holder\'s own second stream supersedes its first; nobody replaced it');
   await second;
   // Revoke the iPad from the phone, while the iPad holds a stream open: the stream
   // ends with a `revoked` event right away, long before its 2 s timeout.
