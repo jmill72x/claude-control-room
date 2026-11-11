@@ -13,6 +13,7 @@ const fixture = () => {
   mkdirSync(join(dist, 'assets'), { recursive: true });
   writeFileSync(join(dist, 'index.html'), '<!doctype html>page');
   writeFileSync(join(dist, 'assets', 'app.js'), 'console.log(1)');
+  writeFileSync(join(dist, 'manifest.webmanifest'), '{"name":"x"}');
   mkdirSync(join(base, 'server'), { recursive: true });
   writeFileSync(join(base, 'server', 'config.json'), '{"secret":true}');
   // A sibling whose name merely starts with the web root's, which a naive
@@ -88,6 +89,10 @@ test('legitimate assets still serve with their content type', async () => {
   const query = await get(dist, '/assets/app.js?v=123');
   assert.equal(query.statusCode, 200);
   assert.match(query.body, /console\.log/);
+
+  const manifest = await get(dist, '/manifest.webmanifest');
+  assert.equal(manifest.statusCode, 200);
+  assert.equal(manifest.headers['Content-Type'], 'application/manifest+json', 'the home-screen manifest has its own type');
 });
 
 test('a traversal that stays inside the root is allowed', () => {

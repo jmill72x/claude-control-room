@@ -1,3 +1,5 @@
+import { needsYouAlerts } from './needs-you.mjs';
+
 const DAY = 24 * 3600 * 1000;
 // Three quarters of the board's save cap.
 export const BOARD_WARN_SHARE = 0.75;
@@ -93,6 +95,12 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
       alerts.push({ text: `${s.name} is not running`, kind: 'service', key: `service:${s.key}`, since: s.downSince });
     }
   }
+
+  // A session that has waited on a person for five minutes (lib/needs-you.mjs):
+  // `snapshot.needsYou` is the list the route built just now, or the notifier's
+  // envelope of it (its okOnly() blanks the data of anything not `ok`).
+  // Before the credits rules, which return early.
+  alerts.push(...needsYouAlerts(Array.isArray(snapshot.needsYou) ? snapshot.needsYou : snapshot.needsYou?.data, now));
 
   // Automatic credits — read from the CLI's own cached usage response — outrank
   // everything hand-entered, on the page and here. While they are readable the

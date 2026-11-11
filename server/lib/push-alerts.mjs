@@ -17,7 +17,8 @@ const DISCLOSED_KINDS = new Set(['limit', 'projection', 'credits', 'board']);
 // its own message, so a new failure of one kind doesn't repeat the others.
 const COUNT_WORDS = {
   cron: n => `${n} job${n === 1 ? '' : 's'} failed`,
-  service: n => `${n} service${n === 1 ? ' is' : 's are'} down`
+  service: n => `${n} service${n === 1 ? ' is' : 's are'} down`,
+  'needs-you': n => `${n} session${n === 1 ? ' is' : 's are'} waiting on you`
 };
 const anyOther = n => `${n} item${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} attention`;
 
@@ -63,6 +64,9 @@ export function observableSources(snapshot) {
     ...(ok('ingestCrons') ? ['cron:ingest'] : []),
     ...(ok('board') ? ['board'] : []),
     ...(ok('health') ? ['service'] : []),
+    // The waits live in this server's own memory (lib/needs-you.mjs), so they are
+    // always observable: a wait that is gone has been cleared or has lapsed.
+    'needs-you',
     // Credits alerts read the ingested feed when it is current and fall back
     // to config (loaded at startup, always readable) otherwise. So the source
     // is observable when the feed is current or was never posted — but a

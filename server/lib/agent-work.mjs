@@ -21,7 +21,11 @@
 // A run's time is its first request and its tokens the sum of its requests,
 // each request counted once (collectSessions has dropped the copies). Its task
 // is the brief's one-line description; for a --agent run, the name of the
-// agent's scheduled job that fell due just before it started, if one did.
+// agent's scheduled job that fell due just before it started, if one did. Its
+// `model` is the family of its latest request (lib/hourly.mjs, as Burn classifies
+// them), and `leadModel` is the same for the lead's own session: the Now chip
+// says which model the lead runs on from the transcript, not from a setting.
+import { familyOf } from './hourly.mjs';
 
 const DAY = 24 * 3600 * 1000;
 const WEEK = 7 * DAY;
@@ -63,7 +67,7 @@ function routineFor(agent, start, jobs, dueByLabel) {
 export function buildAgentWork({ transcripts, sessionNames, roster, crons, now = Date.now() }) {
   const agents = Array.isArray(roster?.agents) ? roster.agents : [];
   const lead = agents[0] ?? null;
-  if (!lead) return { lead: null, agents: {}, runs: [] };
+  if (!lead) return { lead: null, leadModel: null, leadLast: null, agents: {}, runs: [] };
 
   const onRoster = new Set(agents.map(a => a.key));
   const leadNames = new Set([fold(lead.name), fold(lead.key)]);
@@ -74,6 +78,8 @@ export function buildAgentWork({ transcripts, sessionNames, roster, crons, now =
   }
 
   const totals = Object.fromEntries(agents.map(a => [a.key, { tokens7d: 0, lastActivity: null }]));
+  let leadModel = null, leadLast = null;
+  const latestOf = records => records.reduce((best, r) => (best === null || r.ts > best.ts ? r : best), null);
   const count = (key, records) => {
     const t = totals[key];
     for (const r of records) {
@@ -98,6 +104,8 @@ export function buildAgentWork({ transcripts, sessionNames, roster, crons, now =
       agent = t.agentSetting;
     } else if (isLead(t.agentName)) {
       count(lead.key, records);
+      const latest = latestOf(records);
+      if (latest && (leadLast === null || latest.ts > leadLast)) { leadLast = latest.ts; leadModel = familyOf(latest.model); }
       continue;
     } else {
       continue;
@@ -112,9 +120,9 @@ export function buildAgentWork({ transcripts, sessionNames, roster, crons, now =
     }
     if (start < now - WEEK) continue;
     if (!t.subagent) task = routineFor(agent, start, roster.jobs, dueByLabel);
-    runs.push({ agent, helper, direct: !t.subagent, task, tokens, start, last });
+    runs.push({ agent, helper, direct: !t.subagent, task, tokens, start, last, model: familyOf(latestOf(records).model) });
   }
 
   runs.sort((a, b) => b.start - a.start);
-  return { lead: lead.key, agents: totals, runs: runs.slice(0, MAX_RUNS) };
+  return { lead: lead.key, leadModel, leadLast, agents: totals, runs: runs.slice(0, MAX_RUNS) };
 }

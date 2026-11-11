@@ -9,7 +9,10 @@ const MIME = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
-  '.ico': 'image/x-icon'
+  '.ico': 'image/x-icon',
+  // The home-screen manifest (web/public/manifest.webmanifest); without this it
+  // went out as an octet stream, which Safari ignores.
+  '.webmanifest': 'application/manifest+json'
 };
 
 // What the pages may load (the 2026-10-21 security review, before Orbit Phase 5):

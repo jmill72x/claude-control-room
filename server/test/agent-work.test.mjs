@@ -31,7 +31,7 @@ const build = (transcripts, extra = {}) => buildAgentWork({ transcripts, session
 test('a subagent whose type is on the roster is that agent\'s run, timed from its first request', () => {
   const out = build([lead, sub('s-lead', { agentType: 'forge', description: 'Build the widget' }, [rec(90 * MIN, 1000), rec(80 * MIN, 500)])]);
   assert.equal(out.lead, 'atlas');
-  assert.deepEqual(out.runs, [{ agent: 'forge', helper: false, direct: false, task: 'Build the widget', tokens: 1500, start: NOW - 90 * MIN, last: NOW - 80 * MIN }]);
+  assert.deepEqual(out.runs, [{ agent: 'forge', helper: false, direct: false, task: 'Build the widget', tokens: 1500, start: NOW - 90 * MIN, last: NOW - 80 * MIN, model: 'opus' }]);
   assert.deepEqual(out.agents.forge, { tokens7d: 1500, lastActivity: NOW - 80 * MIN });
 });
 
@@ -40,7 +40,7 @@ test("any other subagent under the lead's session is a helper of the lead's; und
   const elsewhere = sub('s-other', { agentType: 'general-purpose', description: 'Not ours' }, [rec(60 * MIN, 7000)]);
   const orphan = sub('s-missing', { agentType: 'Explore', description: 'Parent unknown' }, [rec(60 * MIN, 8000)]);
   const out = build([lead, helper, elsewhere, orphan]);
-  assert.deepEqual(out.runs, [{ agent: 'atlas', helper: true, direct: false, task: 'Review the widget', tokens: 300, start: NOW - 70 * MIN, last: NOW - 70 * MIN }]);
+  assert.deepEqual(out.runs, [{ agent: 'atlas', helper: true, direct: false, task: 'Review the widget', tokens: 300, start: NOW - 70 * MIN, last: NOW - 70 * MIN, model: 'opus' }]);
   assert.equal(out.agents.atlas.tokens7d, 100 + 50 + 300, "the lead's own session and its helpers");
   assert.equal(out.agents.atlas.lastActivity, NOW - 30 * MIN);
 });
@@ -107,7 +107,26 @@ test('runs are newest first, and an agent with no runs still has an entry', () =
 
 test('with no roster there is no lead, no agent and no run', () => {
   const out = buildAgentWork({ transcripts: [lead], sessionNames: names, roster: { agents: [], jobs: {} }, crons, now: NOW });
-  assert.deepEqual(out, { lead: null, agents: {}, runs: [] });
+  assert.deepEqual(out, { lead: null, leadModel: null, leadLast: null, agents: {}, runs: [] });
+});
+
+test("a run's model is the family of its latest request; the lead's own session gives leadModel and leadLast", () => {
+  const run = sub('s-lead', { agentType: 'forge', description: 'Switch models' }, [
+    { ts: NOW - 50 * MIN, tokens: 10, model: 'claude-opus-5' },
+    { ts: NOW - 40 * MIN, tokens: 10, model: 'claude-fable-5-2' },
+    { ts: NOW - 45 * MIN, tokens: 10, model: 'claude-sonnet-4' }
+  ]);
+  const out = build([lead, run]);
+  assert.equal(out.runs[0].model, 'fable', 'the latest request, not the last in the file');
+  assert.equal(out.leadModel, 'opus');
+  assert.equal(out.leadLast, NOW - 30 * MIN);
+  const leadOnFable = { ...lead, records: [rec(2 * HOUR, 100), { ts: NOW - 10 * MIN, tokens: 1, model: 'claude-fable-5-2' }] };
+  assert.equal(build([leadOnFable]).leadModel, 'fable');
+  const twoLeadSessions = [{ ...leadOnFable, sessionId: 's-lead-new' }, { ...lead, sessionId: 's-lead-old' }];
+  assert.equal(build(twoLeadSessions).leadModel, 'fable', 'the newest request across the lead\'s sessions, whichever file is read last');
+  assert.equal(build(twoLeadSessions).leadLast, NOW - 10 * MIN);
+  assert.equal(build([run]).leadModel, null, 'no lead session, no model');
+  assert.equal(build([{ ...lead, records: [{ ts: NOW - MIN, tokens: 1, model: 'claude-mythos-1' }] }]).leadModel, 'other');
 });
 
 test('a task line is one plain line: control and direction characters go, spaces close up, and it is cut at 120', () => {

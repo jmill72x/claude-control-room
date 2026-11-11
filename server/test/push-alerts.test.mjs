@@ -89,8 +89,8 @@ test('an alert with no key is dropped rather than pushed unkeyed', () => {
 });
 
 test('observableSources reports usage-backed keys only when the usage panel is ok', () => {
-  assert.deepEqual([...observableSources({ usage: { status: 'ok' } })].sort(), ['credits', 'limit', 'projection']);
-  assert.deepEqual([...observableSources({ usage: { status: 'stale' } })].sort(), ['credits']);
+  assert.deepEqual([...observableSources({ usage: { status: 'ok' } })].sort(), ['credits', 'limit', 'needs-you', 'projection']);
+  assert.deepEqual([...observableSources({ usage: { status: 'stale' } })].sort(), ['credits', 'needs-you']);
 });
 
 // Observability is per SOURCE, not per kind. Launchd being readable says

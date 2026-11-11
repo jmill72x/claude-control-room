@@ -6,6 +6,7 @@ import { readRoster } from './lib/roster.mjs';
 import {
   applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine
 } from './lib/acks.mjs';
+import { checkNeedsYou, needsYouLogLine } from './lib/needs-you.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -149,11 +150,16 @@ export function pageConfig(config, planData) {
 // The acks (lib/acks.mjs) when the server runs without a store: nothing is
 // acknowledged, and a POST says so.
 const NO_ACKS = { read: async () => [], add: null, remove: null };
+// The waits (lib/needs-you.mjs) without a store: none, and the ingest says so.
+const NO_NEEDS_YOU = { view: () => [], record: null };
 
-export function createHandler({ cache, todos, config, acks = NO_ACKS, log = console.log }) {
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log }) {
   const panels = now => {
     const payload = {};
     for (const key of PANELS) payload[key] = cache.get(key, now);
+    // The sessions waiting on a person (lib/needs-you.mjs): who, kind, since and a
+    // key, nothing else. Built here, not cached, so a cleared wait goes at once.
+    payload.needsYou = needsYou.view(now);
     return payload;
   };
   // The alerts as raised, before any acknowledgement, from the panels alone.
@@ -271,6 +277,19 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, log = cons
               boardHeaders(err.current));
           }
         }
+      }
+
+      // A Claude Code hook posting that a session waits for a person, or moved on
+      // (lib/needs-you.mjs). The ingest guards; the body is the hook's own JSON, of
+      // which three fields are read and the session's id is the only one kept.
+      if (path === '/api/ingest/needs-you' && req.method === 'POST') {
+        guardWrite(req);
+        if (!needsYou.record) throw new HttpError(503, 'needs-you is not set up on this server');
+        const checked = checkNeedsYou(await readBody(req));
+        if (!checked.ok) throw new HttpError(400, checked.error);
+        const open = needsYou.record(checked.value, Date.now());
+        log(needsYouLogLine(checked.value, open));
+        return json(res, 200, { ok: true, open });
       }
 
       const ingest = path.match(/^\/api\/ingest\/(crons|projects|credits)$/);

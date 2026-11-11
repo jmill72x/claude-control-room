@@ -27,6 +27,7 @@ import { loadConfig } from './lib/config.mjs';
 import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
+import { createNeedsYouStore } from './lib/needs-you.mjs';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
@@ -114,9 +115,24 @@ registry.register('accountCredits', () => collectAccountCredits(), 60 * 1000);
 registry.register('plan', () => collectPlan(), PLAN_INTERVAL_MS);
 // Kept from pass to pass, so each minute reads only the transcripts that changed.
 const transcriptCache = new Map();
+// Which roster agent each top-level session is, by its id: the session named for
+// the lead (`agent-name`), or a `--agent` run (`agent-setting`). For the waits
+// (lib/needs-you.mjs), whose hook names a session, never an agent.
+const sessionAgents = new Map();
+const rosterName = word => {
+  const w = String(word ?? '').trim().toLowerCase();
+  return roster.agents.find(a => a.key.toLowerCase() === w || a.name.toLowerCase() === w)?.name ?? null;
+};
+const needsYou = createNeedsYouStore({ whoFor: id => sessionAgents.get(id) ?? null });
 registry.register('sessions', async () => {
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths, sessionNames } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
+  sessionAgents.clear();
+  for (const t of transcripts) {
+    if (t.subagent || !t.sessionId) continue;
+    const name = rosterName(t.agentName) ?? rosterName(t.agentSetting);
+    if (name) sessionAgents.set(t.sessionId, name);
+  }
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
@@ -154,7 +170,8 @@ registry.register('notifier', async () => {
   const topic = await getTopic();
   const now = Date.now();
   const out = await runNotifier({
-    snapshot: cache.snapshot(now),
+    // The waits (lib/needs-you.mjs) ride along as a panel the alerts read.
+    snapshot: { ...cache.snapshot(now), needsYou: { status: 'ok', data: needsYou.view(now), fetchedAt: now, error: null } },
     config,
     now,
     readSent,
@@ -165,7 +182,7 @@ registry.register('notifier', async () => {
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
 
-const api = createHandler({ cache, todos, config, acks: ackStore });
+const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 
