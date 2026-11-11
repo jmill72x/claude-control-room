@@ -440,7 +440,7 @@ describes it: the JSONL store with seqs and an epoch, the channel's Unix socket 
 one client at a time, `ack {seq, epoch}`), the page routes (pairing and the `__Host-jos`
 cookie, messages, uploads, SSE with Last-Event-ID replay, single-use verdicts, status), the
 admin socket and `bin/chat-pair`. Nothing listens until `config.json` has a `chat` block
-with `login` and `hostCheck` is `"enforce"`. Not built: Web Push (C6).
+with `login` and `hostCheck` is `"enforce"`. Web Push (C6) is built on `jos/push` (below).
 **The Chat tab (C5) is built on the branch `jos/chat-ui` (from `jos/chat-server`, 2026-11-11,
 local commits only), not live; README "The chat with the lead agent", its last bullet,
 describes it.** A third tab at `#chat`: the pairing screen (name, code, poll, the two ways to
@@ -486,8 +486,8 @@ channel's own e2e suite was not run). Checks: 57 of 57 at 390 px in light and da
 PDF, drop, the four-file cap, the 404 stop, the self-revoke clearing the cookie); Safari and
 iPad drag and drop are not verified. Tests now: 698 server (local time and Tokyo), 122 web. **Left for later:** a "Start over" on a pairing resumed
 after a reload can't start a new one until the pending code expires (the server allows one
-pending at a time, 10 minutes); the Chat tab mounts its stream only while open, so a message
-arriving on another tab shows nothing until Web Push (C6); the playwright-cli on the mini
+pending at a time, 10 minutes); the Chat tab mounts its stream only while open (Web Push, C6,
+covers a message arriving while it isn't); the playwright-cli on the mini
 updated itself to 1.64 alpha and lacks its browser, so the checks ran playwright-core against
 the installed 1223 headless shell by `executablePath`.
 **Ultron's 11-11 review: merge with chat off; no-go to switch on until findings 1-4 are
@@ -548,8 +548,47 @@ references to store messages, unbounded but tiny (the owner's own messages). (2)
 then a fresh `hello` logs the gap (`chat: the channel is back 3.2 s after its bye`, plus
 "a quick restart, under 5 s" when it is) and records a `notice` from `system`, "Jarvis's
 channel restarted HH:MM" (local time), never pushed or alerted and not on the channel's
-stream; a failed notice write is logged and the hello still succeeds. **When Web Push (C6)
-is built, it must skip `notice` messages.** Spec §1.5 gained one bullet for each.
+stream; a failed notice write is logged and the hello still succeeds. Web Push (C6) skips
+`notice` messages (tested). Spec §1.5 gained one bullet for each.
+
+**Web Push (C6) is built on the branch `jos/push` (from `jos/chat-ui` f633d74, 2026-11-11,
+local commits only), not live; README "The chat with the lead agent", the Notifications
+bullet, describes it.** Two commits: e9c2a9d (Ultron's two lows on f633d74: an upload's name
+cut at 120 code points and made well formed before `encodeURIComponent`, so a PDF named
+with an emoji at the cut downloads instead of a 500; an unsent upload's file deleted when it
+expires after an hour, at most 8 waiting per device, 429) and the push commit
+(`server/lib/webpush.mjs`, `server/lib/chat-push.mjs`, `server/lib/vapid-store.mjs`,
+`bin/vapid-keygen`, the `/api/push` routes, `web/public/sw.js`, the settings sheet's
+Notifications part, the manifest's `id`, and the stream closing when the page is hidden so
+the 10 s rule sees it). Checks 11-11: RFC 8291 Appendix A reproduced byte for byte; the JWT
+verified with the derived key (a changed claim, another key, a non-ES256 header all fail);
+a round trip through a test receiver; the egress rule (15 refused shapes); each trigger, the
+10 s rule and its re-check, the once-a-minute limit, notices and edits skipped, 404/410
+deletion (and a stale "gone" never deleting a fresh subscription), the 403 alert, the
+routes, revoke; a loopback push service receiving and decrypting a push (`fetch` for real,
+the test-only host override); 731 server and 127 web tests in local time and Tokyo; 43
+push server mutations, 11 web and 8 for the lows, all caught after four test fixes (one dead
+`subscribed && server` condition removed); headless Chromium (1223 shell) at 390 and 1440 against a
+scratch server with a loopback push service, 17 of 17: the worker registers at `/`, the
+sheet's Turn on, the subscription stored and marked, no push while the Chat tab is open, a
+message and an approval pushed after 10 s hidden and decrypted with the page's own keys
+(`navigate` to the page's origin, no text, approval urgent), a relaunch resyncing without a
+new subscribe, Turn off dropping it, no CSP violation or console error, no sideways scroll.
+Faked in that check: `PushManager` (real WebCrypto keys, a loopback endpoint) and the
+permission prompt (the headless shell denies everything). **Not verified without Jeff's
+iPhone:** a real subscribe through Apple's push service, whether `requestPermission` then
+`subscribe` both count as the one tap on iOS, delivery while locked, a tap opening `#chat`,
+the badge, Focus modes, iOS before 18.4 versus the declarative form, whether Apple accepts
+the JWT and `Topic`/`Urgency` as sent, 410 after removing the app, and the declarative
+`navigate`. **Go-live order:** Ultron's review (crypto, egress, payload); Jeff runs
+`bin/vapid-keygen` on the mini; Jarvis adds `"push": {"subject": "mailto:<Jeff's
+address>"}` to config.json (with the chat's own entries); C&P; restart (Vision); the web
+build; then on each device, from the home-screen icon (re-added once Serve is on HTTPS),
+Settings in the Chat tab, Turn on notifications. **Post-restart checks:** the log says
+`push: notifications on` (no `push:` problem line); `GET /api/push/key` with a paired
+cookie answers the key; after Jeff turns it on, `devices.json` shows `push` on his device
+and a message from Jarvis while the app is closed arrives as "New message". The manifest
+still has only the 180 px icon (the spec also wants 192 and 512; not added).
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,

@@ -152,19 +152,29 @@ export function useChat({ active }) {
   // Back from the background: open the stream anew from where the page is.
   useEffect(() => {
     if (!active) return undefined;
+    // Away (another app, the lock screen, another tab): the stream closes at once,
+    // so the server knows this device is not looking and may push to it after
+    // 10 s (server/lib/chat-push.mjs). iOS would only freeze it, and a frozen
+    // stream still counts as open on the server.
     const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState !== 'visible') { closeStream(); return; }
       if (phase === 'paired') openStream();
+      // Looking at the chat clears the home-screen badge a notification set.
+      navigator.clearAppBadge?.().catch?.(() => {});
     };
+    const onHide = () => closeStream();
+    if (document.visibilityState === 'visible') navigator.clearAppBadge?.().catch?.(() => {});
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onVisible);
     window.addEventListener('pageshow', onVisible);
+    window.addEventListener('pagehide', onHide);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('online', onVisible);
       window.removeEventListener('pageshow', onVisible);
+      window.removeEventListener('pagehide', onHide);
     };
-  }, [active, phase, openStream]);
+  }, [active, phase, openStream, closeStream]);
 
   // ---- older history (scroll-up) ----
   const loadOlder = useCallback(async () => {

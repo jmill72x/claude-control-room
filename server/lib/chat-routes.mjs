@@ -15,6 +15,7 @@ import { publicMessage, isMessageId, isClientId, isAttachmentId, isRequestId, sn
 import { COOKIE_NAME, PAIR_COOKIE_NAME, COOKIE_MAX_AGE_S, PAIR_CODE_TTL_MS, cookieHeader, clearCookieHeader, cleanName } from './chat-devices.mjs';
 import { HEARTBEAT_FRESH_MS } from './chat-socket.mjs';
 import { readFile } from 'node:fs/promises';
+import { checkSubscription } from './webpush.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -86,10 +87,13 @@ export function chatState({ socket, store, now }) {
   return { state, since: since ?? null, channelConnected: socket.channelConnected, lastHeartbeatAt: socket.lastHeartbeatAt, lastJarvisMessageAt: lastJarvis, openPermission: open.length > 0 ? store.publicPermission(open[0]) : null, openPermissions: open.length };
 }
 
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS }) {
+// `push` is the push service (lib/chat-push.mjs), or null while notifications are
+// off: its key, and the loopback hosts a scratch push service may use (tests only).
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS, push = null }) {
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
   const streams = new Set();         // { res, deviceId, stop }
+  const streamClosedAt = new Map();  // device id -> when its last stream closed (the push rule)
 
   // A pending upload expires after an hour, and its file goes with it: on every
   // upload and every 10 minutes (an unref'd timer), so an unsent photo stays on
@@ -293,8 +297,36 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
           writeEvent(res, 'status', null, chatState({ socket: socket.status(), store, now: now() }));
         }, pingMs);
         streams.add(entry);
-        req.on('close', () => { streams.delete(entry); entry.stop(); });
+        req.on('close', () => { streams.delete(entry); entry.stop(); streamClosedAt.set(device.id, now()); });
         return undefined;
+      }
+
+      // ---- notifications (§3) ----
+      if (req.method === 'GET' && path === '/api/push/key') {
+        const device = requireDevice(req);
+        if (!push?.on()) throw new HttpError(503, 'notifications are not set up on the server yet');
+        return json(res, 200, { key: push.publicKey(), subscribed: devices.hasPush(device.id) }, NO_STORE);
+      }
+      if (req.method === 'POST' && path === '/api/push/subscription') {
+        guardWrite(req);
+        const device = requireDevice(req);
+        if (!push?.on()) throw new HttpError(503, 'notifications are not set up on the server yet');
+        const checked = checkSubscription(await readBody(req), { testHosts: push.testHosts ?? null });
+        if (!checked.ok) throw new HttpError(400, checked.error);
+        // Where a tap on a notification goes: the page's own origin, which the write
+        // guard has just checked against this request's Host.
+        const origin = typeof req.headers?.origin === 'string' && req.headers.origin !== 'null' ? req.headers.origin : null;
+        const r = await devices.setPush(device.id, { ...checked.subscription, origin });
+        if (!r.ok) throw new HttpError(r.status, r.error);
+        log(`push: ${device.name} turned notifications on`);
+        return json(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && path === '/api/push/subscription') {
+        guardDelete(req);
+        const device = requireDevice(req);
+        await devices.setPush(device.id, null);
+        log(`push: ${device.name} turned notifications off`);
+        return json(res, 200, { ok: true });
       }
 
       // ---- verdicts and status ----
@@ -327,11 +359,15 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   }
 
   // Which paths this router owns.
-  const owns = path => path.startsWith('/api/chat/') || path.startsWith('/api/pair/') || path === '/api/devices' || path.startsWith('/api/devices/');
+  const owns = path => path.startsWith('/api/chat/') || path.startsWith('/api/pair/') || path.startsWith('/api/push/') || path === '/api/devices' || path.startsWith('/api/devices/');
   // How many devices hold a stream open now (the push rule later: none in 10 s means push).
   const streaming = () => new Set([...streams].map(s => s.deviceId));
 
-  return { handler, owns, streaming, sweepUploads, chatState: () => chatState({ socket: socket.status(), store, now: now() }), HEARTBEAT_FRESH_MS };
+  // Whether a device has a stream open ('open'), else when its last one closed, or
+  // null if it never had one in this run: the 10 s rule (lib/chat-push.mjs).
+  const lastStream = id => ([...streams].some(s => s.deviceId === id) ? 'open' : streamClosedAt.get(id) ?? null);
+
+  return { handler, owns, streaming, lastStream, sweepUploads, chatState: () => chatState({ socket: socket.status(), store, now: now() }), HEARTBEAT_FRESH_MS };
 }
 
 // The admin socket's router: `bin/chat-pair <code>` on the machine approves the

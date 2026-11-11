@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+// Make the chat's Web Push (VAPID) key and store it in the login Keychain
+// (service claude-control-room, account vapid-private-key), where the Control Room
+// reads it at start. One-off, run by the machine's owner in a terminal:
+//
+//   bin/vapid-keygen             make and store a key (refuses if one is there)
+//   bin/vapid-keygen --replace   make a new one in its place
+//
+// The private key is never printed, written to a file or put on a command line;
+// it goes to `security` on stdin. Only the public key is shown. Restart the
+// service afterwards so it reads the key. Exit 0 stored, 1 refused or failed,
+// 2 usage.
+import { storeNewKey } from '../server/lib/vapid-store.mjs';
+
+const args = process.argv.slice(2);
+if (args.some(a => a !== '--replace')) {
+  console.error('usage: vapid-keygen [--replace]');
+  process.exit(2);
+}
+if (process.platform !== 'darwin') {
+  console.error('vapid-keygen: this stores the key in the macOS Keychain; run it on the Mac that serves the Control Room');
+  process.exit(2);
+}
+const r = await storeNewKey({ replace: args.includes('--replace') });
+if (!r.ok) {
+  console.error(`vapid-keygen: ${r.error}`);
+  process.exit(1);
+}
+console.log('Stored the VAPID private key in the login Keychain (service claude-control-room, account vapid-private-key).');
+console.log(`Public key (not secret): ${r.publicKey}`);
+console.log('Next: restart the Control Room so it reads the key, then turn notifications on from the Chat tab on each device.');

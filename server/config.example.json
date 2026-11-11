@@ -4,6 +4,7 @@
   "allowedHosts": ["example-host.example-tailnet.ts.net"],
   "hostCheck": "log",
   "chat": { "login": "owner@example.com" },
+  "push": { "subject": "mailto:owner@example.com" },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",

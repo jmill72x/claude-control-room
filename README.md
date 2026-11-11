@@ -740,7 +740,62 @@ three pieces, each with its own router:
   Motion (the only animation is a 180 ms fade-in, off under it), its own light and dark
   tokens under `prefers-color-scheme` (the rest of the page keeps its paper), sizes in em
   off `-apple-system-body` so iOS Dynamic Type scales them, and a 760 px reading width on a
-  wide screen.
+  wide screen. Looking away (another app, the lock screen, another tab: `visibilitychange`
+  to hidden, or `pagehide`) closes the stream at once, so the server knows the device isn't
+  looking; looking again opens it from `?after=` and clears the home-screen badge. An
+  upload not sent with a message expires after an hour and its file is deleted then (swept
+  on each upload and every 10 minutes); at most 8 wait per device (429 past that).
+- **Notifications** (Web Push, the spec's §3; `server/lib/webpush.mjs`,
+  `server/lib/chat-push.mjs`, `web/public/sw.js`, `web/src/orbit/pushApi.js`,
+  `web/src/lib/orbit/push.js`): on only when `config.json` has `push.subject` (a `mailto:`
+  address; Apple refuses a localhost one) and the VAPID private key is in the login
+  Keychain (service `claude-control-room`, account `vapid-private-key`, read with
+  `security find-generic-password -s claude-control-room -a vapid-private-key -w` at
+  start); otherwise a `push:` line at start says which is missing and the chat runs
+  without them. `bin/vapid-keygen` makes the key (P-256) and stores it, the private half
+  sent to `security -i` on stdin so it is never on a command line, printed or written to a
+  file; it refuses to replace a key unless given `--replace`, since a new key strands every
+  subscription until each device turns notifications on again. The public key is derived
+  from the private one; config holds no key. `webpush.mjs` has no dependencies: RFC 8291
+  aes128gcm in one record (it reproduces the RFC's Appendix A byte for byte) and an RFC
+  8292 VAPID JWT (ES256, `aud` the endpoint's origin, `exp` 12 hours, `sub` from config),
+  sent with `TTL: 3600`, `Urgency` high for approvals and normal otherwise, and `Topic`
+  `jos-approval` or `jos-chat`. **Egress:** an endpoint must be `https` on the default port
+  to a host ending in `.push.apple.com`, checked when it is stored and again before each
+  send, no redirects followed; anything else is refused at subscribe time, which also keeps
+  this server from being made to call an address of someone's choosing (the one exception,
+  a loopback `http` push service, exists only when a test passes it in; `server.mjs` never
+  does). Routes, with the device cookie and the write guards: `GET /api/push/key`
+  (`{key, subscribed}`, 503 while push is off), `POST /api/push/subscription` (the
+  browser's `PushSubscription` JSON; the page's `Origin` is kept as where a tap goes) and
+  `DELETE /api/push/subscription`. One subscription per device, in `devices.json`; an
+  endpoint another device holds moves to the new one; a revoke drops it; the device list
+  says which devices have one. **What pushes, in generic words only, never a message's text
+  or a tool's name:** "New message" for each chat message from the lead, to a device that
+  has no stream open and has had none in the last 10 s (one that closed under 10 s ago is
+  checked again when the 10 s are up and skipped if it opened a stream after the message),
+  at most once a minute per device while it stays away; "Jarvis needs an approval" for
+  every permission request, to every device, urgent; "Jarvis is offline" once after 5
+  minutes without the channel's heartbeat (counted from the server's start when there was
+  none), and again only after it has come back. `notice`s, verdicts, edits and the owner's
+  own messages never push. The payload is Declarative Web Push (`{"web_push": 8030,
+  "notification": {"title": "Jarvis", "body", "navigate": "<origin>/#chat", "app_badge":
+  1}}`). A 404 or 410 from the push service deletes that subscription (logged with the
+  device's name, never the endpoint); a 403 (the key or JWT refused) is logged and alerted
+  like a refused channel, at most once per 10 minutes. `sw.js` is push only: a `push`
+  handler that always calls `showNotification` inside `waitUntil` (for iOS before 18.4,
+  which ignores the declarative form; an unreadable payload still shows "Jarvis") and sets
+  the badge, and a `notificationclick` that brings an open page forward and switches it to
+  `#chat`, or opens `/#chat`; it has no `fetch` handler and caches nothing, so no stale
+  page can ever be served (the old board-tab bug). The page registers it on every load
+  (`/sw.js`, scope `/`; `default-src 'self'` covers a same-origin worker, so the policy is
+  unchanged). The settings sheet's Notifications part fetches the key first, then a tap on
+  "Turn on notifications" asks `Notification.requestPermission()` and calls
+  `pushManager.subscribe({userVisibleOnly: true, applicationServerKey})`; it shows on, off,
+  blocked, "not set up on the server yet", or, on an iPhone or iPad outside the home-screen
+  app, that notifications work only from the home-screen icon. Each launch with permission
+  already given sends the subscription again (made anew when the key changed). The
+  manifest has `id`, `start_url` and `scope` all `/` and `display: standalone`.
 
 The cookie is `__Host-jos` (32 random bytes, only its sha256 on file; HttpOnly, Secure,
 SameSite=Strict, 400 days). A browser accepts a `__Host-` cookie over HTTPS only, so until
@@ -1142,6 +1197,7 @@ and that must not reach every device on the tailnet.
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
+| `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
 | `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |

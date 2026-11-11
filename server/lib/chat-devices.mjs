@@ -143,6 +143,8 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
       const d = devices.find(x => x.id === id && !x.revokedAt);
       if (!d) return { ok: false, status: 404, error: 'no such device' };
       d.revokedAt = now();
+      // Its push subscription goes with it: a revoked device hears nothing more.
+      d.push = null;
       // An approved pairing not yet collected goes too: whichever device asked for
       // it, a revoke must never leave a cookie waiting to be picked up.
       if (pending?.approved) pending = null;
@@ -152,9 +154,37 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
     });
   }
 
-  const list = () => devices.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt ?? null, revokedAt: d.revokedAt ?? null }));
+  const list = () => devices.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt ?? null, revokedAt: d.revokedAt ?? null, push: Boolean(d.push) }));
+
+  // A device's Web Push subscription (lib/webpush.mjs checked it): one per device,
+  // `null` to drop it. An endpoint another active device holds moves here, so one
+  // browser never gets each push twice.
+  function setPush(id, push) {
+    return serial(async () => {
+      const d = active().find(x => x.id === id);
+      if (!d) return { ok: false, status: 404, error: 'no such device' };
+      if (push) for (const other of active()) if (other !== d && other.push?.endpoint === push.endpoint) other.push = null;
+      d.push = push ? { endpoint: push.endpoint, keys: { p256dh: push.keys.p256dh, auth: push.keys.auth }, origin: push.origin ?? null, at: now() } : null;
+      await persist();
+      return { ok: true };
+    });
+  }
+  // Drop a subscription only while it is still the one that failed (a page may
+  // have sent a fresh one while the push was out).
+  function dropPush(id, endpoint) {
+    return serial(async () => {
+      const d = devices.find(x => x.id === id);
+      if (!d?.push || d.push.endpoint !== endpoint) return false;
+      d.push = null;
+      await persist();
+      return true;
+    });
+  }
+  // The active devices that take pushes, each with its subscription.
+  const pushTargets = () => active().filter(d => d.push?.endpoint).map(d => ({ id: d.id, name: d.name, push: d.push }));
+  const hasPush = id => Boolean(active().find(x => x.id === id)?.push);
   // Whether a device is still paired: what an open stream re-checks on every ping.
   const isActive = id => active().some(d => d.id === id);
 
-  return { load, authenticate, start, approve, status, revoke, list, isActive, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
+  return { load, authenticate, start, approve, status, revoke, list, isActive, setPush, dropPush, pushTargets, hasPush, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
 }

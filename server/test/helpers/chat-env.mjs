@@ -70,7 +70,8 @@ export async function makeChatEnv({ routes: routeOpts = {}, start = 179438000000
   const close = async () => {
     server.closeAllConnections?.();
     await new Promise(r => server.close(r));
-    await rm(dir, { recursive: true, force: true });
+    // A device's lastSeenAt is saved without being awaited; retry past a write still landing.
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   };
   return { dir, clock, now, events, store, devices, channel, socket, routes, server, port, pair, close, extra, call: opts => call({ port, ...opts }) };
 }

@@ -4,6 +4,8 @@ import { useReducedMotion } from './useReducedMotion.js';
 import { Avatar } from './Avatar.jsx';
 import { attachmentUrl } from './chatApi.js';
 import { prepareFile } from './photo.js';
+import * as push from './pushApi.js';
+import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
@@ -467,7 +469,7 @@ function SettingsSheet({ chat, now, onClose }) {
             {devices.map(d => (
               <li key={d.id} className={`o-chat-device${d.revokedAt ? ' o-chat-device-revoked' : ''}`}>
                 <div className="o-chat-device-main">
-                  <span className="o-chat-device-name">{d.name}{chat.device?.id === d.id && <span className="o-chat-this">this device</span>}</span>
+                  <span className="o-chat-device-name">{d.name}{chat.device?.id === d.id && <span className="o-chat-this">this device</span>}{!d.revokedAt && d.push && <span className="o-chat-this">notifications</span>}</span>
                   <span className="o-chat-sub">{d.revokedAt ? `revoked ${when(d.revokedAt)}` : `paired ${when(d.createdAt)} · seen ${when(d.lastSeenAt)}`}</span>
                 </div>
                 {!d.revokedAt && (confirm === d.id
@@ -478,6 +480,7 @@ function SettingsSheet({ chat, now, onClose }) {
             {devices.length === 0 && <li className="o-chat-sub">No devices.</li>}
           </ul>
         )}
+        <Notifications onChange={load} />
         <h3 className="o-chat-label">Approve another device</h3>
         <form className="o-chat-approve" onSubmit={approve}>
           <input className="o-input o-chat-input o-mono" value={code} maxLength={6} autoComplete="off" autoCapitalize="characters" placeholder="6-letter code" aria-label="Pairing code" onChange={e => setCode(e.target.value)} />
@@ -487,6 +490,63 @@ function SettingsSheet({ chat, now, onClose }) {
         {error && <p className="o-chat-card-error" role="alert">{error}</p>}
       </div>
     </div>
+  );
+}
+
+// ---- notifications (Web Push) for this device ----
+
+function Notifications({ onChange }) {
+  const [support] = useState(() => push.support());
+  const [permission, setPermission] = useState(() => push.permission());
+  const [server, setServer] = useState('checking'); // checking | on | off | error
+  const [key, setKey] = useState(null);
+  const [subscribed, setSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (support !== 'ok') return undefined;
+    let alive = true;
+    // The key and the browser's subscription are read before any tap, so the tap
+    // goes straight to the permission prompt with nothing to wait for.
+    push.pushKey().then(async r => {
+      const sub = await push.currentSubscription().catch(() => null);
+      if (!alive) return;
+      setKey(r.key);
+      setSubscribed(Boolean(r.subscribed && sub));
+      setServer('on');
+    }).catch(err => { if (alive) { setServer(err?.status === 503 ? 'off' : 'error'); if (err?.status !== 503) setError(String(err?.message ?? err)); } });
+    return () => { alive = false; };
+  }, [support]);
+  const view = pushView({ support, permission, subscribed, server: server === 'checking' ? 'on' : server });
+  const act = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (view.action === 'on') {
+        const r = await push.turnOn(key);
+        setPermission(r.permission);
+        setSubscribed(r.subscribed);
+      } else {
+        await push.turnOff();
+        setSubscribed(false);
+      }
+      onChange?.();
+    } catch (err) {
+      setError(String(err?.message ?? err));
+      setPermission(push.permission());
+    } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <h3 className="o-chat-label">Notifications</h3>
+      <p className="o-chat-sub o-chat-push-text" role="status">{server === 'checking' && support === 'ok' ? 'Checking…' : view.text}</p>
+      {view.action && server === 'on' && (
+        <button type="button" className={`o-cbtn${view.action === 'on' ? ' o-cbtn-primary' : ''}`} disabled={busy || !key} onClick={act}>
+          {view.action === 'on' ? 'Turn on notifications' : 'Turn off notifications'}
+        </button>
+      )}
+      {error && <p className="o-chat-card-error" role="alert">{error}</p>}
+    </>
   );
 }
 

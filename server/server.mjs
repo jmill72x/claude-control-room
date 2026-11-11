@@ -34,6 +34,7 @@ import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
 import { prepareSocketPath } from './lib/chat-listen.mjs';
+import { createPushService, loadVapid } from './lib/chat-push.mjs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { get } from 'node:http';
@@ -238,11 +239,12 @@ if (chatSettings.on && socketsReady) {
       revoked: `a chat device was revoked: ${event.device?.name ?? '?'}`,
       'pairing-failed': 'a chat pairing failed on three wrong codes',
       'permission-opened': `the lead asked for a permission (${event.tool ?? 'a tool'})`,
-      verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`
+      verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`,
+      'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`
     };
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
-    if (['client-refused', 'client-replaced', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started'].includes(event.kind)) {
+    if (['client-refused', 'client-replaced', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
@@ -256,7 +258,13 @@ if (chatSettings.on && socketsReady) {
   const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
   await chatDevices.load();
   const socketRouter = createSocketRouter({ store: chatStore, onEvent: chatEvents });
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents });
+  // Web Push (lib/chat-push.mjs): on with config's `push.subject` and the VAPID key
+  // in the Keychain; otherwise a `push:` line says why and the chat runs without it.
+  const { vapid, problems: pushProblems } = await loadVapid({ config });
+  for (const problem of pushProblems) console.error(`push: ${problem}`);
+  if (vapid) console.log('push: notifications on');
+  const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
