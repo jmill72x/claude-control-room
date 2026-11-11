@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDashboard } from '../hooks/useDashboard.js';
 import { useTick } from '../hooks/useTick.js';
 import { useBoard } from './useBoard.js';
@@ -14,6 +14,10 @@ import { BoardBand, BoardTab } from './Board.jsx';
 import { useBoardFilters } from './useBoardFilters.js';
 import { ChatTab } from './Chat.jsx';
 import { useChat } from './useChat.js';
+import { useUnseen } from './useUnseen.js';
+import { useSwipeTabs } from './useSwipeTabs.js';
+import { navStuck } from '../lib/orbit/nav.js';
+import { badgeText, chatTabLabel } from '../lib/orbit/unseen.js';
 
 const EMPTY_ROSTER = { agents: [], tagOwners: {} };
 
@@ -33,6 +37,27 @@ function useRoute() {
   return [route, go];
 }
 
+// The tabs stay in reach: once their place in the header scrolls away, the same
+// nav is pinned to the top of the screen. Fixed, so nothing below it moves: its
+// empty slot keeps the nav's height (CSS) and width (measured here as it leaves),
+// or on a phone the title row would close up and the page jump.
+function useStuckNav() {
+  const slotRef = useRef(null);
+  const [stuck, setStuck] = useState(null); // null, or the slot's width when it emptied
+  useEffect(() => {
+    const el = slotRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver(entries => {
+      const e = entries[entries.length - 1];
+      const now = navStuck({ isIntersecting: e.isIntersecting, top: e.boundingClientRect.top });
+      setStuck(was => (!now ? null : was ?? { width: e.boundingClientRect.width }));
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return [slotRef, stuck];
+}
+
 export function OrbitApp() {
   const { payload, error, receivedAt, refresh } = useDashboard();
   const board = useBoard();
@@ -44,6 +69,11 @@ export function OrbitApp() {
   const now = useTick(route.tab === 'board' ? 10_000 : 1000);
   // The chat's state lives only while its tab is open: the stream closes with it.
   const chat = useChat({ active: route.tab === 'chat' });
+  // The badge on the Chat tab: the lead's messages this device hasn't shown yet.
+  const unseen = useUnseen({ onChat: route.tab === 'chat', messages: chat.messages });
+  useSwipeTabs({ tab: route.tab, go });
+  const [navSlot, stuckNav] = useStuckNav();
+  const navIsStuck = stuckNav !== null;
   // Why the board was opened on an item: just added on this page, or from
   // Waiting on you. A link from anywhere else is a "Linked item".
   const [focusFrom, setFocusFrom] = useState(null);
@@ -66,6 +96,8 @@ export function OrbitApp() {
   const totals = boardTotals(board.todos);
   const isBoard = route.tab === 'board';
   const isChat = route.tab === 'chat';
+  // The badge's count is in the link's name too ("Chat, 3 unread messages").
+  const showBadge = !isChat && unseen.count > 0;
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
   // The Now chip (Now.jsx), rebuilt each tick: its ages move by the second.
   const nowChip = isBoard || isChat ? null : nowFromPayload({ payload, roster, now });
@@ -81,7 +113,7 @@ export function OrbitApp() {
   const focusWhy = route.item !== null && route.item === focusFrom?.id ? focusFrom.why : 'link';
 
   return (
-    <div className={`o-page${isChat ? ' o-page-chat' : ''}`}>
+    <div className={`o-page${isChat ? ' o-page-chat' : ''}${navIsStuck ? ' o-page-stuck' : ''}`}>
       <header className={`o-band${isBoard ? ' o-band-board' : ''}`}>
         <div className="o-wrap o-band-inner">
           <div className="o-titlebar">
@@ -89,13 +121,18 @@ export function OrbitApp() {
               <h1>Control Room</h1>
               <span className="o-mono o-date">{lead ? `${lead.name} · ` : ''}{headerDate(now)}</span>
             </div>
-            <nav aria-label="Views" className="o-tabs">
-              <a className="o-tab" href="#overview" aria-current={isBoard || isChat ? undefined : 'page'}>Overview</a>
-              <a className="o-tab" href="#board" aria-current={isBoard ? 'page' : undefined}>
-                Board · {board.loaded ? totals.open : '—'}
-              </a>
-              <a className="o-tab" href="#chat" aria-current={isChat ? 'page' : undefined}>Chat</a>
-            </nav>
+            <div className="o-tabs-slot" ref={navSlot} style={navIsStuck ? { minWidth: `min(${stuckNav.width}px, 100%)` } : undefined}>
+              <nav aria-label="Views" className={`o-tabs${navIsStuck ? ' o-tabs-stuck' : ''}`}>
+                <a className="o-tab" href="#overview" aria-current={isBoard || isChat ? undefined : 'page'}>Overview</a>
+                <a className="o-tab" href="#board" aria-current={isBoard ? 'page' : undefined}>
+                  Board · {board.loaded ? totals.open : '—'}
+                </a>
+                <a className="o-tab" href="#chat" aria-current={isChat ? 'page' : undefined}
+                  aria-label={showBadge ? chatTabLabel(unseen.count, unseen.more) : undefined}>
+                  Chat{showBadge && <span className="o-tab-badge" aria-hidden="true">{badgeText(unseen.count, unseen.more)}</span>}
+                </a>
+              </nav>
+            </div>
           </div>
           <div className="o-statusrow" role="group" aria-label="System health">
             <HealthChips env={payload?.health} fresh={fresh} open={chip} detailId="o-health-detail"

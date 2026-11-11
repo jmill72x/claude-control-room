@@ -82,6 +82,29 @@ button:disabled { cursor: default; }
   border: 1px solid rgba(248, 247, 243, 0.3); border-radius: 999px; color: var(--paper); text-decoration: none; white-space: nowrap;
 }
 .o-tab[aria-current='page'] { background: var(--accent-bright); border-color: var(--accent-bright); color: var(--navy); }
+/* The tabs stay in reach (OrbitApp's useStuckNav): once their slot in the header has
+   scrolled away, the nav is pinned to the top, below the status bar or notch in the
+   home-screen app. The slot keeps its height, so nothing below moves; what sticks
+   to the top of a tab (the chat's banner) and scrolled-to items sit below the bar. */
+:root { --o-navbar-h: calc(60px + env(safe-area-inset-top, 0px)); }
+html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
+.o-tabs-slot { display: flex; min-height: 44px; }
+.o-tabs-stuck {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 10; justify-content: center;
+  padding: max(8px, env(safe-area-inset-top, 0px)) max(var(--gutter), env(safe-area-inset-right, 0px)) 8px max(var(--gutter), env(safe-area-inset-left, 0px));
+  background: var(--navy); box-shadow: 0 1px 0 rgba(248, 247, 243, 0.12), 0 6px 16px rgba(13, 32, 69, 0.25);
+}
+.o-page-stuck .o-chat-banner { top: var(--o-navbar-h); }
+/* A phone's tabs, with a three-digit board count and a "99+" badge, still fit in one row. */
+@media (max-width: 420px) {
+  .o-tabs { gap: 6px; }
+  .o-tab { padding: 0 13px; }
+}
+/* The Chat tab's unseen count (useUnseen); the link's own name carries it for a screen reader. */
+.o-tab-badge {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; margin-left: 8px; padding: 0 6px;
+  border-radius: 999px; background: var(--accent-bright); color: var(--navy); font-size: 11px; font-weight: 700; letter-spacing: 0; line-height: 1;
+}
 .o-statusrow { margin-top: -10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 20px; }
 .o-updated { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 0.06em; color: var(--night-sub); }
 .o-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--night-sub); flex: none; }

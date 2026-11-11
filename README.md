@@ -275,10 +275,21 @@ Burn beside the week's heat map; on a phone (700 px and under) those last six si
 one "More" disclosure that remembers its state per viewer. Phases 1 to 4 of the Orbit
 plan and Phase 1b of the Jarvis OS plan give it:
 
-- **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
-  minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
-  `#board`, and `#board/<id>`, which opens the board on one item), so Back works. The
-  alert bar's lines show in a strip under the header.
+- **A navy header:** the date, three tabs (Overview, Board, Chat) and "Updated N s ago",
+  which turns amber past 3 minutes and red when the last poll failed. The tab is kept in
+  the address (`#overview`, `#board`, `#board/<id>`, which opens the board on one item,
+  and `#chat`), so Back works. The alert bar's lines show in a strip under the header.
+  Three ways between the tabs since 2026-11-11 (`web/src/lib/orbit/nav.js`, tested by
+  `web/test/orbit-nav.test.js`, and `useSwipeTabs.js`): once the tabs' place in the header
+  scrolls away, the same nav is pinned to the top of the screen (fixed, below the status
+  bar's safe area; its empty slot keeps its size, so nothing jumps, and the Chat banner and
+  scrolled-to items sit below it). A sideways swipe anywhere on the page moves to the next
+  or previous tab in that order (left for next), on any width: at least 60 px, twice as
+  sideways as up or down, within 0.7 s, by touch only (a mouse drag never does). It leaves
+  alone a swipe that starts within 24 px of the screen's edge (iOS's own back and forward),
+  one in a field, a dialog or `[data-noswipe]`, and one in anything that scrolls sideways at
+  that moment, which keeps its own scroll. Before it there was no swipe of the page's own:
+  what moved between tabs on the iPhone was iOS's edge swipe through the hash history.
 - **The health strip (Phase 2),** under the title on both tabs: a chip for the scheduled
   jobs, then one for each always-on service in config, each a dot (green, red or grey)
   and a word. A chip opens its details below the strip; a second tap or Escape closes
@@ -722,7 +733,14 @@ three pieces, each with its own router:
   name}`, for the settings sheet's "this device" mark).
 - **The Chat tab** (`web/src/orbit/Chat.jsx`, `useChat.js`, `chatApi.js`, `photo.js`, and
   the pure logic in `web/src/lib/orbit/chat.js`, tested by `web/test/orbit-chat.test.js`):
-  the third tab, at `#chat`. An unpaired device (`/api/pair/status` says so) gets the
+  the third tab, at `#chat`. Off the tab, a badge on it counts the lead's messages and
+  event lines this device hasn't shown yet (its own messages, verdicts and notices don't
+  count), and the link's name says it ("Chat, 3 unread messages"); opening the tab clears
+  it. The mark is the highest seq shown, with the store's epoch, in this browser's
+  `localStorage` (`jos.chat.seen`, per device; a new epoch or a lower seq starts it again
+  from the store's seq), and the page polls `/api/pair/status`, then on a paired device
+  `/api/chat/messages?after=<mark>`, every 30 s while visible (`useUnseen.js`, logic in
+  `web/src/lib/orbit/unseen.js`, tested by `web/test/orbit-unseen.test.js`). An unpaired device (`/api/pair/status` says so) gets the
   pairing screen: a name, the 6-letter code, a 2-second poll of `/api/pair/status`, and the
   two ways to approve (a paired device's settings sheet, or `bin/chat-pair <CODE>` on the
   machine); a pairing started before a reload resumes from its cookie. The thread puts the

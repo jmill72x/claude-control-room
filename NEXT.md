@@ -633,8 +633,32 @@ holds in a browser (their logic is unit-tested, the wiring not), and anything on
 whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
 use of the 192/512 icons (it uses the apple-touch-icon).
 
-**Events, pillar 3 slice 1 ("a failed job wakes Jarvis"), staged on `jos/events` (from main
-66607bb, 2026-11-11), not committed, not live.** Jeff approved the design 11-11 ("Go with
+**Three tab fixes staged on `jos/qol-nav` (from main 2b53124, 2026-11-11), not committed, not
+live.** Jeff's ask that day: a badge on Chat for an unseen message, a header that stays in reach
+while scrolling, and the sideways swipe on the iPad. README "The Orbit page" (the header bullet
+and the Chat tab bullet) has how each works. (1) **Badge:** `useUnseen.js` + `lib/orbit/unseen.js`;
+per device in `localStorage`, polled every 30 s off the Chat tab while the page is visible; the
+lead's messages and event lines count, not his own, verdicts or notices. (2) **Sticky tabs:**
+the header's nav is pinned (fixed, safe-area padded) once its slot scrolls away; the slot keeps
+its measured width so a phone's title row doesn't close up. (3) **Swipe:** the finding was that
+the page never had a swipe; the iPhone's working "swipe" was iOS's edge gesture through the
+`#hash` history, which only goes back to where you were and only from the screen's very edge,
+so on the iPad (a wider screen, and a gesture usually begun away from the edge) it seemed dead.
+`useSwipeTabs.js` + `lib/orbit/nav.js` add a tab-order swipe on touch, any width, that leaves the
+edges to iOS and leaves sideways scrollers, fields and dialogs alone. **Go-live:** C&P, then
+`cd web && npm run build` alone (no server change, no restart); the build-id watcher reloads open
+pages. **Verified:** web 160 tests (20 new, 28 mutations all caught), server 788 in local time
+and Tokyo; headless Chromium (the 1223 shell) on a scratch build at 390, 820x1180, 1180x820 and
+1440 with touch emulated through CDP: 98 checks (pinned at top 0 with every tab on screen and 44
+px, no content jump, no sideways page scroll, the badge's count and label with the chat routes
+faked, opening Chat marks the seq, the Chat banner under the bar, swipes both ways, edge, vertical,
+slow, a sideways scroller that scrolls instead, the composer, a mouse drag on desktop that does
+nothing). **Unverified:** everything on real iOS (WebKit isn't installed): Safari's touch events
+on the iPad, how the pin looks under the status bar in the home-screen app, the badge against
+the live chat store. At 320 px a "Board · 123" and "99+" badge overflow the pinned row by 7 px.
+
+**Events, pillar 3 slice 1 ("a failed job wakes Jarvis"), built on `jos/events` (from main
+66607bb, 2026-11-11), committed on main as 2b53124; go-live as below.** Jeff approved the design 11-11 ("Go with
 your recos for now"); Ultron's review was go with changes, all built in. README "Events"
 has the rules and the exact inbound line the channel must handle (`{"type":"event", seq,
 id, at, source, event, text, count, ids}`, a `summary` after hello). What's in it:
