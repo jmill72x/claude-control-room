@@ -38,6 +38,8 @@ import { createEvents, readEventsConfig } from './lib/events.mjs';
 import { createEventSocketRouter } from './lib/event-socket.mjs';
 import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
+import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
+import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { get } from 'node:http';
@@ -214,6 +216,7 @@ const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
 // verdicts, a refused second channel and a takeover are logged and pushed like an alert;
 // the last two at most once per kind per 10 minutes, with a count of those held back.
 let chat = null;
+let chatDevicesForFeed = null; // the Feed's reads take the chat's device cookie
 const chatSettings = readChatConfig(config, hosts.mode);
 for (const problem of chatSettings.problems) console.error(`config: ${problem}`);
 const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
@@ -283,6 +286,7 @@ if (chatSettings.on && socketsReady) {
   if (orphans) console.log(`chat: removed ${orphans} unsent upload${orphans === 1 ? '' : 's'} left from before the start`);
   const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
   await chatDevices.load();
+  chatDevicesForFeed = chatDevices;
   events = createEvents({ store: chatStore, ledgerPath: join(HERE, 'data', 'events.json'), killSwitchPath: eventsOffPath, sources: eventsSettings.sources, triagePerDay: eventsSettings.triagePerDay });
   await events.load();
   console.log(`events: on${events.killed() ? ' (the kill switch is on: events are stored, never delivered)' : ''}, ${eventsSettings.sources.size} socket source${eventsSettings.sources.size === 1 ? '' : 's'} allowed`);
@@ -314,6 +318,17 @@ if (chatSettings.on && socketsReady) {
       .catch(err => console.error(`events: the event socket did not start (${err?.code ?? err?.message ?? err})`));
   }
 }
+// The Feed (lib/feed.mjs, lib/feed-routes.mjs): what each agent posted to its Discord
+// feed, read from the copies the lead's discord-post keeps, for the roster's agents
+// only, the lead's brief and digest pinned. Read-only, on request, at most every 5 s;
+// a paired device may read it (the chat's rule), so with the chat off nobody can.
+const feedSettings = readFeedConfig(config);
+for (const problem of feedSettings.problems) console.error(`config: ${problem}`);
+const feedRoutes = createFeedRoutes({
+  feed: createFeedReader({ dir: feedSettings.dir, agents: roster.agents.map(a => a.key), lead: roster.agents[0]?.key ?? null }),
+  devices: chatDevicesForFeed,
+  login: chatSettings.on ? chatSettings.login : null
+});
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 
@@ -327,6 +342,7 @@ process.on('unhandledRejection', err => {
 // The Host check comes first, before any route, API or page alike.
 const routes = withHostGuard(async (req, res) => {
   if (chat && chat.owns(new URL(req.url, 'http://localhost').pathname)) return chat.handler(req, res);
+  if (feedRoutes.owns(new URL(req.url, 'http://localhost').pathname)) return feedRoutes.handler(req, res);
   if (req.url.startsWith('/api/')) return api(req, res);
   if (req.url.startsWith('/avatars/')) return serveAvatar(req, res);
   return serveStatic(req, res);

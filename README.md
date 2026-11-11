@@ -275,10 +275,12 @@ Burn beside the week's heat map; on a phone (700 px and under) those last six si
 one "More" disclosure that remembers its state per viewer. Phases 1 to 4 of the Orbit
 plan and Phase 1b of the Jarvis OS plan give it:
 
-- **A navy header:** the date, three tabs (Overview, Board, Chat) and "Updated N s ago",
+- **A navy header:** the date, four tabs (Overview, Board, Chat, Feed; Feed since
+  2026-11-11, see "The Feed" below) and "Updated N s ago",
   which turns amber past 3 minutes and red when the last poll failed. The tab is kept in
   the address (`#overview`, `#board`, `#board/<id>`, which opens the board on one item,
-  and `#chat`), so Back works. The alert bar's lines show in a strip under the header.
+  `#chat` and `#feed`), so Back works. On a phone (420 px and under) the tabs are tighter,
+  so all four fit one row at 375 px with a three-digit board count and a "99+" badge. The alert bar's lines show in a strip under the header.
   Three ways between the tabs since 2026-11-11 (`web/src/lib/orbit/nav.js`, tested by
   `web/test/orbit-nav.test.js`, and `useSwipeTabs.js`): once the tabs' place in the header
   scrolls away, the same nav is pinned to the top of the screen (fixed, below the status
@@ -1036,6 +1038,75 @@ HH:MM`), and the caps, quiet hours and kill switch apply. Answers: 201 `{"status
 or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the owner may
 post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
 leaves the chat up.
+
+### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
+
+The Feed tab shows what each agent and job posted to its Discord feed, without Discord
+(design doc §5.7). The lead's `discord-post` (its repo, branch `jos/feed-log`) keeps a copy
+of every post it sends (the messages as Discord got them, after its link rewrite and
+secret scan), one JSON line in
+`~/.local/state/jarvis/feed/<agent>.jsonl` (folder 0700, files 0600, rolled to
+`<agent>.1.jsonl` past 1 MB):
+
+```json
+{"ts": "2026-11-09T12:00:00.000Z", "agent": "<key>", "title": "…" , "text": "…", "kind": "brief", "truncated": true}
+```
+
+`title` may be null; `kind` (`brief` or `digest`, set only by the lead's morning routine,
+in-process: `discord-post` has no flag for it) and `truncated` (text past 16 KB) are
+optional. A dry run or a failed post keeps nothing. The lead's routines that read the web
+are denied the folder.
+
+- **The reader** (`server/lib/feed.mjs`) is read-only and trusts nothing in the folder. The
+  folder must pass the program check's folder rule (`checkFolder` in
+  `lib/program-check.mjs`: this user's, and neither it nor a folder above it writable by
+  others); a folder that fails is logged once (`feed: the feed folder …`) and the tab says
+  so. Only files named for a roster agent are read (`<key>.1.jsonl`, then `<key>.jsonl`),
+  each opened with `O_NOFOLLOW | O_NONBLOCK` and read only if it is a regular file of this
+  user's, with one link, that others can't write; only its last 2 MB is read, a line over 128 KB is
+  skipped, and a file is parsed again only when its inode, size or mtime moved. A line must
+  be a JSON object whose `agent` is the file's, with an ISO `ts` no more than 24 hours
+  ahead and non-empty text, or it is skipped and counted; a line still being written (no newline yet) is skipped. Text is
+  cut to 16,384 characters and titles to 200 (`truncated: true`), and lone surrogates
+  become U+FFFD. It keeps an agent's newest 50, and pins the newest `brief` and `digest`
+  found in the lead's own files (the roster's first agent), however far back in them; a
+  `kind` in any other file is dropped. Each post's id is a hash of its agent and line.
+  The answer holds about 1 MB of text and titles at most: the pins always, then posts
+  newest first until that runs out (`dropped` counts the rest, and the tab says so). A
+  read already on its way is shared, and reads within 5 s share one answer. No timer: it
+  reads when the tab asks.
+- **`GET /api/feed`** (`server/lib/feed-routes.mjs`) answers `{status, posts, pinned:
+  {brief, digest}, agents: [{key, count, latestAt}], skipped, unreadable, dropped}`,
+  `no-store`.
+  `status` is `ok`, `missing` (no folder yet: nothing posted since the writer landed),
+  `refused` (the folder rule) or `off`. It never holds a path. It takes exactly the chat's
+  read rule (`requireDevice`), not the dashboard's: a paired device's cookie, with the
+  owner's `Tailscale-User-Login` when `chat.login` is set; anything else gets 401 or 403,
+  a program on this machine included (Ultron 11-11). With the chat off there are no
+  devices, so nobody can read it. The feed is never part of `/api/dashboard`, which any
+  tailnet device can read.
+- **Config:** nothing needed. An optional `"feed": {"dir": "/absolute/folder"}` moves the
+  folder and `"feed": {"off": true}` turns it off; anything else is a `config:` line and
+  the tab stays empty.
+- **The tab** (`web/src/orbit/Feed.jsx`, `useFeed.js`, `feedApi.js`, logic in
+  `web/src/lib/orbit/feed.js`, tested by `web/test/orbit-feed.test.js`): read when it
+  opens, then every minute while it stays open and in view; the last answer is kept
+  across tab changes. The pins come first (newest of the two first, each with its label and
+  an accent edge), then the posts newest first under day headings, each with the agent's
+  avatar and name from the roster, its time and its title. The bold title `discord-post`
+  repeats at the top of the text is left out of the body. Text goes through the chat's
+  `Markdown` component (no HTML is ever built from it; a link shows its real host). A post
+  over 700 characters or 12 lines is folded with "Show all". The filter row (All, then
+  each agent with posts, with counts) is kept across tab changes and scrolls sideways on a
+  phone. Uses the chat's light and dark tokens. A device that isn't paired is sent to the
+  Chat tab to pair. No push for feed posts.
+- **Swipe order:** Overview, Board, Chat, Feed. Chat keeps its place; the Feed, for
+  reading only, goes last.
+
+Tests: `server/test/feed.test.mjs` (the reader over real temp folders, FIFOs and
+symlinks included, and the route over a loopback port with the chat's device store) and
+`web/test/orbit-feed.test.js`. The writer's tests are in the lead's repo
+(`tests/test_discord_post.py`).
 
 ### Acknowledging a known miss
 

@@ -7,7 +7,8 @@
 // went. This swipe goes by tab order from anywhere on the page, and leaves the
 // edges to the system, so the two never both fire.
 
-export const TAB_ORDER = ['overview', 'board', 'chat'];
+// Feed (2026-11-11) went last: the Chat keeps the place Jeff's thumb already knows.
+export const TAB_ORDER = ['overview', 'board', 'chat', 'feed'];
 
 // A swipe starting this close to the screen's left or right edge is the system's.
 export const EDGE_PX = 24;

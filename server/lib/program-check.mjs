@@ -87,6 +87,14 @@ async function checkPackage(dir, opts) {
   return walk(dir, `../${PACKAGE}`, 'folder', 0);
 }
 
+// Whether this server may read a folder of files another program writes (the Feed's
+// folder, lib/feed.mjs): the same rule, for a folder. Gives { real, problem }.
+export async function checkFolder(path, { uid = process.getuid(), fs = { realpath, stat, readdir } } = {}) {
+  let found;
+  try { found = await inspect(path, 'folder', { uid, fs }); } catch (err) { return { real: null, problem: notChecked(err) }; }
+  return found.problem ? { real: null, problem: found.problem } : { real: found.real, problem: null };
+}
+
 // Whether this server may run the launcher at `path`: the launcher passes the
 // rule, and so does its package. Gives { real, problem }: the launcher's real
 // path when everything passes, or what is wrong.

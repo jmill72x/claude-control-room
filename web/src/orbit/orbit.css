@@ -95,10 +95,13 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   background: var(--navy); box-shadow: 0 1px 0 rgba(248, 247, 243, 0.12), 0 6px 16px rgba(13, 32, 69, 0.25);
 }
 .o-page-stuck .o-chat-banner { top: var(--o-navbar-h); }
-/* A phone's tabs, with a three-digit board count and a "99+" badge, still fit in one row. */
+/* A phone's four tabs, with a three-digit board count and a "99+" badge, still fit
+   in one row at 375 px (measured 2026-11-11 with the Feed tab: tighter padding and
+   letter-spacing, each tab still at least 44 px each way). */
 @media (max-width: 420px) {
-  .o-tabs { gap: 6px; }
-  .o-tab { padding: 0 13px; }
+  .o-tabs { gap: 4px; }
+  .o-tab { padding: 0 8px; letter-spacing: 0.06em; }
+  .o-tab-badge { margin-left: 5px; }
 }
 /* The Chat tab's unseen count (useUnseen); the link's own name carries it for a screen reader. */
 .o-tab-badge {
@@ -612,10 +615,10 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   line-height: 1.4;
   color: var(--c-ink);
 }
-.o-page-chat { background: var(--c-bg, var(--paper)); min-height: 100dvh; display: flex; flex-direction: column; }
+.o-page-chat, .o-page-feed { background: var(--c-bg, var(--paper)); min-height: 100dvh; display: flex; flex-direction: column; }
 .o-page-chat .o-chat-thread-page { flex: 1 1 auto; display: flex; flex-direction: column; }
 @media (prefers-color-scheme: dark) {
-  .o-chat, .o-page-chat {
+  .o-chat, .o-page-chat, .o-page-feed {
     --c-bg: #0B1324;
     --c-ink: #E4E8F1;
     --c-heading: #F8F7F3;
@@ -638,7 +641,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
     --c-amber: #F5C860;
     --c-focus: #FF9F6E;
   }
-  .o-page-chat { background: #0B1324; }
+  .o-page-chat, .o-page-feed { background: #0B1324; }
   .o-chat *:focus-visible { outline-color: var(--c-focus); }
 }
 .o-chat-wrap { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 var(--gutter); display: flex; flex-direction: column; flex: 1 1 auto; }
@@ -829,3 +832,34 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-thread-page { position: relative; }
 .o-chat-dropzone { position: fixed; inset: 8px; z-index: 30; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--c-focus); border-radius: 16px; background: var(--c-composer); color: var(--c-heading); pointer-events: none; }
 .o-chat-mine .o-chat-pdf { background: rgba(255, 255, 255, 0.12); }
+
+/* ---- the Feed tab (Feed.jsx): the chat's tokens and type, one column of cards ----
+   A long post is folded to a few lines with a fade; the filter row scrolls sideways
+   on a phone (which also keeps a swipe that starts on it from changing tabs). */
+.o-feed-wrap { width: 100%; max-width: 760px; margin: 0 auto; padding: 16px var(--gutter) 40px; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }
+.o-feed-bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.o-feed-filters { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter) 2px; }
+.o-feed-filters::-webkit-scrollbar { display: none; }
+.o-feed-filter {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid var(--c-input-border); background: var(--c-card); color: var(--c-heading);
+  font: inherit; font-size: 0.85em; font-weight: 600; white-space: nowrap;
+}
+.o-feed-filter[aria-pressed='true'] { background: var(--c-mine); border-color: var(--c-mine); color: var(--c-mine-ink); }
+.o-feed-count { font-family: var(--mono); font-size: 0.85em; opacity: 0.75; }
+.o-feed-pins, .o-feed-list { display: flex; flex-direction: column; gap: 10px; }
+.o-feed-list { list-style: none; margin: 0; padding: 0; }
+.o-feed-card {
+  min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  border-radius: 14px; background: var(--c-theirs); color: var(--c-theirs-ink); border: 1px solid var(--c-theirs-border);
+}
+.o-feed-pin { border-left: 4px solid var(--c-bad); }
+.o-feed-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.o-feed-who { font-size: 0.9em; font-weight: 700; color: var(--c-heading); }
+.o-feed-kind { font-size: 0.68em; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--c-bad); }
+.o-feed-when { margin-left: auto; font-size: 0.75em; color: var(--c-sub); white-space: nowrap; }
+.o-feed-title { margin: 0; font-size: 1em; font-weight: 700; color: var(--c-heading); overflow-wrap: anywhere; }
+.o-feed-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.95em; }
+.o-feed-folded { max-height: 14em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 65%, transparent); mask-image: linear-gradient(#000 65%, transparent); }
+.o-feed-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.o-feed-empty { margin: 16px 0; color: var(--c-sub); }

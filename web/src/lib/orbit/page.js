@@ -33,12 +33,13 @@ export function compactTokens(n) {
   return String(Math.round(n));
 }
 
-// ---- the tab in the address: #overview, #board, #board/<id>, #chat ----
+// ---- the tab in the address: #overview, #board, #board/<id>, #chat, #feed ----
 
 export function parseRoute(hash) {
   const raw = String(hash ?? '').replace(/^#/, '');
   if (raw === 'board') return { tab: 'board', item: null };
   if (raw === 'chat') return { tab: 'chat', item: null };
+  if (raw === 'feed') return { tab: 'feed', item: null };
   if (raw.startsWith('board/')) {
     let item = null;
     try { item = decodeURIComponent(raw.slice('board/'.length)) || null; } catch { item = null; }
@@ -49,6 +50,7 @@ export function parseRoute(hash) {
 
 export function routeHash({ tab, item = null }) {
   if (tab === 'chat') return '#chat';
+  if (tab === 'feed') return '#feed';
   if (tab !== 'board') return '#overview';
   return item === null || item === undefined || item === '' ? '#board' : `#board/${encodeURIComponent(String(item))}`;
 }

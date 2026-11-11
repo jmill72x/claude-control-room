@@ -407,7 +407,7 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   look. **Next, a week after it goes live:** delete `classic.html`, its components and
   CSS (and the `classic` Vite entry), and rewrite README and this file for the new page.
 
-## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a built, staged)
+## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a built, staged; Phase 2 Feed staged 11-11)
 
 Jeff's pick of 2026-11-10: the Control Room becomes the one home screen (what's running,
 what's waiting on you, today's routines, usage, approvals), built on the Orbit page. The
@@ -416,6 +416,43 @@ design is `docs/design/2026-11-10-jarvis-os-home.md`; Jeff answered its decision
 OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside Jarvis OS,
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
+
+**Phase 2, the Feed tab (board fbc77b53), staged on `jos/feed` (from main 80c0569,
+2026-11-11), not committed, not live; its writer is staged in the lead's repo on
+`jos/feed-log` (from build/v1).** README "The Feed" describes both halves. Server:
+`lib/feed.mjs` (read-only reader), `lib/feed-routes.mjs` (`GET /api/feed`, a paired device
+only, the chat's rule), `checkFolder` added to `lib/program-check.mjs`, wired in
+`server.mjs`. Web: the Feed tab, last in the tab and swipe order, phone tabs tightened so
+four fit at 375 px. **Ultron's 11-11 review (lead's repo: go after M1; here: go, lows only)
+is fixed on both branches, not re-read:** M1 the web-reading routines are denied
+`feed/**`; L2/L3 the writer opens without blocking and refuses anything but this user's
+regular file with one link; L4 no `--kind` flag (only the routines set it, in-process);
+L5 the log keeps the messages as sent; L6 no local-caller shortcut on `/api/feed`; L7 an
+in-flight read is shared; L8 about 1 MB of text per answer, oldest dropped first, pins
+kept (`dropped`, shown on the tab); L9 posts over 24 h ahead skipped; L10 one link only.
+Tests: server 822 in local time and Tokyo (26 in `feed.test.mjs`), web 194; the lead's
+repo 674 run with the 26 known git-guard failures only (`test_git_read`, `test_backup`).
+Mutations: 34 on the reader and route and 17 on the writer, all caught but three
+explained (the writer's inode guard, a race only; `O_NOFOLLOW`, also refused by the inode
+check; the writer's regular-file check, since macOS refuses `flock` on a FIFO anyway).
+Headless Chromium (cached 1223 shell) at 375, 390 and 820, light and dark, on a scratch
+server with a paired scratch device and invented feed files: pins, order, filters,
+folding, text never HTML, a masked link's host, 44 px targets, no sideways scroll, sticky
+tabs; and the worst-case tab row (three-digit board count, "99+" badge) inside the gutter
+at 375. Unverified: Safari and the home-screen app, a real device through Serve, the real
+files. **To go live, in this order:** Ultron's re-read of the fixes; Jeff's C&P of both
+repos, the lead's repo first (the writer must exist for the tab to show anything; it needs
+no restart, the next post writes the first line); then the service restart (Vision or
+Jeff; no config change needed); then `cd web && npm run build` (the old page has no Feed
+tab, and the new page against the old server gets a 404 and shows "Couldn't load the
+feeds", so build after the restart). **Post-restart checks:** a local
+`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8322/api/feed` answers 401 (no
+shortcut for this machine); the Feed tab on the paired iPhone shows the posts since the
+writer landed (an empty folder reads "No posts yet"); no `feed:` or `config: feed` line in
+the service log; Jeff's Safari look. The six test lines the lead's repo wrote on 11-11 were
+deleted at 13:34 with Jeff's OK; the folder was empty after. **Follow-ups:** the pins
+appear only after the first routine run on the new writer (the brief Thu 11-12 07:30, the
+digest Mon 11-16).
 
 **Ultron's 1a review, answered on the branch `jos/hardening` (2026-11-10 overnight, local
 commits only):** a Host allowlist before every route (`server/lib/host-guard.mjs`; config's

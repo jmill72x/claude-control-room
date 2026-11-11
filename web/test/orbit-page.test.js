@@ -30,6 +30,9 @@ test('the tab lives in the address, and an item id survives the round trip', () 
   assert.deepEqual(parseRoute(''), { tab: 'overview', item: null });
   assert.deepEqual(parseRoute('#overview'), { tab: 'overview', item: null });
   assert.deepEqual(parseRoute('#board'), { tab: 'board', item: null });
+  assert.deepEqual(parseRoute('#feed'), { tab: 'feed', item: null });
+  assert.equal(routeHash({ tab: 'feed' }), '#feed');
+  assert.equal(routeHash({ tab: 'feed', item: 'x' }), '#feed');
   assert.deepEqual(parseRoute('#nowhere'), { tab: 'overview', item: null });
   for (const id of ['72e9717d-8d7c-458f-8f90-d92d9f52d693', 'a/b c', 'café#1', '50%off', '42']) {
     assert.equal(parseRoute(routeHash({ tab: 'board', item: id })).item, id);

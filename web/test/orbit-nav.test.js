@@ -8,8 +8,8 @@ import { TAB_ORDER, swipeTab, blocksSwipe, navStuck, EDGE_PX, MIN_DX } from '../
 const W = 820; // an iPad's width in portrait
 const g = (over = {}) => ({ tab: 'board', startX: 400, dx: -120, dy: 10, ms: 250, width: W, ...over });
 
-test('the tabs go Overview, Board, Chat', () => {
-  assert.deepEqual(TAB_ORDER, ['overview', 'board', 'chat']);
+test('the tabs go Overview, Board, Chat, Feed', () => {
+  assert.deepEqual(TAB_ORDER, ['overview', 'board', 'chat', 'feed']);
 });
 
 test('a swipe to the left goes to the next tab, to the right the one before', () => {
@@ -17,10 +17,12 @@ test('a swipe to the left goes to the next tab, to the right the one before', ()
   assert.equal(swipeTab(g({ dx: 120 })), 'overview');
   assert.equal(swipeTab(g({ tab: 'overview' })), 'board');
   assert.equal(swipeTab(g({ tab: 'chat', dx: 120 })), 'board');
+  assert.equal(swipeTab(g({ tab: 'chat' })), 'feed');
+  assert.equal(swipeTab(g({ tab: 'feed', dx: 120 })), 'chat');
 });
 
 test('no tab past either end', () => {
-  assert.equal(swipeTab(g({ tab: 'chat' })), null);
+  assert.equal(swipeTab(g({ tab: 'feed' })), null);
   assert.equal(swipeTab(g({ tab: 'overview', dx: 120 })), null);
   assert.equal(swipeTab(g({ tab: 'nope' })), null);
 });
