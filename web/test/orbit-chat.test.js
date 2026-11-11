@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  permissionView, upsertPermission, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
+  permissionView, upsertPermission, withStatus, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -121,7 +121,35 @@ test('the open cards decide "waiting on you" between status pings, both ways', (
   assert.equal(effectiveStatus({ state: 'waiting on you' }, new Map([['r1', { ...p, state: 'allowed' }]]), T0).state, 'online');
   assert.equal(effectiveStatus({ state: 'online' }, open, T0 + PERMISSION_TTL_MS).state, 'online', 'an expired card is not waiting');
   assert.equal(effectiveStatus({ state: 'offline' }, new Map(), T0).state, 'offline');
+  const offline = { state: 'offline', channelConnected: false, since: 1 };
+  assert.equal(effectiveStatus(offline, open, T0), offline, 'offline wins over an open card');
   assert.equal(effectiveStatus(null, open, T0), null);
+});
+
+test('a status that counts no open request drops the cards the page still shows as open; expired and closed ones stay', () => {
+  const p = { requestId: 'r1', tool: 'Bash', description: 'x', inputPreview: '', openedAt: T0, state: 'open' };
+  const map = new Map([['r1', p], ['r2', { ...p, requestId: 'r2', openedAt: T0 - PERMISSION_TTL_MS }], ['r3', { ...p, requestId: 'r3', state: 'allowed' }]]);
+  const next = withStatus(map, { state: 'online', openPermissions: 0 }, T0);
+  assert.deepEqual([...next.keys()], ['r2', 'r3']);
+  assert.equal(map.size, 3, 'the old map is left alone');
+  assert.equal(withStatus(map, { state: 'waiting on you', openPermissions: 1 }, T0), map, 'the server still counts one');
+  assert.equal(withStatus(map, { state: 'online' }, T0), map, 'no count, no change');
+  assert.equal(withStatus(map, null, T0), map);
+  const noneOpen = new Map([['r3', map.get('r3')]]);
+  assert.equal(withStatus(noneOpen, { openPermissions: 0 }, T0), noneOpen, 'nothing to drop, same map');
+});
+
+test('a refusal after the stream gave up: 401, 403 and 404 stop with their phase; anything else opens again', () => {
+  assert.equal(phaseFor({ status: 401 }), 'unpaired');
+  assert.equal(phaseFor({ status: 403 }), 'forbidden');
+  assert.equal(phaseFor({ status: 404 }), 'off');
+  assert.equal(phaseFor({ status: 500 }), 'error');
+  assert.equal(phaseFor(new TypeError('Failed to fetch')), 'error');
+  assert.deepEqual(afterStreamRefusal({ status: 401 }), { reopen: false, phase: 'unpaired' });
+  assert.deepEqual(afterStreamRefusal({ status: 403 }), { reopen: false, phase: 'forbidden' });
+  assert.deepEqual(afterStreamRefusal({ status: 404 }), { reopen: false, phase: 'off' });
+  assert.deepEqual(afterStreamRefusal({ status: 502 }), { reopen: true, phase: null });
+  assert.deepEqual(afterStreamRefusal(new TypeError('Failed to fetch')), { reopen: true, phase: null });
 });
 
 test('a permission card is open, expired after 10 minutes on the page too, or closed', () => {

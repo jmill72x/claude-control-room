@@ -80,6 +80,25 @@ export function tickFor(m, list) {
 export const TICK_MARKS = { sending: '…', failed: '!', queued: '', delivered: '✓', answered: '✓✓' };
 export const TICK_WORDS = { sending: 'Sending', failed: 'Not sent', queued: 'Sent', delivered: 'Delivered', answered: 'Answered' };
 
+// ---- refusals ----
+
+// The tab's phase after a refusal: 401 not paired, 403 not the owner (or the Host
+// check), 404 the chat is off on this server; anything else is a passing error.
+export function phaseFor(err) {
+  if (err?.status === 401) return 'unpaired';
+  if (err?.status === 403) return 'forbidden';
+  if (err?.status === 404) return 'off';
+  return 'error';
+}
+
+// After the stream gave up and /api/chat/status refused too: a passing error opens
+// the stream again in a few seconds; a refusal that will not change by itself
+// (401, 403, 404) stops here with its phase, instead of asking every 3 s forever.
+export function afterStreamRefusal(err) {
+  const phase = phaseFor(err);
+  return phase === 'error' ? { reopen: true, phase: null } : { reopen: false, phase };
+}
+
 // ---- the status banner (§2.6) ----
 
 // What the strip over the composer says. `status` is /api/chat/status's answer
@@ -101,10 +120,12 @@ export function bannerFor(status, now = Date.now()) {
 
 // The status as the page shows it: the server's `status` event comes with each
 // ping (20 s), but a permission request opens and closes between pings, so the
-// open cards decide "waiting on you" here, at once, both ways.
+// open cards decide "waiting on you" here, at once, both ways. Offline wins: a
+// card left open while the channel is gone can't be answered through it.
 export function effectiveStatus(status, permissions, now = Date.now()) {
   const open = [...(permissions?.values?.() ?? [])].some(p => permissionView(p, now)?.view === 'open');
   if (!status) return status;
+  if (status.state === 'offline') return status;
   if (open) return status.state === 'waiting on you' ? status : { ...status, state: 'waiting on you' };
   if (status.state === 'waiting on you') return { ...status, state: status.channelConnected === false ? 'offline' : 'online' };
   return status;
@@ -120,6 +141,18 @@ export function permissionView(p, now = Date.now()) {
   const state = p.state === 'open' && now - p.openedAt >= PERMISSION_TTL_MS ? 'expired' : p.state;
   if (state === 'allowed' || state === 'denied') return { ...p, view: 'closed', state };
   return { ...p, view: state === 'expired' ? 'expired' : 'open', state };
+}
+
+// The map of requests after a status: when the server counts no open request, a
+// card the page still shows as open missed its close (answered on Discord while
+// the stream was down, say) and goes. Expired and closed cards stay.
+export function withStatus(map, status, now = Date.now()) {
+  if (status?.openPermissions !== 0) return map;
+  const stale = [...map].filter(([, p]) => permissionView(p, now)?.view === 'open').map(([id]) => id);
+  if (stale.length === 0) return map;
+  const next = new Map(map);
+  for (const id of stale) next.delete(id);
+  return next;
 }
 
 // The map of requests after an event: a new or changed request replaces its row.

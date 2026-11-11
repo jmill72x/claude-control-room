@@ -143,6 +143,9 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
       const d = devices.find(x => x.id === id && !x.revokedAt);
       if (!d) return { ok: false, status: 404, error: 'no such device' };
       d.revokedAt = now();
+      // An approved pairing not yet collected goes too: whichever device asked for
+      // it, a revoke must never leave a cookie waiting to be picked up.
+      if (pending?.approved) pending = null;
       await persist();
       onEvent({ kind: 'revoked', device: { id: d.id, name: d.name }, by });
       return { ok: true };

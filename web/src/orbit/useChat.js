@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -44,28 +44,36 @@ export function useChat({ active }) {
     setStream('closed');
   }, []);
 
-  // A refusal that means "this device is not paired" ends the session here.
+  // A refusal that means "this device is not paired" ends the session here, and
+  // nothing of it stays behind: a later pairing starts from an empty thread.
   const unpaired = useCallback(() => {
     closeStream();
     setDevice(null);
+    setMessages([]);
+    setPermissions(new Map());
+    setStatus(null);
+    setHasOlder(false);
     setPhase('unpaired');
   }, [closeStream]);
 
-  const phaseFor = err => {
-    if (err?.status === 401) return 'unpaired';
-    if (err?.status === 403) return 'forbidden';
-    if (err?.status === 404) return 'off';
-    return 'error';
-  };
+  // A status (an event or /api/chat/status's answer) also clears the open cards
+  // the server no longer counts.
+  const applyStatus = useCallback(s => {
+    setStatus(s);
+    setPermissions(map => withStatus(map, s));
+  }, []);
 
   const openStream = useCallback(() => {
     if (!aliveRef.current) return;
     closeStream();
     const es = new EventSource(api.streamUrl(lastSeq(messagesRef.current)));
     esRef.current = es;
+    // The server replays every open request on connect, so the cards start over
+    // with each stream: one answered while the page was away doesn't linger.
+    setPermissions(new Map());
     const parse = e => { try { return JSON.parse(e.data); } catch { return null; } };
     es.addEventListener('open', () => setStream('open'));
-    es.addEventListener('status', e => { const s = parse(e); if (s) setStatus(s); });
+    es.addEventListener('status', e => { const s = parse(e); if (s) applyStatus(s); });
     es.addEventListener('message', e => { const m = parse(e); if (m) setMessages(list => mergeMessages(list, m)); });
     es.addEventListener('edit', e => { const m = parse(e); if (m) setMessages(list => applyEdit(list, m)); });
     es.addEventListener('state', e => { const s = parse(e); if (s) setMessages(list => applyState(list, s)); });
@@ -75,22 +83,26 @@ export function useChat({ active }) {
     es.addEventListener('error', () => {
       // The browser retries by itself while the connection merely dropped; once it
       // gives up (an HTTP error, such as 401 after a revoke), ask the status route
-      // why, and open again in 3 s unless this device is no longer paired.
+      // why, and open again in 3 s unless the answer is a refusal that stays
+      // (not paired, not the owner, or the chat turned off).
       if (es.readyState !== EventSource.CLOSED) { setStream('closed'); return; }
       if (esRef.current !== es) return;
       esRef.current = null;
       setStream('closed');
       api.chatStatus().then(s => {
         if (!aliveRef.current) return;
-        setStatus(s);
+        applyStatus(s);
         reopenRef.current = setTimeout(openStream, REOPEN_MS);
       }).catch(err => {
         if (!aliveRef.current) return;
-        if (err?.status === 401) unpaired();
-        else reopenRef.current = setTimeout(openStream, REOPEN_MS);
+        const next = afterStreamRefusal(err);
+        if (next.reopen) { reopenRef.current = setTimeout(openStream, REOPEN_MS); return; }
+        if (next.phase === 'unpaired') { unpaired(); return; }
+        setPhase(next.phase);
+        setProblem(String(err?.message ?? err));
       });
     });
-  }, [closeStream, unpaired]);
+  }, [closeStream, unpaired, applyStatus]);
 
   // The thread's first load: the status (which also says whether this device is
   // paired), the latest page, then the stream.
@@ -113,13 +125,12 @@ export function useChat({ active }) {
       }
       const s = await api.chatStatus();
       if (!aliveRef.current) return;
-      setStatus(s);
+      applyStatus(s);
       setDevice(s.device ?? null);
       const page = await api.latestMessages(PAGE);
       if (!aliveRef.current) return;
       setMessages(list => mergeMessages(list, page.messages));
       setHasOlder(page.messages.length >= PAGE);
-      if (s.openPermission) setPermissions(map => upsertPermission(map, s.openPermission));
       setPhase('paired');
       openStream();
     } catch (err) {
@@ -129,7 +140,7 @@ export function useChat({ active }) {
       if (next === 'unpaired') unpaired();
       else setProblem(String(err?.message ?? err));
     }
-  }, [openStream, unpaired]);
+  }, [openStream, unpaired, applyStatus]);
 
   useEffect(() => {
     aliveRef.current = true;

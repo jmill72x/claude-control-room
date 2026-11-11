@@ -527,10 +527,11 @@ test('pairing over TCP and the admin socket: the first device by chat-pair, the 
   const mine = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.equal(mine.status, 200);
   assert.deepEqual(mine.json.device, paired.json.device, 'the status names the asking device');
-  // A paired device asking /api/pair/status hears so, with no cookie set again.
+  // A paired device asking /api/pair/status hears so: no device cookie set again,
+  // only the pairing cookie cleared.
   const already = await tcp({ path: '/api/pair/status', headers: { cookie: env.phone } });
   assert.deepEqual(already.json, { state: 'paired', device: paired.json.device, already: true });
-  assert.equal(already.headers['set-cookie'], undefined);
+  assert.deepEqual(already.headers['set-cookie'], ['__Host-jos-pair=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0']);
   assert.equal(already.headers['cache-control'], 'no-store');
   assert.ok(env.events.some(e => e.kind === 'paired' && e.device.name === 'phone'));
   // The second device, approved from the first.
@@ -779,7 +780,9 @@ test('a superseded inbound stream gets one last line and closes; a revoke shuts 
     await new Promise(r => setTimeout(r, 40));
     assert.equal(slow.streaming().size, 1);
     assert.equal((await call({ port: slowPort, method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone, origin: 'https://evil.example' } })).status, 403);
-    assert.equal((await call({ port: slowPort, method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone } })).status, 200);
+    const del = await call({ port: slowPort, method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone } });
+    assert.equal(del.status, 200);
+    assert.equal(del.headers['set-cookie'], undefined, 'revoking another device leaves the caller\'s own cookie alone');
     const ended = await ipadStream;
     assert.ok(Date.now() - t0 < 1500, 'the stream ended on the revoke, not on the timeout');
     assert.deepEqual(sse(ended.text).at(-1), { comment: null, event: 'revoked', data: { reason: 'revoked' } });
@@ -821,4 +824,57 @@ test('a superseded inbound stream gets one last line and closes; a revoke shuts 
   assert.ok(Date.now() - t1 < 1500, 'ended within a ping (60 ms here), not at the timeout');
   assert.deepEqual(sse(gone.text).at(-1), { comment: null, event: 'revoked', data: { reason: 'revoked' } });
   assert.equal(env.routes.streaming().size, 0);
+});
+
+test('a stale approved pairing never outlives a revoke: a paired device cannot start one, pair/status clears its pairing cookie, a revoke drops an approved one, and revoking itself clears the device cookie', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chat-stale-'));
+  const devices = createDeviceStore({ path: join(dir, 'devices.json'), now: () => env.clock.t });
+  await devices.load();
+  const routes = createChatRoutes({ store: env.store, devices, socket: env.socket, config: {}, now: () => env.clock.t, log: () => {}, pingMs: 60e3 });
+  const srv = createServer((req, res) => routes.handler(req, res));
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const http = opts => call({ port, ...opts });
+  try {
+    // A phone paired the usual way.
+    const s1 = await devices.start('phone');
+    await devices.approve(s1.code, { by: 'test' });
+    const got = await devices.status(`${PAIR_COOKIE_NAME}=${s1.pairToken}`);
+    const phone = `${COOKIE_NAME}=${got.token}`;
+    // It cannot ask for a pairing of its own while paired.
+    const again = await http({ method: 'POST', path: '/api/pair/start', body: { name: 'phone again' }, headers: { cookie: phone } });
+    assert.equal(again.status, 409);
+    assert.deepEqual(again.json, { error: 'this device is already paired' });
+    assert.equal(devices.pendingCode(), null, 'no pairing was started');
+    // A pairing it got before that rule (or past it) and that was approved: its
+    // pairing cookie is cleared the next time it asks, and the approval waits.
+    const s2 = await devices.start('phone again');
+    await devices.approve(s2.code, { by: 'test' });
+    const stale = `${PAIR_COOKIE_NAME}=${s2.pairToken}`;
+    const already = await http({ path: '/api/pair/status', headers: { cookie: `${phone}; ${stale}` } });
+    assert.equal(already.json.already, true);
+    assert.deepEqual(already.headers['set-cookie'], ['__Host-jos-pair=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0']);
+    // The phone revokes itself: its own cookie is cleared, and the approved
+    // pairing goes with the revoke.
+    const del = await http({ method: 'DELETE', path: `/api/devices/${got.device.id}`, headers: { cookie: phone } });
+    assert.equal(del.status, 200);
+    assert.deepEqual(del.headers['set-cookie'], ['__Host-jos=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0']);
+    // A browser that kept the stale pairing cookie (one that missed the clearing) gets nothing.
+    const after = await http({ path: '/api/pair/status', headers: { cookie: `${phone}; ${stale}` } });
+    assert.deepEqual(after.json, { state: 'none', expiresAt: null });
+    assert.equal(after.headers['set-cookie'], undefined);
+    assert.equal(devices.list().filter(d => !d.revokedAt).length, 0, 'no device was minted from the stale pairing');
+    // A pairing still waiting for its code is untouched by a revoke.
+    const s3 = await devices.start('ipad');
+    const s4 = await devices.start('ipad2');
+    assert.equal(s4.status, 409);
+    await devices.approve(s3.code, { by: 'test' });
+    const ipad = await devices.status(`${PAIR_COOKIE_NAME}=${s3.pairToken}`);
+    const s5 = await devices.start('mac');
+    assert.equal((await devices.revoke(ipad.device.id, 'test')).ok, true);
+    assert.equal(devices.pendingCode(), s5.code, 'an unapproved pairing survives a revoke');
+  } finally {
+    await new Promise(r => srv.close(r));
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -468,7 +468,13 @@ scratchpad. Chromium treats `http://localhost` as secure, so the `__Host-` cooki
 there; on the tailnet it needs Serve HTTPS. **Not verified:** Safari and the installed-app
 (home screen) case, iOS Dynamic Type, HEIC decoding (Chromium can't; the file goes up as is
 and the server accepts heic), the expired card's look (unit-tested only, 10 minutes), and the
-stream after a real iOS suspend. **Left for later:** a "Start over" on a pairing resumed
+stream after a real iOS suspend. **Ultron's five 11-11 lows on C5 are fixed on the
+branch:** a paired device can't start a pairing and its pairing cookie is cleared by
+`pair/status`; a revoke drops an approved uncollected pairing (so a stale approved pairing
+can't mint a device after a revoke); a device revoking itself gets `__Host-jos` cleared;
+each stream starts with no cards and a `status` with `openPermissions: 0` drops open ones;
+offline wins over "waiting on you"; `unpaired()` clears the thread, cards and status; a 403
+or 404 after the stream gave up stops the 3 s reopen loop with its phase. **Left for later:** a "Start over" on a pairing resumed
 after a reload can't start a new one until the pending code expires (the server allows one
 pending at a time, 10 minutes); the Chat tab mounts its stream only while open, so a message
 arriving on another tab shows nothing until Web Push (C6); the playwright-cli on the mini

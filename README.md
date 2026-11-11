@@ -667,11 +667,14 @@ three pieces, each with its own router:
   or `bin/chat-pair <CODE>` on the machine over the admin socket
   `~/.local/state/jarvis-os/admin.sock`; then `GET /api/pair/status` hands the device its
   cookie, once; a device that is paired already hears `{state: "paired", device, already:
-  true}` there with no cookie set, which is how the page learns whether to show the pairing
-  screen without taking a 401; the pairing answers carry `Cache-Control: no-store`), the devices (`GET
+  true}` there with no device cookie set and any pairing cookie it holds cleared, which is
+  how the page learns whether to show the pairing screen without taking a 401, and
+  `pair/start` refuses it (409); the pairing answers carry `Cache-Control: no-store`), the devices (`GET
   /api/devices`, `DELETE /api/devices/<id>`, at most 4 active; a revoke ends every open
   stream of that device at once with a last `revoked` event, and each stream's ping
-  re-checks its device, so a revoke by any path ends it within 20 s), the messages
+  re-checks its device, so a revoke by any path ends it within 20 s; a revoke also drops a
+  pairing that was approved but not yet collected, and a device revoking itself gets its
+  `__Host-jos` cookie cleared), the messages
   (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId` dedup), uploads (`POST
   /api/chat/attachments` with raw image bytes, `GET /api/chat/attachments/<id>` served
   inline with nosniff, a sandboxing policy and `Cache-Control: private, no-store`, like
@@ -702,8 +705,11 @@ three pieces, each with its own router:
   visible again (iOS suspends a background tab's connections without an error), comes back
   online or is restored from the back-forward cache, the stream is closed and opened anew
   from the highest seq the page holds (`?after=`); once the browser gives up on a stream
-  (an HTTP error) the page asks `/api/chat/status` and opens again in 3 s, or returns to the
-  pairing screen on a 401; a `revoked` event does the same at once. The composer is a growing
+  (an HTTP error) the page asks `/api/chat/status` and opens again in 3 s, or stops: the
+  pairing screen on a 401 (the thread, cards and status cleared), the owner-only note on a
+  403, the chat-off note on a 404; a `revoked` event returns to pairing at once. Each new
+  stream starts with no cards (the server replays the open requests), and a `status` that
+  counts no open request drops any card still showing as open. The composer is a growing
   box (Enter sends with a keyboard, a new line on a touch screen, where the Send button
   sends; Shift+Enter is a new line everywhere), a reply-to line, and a photo picker
   (`accept="image/*"`): each photo is decoded with `createImageBitmap`, drawn on a canvas at
@@ -715,7 +721,7 @@ three pieces, each with its own router:
   never doubles a message. The banner over the thread follows `/api/chat/status` and the
   stream's `status` events: online (a dot), "Jarvis is offline since HH:MM. Messages wait
   here and reach him when he's back.", "Delivered N m ago, no answer yet", or "waiting on
-  you", which the open cards decide on the page between pings. An open permission request
+  you", which the open cards decide on the page between pings (offline wins over it). An open permission request
   is a card pinned over the composer: the tool, the description, the full input preview in
   a scrollable monospace block, and Deny and Allow once as two equal buttons (`POST
   /api/chat/permission/<id>`); after 10 minutes the card reads "may already be answered in

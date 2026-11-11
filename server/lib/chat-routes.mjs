@@ -116,6 +116,9 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       if (req.method === 'POST' && path === '/api/pair/start') {
         guardWrite(req);
         requireLogin(req);
+        // A device that is paired already has nothing to pair: refused, so it can
+        // never hold an approved pairing that outlives its own revoke.
+        if (devices.authenticate(req.headers?.cookie)) throw new HttpError(409, 'this device is already paired');
         const body = await readBody(req);
         const r = await devices.start(isObject(body) ? body.name : null);
         if (!r.ok) throw new HttpError(r.status, r.error);
@@ -134,11 +137,12 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       }
       if (req.method === 'GET' && path === '/api/pair/status') {
         requireLogin(req);
-        // A device that is paired already hears so here (its own id and name, no
-        // cookie set): the page asks this first, so an unpaired device never has
-        // to take a 401 to learn that it must pair.
+        // A device that is paired already hears so here (its own id and name; no
+        // device cookie set, and any pairing cookie it still holds cleared): the
+        // page asks this first, so an unpaired device never has to take a 401 to
+        // learn that it must pair.
         const already = devices.authenticate(req.headers?.cookie);
-        if (already) return json(res, 200, { state: 'paired', device: { id: already.id, name: already.name }, already: true }, NO_STORE);
+        if (already) return json(res, 200, { state: 'paired', device: { id: already.id, name: already.name }, already: true }, { ...NO_STORE, 'Set-Cookie': clearCookieHeader(PAIR_COOKIE_NAME) });
         const r = await devices.status(req.headers?.cookie);
         if (r.state === 'paired') {
           return json(res, 200, { state: 'paired', device: r.device }, { ...NO_STORE, 'Set-Cookie': [cookieHeader(COOKIE_NAME, r.token, COOKIE_MAX_AGE_S), clearCookieHeader(PAIR_COOKIE_NAME)] });
@@ -156,7 +160,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const r = await devices.revoke(dev[1], device.name);
         if (!r.ok) throw new HttpError(r.status, r.error);
         closeStreams(dev[1], 'revoked');
-        return json(res, 200, { ok: true });
+        // Revoking itself, the device also drops the cookie it can no longer use.
+        return json(res, 200, { ok: true }, dev[1] === device.id ? { 'Set-Cookie': clearCookieHeader(COOKIE_NAME) } : {});
       }
 
       // ---- messages (§2.3) ----
