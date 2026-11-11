@@ -12,11 +12,13 @@ import { AlertStrip } from './Acks.jsx';
 import { unack } from './ackApi.js';
 import { BoardBand, BoardTab } from './Board.jsx';
 import { useBoardFilters } from './useBoardFilters.js';
+import { ChatTab } from './Chat.jsx';
+import { useChat } from './useChat.js';
 
 const EMPTY_ROSTER = { agents: [], tagOwners: {} };
 
-// The tab lives in the address (#overview, #board, #board/<id>), so Back works
-// and a link can open the board on one item.
+// The tab lives in the address (#overview, #board, #board/<id>, #chat), so Back
+// works and a link can open the board on one item.
 function useRoute() {
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   useEffect(() => {
@@ -38,7 +40,10 @@ export function OrbitApp() {
   const [route, go] = useRoute();
   // Every second for the countdown on the Overview; on the Board, every 10 s is
   // enough for "Updated", and typing stays smooth (the design pauses it there).
+  // The Chat's ages and its pairing countdown move by the second too.
   const now = useTick(route.tab === 'board' ? 10_000 : 1000);
+  // The chat's state lives only while its tab is open: the stream closes with it.
+  const chat = useChat({ active: route.tab === 'chat' });
   // Why the board was opened on an item: just added on this page, or from
   // Waiting on you. A link from anywhere else is a "Linked item".
   const [focusFrom, setFocusFrom] = useState(null);
@@ -60,13 +65,14 @@ export function OrbitApp() {
   const fresh = freshness({ serverTime: payload?.serverTime, receivedAt, error, now });
   const totals = boardTotals(board.todos);
   const isBoard = route.tab === 'board';
+  const isChat = route.tab === 'chat';
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
   // The Now chip (Now.jsx), rebuilt each tick: its ages move by the second.
-  const nowChip = isBoard ? null : nowFromPayload({ payload, roster, now });
+  const nowChip = isBoard || isChat ? null : nowFromPayload({ payload, roster, now });
 
   useEffect(() => {
-    document.title = isBoard ? 'Board · Control Room' : 'Control Room';
-  }, [isBoard]);
+    document.title = isBoard ? 'Board · Control Room' : isChat ? 'Chat · Control Room' : 'Control Room';
+  }, [isBoard, isChat]);
 
   const openItem = (id, why) => {
     setFocusFrom(why === 'added' || why === 'waiting' ? { id, why } : null);
@@ -75,7 +81,7 @@ export function OrbitApp() {
   const focusWhy = route.item !== null && route.item === focusFrom?.id ? focusFrom.why : 'link';
 
   return (
-    <div className="o-page">
+    <div className={`o-page${isChat ? ' o-page-chat' : ''}`}>
       <header className={`o-band${isBoard ? ' o-band-board' : ''}`}>
         <div className="o-wrap o-band-inner">
           <div className="o-titlebar">
@@ -84,10 +90,11 @@ export function OrbitApp() {
               <span className="o-mono o-date">{lead ? `${lead.name} · ` : ''}{headerDate(now)}</span>
             </div>
             <nav aria-label="Views" className="o-tabs">
-              <a className="o-tab" href="#overview" aria-current={isBoard ? undefined : 'page'}>Overview</a>
+              <a className="o-tab" href="#overview" aria-current={isBoard || isChat ? undefined : 'page'}>Overview</a>
               <a className="o-tab" href="#board" aria-current={isBoard ? 'page' : undefined}>
                 Board · {board.loaded ? totals.open : '—'}
               </a>
+              <a className="o-tab" href="#chat" aria-current={isChat ? 'page' : undefined}>Chat</a>
             </nav>
           </div>
           <div className="o-statusrow" role="group" aria-label="System health">
@@ -111,10 +118,10 @@ export function OrbitApp() {
 
       <AlertStrip alerts={alerts} now={now} onChanged={refresh} />
 
-      {isBoard
-        ? <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
-            onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />
-        : <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
+      {isChat && <ChatTab chat={chat} now={now} lead={lead} />}
+      {isBoard && <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
+            onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />}
+      {!isBoard && !isChat && <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
             onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} />}
     </div>
   );

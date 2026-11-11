@@ -1,0 +1,461 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useMediaQuery } from '../hooks/useMediaQuery.js';
+import { useReducedMotion } from './useReducedMotion.js';
+import { Avatar } from './Avatar.jsx';
+import { attachmentUrl } from './chatApi.js';
+import { preparePhoto } from './photo.js';
+import { clock } from '../lib/orbit/page.js';
+import {
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT
+} from '../lib/orbit/chat.js';
+
+// The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
+// holds no cookie, else the thread with the owner on the right and the lead on
+// the left, the status banner, the permission cards, the composer and the
+// settings sheet. Phone first; on a wide screen the thread sits centred at a
+// reading width. Nothing here carries an inline style attribute: the policy has
+// no 'unsafe-inline', and the few sizes set at runtime go through the CSSOM.
+
+const HOW_TO_APPROVE = 'Approve it from a device that is already paired (Settings in its Chat tab), or on the machine run';
+
+export function ChatTab({ chat, now, lead }) {
+  const [settings, setSettings] = useState(false);
+  if (chat.phase === 'checking') return <div className="o-wrap o-chat o-chat-note" role="status">Opening the chat…</div>;
+  if (chat.phase === 'unpaired') return <Pairing chat={chat} now={now} />;
+  if (chat.phase === 'off') return <div className="o-wrap o-chat o-chat-note">The chat isn't switched on on this server yet.</div>;
+  if (chat.phase === 'forbidden') return <div className="o-wrap o-chat o-chat-note">The chat is reachable only as the owner, through the tailnet.</div>;
+  if (chat.phase === 'error') {
+    return (
+      <div className="o-wrap o-chat o-chat-note">
+        <p>Couldn't open the chat: {chat.problem ?? 'unknown problem'}.</p>
+        <button type="button" className="o-cbtn" onClick={chat.reload}>Try again</button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Thread chat={chat} now={now} lead={lead} onSettings={() => setSettings(true)} />
+      {settings && <SettingsSheet chat={chat} now={now} onClose={() => setSettings(false)} />}
+    </>
+  );
+}
+
+// ---- pairing (§2.2) ----
+
+function Pairing({ chat, now }) {
+  const [name, setName] = useState('');
+  const p = chat.pairing;
+  const submit = e => {
+    e.preventDefault();
+    if (name.trim()) chat.startPairing(name.trim());
+  };
+  const left = p?.expiresAt ? Math.max(0, Math.ceil((p.expiresAt - now) / 1000)) : null;
+  return (
+    <div className="o-wrap o-chat">
+      <div className="o-chat-pair" role="region" aria-label="Pair this device">
+        <h2 className="o-chat-h2">Pair this device</h2>
+        {!p && (
+          <form className="o-chat-pair-form" onSubmit={submit}>
+            <p className="o-chat-p">Messages with Jarvis stay on the tailnet. Give this device a name, then approve the code it shows.</p>
+            <label className="o-field">
+              <span className="o-chat-label">Device name</span>
+              <input className="o-input o-chat-input" value={name} maxLength={40} autoComplete="off" placeholder="Jeff's iPhone" onChange={e => setName(e.target.value)} />
+            </label>
+            <button type="submit" className="o-cbtn o-cbtn-primary" disabled={!name.trim()}>Get a code</button>
+          </form>
+        )}
+        {p && p.state === 'starting' && <p className="o-chat-p" role="status">Asking for a code…</p>}
+        {p && p.code && (p.state === 'pending' || p.state === 'error') && (
+          <div className="o-chat-pair-code" role="status">
+            <span className="o-chat-label">Code for {p.name}</span>
+            <span className="o-mono o-chat-code" aria-label={`Pairing code ${p.code.split('').join(' ')}`}>{p.code}</span>
+            <p className="o-chat-p">
+              {HOW_TO_APPROVE} <code className="o-mono o-chat-cmd">bin/chat-pair {p.code}</code>.
+              {left !== null && <> The code lasts {left > 60 ? `${Math.floor(left / 60)} more minutes` : `${left} s`}.</>}
+            </p>
+            <p className="o-chat-sub">{p.state === 'error' ? `Couldn't check: ${p.error}` : 'Waiting for the approval…'}</p>
+            <button type="button" className="o-cbtn" onClick={chat.cancelPairing}>Start over</button>
+          </div>
+        )}
+        {p && !p.code && p.state === 'pending' && (
+          <div className="o-chat-pair-code" role="status">
+            <p className="o-chat-p">A pairing from this device is waiting for its approval (the code was shown before this page reloaded). {HOW_TO_APPROVE} <code className="o-mono o-chat-cmd">bin/chat-pair &lt;CODE&gt;</code>.</p>
+            <button type="button" className="o-cbtn" onClick={chat.cancelPairing}>Start over</button>
+          </div>
+        )}
+        {p && !p.code && p.state === 'error' && (
+          <div className="o-chat-pair-code" role="alert">
+            <p className="o-chat-p">Couldn't start the pairing: {p.error}.</p>
+            <button type="button" className="o-cbtn" onClick={chat.cancelPairing}>Try again</button>
+          </div>
+        )}
+        {p && (p.state === 'expired' || p.state === 'none') && (
+          <div className="o-chat-pair-code" role="alert">
+            <p className="o-chat-p">That code has expired. Start again for a new one.</p>
+            <button type="button" className="o-cbtn" onClick={chat.cancelPairing}>Start over</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- the thread ----
+
+const NEAR_BOTTOM_PX = 160;
+const scroller = () => document.scrollingElement ?? document.documentElement;
+const distanceFromBottom = () => { const s = scroller(); return s.scrollHeight - s.scrollTop - window.innerHeight; };
+
+function Thread({ chat, now, lead, onSettings }) {
+  const reduced = useReducedMotion();
+  const coarse = useMediaQuery('(pointer: coarse)');
+  const [replyTo, setReplyTo] = useState(null);
+  const [viewing, setViewing] = useState(null);
+  const { messages, hasOlder, loadingOlder } = chat;
+  const topRef = useRef(null);
+  const keep = useRef(null);        // scrollHeight before an older page, to hold the view
+  const lastSeqRef = useRef(null);
+  const firstRef = useRef(true);
+  const rows = threadRows(messages, now);
+
+  // Keep the view where it was when older history lands above it.
+  useLayoutEffect(() => {
+    if (keep.current === null) return;
+    const s = scroller();
+    s.scrollTop += s.scrollHeight - keep.current;
+    keep.current = null;
+  }, [messages]);
+
+  // Follow the thread: on first load jump to the end; afterwards only when the
+  // viewer was near the end, or sent the newest message themselves.
+  useEffect(() => {
+    const last = messages[messages.length - 1] ?? null;
+    const key = last ? `${last.seq}:${last.clientId ?? ''}` : null;
+    if (key === lastSeqRef.current) return;
+    const wasFirst = firstRef.current;
+    const mine = last?.from === 'jeff' && !Number.isInteger(last?.seq);
+    lastSeqRef.current = key;
+    if (!last) return;
+    if (wasFirst || mine || distanceFromBottom() < NEAR_BOTTOM_PX) {
+      firstRef.current = false;
+      window.scrollTo({ top: scroller().scrollHeight, behavior: wasFirst || reduced ? 'auto' : 'smooth' });
+    }
+  }, [messages, reduced]);
+
+  // Older history when the top comes into view.
+  useEffect(() => {
+    const el = topRef.current;
+    if (!el || !hasOlder || loadingOlder || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver(entries => {
+      if (!entries.some(e => e.isIntersecting)) return;
+      keep.current = scroller().scrollHeight;
+      chat.loadOlder().then(n => { if (!n) keep.current = null; });
+    }, { rootMargin: '200px 0px 0px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [chat, hasOlder, loadingOlder, messages.length]);
+
+  const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now);
+  const cards = [...chat.permissions.values()].map(p => permissionView(p, now)).filter(p => p && p.view !== 'closed');
+
+  return (
+    <div className="o-chat o-chat-thread-page">
+      <div className="o-chat-wrap">
+        <div className={`o-chat-banner o-chat-banner-${banner.tone}`} role="status">
+          <span className="o-chat-banner-dot" aria-hidden="true" />
+          <span className="o-chat-banner-text">{banner.text}</span>
+          {chat.stream !== 'open' && <span className="o-chat-banner-sub">reconnecting…</span>}
+          <button type="button" className="o-chat-iconbtn" aria-label="Chat settings" onClick={onSettings}>
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.2" /><circle cx="10" cy="4" r="1.6" /><circle cx="10" cy="16" r="1.6" /></svg>
+          </button>
+        </div>
+        <ol className="o-chat-list" aria-label="Messages">
+          <li ref={topRef} className="o-chat-top" aria-hidden="true">
+            {loadingOlder ? 'Loading earlier messages…' : hasOlder ? '' : messages.length ? 'The start of the conversation' : ''}
+          </li>
+          {messages.length === 0 && <li className="o-chat-empty">No messages yet. Say hello.</li>}
+          {rows.map(row => (row.type === 'day'
+            ? <li key={row.key} className="o-chat-day"><span>{row.label}</span></li>
+            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} />))}
+        </ol>
+        <div className="o-chat-bottom">
+          {cards.length > 0 && (
+            <div className="o-chat-cards" role="region" aria-label="Permission requests">
+              {cards.map(p => <PermissionCard key={p.requestId} p={p} chat={chat} now={now} />)}
+            </div>
+          )}
+          <Composer chat={chat} coarse={coarse} replyTo={quoted(messages, replyTo)} onClearReply={() => setReplyTo(null)} />
+        </div>
+      </div>
+      {viewing && <ImageViewer attachment={viewing} onClose={() => setViewing(null)} />}
+    </div>
+  );
+}
+
+function Row({ m, list, lead, chat, onReply, onView }) {
+  // A notice carries its own time in its words ("… restarted 08:06").
+  if (m.kind === 'notice') return <li className="o-chat-notice"><span>{m.text}</span></li>;
+  if (m.kind === 'permission') {
+    return <li className="o-chat-notice"><span>Jarvis asked for a permission{m.meta?.tool ? ` (${m.meta.tool})` : ''}: {m.text}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+  }
+  if (m.kind === 'verdict') {
+    const word = m.meta?.behavior === 'allow' || m.text === 'allow' ? 'Allowed' : 'Denied';
+    return <li className="o-chat-notice"><span>{word}{m.device ? ` from ${m.device}` : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+  }
+  const mine = m.from === 'jeff';
+  const tick = tickFor(m, list);
+  const quote = m.replyTo ? quoted(list, m.replyTo) : null;
+  const pending = !Number.isInteger(m.seq);
+  return (
+    <li className={`o-chat-row ${mine ? 'o-chat-mine' : 'o-chat-theirs'}${m.failed ? ' o-chat-failed' : ''}${pending ? ' o-chat-pending' : ''}`}>
+      {!mine && <span className="o-chat-avatar"><Avatar agent={lead} fallback="J" size={28} tone="day" /></span>}
+      <div className="o-chat-bubble">
+        {(m.replyTo || quote) && <blockquote className="o-chat-quote"><span className="o-chat-quote-who">{quote ? (quote.from === 'jeff' ? 'You' : 'Jarvis') : 'Reply'}</span>{quoteLine(quote)}</blockquote>}
+        {m.attachments?.length > 0 && (
+          <div className="o-chat-photos">
+            {m.attachments.map((a, i) => (a.id && !pending
+              ? <button key={a.id} type="button" className="o-chat-photo" onClick={() => onView(a)} aria-label={`Open ${a.name}`}><img src={attachmentUrl(a.id)} alt={a.name} loading="lazy" /></button>
+              : <span key={a.id ?? i} className="o-chat-file">{a.name} · {fileSize(a.bytes)}{pending && !m.failed ? ' · uploading…' : ''}</span>))}
+          </div>
+        )}
+        {m.text && <p className="o-chat-text">{m.text}</p>}
+        <div className="o-chat-meta">
+          <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
+          {m.editedAt && <span className="o-chat-edited">edited</span>}
+          {tick && <span className={`o-chat-tick o-chat-tick-${tick}`} role="img" aria-label={TICK_WORDS[tick]}>{TICK_MARKS[tick]}</span>}
+        </div>
+        {m.failed && (
+          <div className="o-chat-retry" role="alert">
+            <span>Not sent{m.error ? `: ${m.error}` : ''}</span>
+            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.retry(m.clientId)}>Retry</button>
+            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.discard(m.clientId)}>Discard</button>
+          </div>
+        )}
+      </div>
+      {!pending && <button type="button" className="o-chat-replybtn" aria-label="Reply to this message" onClick={() => onReply(m.id)}>
+        <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5 3 10l5 5v-3.2c4 0 7 1 9 4-.6-4.2-3.4-7.8-9-8.3Z" /></svg>
+      </button>}
+    </li>
+  );
+}
+
+// ---- permission cards (§2.1) ----
+
+function PermissionCard({ p, chat, now }) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const expired = p.view === 'expired';
+  const age = Math.max(0, Math.floor((now - p.openedAt) / 1000));
+  const answer = async behavior => {
+    setBusy(behavior);
+    setError(null);
+    const r = await chat.verdict(p.requestId, behavior);
+    setBusy(null);
+    if (!r.ok) setError(r.error);
+  };
+  return (
+    <section className={`o-chat-card${expired ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`}>
+      <div className="o-chat-card-head">
+        <span className="o-chat-label">{expired ? 'Expired request' : 'Jarvis asks'}</span>
+        <span className="o-chat-sub">{age < 60 ? `${age} s ago` : `${Math.floor(age / 60)} min ago`}</span>
+      </div>
+      <h3 className="o-chat-card-tool o-mono">{p.tool}</h3>
+      {p.description && <p className="o-chat-card-desc">{p.description}</p>}
+      {p.inputPreview
+        ? <pre className="o-mono o-chat-card-input" tabIndex={0} aria-label="The full input">{p.inputPreview}</pre>
+        : <p className="o-chat-sub">No input preview.</p>}
+      {expired
+        ? (
+          <div className="o-chat-card-expired-note">
+            <span>This request expired after 10 minutes. It may already be answered in Discord.</span>
+            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
+          </div>
+        )
+        : (
+          <div className="o-chat-card-actions">
+            <button type="button" className="o-cbtn o-cbtn-deny" disabled={busy !== null} onClick={() => answer('deny')}>{busy === 'deny' ? 'Denying…' : 'Deny'}</button>
+            <button type="button" className="o-cbtn o-cbtn-allow" disabled={busy !== null} onClick={() => answer('allow')}>{busy === 'allow' ? 'Allowing…' : 'Allow once'}</button>
+          </div>
+        )}
+      {error && <p className="o-chat-card-error" role="alert">Couldn't answer: {error}</p>}
+    </section>
+  );
+}
+
+// ---- the composer ----
+
+const MAX_FILES = 4;
+
+function Composer({ chat, coarse, replyTo, onClearReply }) {
+  const [text, setText] = useState('');
+  const [files, setFiles] = useState([]);
+  const [preparing, setPreparing] = useState(0);
+  const [note, setNote] = useState(null);
+  const areaRef = useRef(null);
+  const fileRef = useRef(null);
+  const offline = chat.status?.state === 'offline';
+
+  // The box grows with its lines, up to a third of the screen (a CSSOM size).
+  const fit = useCallback(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight / 3))}px`;
+  }, []);
+  useEffect(fit, [text, fit]);
+
+  const canSend = (text.trim().length > 0 || files.length > 0) && preparing === 0 && text.length <= MAX_TEXT;
+  const send = () => {
+    if (!canSend) return;
+    chat.send({ text: text.trim(), replyTo: replyTo?.id ?? null, files });
+    setText('');
+    setFiles([]);
+    onClearReply();
+    areaRef.current?.focus();
+  };
+  const onKey = e => {
+    // Enter sends where there is a keyboard; on a phone the button does, and
+    // Enter makes a new line. Shift+Enter is a new line everywhere.
+    if (e.key === 'Enter' && !e.shiftKey && !coarse && !e.nativeEvent?.isComposing) { e.preventDefault(); send(); }
+  };
+  const pick = async e => {
+    const picked = [...(e.target.files ?? [])].slice(0, MAX_FILES - files.length);
+    e.target.value = '';
+    if (picked.length === 0) return;
+    setNote(null);
+    setPreparing(n => n + picked.length);
+    for (const f of picked) {
+      try {
+        const ready = await preparePhoto(f);
+        setFiles(list => (list.length < MAX_FILES ? [...list, ready] : list));
+      } catch (err) {
+        setNote(`Couldn't read ${f.name}: ${err?.message ?? err}`);
+      } finally {
+        setPreparing(n => n - 1);
+      }
+    }
+  };
+
+  return (
+    <div className="o-chat-composer">
+      {replyTo && (
+        <div className="o-chat-replying">
+          <span className="o-chat-quote-who">Replying to {replyTo.from === 'jeff' ? 'yourself' : 'Jarvis'}</span>
+          <span className="o-chat-replying-text">{quoteLine(replyTo)}</span>
+          <button type="button" className="o-chat-iconbtn" aria-label="Cancel the reply" onClick={onClearReply}>×</button>
+        </div>
+      )}
+      {(files.length > 0 || preparing > 0) && (
+        <ul className="o-chat-files" aria-label="Photos to send">
+          {files.map((f, i) => (
+            <li key={`${f.name}-${i}`} className="o-chat-file">
+              <span>{f.name} · {fileSize(f.blob.size)}{f.width ? ` · ${f.width}×${f.height}` : ''}</span>
+              <button type="button" className="o-chat-iconbtn" aria-label={`Remove ${f.name}`} onClick={() => setFiles(list => list.filter((_, j) => j !== i))}>×</button>
+            </li>
+          ))}
+          {preparing > 0 && <li className="o-chat-file o-chat-sub">Preparing {preparing} photo{preparing > 1 ? 's' : ''}…</li>}
+        </ul>
+      )}
+      {note && <p className="o-chat-sub" role="alert">{note}</p>}
+      <div className="o-chat-composer-row">
+        <input ref={fileRef} type="file" accept="image/*" multiple className="o-chat-filepick" onChange={pick} aria-label="Choose photos" tabIndex={-1} />
+        <button type="button" className="o-chat-iconbtn o-chat-attach" aria-label="Attach a photo" disabled={files.length >= MAX_FILES} onClick={() => fileRef.current?.click()}>
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7a2 2 0 0 1 2-2h2l1.2-1.6h5.6L16 5h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" strokeWidth="1.7" /><circle cx="12" cy="12.5" r="3.4" fill="none" stroke="currentColor" strokeWidth="1.7" /></svg>
+        </button>
+        <textarea ref={areaRef} className="o-input o-chat-area" rows={1} value={text} maxLength={MAX_TEXT} placeholder={offline ? 'Message (waits for Jarvis)' : 'Message'}
+          aria-label="Message" enterKeyHint={coarse ? 'enter' : 'send'} onChange={e => setText(e.target.value)} onKeyDown={onKey} />
+        <button type="button" className="o-cbtn o-cbtn-primary o-chat-send" disabled={!canSend} onClick={send} aria-label="Send">
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10 17 3l-3.2 14-4.3-5.2Zm7 1.8L13 15l2-9.4-9.6 4.6Z" /></svg>
+          <span>Send</span>
+        </button>
+      </div>
+      {text.length > MAX_TEXT - 500 && <p className="o-chat-sub">{MAX_TEXT - text.length} characters left</p>}
+    </div>
+  );
+}
+
+// ---- the settings sheet ----
+
+function SettingsSheet({ chat, now, onClose }) {
+  const [devices, setDevices] = useState(null);
+  const [error, setError] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [code, setCode] = useState('');
+  const [approved, setApproved] = useState(null);
+  const load = useCallback(() => chat.devices().then(setDevices).catch(err => setError(String(err?.message ?? err))), [chat]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const revoke = async id => {
+    setError(null);
+    try {
+      await chat.revoke(id);
+      setConfirm(null);
+      // Revoking this device ends the session: the pairing screen replaces the
+      // sheet, and the list would only answer 401 now.
+      if (id !== chat.device?.id) load();
+    } catch (err) { setError(String(err?.message ?? err)); }
+  };
+  const approve = async e => {
+    e.preventDefault();
+    setError(null);
+    setApproved(null);
+    try { const r = await chat.approve(code.trim().toUpperCase()); setApproved(r.name); setCode(''); } catch (err) { setError(String(err?.message ?? err)); }
+  };
+  const when = at => (at ? `${hhmm(at)} ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'never');
+  void now;
+  return (
+    <div className="o-chat o-chat-sheet-back" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="o-chat-sheet" role="dialog" aria-modal="true" aria-label="Chat settings">
+        <div className="o-chat-sheet-head">
+          <h2 className="o-chat-h2">Chat settings</h2>
+          <button type="button" className="o-chat-iconbtn" aria-label="Close" onClick={onClose}>×</button>
+        </div>
+        <h3 className="o-chat-label">Paired devices</h3>
+        {!devices && !error && <p className="o-chat-sub">Loading…</p>}
+        {devices && (
+          <ul className="o-chat-devices">
+            {devices.map(d => (
+              <li key={d.id} className={`o-chat-device${d.revokedAt ? ' o-chat-device-revoked' : ''}`}>
+                <div className="o-chat-device-main">
+                  <span className="o-chat-device-name">{d.name}{chat.device?.id === d.id && <span className="o-chat-this">this device</span>}</span>
+                  <span className="o-chat-sub">{d.revokedAt ? `revoked ${when(d.revokedAt)}` : `paired ${when(d.createdAt)} · seen ${when(d.lastSeenAt)}`}</span>
+                </div>
+                {!d.revokedAt && (confirm === d.id
+                  ? <span className="o-chat-device-actions"><button type="button" className="o-cbtn o-cbtn-deny o-cbtn-small" onClick={() => revoke(d.id)}>Confirm revoke</button><button type="button" className="o-cbtn o-cbtn-small" onClick={() => setConfirm(null)}>Keep</button></span>
+                  : <button type="button" className="o-cbtn o-cbtn-small" onClick={() => setConfirm(d.id)}>Revoke</button>)}
+              </li>
+            ))}
+            {devices.length === 0 && <li className="o-chat-sub">No devices.</li>}
+          </ul>
+        )}
+        <h3 className="o-chat-label">Approve another device</h3>
+        <form className="o-chat-approve" onSubmit={approve}>
+          <input className="o-input o-chat-input o-mono" value={code} maxLength={6} autoComplete="off" autoCapitalize="characters" placeholder="6-letter code" aria-label="Pairing code" onChange={e => setCode(e.target.value)} />
+          <button type="submit" className="o-cbtn o-cbtn-primary" disabled={code.trim().length !== 6}>Approve</button>
+        </form>
+        {approved && <p className="o-chat-sub" role="status">Approved: {approved} can finish pairing now.</p>}
+        {error && <p className="o-chat-card-error" role="alert">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ---- a photo, full size ----
+
+function ImageViewer({ attachment, onClose }) {
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="o-chat-viewer" role="dialog" aria-modal="true" aria-label={attachment.name} onClick={onClose}>
+      <img src={attachmentUrl(attachment.id)} alt={attachment.name} />
+      <button type="button" className="o-chat-iconbtn o-chat-viewer-close" aria-label="Close" onClick={onClose}>×</button>
+    </div>
+  );
+}
