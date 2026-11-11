@@ -524,7 +524,14 @@ test('pairing over TCP and the admin socket: the first device by chat-pair, the 
   assert.match(cookies[0], /^__Host-jos=[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=34560000$/);
   assert.match(cookies[1], /^__Host-jos-pair=; .*Max-Age=0$/);
   env.phone = cookies[0].split(';')[0];
-  assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } })).status, 200);
+  const mine = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.json.device, paired.json.device, 'the status names the asking device');
+  // A paired device asking /api/pair/status hears so, with no cookie set again.
+  const already = await tcp({ path: '/api/pair/status', headers: { cookie: env.phone } });
+  assert.deepEqual(already.json, { state: 'paired', device: paired.json.device, already: true });
+  assert.equal(already.headers['set-cookie'], undefined);
+  assert.equal(already.headers['cache-control'], 'no-store');
   assert.ok(env.events.some(e => e.kind === 'paired' && e.device.name === 'phone'));
   // The second device, approved from the first.
   const s2 = await tcp({ method: 'POST', path: '/api/pair/start', body: { name: 'ipad' } });

@@ -134,6 +134,11 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       }
       if (req.method === 'GET' && path === '/api/pair/status') {
         requireLogin(req);
+        // A device that is paired already hears so here (its own id and name, no
+        // cookie set): the page asks this first, so an unpaired device never has
+        // to take a 401 to learn that it must pair.
+        const already = devices.authenticate(req.headers?.cookie);
+        if (already) return json(res, 200, { state: 'paired', device: { id: already.id, name: already.name }, already: true }, NO_STORE);
         const r = await devices.status(req.headers?.cookie);
         if (r.state === 'paired') {
           return json(res, 200, { state: 'paired', device: r.device }, { ...NO_STORE, 'Set-Cookie': [cookieHeader(COOKIE_NAME, r.token, COOKIE_MAX_AGE_S), clearCookieHeader(PAIR_COOKIE_NAME)] });
@@ -259,8 +264,10 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { ok: true, state: r.request.state });
       }
       if (req.method === 'GET' && path === '/api/chat/status') {
-        requireDevice(req);
-        return json(res, 200, { ...chatState({ socket: socket.status(), store, now: now() }), seq: store.seq, epoch: store.epoch, streams: streams.size }, { 'Cache-Control': 'no-store' });
+        const device = requireDevice(req);
+        // `device` is the asking device's own id and name (the Chat tab's settings
+        // sheet marks "this device" with it); never another device's.
+        return json(res, 200, { ...chatState({ socket: socket.status(), store, now: now() }), seq: store.seq, epoch: store.epoch, streams: streams.size, device: { id: device.id, name: device.name } }, { 'Cache-Control': 'no-store' });
       }
       return json(res, 404, { error: 'not found' });
     } catch (err) {
