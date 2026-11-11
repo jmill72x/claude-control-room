@@ -21,6 +21,7 @@ import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
+import { createAlertLimiter } from './lib/chat-alert-limit.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
@@ -198,7 +199,8 @@ const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
 // (0700, sockets 0600; an override's folder is checked the same way, and a socket a
 // live server answers on is never unlinked: lib/chat-listen.mjs), each with its own
 // router; the page routes join the TCP router below, behind the Host check. Pairings,
-// verdicts, a refused second channel and a takeover are logged and pushed like an alert.
+// verdicts, a refused second channel and a takeover are logged and pushed like an alert;
+// the last two at most once per kind per 10 minutes, with a count of those held back.
 let chat = null;
 const chatSettings = readChatConfig(config, hosts.mode);
 for (const problem of chatSettings.problems) console.error(`config: ${problem}`);
@@ -220,6 +222,12 @@ if (chatSettings.on && socketsReady) {
   const chatDir = join(HERE, 'data', 'chat');
   await mkdir(chatDir, { recursive: true, mode: 0o700 });
   await chmod(chatDir, 0o700);
+  // A refused channel or a takeover pushes at most once per kind per 10 minutes,
+  // with a count of the ones held back (lib/chat-alert-limit.mjs).
+  const chatAlerts = createAlertLimiter({
+    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message }),
+    onError: err => console.error('chat: alert failed', err?.message ?? err)
+  });
   const chatEvents = async event => {
     const words = {
       'client-refused': 'a second chat channel tried to connect and was refused',
@@ -235,7 +243,10 @@ if (chatSettings.on && socketsReady) {
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
     if (['client-refused', 'client-replaced', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started'].includes(event.kind)) {
-      try { await sendAlert({ topic: await getTopic(), title: 'Control Room', message: line }); } catch (err) { console.error('chat: alert failed', err?.message ?? err); }
+      try {
+        const { sent, held } = await chatAlerts.alert(event.kind, line);
+        if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
+      } catch (err) { console.error('chat: alert failed', err?.message ?? err); }
     }
   };
   const chatStore = createChatStore({ dir: chatDir });

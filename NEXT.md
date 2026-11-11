@@ -456,7 +456,11 @@ read back only by its uploader, `no-store` on the pairing answers and on attachm
 (`private, no-store`, my call: a lost or revoked device keeps no cached photo). **The channel
 plugin must change to match:** send the token header, send the epoch on every ack, and treat
 a 409 on any route as "say hello again"; the contract is in the spec's §1.5 (edited 11-11).
-**Before it can go live:** Ultron's re-read of the fixes; Serve on HTTPS (P2, Vision, Jeff's
+**Ultron's re-read (second 11-11 pass): go to merge with chat off, 0 medium findings;** the low
+on alert floods is fixed on the branch: `client-refused` and `client-replaced` push at most
+once per kind per 10 minutes, with a count of the ones held back (`server/lib/chat-alert-limit.mjs`,
+6 tests; the wiring in server.mjs is syntax-checked only, not run, since server.mjs starts the
+collectors). **Before it can go live:** Serve on HTTPS (P2, Vision, Jeff's
 yes), since a browser takes a `__Host-` cookie over HTTPS only; Jarvis adds `chat.login` and
 `hostCheck: "enforce"` to config.json (the latter after the day of clean host logs); Jarvis's
 channel (C3) tried against a scratch server, never :8322. Checks done 11-11: 21 chat tests

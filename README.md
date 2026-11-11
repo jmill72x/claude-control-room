@@ -677,13 +677,18 @@ second factor the Serve proxy adds, never the credential, since a local process 
 it. Writes keep the ingest guards (JSON only, same origin or none); a pairing (logged and
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
-log and pushed like an alert (ntfy and the feed). At start the chat folder and its files
+log and pushed like an alert (ntfy and the feed). A refused channel and a takeover push at
+most once per kind per 10 minutes (`server/lib/chat-alert-limit.mjs`), since a channel
+stuck in a restart loop would otherwise push on every try: the rest are held back and
+counted, the count riding on the kind's next push ("… (and 3 more held back in the last 10
+minutes)") or, if none comes, going out alone when the window ends; the log still gets
+every event, plus a `chat: alert held back` line. At start the chat folder and its files
 folder are set to 0700 whether or not they existed, and each socket path is checked
 (`server/lib/chat-listen.mjs`): its folder must be this user's and 0700 (the default folder
 is made so; an override from `JARVIS_OS_SOCKET` or `JARVIS_OS_ADMIN_SOCKET` is checked as
 found), and a socket file is unlinked only when nothing answers on it, so a second server
 started by mistake never pulls the live one's socket away; a problem there keeps the chat
-off. Tests: `server/test/chat.test.mjs` and `chat-listen.test.mjs`, over real temp Unix
+off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-limit.test.mjs`, over real temp Unix
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
 
