@@ -434,6 +434,20 @@ log over a day; no line for the Serve name means the list is right, and `"hostCh
 "enforce"` goes in with the next restart. A line naming a Host that Jeff's devices do use
 means the list is missing that name (add it, don't enforce yet).
 
+**The chat server (Shuri's spec, C2) is built on the branch `jos/chat-server` (from `jos/1b`,
+2026-11-11 overnight, local commits only), not live.** README "The chat with the lead agent"
+describes it: the JSONL store with seqs and an epoch, the channel's Unix socket (API v1,
+one client at a time, `ack {seq, epoch}`), the page routes (pairing and the `__Host-jos`
+cookie, messages, uploads, SSE with Last-Event-ID replay, single-use verdicts, status), the
+admin socket and `bin/chat-pair`. Nothing listens until `config.json` has a `chat` block.
+Not built: the Chat tab (C5) and Web Push (C6). **Before it can go live:** Ultron's C2 review
+(socket permissions, the router split, pairing alerts, cookies, uploads, the header rule,
+replay); Serve on HTTPS (P2, Vision, Jeff's yes), since a browser takes a `__Host-` cookie
+over HTTPS only; Jarvis's channel (C3) tried against a scratch server, never :8322. Checks
+done: 17 tests over a real temp socket and port (669 server tests in local time and Tokyo),
+32 of 32 mutations caught, and a curl pass on a scratch server (`--unix-socket`, `-N` on
+both streams, `chat-pair`, a stale-epoch ack refused, a verdict single use).
+
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,
 the phone fold, the home-screen icon) and "A session waiting on you" (the ingest and the hook
