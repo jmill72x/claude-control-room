@@ -634,11 +634,15 @@ three pieces, each with its own router:
   the owner's messages and verdicts after a seq, a ping every 15 s; it replays the whole
   backlog after `after`, a page of 100 at a time until the store has no more, listening for
   live messages before the replay starts and holding them until it ends, so each seq is sent
-  once and none falls in between), `ack` (`{seq, epoch}`; the epoch is required, 400 without
+  once and none falls in between; it waits for `drain` whenever the buffer fills, and a
+  holder that stops reading is cut once 4 MB sits unsent, logged, to reconnect from its
+  cursor), `ack` (`{seq, epoch}`; the epoch is required, 400 without
   it, and one that isn't current is refused with 409; the cursor moves only as far as this
   session's streams have sent, or as far as the `after` the channel asked from, never to a
   seq that was never written to it), `bye` (a clean exit: the place is free at once, the
-  inbound stream ends with `{"type":"bye"}`, logged, never pushed), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
+  inbound stream ends with `{"type":"bye"}`, logged, never pushed; a fresh `hello` after
+  a bye logs the gap, "quick" under 5 s, and records a quiet `notice` from `system`,
+  "Jarvis's channel restarted HH:MM" in local time, shown in the chat and never pushed), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
   `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
   `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
   `status`. **One client at a time, held by a session token:** `hello` answers a random

@@ -12,7 +12,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createChatStore } from '../lib/chat-store.mjs';
-import { createSocketRouter, HEARTBEAT_FRESH_MS, HEARTBEAT_MISSED_MS, REPLAY_PAGE, SESSION_HEADER } from '../lib/chat-socket.mjs';
+import { createSocketRouter, HEARTBEAT_FRESH_MS, HEARTBEAT_MISSED_MS, REPLAY_PAGE, SESSION_HEADER, INBOUND_BUFFER_MAX, QUICK_RESTART_MS, restartNotice } from '../lib/chat-socket.mjs';
 
 const call = ({ socketPath, method = 'GET', path, headers = {}, body }) => new Promise((resolve, reject) => {
   const raw = body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -32,11 +32,15 @@ const call = ({ socketPath, method = 'GET', path, headers = {}, body }) => new P
 });
 
 // A streaming GET held open until `close()` (or until the server ends it).
-function openStream({ socketPath, path, headers }) {
+// `paused` reads nothing until `resume()`: a holder that has stopped reading.
+function openStream({ socketPath, path, headers, paused = false }) {
   let text = '';
   let req;
+  let response = null;
   const ended = new Promise((resolve, reject) => {
     req = request({ socketPath, method: 'GET', path, headers }, res => {
+      response = res;
+      if (paused) res.pause();
       res.setEncoding('utf8');
       res.on('data', c => { text += c; });
       res.on('end', () => resolve('server'));
@@ -45,7 +49,8 @@ function openStream({ socketPath, path, headers }) {
     req.on('error', err => (err.code === 'ECONNRESET' ? resolve('closed') : reject(err)));
     req.end();
   });
-  return { lines: () => text.split('\n').filter(Boolean).map(l => JSON.parse(l)), ended, close: () => { req.destroy(); return ended; } };
+  // Whole lines only: a line still arriving is left for the next look.
+  return { lines: () => text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map(l => JSON.parse(l)), ended, close: () => { req.destroy(); return ended; }, resume: () => response?.resume(), started: () => response !== null };
 }
 // How a stream ended, or 'still open' after a second.
 const endedSoon = st => Promise.race([st.ended, new Promise(r => setTimeout(() => r('still open'), 1000).unref())]);
@@ -57,22 +62,23 @@ const until = async (fn, what, ms = 2000) => {
   }
 };
 
-async function setup({ wrap = s => s } = {}) {
+async function setup({ wrap = s => s, router = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'chat-sock-'));
   const clock = { t: 1794380000000 };
   const events = [];
   const logs = [];
   const store = createChatStore({ dir: join(dir, 'chat'), now: () => clock.t });
   await store.load();
-  const socket = createSocketRouter({ store: wrap(store), now: () => clock.t, onEvent: e => events.push(e), log: l => logs.push(l), pingMs: 60e3 });
+  const socket = createSocketRouter({ store: wrap(store), now: () => clock.t, onEvent: e => events.push(e), log: l => logs.push(l), pingMs: 60e3, ...router });
   const socketPath = join(dir, 's.sock');
-  const srv = createServer((req, res) => socket.handler(req, res));
+  // `pending`: handlers not yet returned (an inbound one returns once its replay ends).
+  const srv = createServer(async (req, res) => { env.pending++; try { await socket.handler(req, res); } finally { env.pending--; } });
   await new Promise(r => srv.listen(socketPath, r));
-  const env = { dir, clock, events, logs, store, socket, socketPath, token: null, streams: [] };
+  const env = { dir, clock, events, logs, store, socket, socketPath, token: null, streams: [], pending: 0 };
   env.call = opts => call({ socketPath, ...opts, headers: { ...(env.token ? { [SESSION_HEADER]: env.token } : {}), ...(opts.headers ?? {}) } });
   env.stranger = opts => call({ socketPath, ...opts });
   env.hello = async (body = { pid: 100 }) => { const h = await env.call({ method: 'POST', path: '/v1/hello', body }); if (h.status === 200) env.token = h.json.token; return h; };
-  env.inbound = after => { const s = openStream({ socketPath, path: `/v1/inbound${after === undefined ? '' : `?after=${after}`}`, headers: { [SESSION_HEADER]: env.token } }); env.streams.push(s); return s; };
+  env.inbound = (after, { paused = false } = {}) => { const s = openStream({ socketPath, path: `/v1/inbound${after === undefined ? '' : `?after=${after}`}`, headers: { [SESSION_HEADER]: env.token }, paused }); env.streams.push(s); return s; };
   env.ack = seq => env.call({ method: 'POST', path: '/v1/ack', body: { seq, epoch: store.epoch } });
   env.done = async () => {
     for (const s of env.streams) await s.close();
@@ -290,5 +296,152 @@ test('the holder\'s re-hello ends its stream with `superseded`; a takeover after
     assert.equal(await endedSoon(b), 'server');
     assert.deepEqual(b.lines(), [{ type: 'replaced' }]);
     assert.deepEqual(env.events.map(e => e.kind), ['client-replaced']);
+  } finally { await env.done(); }
+});
+
+// Backpressure and the restart notice (Ultron's third 11-11 re-read).
+const BIG = 30000;
+const big = i => `${String(i).padStart(4, '0')}${'x'.repeat(BIG - 4)}`;
+const cutLog = env => env.logs.find(l => /inbound stream was cut/.test(l));
+
+test('the cap is 4 MB by default', () => {
+  assert.equal(INBOUND_BUFFER_MAX, 4 * 1024 * 1024);
+  assert.equal(QUICK_RESTART_MS, 5e3);
+});
+
+test('the notice\'s time is HH:MM in local time, zero-padded', () => {
+  assert.equal(restartNotice(new Date(2026, 10, 11, 9, 5, 30).getTime()), 'Jarvis\'s channel restarted 09:05');
+  assert.equal(restartNotice(new Date(2026, 10, 11, 23, 59).getTime()), 'Jarvis\'s channel restarted 23:59');
+});
+
+test('replay waits for drain: a 3 MB backlog to a slow reader stays under a 512 KB cap and arrives whole, in order', async () => {
+  const env = await setup({ router: { inboundBufferMax: 512 * 1024 } });
+  try {
+    for (let i = 1; i <= 100; i++) await env.store.append({ from: 'jeff', text: big(i), state: 'queued' });
+    await env.hello();
+    const s = env.inbound(0, { paused: true });
+    await until(() => s.started(), 'the stream to start');
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(cutLog(env), undefined, 'not cut while the reader is slow');
+    assert.equal(env.pending, 1, 'the replay is waiting for drain, not done');
+    assert.equal(env.socket.status().streaming, true);
+    s.resume();
+    await until(() => msgs(s.lines()).length >= 100, 'the whole backlog', 5000);
+    const got = msgs(s.lines());
+    assert.deepEqual(got.map(l => l.text.slice(0, 4)), Array.from({ length: 100 }, (_, i) => String(i + 1).padStart(4, '0')));
+    assert.equal(cutLog(env), undefined);
+    assert.equal(env.pending, 0, 'the replay finished');
+    // Live messages still flow after a paced replay.
+    await env.store.append({ from: 'jeff', text: 'live', state: 'queued' });
+    await until(() => msgs(s.lines()).some(l => l.text === 'live'), 'the live message');
+  } finally { await env.done(); }
+});
+
+test('a holder that stops reading is cut once its unsent bytes pass the cap, logged, not alerted; its reconnect from the cursor gets everything', async () => {
+  const env = await setup({ router: { inboundBufferMax: 256 * 1024 } });
+  try {
+    await env.hello();
+    const s = env.inbound(0, { paused: true });
+    await until(() => env.socket.status().streaming === true, 'the stream');
+    for (let i = 1; i <= 40; i++) await env.store.append({ from: 'jeff', text: big(i), state: 'queued' });
+    await until(() => cutLog(env) !== undefined, 'the cut');
+    assert.match(cutLog(env), /cut with \d+ bytes unsent \(the cap is 262144\)/);
+    const unsent = Number(/with (\d+) bytes/.exec(cutLog(env))[1]);
+    assert.ok(unsent > 256 * 1024 && unsent < 256 * 1024 + 2 * BIG, 'cut just past the cap, not after everything');
+    assert.equal(env.socket.status().streaming, false);
+    s.resume();
+    assert.equal(await endedSoon(s), 'closed', 'the socket was destroyed, not ended after its buffer drained');
+    assert.ok(msgs(s.lines()).length < 40, 'the stalled stream got only part');
+    assert.deepEqual(env.events, [], 'logged, never pushed');
+    // The server cut it, so it is no sign of a crash: the 45 s rule still holds.
+    env.clock.t += HEARTBEAT_MISSED_MS + 1;
+    assert.equal(env.socket.status().channelConnected, true);
+    // Nothing was acked, so nothing is delivered, and a reconnect from the cursor gets all 40.
+    assert.equal(env.store.deliveredSeq, 0);
+    const again = env.inbound();
+    await until(() => msgs(again.lines()).length === 40, 'all 40 again', 5000);
+    assert.equal(env.logs.filter(l => /inbound stream was cut/.test(l)).length, 1);
+  } finally { await env.done(); }
+});
+
+test('a replay waiting on a stalled holder ends when the holder re-hellos; nothing is written after `superseded`', async () => {
+  const env = await setup({ router: { inboundBufferMax: 8 * 1024 * 1024 } });
+  try {
+    for (let i = 1; i <= 60; i++) await env.store.append({ from: 'jeff', text: big(i), state: 'queued' });
+    await env.hello();
+    const s = env.inbound(0, { paused: true });
+    await until(() => s.started(), 'the stream to start');
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(env.pending, 1, 'the replay waits');
+    await env.hello();
+    await until(() => env.pending === 0, 'the waiting replay to end', 1000);
+    s.resume();
+    assert.equal(await endedSoon(s), 'server');
+    const lines = s.lines();
+    assert.deepEqual(lines.at(-1), { type: 'superseded' });
+    assert.ok(msgs(lines).length < 60, 'the replay stopped part way');
+  } finally { await env.done(); }
+});
+
+test('a bye then a fresh hello logs the gap and records a quiet notice in the chat; no push, nothing on the channel\'s stream', async () => {
+  const env = await setup();
+  const hhmm = at => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const notices = () => env.store.list({ after: 0, limit: 100 }).filter(m => m.kind === 'notice');
+  try {
+    // A first hello is no restart.
+    await env.hello({ pid: 100 });
+    assert.deepEqual(notices(), []);
+    await env.call({ method: 'POST', path: '/v1/bye' });
+    env.clock.t += 3200;
+    const h = await env.hello({ pid: 101 });
+    assert.equal(h.status, 200);
+    assert.ok(env.logs.includes('chat: the channel is back 3.2 s after its bye (a quick restart, under 5 s)'), env.logs.join('\n'));
+    const [n] = notices();
+    assert.equal(n.from, 'system');
+    assert.equal(n.text, `Jarvis's channel restarted ${hhmm(env.clock.t)}`);
+    assert.equal(n.text, restartNotice(env.clock.t));
+    assert.match(n.text, /^Jarvis's channel restarted \d\d:\d\d$/);
+    assert.equal(n.at, env.clock.t);
+    assert.equal(h.json.seq, n.seq, 'the hello answers the seq after the notice');
+    // A slow restart: no "quick".
+    await env.call({ method: 'POST', path: '/v1/bye' });
+    env.clock.t += QUICK_RESTART_MS;
+    await env.hello({ pid: 102 });
+    assert.ok(env.logs.includes('chat: the channel is back 5.0 s after its bye'), env.logs.join('\n'));
+    assert.equal(notices().length, 2);
+    // A re-hello by the holder, or a takeover after a stale heartbeat (no bye), is no restart.
+    await env.hello({ pid: 102 });
+    env.clock.t += HEARTBEAT_FRESH_MS;
+    const t = await env.stranger({ method: 'POST', path: '/v1/hello', body: { pid: 300 } });
+    assert.equal(t.status, 200);
+    env.token = t.json.token;
+    assert.equal(notices().length, 2);
+    assert.equal(env.logs.filter(l => /after its bye/.test(l)).length, 2);
+    // Never pushed: the only event is the takeover's.
+    assert.deepEqual(env.events.map(e => e.kind), ['client-replaced']);
+    // The channel's stream carries the owner's messages only, not the notices.
+    await env.store.append({ from: 'jeff', text: 'hi', state: 'queued' });
+    const s = env.inbound(0);
+    await until(() => msgs(s.lines()).length === 1, 'the one message');
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(s.lines().map(l => l.type), ['message']);
+  } finally { await env.done(); }
+});
+
+test('a notice the store refuses still lets the channel in, and the failure is logged', async () => {
+  const wrap = store => new Proxy(store, {
+    get(target, prop) {
+      if (prop === 'append') return opts => (opts?.kind === 'notice' ? Promise.reject(new Error('disk full')) : target.append(opts));
+      const v = Reflect.get(target, prop, target);
+      return typeof v === 'function' ? v.bind(target) : v;
+    }
+  });
+  const env = await setup({ wrap });
+  try {
+    await env.hello();
+    await env.call({ method: 'POST', path: '/v1/bye' });
+    const h = await env.hello({ pid: 2 });
+    assert.equal(h.status, 200);
+    assert.ok(env.logs.includes('chat: the restart notice was not recorded (disk full)'));
   } finally { await env.done(); }
 });

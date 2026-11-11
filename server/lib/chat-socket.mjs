@@ -26,6 +26,18 @@
 // an ack moves the cursor only as far as this session's streams have actually sent
 // (the end-to-end run lost 30 of 130 queued messages to both).
 //
+// Backpressure (Ultron's third 11-11 re-read): the replay writes one message at a
+// time and waits for 'drain' whenever a write says the buffer is full, so a big
+// backlog never sits in memory at once. A holder that stops reading (stalled,
+// SIGSTOP) still can't make the server buffer without limit: once the stream's
+// unsent bytes pass INBOUND_BUFFER_MAX the stream is cut (logged), and the channel
+// reconnects from its cursor, since nothing unacked was marked delivered.
+//
+// A bye followed by a fresh hello is a normal restart: the gap is logged (and
+// called quick under 5 s) and a `notice` from `system` goes in the store, "Jarvis's
+// channel restarted HH:MM" in the server's local time, so the chat shows it. It is
+// never pushed or alerted (no `onEvent`), and the channel's own stream skips it.
+//
 // Errors are `{error}` with fixed words: never the text of a message.
 import { json, readBody, HttpError } from '../routes.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -39,6 +51,14 @@ export const INBOUND_PING_MS = 15e3;
 export const HEARTBEAT_MISSED_MS = 20e3;
 export const REPLAY_PAGE = 100;
 export const SESSION_HEADER = 'x-session-token';
+// What a stream may hold unsent before it is cut: a stalled holder's ceiling.
+export const INBOUND_BUFFER_MAX = 4 * 1024 * 1024;
+// A hello this soon after a bye is a quick restart (named in the log line).
+export const QUICK_RESTART_MS = 5e3;
+const pad2 = n => String(n).padStart(2, '0');
+// HH:MM in the server's local time.
+export const clockTime = at => { const d = new Date(at); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+export const restartNotice = at => `Jarvis's channel restarted ${clockTime(at)}`;
 const newToken = () => randomBytes(32).toString('base64url');
 const same = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
@@ -58,7 +78,7 @@ export function inboundEvent(m) {
   return null;
 }
 
-export function createSocketRouter({ store, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS }) {
+export function createSocketRouter({ store, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS, inboundBufferMax = INBOUND_BUFFER_MAX }) {
   // { pid, version, startedAt, helloAt, lastHeartbeatAt, token, sentSeq, streamClosedAt }
   // sentSeq: how far this session's inbound streams have gone (every seq up to it was
   // written to one, or lay at or below the `after` the channel asked from), the most
@@ -66,6 +86,7 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
   // itself (the channel's end), null while one is open or none was ever opened.
   let client = null;
   let inbound = null;  // { res, stop }
+  let byeAt = null;    // when the last client said bye, until the next hello
   const fresh = at => {
     if (client === null) return false;
     const age = at - client.lastHeartbeatAt;
@@ -120,8 +141,18 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         }
         // startedAt is the channel process's start in epoch milliseconds (kept, not served).
         client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null };
+        const { token } = client;
         endInbound(holder ? 'superseded' : 'replaced');
-        return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq, token: client.token });
+        if (byeAt !== null) {
+          // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.
+          const gap = Math.max(0, at - byeAt);
+          byeAt = null;
+          log(`chat: the channel is back ${(gap / 1000).toFixed(1)} s after its bye${gap < QUICK_RESTART_MS ? ' (a quick restart, under 5 s)' : ''}`);
+          try {
+            await store.append({ from: 'system', kind: 'notice', text: restartNotice(at), meta: { event: 'channel-restarted', gapMs: gap } });
+          } catch (err) { log(`chat: the restart notice was not recorded (${err?.message ?? err})`); }
+        }
+        return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq, token });
       }
       if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
       // Everything from here on is the current client's alone.
@@ -129,6 +160,7 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
       if (req.method === 'POST' && path === '/v1/bye') {
         // A clean exit (stdin EOF): the place is free now, not in 45 s. Logged, not alerted.
         client = null;
+        byeAt = now();
         endInbound('bye');
         log('chat: the channel said bye');
         return json(res, 200, { ok: true });
@@ -144,47 +176,80 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
         const session = client;
         session.streamClosedAt = null;
-        const send = ev => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* gone */ } };
+        let closed = false;
+        let timer = null;
+        let unsubscribe = () => {};
+        let wake = null;  // ends a replay's wait for 'drain'
+        const stop = () => { closed = true; clearInterval(timer); unsubscribe(); wake?.(); };
+        const entry = { res, stop };
+        inbound = entry;
+        // The holder stopped reading: cut the stream rather than buffer without limit.
+        const cut = () => {
+          const unsent = res.writableLength;
+          if (inbound === entry) inbound = null;
+          stop();
+          log(`chat: the inbound stream was cut with ${unsent} bytes unsent (the cap is ${inboundBufferMax}): the channel is not reading; it reconnects from its cursor`);
+          res.destroy();
+        };
+        // false when the buffer is full (wait for 'drain' before more) or the stream is gone.
+        const send = ev => {
+          if (closed) return false;
+          let ok;
+          try { ok = res.write(JSON.stringify(ev) + '\n'); } catch { return false; }
+          if (res.writableLength > inboundBufferMax) { cut(); return false; }
+          return ok;
+        };
+        const drained = () => new Promise(resolve => {
+          if (closed) return resolve();
+          const go = () => { res.off('drain', go); wake = null; resolve(); };
+          wake = go;
+          res.on('drain', go);
+        });
         // `after` is the channel's word that it has everything up to it; past the
         // store's last seq it can claim nothing.
         let done = Math.min(Number.isInteger(asked) && asked >= 0 ? asked : store.deliveredSeq, store.seq);
         if (done > session.sentSeq) session.sentSeq = done;
         // Each message once, in seq order: what this stream has gone past is skipped.
         const deliver = m => {
-          if (m.seq <= done) return;
+          if (m.seq <= done) return true;
           done = m.seq;
           const ev = inboundEvent(m);
-          if (ev) send(ev);
+          const ok = ev ? send(ev) : true;
           if (done > session.sentSeq) session.sentSeq = done;
+          return ok;
         };
-        // Live messages are listened for before the replay starts and held until it
-        // ends, so none falls between the two; the seq check drops the overlap.
-        let held = [];
-        const unsubscribe = store.subscribe(event => {
-          if (event.type !== 'message') return;
-          if (held) held.push(event.message);
-          else deliver(event.message);
-        });
-        // The whole backlog, a page at a time, until the store has nothing after it.
-        for (;;) {
-          const page = store.list({ after: done, limit: REPLAY_PAGE });
-          if (page.length === 0) break;
-          for (const m of page) deliver(m);
-        }
-        const waiting = held;
-        held = null;
-        for (const m of waiting) deliver(m);
-        const timer = setInterval(() => send({ type: 'ping' }), pingMs);
-        const stop = () => { clearInterval(timer); unsubscribe(); };
-        inbound = { res, stop };
         req.on('close', () => {
-          if (inbound?.res !== res) return;
+          if (inbound !== entry) return;
           inbound = null;
           stop();
           // The channel's end closed it: if heartbeats stop too, the process is gone.
           // (After a bye or a new hello, `session` is no longer the client: harmless.)
           session.streamClosedAt = now();
         });
+        // Live messages are listened for before the replay starts and held until it
+        // ends, so none falls between the two; the seq check drops the overlap.
+        let held = [];
+        unsubscribe = store.subscribe(event => {
+          if (event.type !== 'message') return;
+          if (held) held.push(event.message);
+          else deliver(event.message);
+        });
+        // The whole backlog, a page at a time, until the store has nothing after it,
+        // waiting for 'drain' whenever the buffer fills.
+        for (;;) {
+          const page = store.list({ after: done, limit: REPLAY_PAGE });
+          if (page.length === 0) break;
+          for (const m of page) {
+            if (closed) return undefined;
+            if (!deliver(m)) await drained();
+          }
+        }
+        if (closed) return undefined;
+        const waiting = held;
+        held = null;
+        for (const m of waiting) deliver(m);
+        if (closed) return undefined;
+        timer = setInterval(() => send({ type: 'ping' }), pingMs);
         return undefined;
       }
       if (req.method === 'POST' && path === '/v1/ack') {

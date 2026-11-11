@@ -488,6 +488,19 @@ EOF, treat `superseded` like the end of a stream (reconnect with its token), and
 replay-window workaround (the cut at cursor + 100). Tests: `server/test/chat-socket.test.mjs`
 (6, including 250 queued messages over three pages), 688 server tests in local time and Tokyo,
 25 of 25 mutations caught.
+**Ultron's third re-read (11-11): 653190b is go to merge with chat off; two adds made the
+same night.** (1, low) backpressure: the inbound replay waits for `drain` whenever a write
+fills the buffer (a 3 MB backlog to a slow reader stays under the cap and arrives whole), and
+a stream holding more than 4 MB unsent (`INBOUND_BUFFER_MAX`, a stalled or SIGSTOPped
+holder) is destroyed and logged; the channel reconnects from its cursor. A cut doesn't
+start the 20 s crash rule. A replay waiting on drain ends when the stream is superseded,
+replaced or byed. Left: live messages that arrive while a replay waits sit in memory as
+references to store messages, unbounded but tiny (the owner's own messages). (2) a `bye`
+then a fresh `hello` logs the gap (`chat: the channel is back 3.2 s after its bye`, plus
+"a quick restart, under 5 s" when it is) and records a `notice` from `system`, "Jarvis's
+channel restarted HH:MM" (local time), never pushed or alerted and not on the channel's
+stream; a failed notice write is logged and the hello still succeeds. **When Web Push (C6)
+is built, it must skip `notice` messages.** Spec §1.5 gained one bullet for each.
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,
