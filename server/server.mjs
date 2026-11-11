@@ -13,7 +13,8 @@ import { collectUsage } from './collectors/usage.mjs';
 import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
-import { createHealth } from './collectors/health.mjs';
+import { createHealth, JOB_STATUS_TIMEOUT_MS } from './collectors/health.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { readHealthConfig } from './lib/health.mjs';
 import { createToPush } from './collectors/to-push.mjs';
 import { readToPushConfig } from './lib/to-push.mjs';
@@ -112,7 +113,13 @@ registry.register('usage', async () => {
 // verdicts the crons panel then takes over launchd's own, so the morning brief,
 // the page, the mod and the alerts agree on every job.
 const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT });
-registry.register('crons', async () => health.overlay(await collectCrons()), 60 * 1000);
+// The first crons pass waits for job-status's first answer (whenAsked), or its
+// overlay misses the times an ack is matched by; the timeout is job-status's own.
+registry.register('crons', async () => {
+  const crons = await collectCrons();
+  await Promise.race([health.whenAsked(), delay(JOB_STATUS_TIMEOUT_MS + 5e3, null, { ref: false })]);
+  return health.overlay(crons);
+}, 60 * 1000);
 registry.register('health', () => health.collect(), 60 * 1000);
 // Waiting on you's To push tile (collectors/to-push.mjs): git-read on each repo
 // in config, one after another, every 5 minutes. Counts and branch names only.

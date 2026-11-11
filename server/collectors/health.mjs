@@ -93,6 +93,12 @@ export function createHealth({
   uid = process.getuid()
 }) {
   let answer = null;
+  // Settled once the first collect has asked job-status, answered or not. The
+  // crons collector starts beside it, and its overlay without an answer has no
+  // `lastRunAt`, so an acknowledged failure (matched by that time) read as
+  // unacknowledged until the next minute's poll: "1 failed" after a restart.
+  let markAsked;
+  const firstAsk = new Promise(resolve => { markAsked = resolve; });
   let printed = null;
   let downSince = new Map();
   let lastProblem = null;
@@ -153,10 +159,12 @@ export function createHealth({
 
   return {
     overlay: (crons, at = now()) => overlayCrons(crons, answer, at),
+    whenAsked: () => firstAsk,
 
     async collect() {
       const at = now();
       const error = await askJobStatus(at);
+      markAsked();
       const unanswered = !settings.jobStatus ? 'job-status is not set up' : error ? `job-status ${error}` : null;
       const byLabel = new Map((answer?.jobs ?? []).map(j => [j.label, j]));
       const crons = cache?.get('crons', at)?.data;

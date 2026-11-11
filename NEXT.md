@@ -423,7 +423,7 @@ half (the classic page's deletion, about 11-17) is still open.
 `lib/feed.mjs` (read-only reader), `lib/feed-routes.mjs` (`GET /api/feed`, a paired device
 only, the chat's rule), `checkFolder` added to `lib/program-check.mjs`, wired in
 `server.mjs`. Web: the Feed tab, last in the tab and swipe order, phone tabs tightened so
-four fit at 375 px. **Ultron's 11-11 review (lead's repo: go after M1; here: go, lows only)
+four fit on a phone (see the tabs-fit fix below; the first cut stopped at 420 px). **Ultron's 11-11 review (lead's repo: go after M1; here: go, lows only)
 is fixed on both branches, not re-read:** M1 the web-reading routines are denied
 `feed/**`; L2/L3 the writer opens without blocking and refuses anything but this user's
 regular file with one link; L4 no `--kind` flag (only the routines set it, in-process);
@@ -453,6 +453,21 @@ the service log; Jeff's Safari look. The six test lines the lead's repo wrote on
 deleted at 13:34 with Jeff's OK; the folder was empty after. **Follow-ups:** the pins
 appear only after the first routine run on the new writer (the brief Thu 11-12 07:30, the
 digest Mon 11-16).
+
+**Tabs fit and the Jobs chip after a restart, staged on `jos/tabs-fit` (from main d6af463,
+2026-11-11), not committed.** (1) Board 90dca52b: Jeff's iPhone (13:53) showed Feed off the
+right edge. The tight phone tabs applied only up to 420 px; the full-size row needs about
+490 px, so the Plus and Pro Max widths (428-440) got the wide pills. The 375/390 check
+never tried a wider phone. Now `max-width: 520px`. Headless Chromium on a scratch build,
+"Board · 114" plus a "99+" badge, header row and pinned bar: one row, inside the gutter,
+44 px targets, no sideways scroll at 360-768 (18 widths); 320 still clips (no iPhone
+that small runs a current iOS). Safari unverified. (2) Board 20620d37: at startup the crons
+and health collectors start together, the crons overlay ran before job-status answered,
+so the cron alert had no `since`, the ack didn't match, and the Jobs chip said "1 failed"
+until the next minute's poll (the same race could raise an unacked event or push at a
+restart). Now the crons collector awaits `health.whenAsked()` (capped at job-status's
+timeout + 5 s). Unit test only; not seen across a real restart. Go-live: C&P, the service
+restart (for 2), `cd web && npm run build` (for 1; safe in either order).
 
 **Ultron's 1a review, answered on the branch `jos/hardening` (2026-11-10 overnight, local
 commits only):** a Host allowlist before every route (`server/lib/host-guard.mjs`; config's

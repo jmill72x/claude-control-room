@@ -95,10 +95,12 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   background: var(--navy); box-shadow: 0 1px 0 rgba(248, 247, 243, 0.12), 0 6px 16px rgba(13, 32, 69, 0.25);
 }
 .o-page-stuck .o-chat-banner { top: var(--o-navbar-h); }
-/* A phone's four tabs, with a three-digit board count and a "99+" badge, still fit
-   in one row at 375 px (measured 2026-11-11 with the Feed tab: tighter padding and
-   letter-spacing, each tab still at least 44 px each way). */
-@media (max-width: 420px) {
+/* A phone's four tabs, with a three-digit board count and a "99+" badge, fit in one
+   row from 360 px up (tighter padding and letter-spacing, each tab still at least
+   44 px each way). The full-size tabs need about 490 px, so the tight ones cover every
+   phone in portrait: at 420 px the Plus and Pro Max widths (428-440) were left out
+   and Feed ran off the edge (2026-11-11). */
+@media (max-width: 520px) {
   .o-tabs { gap: 4px; }
   .o-tab { padding: 0 8px; letter-spacing: 0.06em; }
   .o-tab-badge { margin-left: 5px; }

@@ -323,3 +323,20 @@ test("the state file's token is read from a small regular file, and nothing else
     release();
   }
 });
+
+test('whenAsked settles after the first job-status ask, answered or not, so the first crons overlay has the times an ack matches', async () => {
+  const pending = Symbol('pending');
+  const settled = p => Promise.race([p.then(() => 'settled'), new Promise(r => setImmediate(() => r(pending)))]);
+  for (const jobStatus of [async () => REPORT, async () => { throw Object.assign(new Error('x'), { code: 1 }); }]) {
+    const { health } = harness({ jobStatus });
+    assert.equal(await settled(health.whenAsked()), pending, 'not before a collect');
+    await health.collect();
+    assert.equal(await settled(health.whenAsked()), 'settled');
+  }
+  const { health } = harness();
+  const crons = [{ label: 'com.example.brief', ok: false, state: 'failed', last: 'Failed · 3', nextRunAt: null }];
+  const first = health.collect();
+  await health.whenAsked();
+  assert.ok(Number.isFinite(health.overlay(crons, NOW)[0].lastRunAt), 'lastRunAt once asked');
+  await first;
+});
