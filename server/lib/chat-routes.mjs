@@ -30,11 +30,16 @@ export const PAGE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/
 // `filename` and whole in `filename*`.
 export function dispositionFor(a) {
   if (a?.type !== 'application/pdf') return 'inline';
-  const name = String(a.name ?? 'file.pdf');
+  // Well formed first: a lone surrogate makes encodeURIComponent throw (a 500).
+  const name = String(a.name ?? 'file.pdf').toWellFormed();
   const ascii = name.replace(/[^A-Za-z0-9 ._()-]/g, '_').slice(0, 120) || 'file.pdf';
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
 }
 const PENDING_UPLOAD_MS = 3600e3;
+// Uploads not yet sent with a message, per device: past this the next one is refused
+// (429), so a page can't fill the disk with files no message will ever carry.
+export const PENDING_UPLOADS_MAX = 8;
+const UPLOAD_SWEEP_MS = 10 * 60e3;
 const MAX_ATTACHMENTS = 4;
 const NO_STORE = { 'Cache-Control': 'no-store' };
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -85,6 +90,22 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
   const streams = new Set();         // { res, deviceId, stop }
+
+  // A pending upload expires after an hour, and its file goes with it: on every
+  // upload and every 10 minutes (an unref'd timer), so an unsent photo stays on
+  // disk an hour or so, not the 90 days a sent one keeps.
+  async function sweepUploads() {
+    const at = now();
+    let gone = 0;
+    for (const [id, up] of [...pendingUploads]) {
+      if (at - up.at <= PENDING_UPLOAD_MS) continue;
+      pendingUploads.delete(id);
+      if (await store.removeAttachment(id)) gone++;
+    }
+    return gone;
+  }
+  const sweepTimer = setInterval(() => { sweepUploads().catch(() => {}); }, UPLOAD_SWEEP_MS);
+  sweepTimer.unref?.();
 
   // The login header, when configured, must match (403): it says which tailnet user
   // the proxy saw. Checked on every chat route, the pairing ones first of all.
@@ -216,6 +237,10 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         // Raw bytes, so no JSON to require: the origin rule alone, like a DELETE.
         guardDelete(req);
         const device = requireDevice(req);
+        await sweepUploads();
+        if ([...pendingUploads.values()].filter(up => up.deviceId === device.id).length >= PENDING_UPLOADS_MAX) {
+          throw new HttpError(429, `at most ${PENDING_UPLOADS_MAX} files can wait to be sent; send or wait an hour`);
+        }
         const type = String(req.headers?.['content-type'] ?? '').split(';')[0].trim().toLowerCase();
         if (!PAGE_ATTACHMENT_TYPES.has(type)) throw new HttpError(415, 'an upload is a jpeg, png, webp or heic image, or a pdf');
         const data = await readRaw(req, ATTACHMENT_MAX_BYTES);
@@ -226,9 +251,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         if ((sniffed === 'application/pdf') !== (type === 'application/pdf')) throw new HttpError(415, 'the file is not what its type says');
         let a;
         try { a = await store.putAttachment({ name: url.searchParams.get('name') ?? (sniffed === 'application/pdf' ? 'file.pdf' : 'photo'), type, data }); } catch (err) { throw new HttpError(err.status ?? 400, err.message); }
-        const at = now();
-        for (const [id, up] of pendingUploads) if (at - up.at > PENDING_UPLOAD_MS) pendingUploads.delete(id);
-        pendingUploads.set(a.id, { attachment: a, at, deviceId: device.id });
+        pendingUploads.set(a.id, { attachment: a, at: now(), deviceId: device.id });
         return json(res, 200, { id: a.id, name: a.name, type: a.type, bytes: a.bytes });
       }
       const att = /^\/api\/chat\/attachments\/([a-f0-9]{32})$/.exec(path);
@@ -308,7 +331,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // How many devices hold a stream open now (the push rule later: none in 10 s means push).
   const streaming = () => new Set([...streams].map(s => s.deviceId));
 
-  return { handler, owns, streaming, chatState: () => chatState({ socket: socket.status(), store, now: now() }), HEARTBEAT_FRESH_MS };
+  return { handler, owns, streaming, sweepUploads, chatState: () => chatState({ socket: socket.status(), store, now: now() }), HEARTBEAT_FRESH_MS };
 }
 
 // The admin socket's router: `bin/chat-pair <code>` on the machine approves the

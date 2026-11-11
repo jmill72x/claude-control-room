@@ -306,7 +306,9 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     if (!kind || !ATTACHMENT_TYPES.has(kind)) throw Object.assign(new Error('the file is not a png, jpeg, webp, heic, pdf, txt or md'), { status: 415 });
     if ((kind === 'text/plain' || kind === 'text/markdown') && data.includes(0)) throw Object.assign(new Error('a text file may not hold NUL bytes'), { status: 415 });
     const id = randomBytes(16).toString('hex');
-    const safeName = String(name ?? 'file').replace(/[\\/\u0000-\u001f\u007f]/g, '_').slice(0, 120) || 'file';
+    // Cut by code points, never UTF-16 units: half a surrogate pair is not text, and
+    // encodeURIComponent throws on it when the name is served (dispositionFor).
+    const safeName = Array.from(String(name ?? 'file').toWellFormed().replace(/[\\/\u0000-\u001f\u007f]/g, '_')).slice(0, 120).join('') || 'file';
     await writeFile(join(filesDir, id), data, { mode: 0o600, flag: 'wx' });
     return { id, name: safeName, type: kind, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
   }
@@ -319,6 +321,13 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (a) return { ...a, path: join(filesDir, id) };
     }
     return null;
+  }
+
+  // An upload never sent with a message: its file goes now (a pending upload that
+  // expired, lib/chat-routes.mjs). A file a message carries is never removed here.
+  async function removeAttachment(id) {
+    if (!isAttachmentId(id) || attachment(id)) return false;
+    try { await unlink(join(filesDir, id)); return true; } catch { return false; }
   }
 
   // Files older than 90 days go; the message keeps its record of them.
@@ -349,7 +358,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     lastJeffAt: () => lastFrom('jeff'),
     openPermission, answerPermission, openPermissions, publicPermission,
     permission: id => { prunePermissions(); return permissions.get(id) ?? null; },
-    putAttachment, attachment, pruneAttachments,
+    putAttachment, attachment, pruneAttachments, removeAttachment,
     attachmentPath: id => (isAttachmentId(id) ? join(filesDir, id) : null)
   };
 }
