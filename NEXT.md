@@ -434,6 +434,27 @@ log over a day; no line for the Serve name means the list is right, and `"hostCh
 "enforce"` goes in with the next restart. A line naming a Host that Jeff's devices do use
 means the list is missing that name (add it, don't enforce yet).
 
+**Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
+commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,
+the phone fold, the home-screen icon) and "A session waiting on you" (the ingest and the hook
+entry) describe it. Server: `model` per run and `leadModel`/`leadLast` in `agentWork`;
+`server/lib/needs-you.mjs` and `POST /api/ingest/needs-you`; `needsYou` in `/api/dashboard`;
+the `needs-you` alert kind and its push words; `.webmanifest`'s MIME type. Page: `Now.jsx`,
+`Routines.jsx`, the Alerts tile in `Waiting.jsx`, the More fold in `Overview.jsx`,
+`web/public/manifest.webmanifest` and `apple-touch-icon.png`. The product is not renamed: the
+page, its title and the manifest all say "Control Room" (Jeff: nothing renamed in Phase 1); when
+he says "Jarvis OS", it is the `<h1>` and `<title>` in `OrbitApp.jsx`/`index.html` and the
+manifest's two names. **To go live, after the hardening:** Ultron's light review of the
+ingest, Jeff's C&P, the restart, then `cd web && npm run build`; then Jeff adds the hook entry
+(README's JSON) to `~/.claude/settings.json` himself, since the dashboard never writes it.
+**Post-restart checks:** `/api/dashboard` has `needsYou: []` and `sessions.data.agentWork.
+leadModel`; the band shows the Now chip with the lead's model; Needs you has four tiles;
+Today's routines lists today's jobs; on the iPhone the lower panels fold under More and
+"Add to Home Screen" offers the navy icon named Control Room; after the hook entry, a
+permission prompt in Jarvis's session shows a Waiting card within a poll (30 s) and clears
+when it is answered. **Follow-up:** the design's §5.2 `PermissionRequest` payload is
+unconfirmed; the `Notification` hook alone is enough.
+
 **Phase 1a, the acknowledge mechanism, is built and committed (96cd2b6, 2026-11-10), not live.** README
 "Acknowledging a known miss" describes it: `server/lib/acks.mjs` (pure), `server/acks.mjs`
 (the file `server/data/acks.json`), `POST`/`DELETE`/`GET /api/acks`, `acks` and `acked` in

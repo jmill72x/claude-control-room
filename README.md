@@ -268,9 +268,12 @@ A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 describes elsewhere is at **`/classic.html`** (`web/classic.html`) until it is deleted a
 week later. `/orbit.html`, its address before the flip, has no file of its own: the
 server's single-page fallback answers it with the same page, so saved links and
-`#board/<id>` addresses keep working. Its Overview runs in the approved order: Waiting on you, Usage limits beside
-the agent work map, Today agent by agent, Latest runs, Next 24 hours, then Burn beside the
-week's heat map. Phases 1 to 4 give it:
+`#board/<id>` addresses keep working. Its Overview runs in the Jarvis OS order
+(`docs/design/2026-11-10-jarvis-os-home.md`, §4): Needs you, Usage limits beside Today's
+routines, then the agent work map, Today agent by agent, Latest runs, Next 24 hours, and
+Burn beside the week's heat map; on a phone (700 px and under) those last six sit under
+one "More" disclosure that remembers its state per viewer. Phases 1 to 4 of the Orbit
+plan and Phase 1b of the Jarvis OS plan give it:
 
 - **A navy header:** the date, two tabs and "Updated N s ago", which turns amber past 3
   minutes and red when the last poll failed. The tab is kept in the address (`#overview`,
@@ -289,9 +292,30 @@ week's heat map. Phases 1 to 4 give it:
   NAS reads its watch's word ("up", or "down", "degraded", "Kuma down", "no SSH" and
   "backup late", all shown as not OK) while the watch itself is current, and "unknown"
   otherwise.
-- **Waiting on you (Phase 4),** at the top of the Overview: the count, then three tiles,
-  Due soon, Decide or do and To push. A tile shows only its cards; a second tap shows all
-  of them again. A board item waits on you when it carries an `ask` (what you do, why it
+- **The Now chip (Jarvis OS 1b),** one line under the health chips: the lead's name, the
+  model family its latest request used (from the transcript, as Burn classifies them,
+  so a model switch shows without a setting), how long its session has been up, who is
+  working now (an agent with a request in the last 5 minutes, with how long ago), and the
+  next calendar job. Tapping it opens the working agents' task lines and tokens, the
+  lead's last request, and the next job. A server from before 1b sends no `model` or
+  `leadModel`, and the chip leaves the model out.
+- **Needs you (Phase 4 as Waiting on you, widened in Jarvis OS 1b),** at the top of the
+  Overview: the count, then four tiles, Due soon, Decide or do, To push and Alerts. A
+  tile shows only its cards; a second tap shows all of them again. Alerts holds a card
+  for every alert raised now (a failed job or a down service gets an **Acknowledge**
+  button that opens the same form as the strip; a limit, a projection, credits or the
+  board say what to do instead) and one for every session waiting on a person (`needsYou`,
+  below), which reads who waits, on what and since when, with an "Answer in Discord" link;
+  acknowledged alerts count in the tile's label ("Alerts 4 · 1 acked"), not as cards.
+- **Today's routines (Jarvis OS 1b),** beside Usage limits: each calendar job due today,
+  with its time, its name from config's `jobs` and its verdict from the same data the
+  Scheduled lane draws (ran, due, missed when job-status says failed, acked, "no run yet"
+  when the time has passed but the job isn't failed, or scheduled when no run time is
+  known), then "next" with the first run after today. Interval jobs never appear.
+- **The home-screen icon (Jarvis OS 1b):** `web/public/manifest.webmanifest` (name
+  "Control Room", standalone, navy) and `apple-touch-icon.png`, linked from `index.html`.
+  In standalone mode Safari shows no Back button; the tabs and "Open on the board" work
+  without one, and the hash route survives a relaunch. A board item waits on you when it carries an `ask` (what you do, why it
   matters, and whether it's a decision or a task). It is due soon when its `due` date is
   within 7 days or past: its chip says the weekday (Today, Next Wed a week on, Overdue
   with the date) and the ask's time when it has one, and the card is dark when the item
@@ -517,6 +541,49 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
   -H 'Content-Type: application/json' \
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
+
+### A session waiting on you
+
+`POST /api/ingest/needs-you` takes the JSON a Claude Code hook receives on stdin and
+records that the session it names waits for a person, or has moved on. It reads three
+fields and keeps one: `hook_event_name` (`Notification` or `PermissionRequest` open a
+wait; `PostToolUse`, `UserPromptSubmit`, `Stop` and `SessionEnd` end it; anything else is
+400), `session_id` (kept, in memory only, to match the clear), and for a Notification its
+`notification_type` (`permission_prompt`, `idle_prompt` and `elicitation_dialog` open a
+wait; any other type, such as `auth_success`, ends one). The message text, the tool's
+input, the transcript path and the working directory are never read. At most 20 waits
+are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
+
+`/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
+roster name of the agent whose session it is (the lead's session by its `agent-name`, a
+`--agent` run by its `agent-setting`), or null for a session nobody on the roster owns;
+`kind` is `permission`, `idle` or `question`; `key` is a short hash of the session id.
+A wait older than 5 minutes is an alert of kind `needs-you` ("Jarvis is waiting on a
+permission"), pushed as a count ("1 session is waiting on you"), never with a name. The
+service log gets one line per event (`needs-you: Notification (permission), 1 open`).
+
+The hook is global in `~/.claude/settings.json`, so every Claude Code session on the
+machine posts, which is why the server matches the session rather than trusting a name.
+Only the owner adds it (the dashboard never writes that file). The entry, for the Serve
+host's own loopback address:
+
+```json
+{
+  "hooks": {
+    "Notification": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }]
+  }
+}
+```
+
+The hook posts the whole stdin JSON; the server drops everything but the three fields.
+The `PermissionRequest` hook exists in the installed CLI's strings (2.1.321) but its
+payload is unconfirmed against the docs for that version; the `Notification` hook with
+`permission_prompt` is the documented path and is enough on its own. A hook that can't
+reach the server (3 s) exits 0 and the session goes on.
 
 ### Acknowledging a known miss
 
