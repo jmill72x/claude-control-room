@@ -440,7 +440,40 @@ describes it: the JSONL store with seqs and an epoch, the channel's Unix socket 
 one client at a time, `ack {seq, epoch}`), the page routes (pairing and the `__Host-jos`
 cookie, messages, uploads, SSE with Last-Event-ID replay, single-use verdicts, status), the
 admin socket and `bin/chat-pair`. Nothing listens until `config.json` has a `chat` block
-with `login` and `hostCheck` is `"enforce"`. Not built: the Chat tab (C5) and Web Push (C6).
+with `login` and `hostCheck` is `"enforce"`. Not built: Web Push (C6).
+**The Chat tab (C5) is built on the branch `jos/chat-ui` (from `jos/chat-server`, 2026-11-11,
+local commits only), not live; README "The chat with the lead agent", its last bullet,
+describes it.** A third tab at `#chat`: the pairing screen (name, code, poll, the two ways to
+approve), the thread (owner right, lead left, day lines, quotes, edited, notices, ticks: one
+on `delivered`, two once the lead's next chat message exists), older pages on scroll-up, SSE
+with `Last-Event-ID` and a fresh open from `?after=` on visibility, online and pageshow, a
+retry-safe composer (`clientId`, optimistic bubble, Retry and Discard), photos resized on a
+canvas to 1568 px JPEG 0.85 with no `blob:` preview (name, size and dimensions instead), the
+status banner (§2.6 words), permission cards pinned over the composer with equal Deny and
+Allow once buttons (the relay is off at launch; cards appear only when a request exists),
+and the settings sheet (devices, this device marked, two-tap Revoke, approve a code). Two
+small server adds: `/api/pair/status` answers `{state: "paired", device, already: true}` to
+a device that already holds a valid cookie (so the page never takes a 401 to learn it must
+pair) and `/api/chat/status` names the asking device. Checks 11-11: 117 web tests (18 new,
+28 of 29 web mutations caught, the one miss an equivalent mutant), 695 server tests in local
+time and Tokyo, and headless Chromium at 390 and 1440 px in light and dark against a scratch
+server (the Serve login header shimmed in by that server) with a fake channel on the socket:
+pairing via `bin/chat-pair`, send and reply over SSE, ticks, a quote, an edit, reload resume,
+a restart notice, a 3000x2000 PNG arriving as a 1568x1045 JPEG and opening full size, a
+permission card answered with Allow, 60 older messages loading on scroll-up, the offline
+banner when the fake channel stops heartbeating (a message sent then stays queued, no tick,
+and is delivered once it is back), revoke from settings returning the pairing screen with the
+cookie dead, no CSP violation, no console error, no sideways scroll; screenshots in the run's
+scratchpad. Chromium treats `http://localhost` as secure, so the `__Host-` cookie worked
+there; on the tailnet it needs Serve HTTPS. **Not verified:** Safari and the installed-app
+(home screen) case, iOS Dynamic Type, HEIC decoding (Chromium can't; the file goes up as is
+and the server accepts heic), the expired card's look (unit-tested only, 10 minutes), and the
+stream after a real iOS suspend. **Left for later:** a "Start over" on a pairing resumed
+after a reload can't start a new one until the pending code expires (the server allows one
+pending at a time, 10 minutes); the Chat tab mounts its stream only while open, so a message
+arriving on another tab shows nothing until Web Push (C6); the playwright-cli on the mini
+updated itself to 1.64 alpha and lacks its browser, so the checks ran playwright-core against
+the installed 1223 headless shell by `executablePath`.
 **Ultron's 11-11 review: merge with chat off; no-go to switch on until findings 1-4 are
 fixed.** Fixed on the branch the same night: (1) a session token from `hello`, required in
 `X-Session-Token` on every socket route but `hello` and `status` (409 otherwise, whatever

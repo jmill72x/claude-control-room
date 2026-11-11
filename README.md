@@ -666,7 +666,9 @@ three pieces, each with its own router:
   10-minute pairing cookie; `POST /api/pair/approve {code}` from a device already paired,
   or `bin/chat-pair <CODE>` on the machine over the admin socket
   `~/.local/state/jarvis-os/admin.sock`; then `GET /api/pair/status` hands the device its
-  cookie, once; the pairing answers carry `Cache-Control: no-store`), the devices (`GET
+  cookie, once; a device that is paired already hears `{state: "paired", device, already:
+  true}` there with no cookie set, which is how the page learns whether to show the pairing
+  screen without taking a 401; the pairing answers carry `Cache-Control: no-store`), the devices (`GET
   /api/devices`, `DELETE /api/devices/<id>`, at most 4 active; a revoke ends every open
   stream of that device at once with a last `revoked` event, and each stream's ping
   re-checks its device, so a revoke by any path ends it within 20 s), the messages
@@ -681,12 +683,57 @@ three pieces, each with its own router:
   /api/chat/permission/<id> {behavior}`, single use, first answer wins, logged with the
   device's name) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
   minutes unanswered, offline after 45 s without a heartbeat, or 20 s once the channel's
-  inbound stream has closed from its end).
+  inbound stream has closed from its end; it also names the asking device, `device: {id,
+  name}`, for the settings sheet's "this device" mark).
+- **The Chat tab** (`web/src/orbit/Chat.jsx`, `useChat.js`, `chatApi.js`, `photo.js`, and
+  the pure logic in `web/src/lib/orbit/chat.js`, tested by `web/test/orbit-chat.test.js`):
+  the third tab, at `#chat`. An unpaired device (`/api/pair/status` says so) gets the
+  pairing screen: a name, the 6-letter code, a 2-second poll of `/api/pair/status`, and the
+  two ways to approve (a paired device's settings sheet, or `bin/chat-pair <CODE>` on the
+  machine); a pairing started before a reload resumes from its cookie. The thread puts the
+  owner on the right and the lead on the left with his avatar, day lines, times, reply
+  quotes, an "edited" mark, and notices (a channel restart, a permission asked, a verdict)
+  as quiet centred lines. Ticks on the owner's chat messages: none while queued, one once
+  the channel acked it (`state: delivered`), two once a later chat message from the lead
+  exists; a bubble the server hasn't answered shows "…", a failed send shows Retry and
+  Discard. The latest 50 load first and older pages (`?before=<id>`) load as the top comes
+  into view, the scroll position held. Live events come from `EventSource('/api/chat/
+  stream')`: the browser's own reconnects carry `Last-Event-ID`; when the page becomes
+  visible again (iOS suspends a background tab's connections without an error), comes back
+  online or is restored from the back-forward cache, the stream is closed and opened anew
+  from the highest seq the page holds (`?after=`); once the browser gives up on a stream
+  (an HTTP error) the page asks `/api/chat/status` and opens again in 3 s, or returns to the
+  pairing screen on a 401; a `revoked` event does the same at once. The composer is a growing
+  box (Enter sends with a keyboard, a new line on a touch screen, where the Send button
+  sends; Shift+Enter is a new line everywhere), a reply-to line, and a photo picker
+  (`accept="image/*"`): each photo is decoded with `createImageBitmap`, drawn on a canvas at
+  a 1568 px long edge, encoded as JPEG at 0.85 and uploaded raw to `/api/chat/attachments`
+  before the message is sent with the ids; no `blob:` or `data:` URL is ever made (the policy
+  allows neither), so the composer shows the file's name, size and new dimensions, and the
+  bubble shows the server's copy once sent (tap for full size). Every send carries a fresh
+  `clientId`, the bubble appears at once, and a retry resends the same id, so a lost answer
+  never doubles a message. The banner over the thread follows `/api/chat/status` and the
+  stream's `status` events: online (a dot), "Jarvis is offline since HH:MM. Messages wait
+  here and reach him when he's back.", "Delivered N m ago, no answer yet", or "waiting on
+  you", which the open cards decide on the page between pings. An open permission request
+  is a card pinned over the composer: the tool, the description, the full input preview in
+  a scrollable monospace block, and Deny and Allow once as two equal buttons (`POST
+  /api/chat/permission/<id>`); after 10 minutes the card reads "may already be answered in
+  Discord" with a Dismiss. The settings sheet (the dots button in the banner) lists the
+  paired devices with "this device" marked, a two-tap Revoke, and a field to approve
+  another device's code. The tab keeps the Orbit page's strict policy (no inline script or
+  style attributes; the composer's height is set through the CSSOM), 44 px targets, Reduce
+  Motion (the only animation is a 180 ms fade-in, off under it), its own light and dark
+  tokens under `prefers-color-scheme` (the rest of the page keeps its paper), sizes in em
+  off `-apple-system-body` so iOS Dynamic Type scales them, and a 760 px reading width on a
+  wide screen.
 
 The cookie is `__Host-jos` (32 random bytes, only its sha256 on file; HttpOnly, Secure,
 SameSite=Strict, 400 days). A browser accepts a `__Host-` cookie over HTTPS only, so until
 Serve runs on HTTPS (the spec's P2) a browser can't pair; curl can, which is how the
-tests and the scratch pass drive it. Every chat request, `/api/pair/start` and
+tests and the scratch pass drive it, and Chromium treats `http://localhost` as a secure
+context, which is how the headless checks of the Chat tab pair against a scratch server
+(the Serve proxy's login header is added by that scratch server alone). Every chat request, `/api/pair/start` and
 `/api/pair/status` included, must carry `Tailscale-User-Login` equal to `chat.login`: a
 second factor the Serve proxy adds, never the credential, since a local process can forge
 it. Writes keep the ingest guards (JSON only, same origin or none); a pairing (logged and
@@ -790,8 +837,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 600 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 80 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 695 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 117 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 
