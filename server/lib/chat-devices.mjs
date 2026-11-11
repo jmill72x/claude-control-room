@@ -96,7 +96,7 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
       }
       const pairToken = newToken();
       pending = { code: newCode(), name: clean, pairSha256: sha256(pairToken), createdAt: now(), attempts: 0, approved: false, token: null };
-      return { ok: true, code: pending.code, pairToken, expiresAt: pending.createdAt + PAIR_CODE_TTL_MS };
+      return { ok: true, code: pending.code, name: clean, pairToken, expiresAt: pending.createdAt + PAIR_CODE_TTL_MS };
     });
   }
 
@@ -150,6 +150,8 @@ export function createDeviceStore({ path, now = () => Date.now(), onEvent = () =
   }
 
   const list = () => devices.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt ?? null, revokedAt: d.revokedAt ?? null }));
+  // Whether a device is still paired: what an open stream re-checks on every ping.
+  const isActive = id => active().some(d => d.id === id);
 
-  return { load, authenticate, start, approve, status, revoke, list, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
+  return { load, authenticate, start, approve, status, revoke, list, isActive, pendingCode: () => (pending && !pending.approved ? pending.code : null) };
 }

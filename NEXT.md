@@ -439,14 +439,33 @@ means the list is missing that name (add it, don't enforce yet).
 describes it: the JSONL store with seqs and an epoch, the channel's Unix socket (API v1,
 one client at a time, `ack {seq, epoch}`), the page routes (pairing and the `__Host-jos`
 cookie, messages, uploads, SSE with Last-Event-ID replay, single-use verdicts, status), the
-admin socket and `bin/chat-pair`. Nothing listens until `config.json` has a `chat` block.
-Not built: the Chat tab (C5) and Web Push (C6). **Before it can go live:** Ultron's C2 review
-(socket permissions, the router split, pairing alerts, cookies, uploads, the header rule,
-replay); Serve on HTTPS (P2, Vision, Jeff's yes), since a browser takes a `__Host-` cookie
-over HTTPS only; Jarvis's channel (C3) tried against a scratch server, never :8322. Checks
-done: 17 tests over a real temp socket and port (669 server tests in local time and Tokyo),
-32 of 32 mutations caught, and a curl pass on a scratch server (`--unix-socket`, `-N` on
-both streams, `chat-pair`, a stale-epoch ack refused, a verdict single use).
+admin socket and `bin/chat-pair`. Nothing listens until `config.json` has a `chat` block
+with `login` and `hostCheck` is `"enforce"`. Not built: the Chat tab (C5) and Web Push (C6).
+**Ultron's 11-11 review: merge with chat off; no-go to switch on until findings 1-4 are
+fixed.** Fixed on the branch the same night: (1) a session token from `hello`, required in
+`X-Session-Token` on every socket route but `hello` and `status` (409 otherwise, whatever
+the pid; a reconnect by the holder rotates it; a takeover after a stale heartbeat is alerted);
+`/v1/status` no longer carries the pid; (2) a revoke ends the device's SSE streams at once
+and each ping re-checks the device; (3) `chat.login` is required and checked on
+`/api/pair/start` and `/api/pair/status` too; (4) the chat refuses to start unless
+`hostCheck` is `"enforce"`; (7) the cleaned pairing name in the log and the alert; (8) the
+epoch is required on `ack` (400 without it); (9) the chat folders are chmod 0700 on every
+start, a socket's folder is checked (0700, ours) for the env overrides too, a socket a live
+server answers on is never unlinked (`server/lib/chat-listen.mjs`), a pending upload can be
+read back only by its uploader, `no-store` on the pairing answers and on attachments
+(`private, no-store`, my call: a lost or revoked device keeps no cached photo). **The channel
+plugin must change to match:** send the token header, send the epoch on every ack, and treat
+a 409 on any route as "say hello again"; the contract is in the spec's §1.5 (edited 11-11).
+**Before it can go live:** Ultron's re-read of the fixes; Serve on HTTPS (P2, Vision, Jeff's
+yes), since a browser takes a `__Host-` cookie over HTTPS only; Jarvis adds `chat.login` and
+`hostCheck: "enforce"` to config.json (the latter after the day of clean host logs); Jarvis's
+channel (C3) tried against a scratch server, never :8322. Checks done 11-11: 21 chat tests
+over real temp sockets and a port (673 server tests in local time and Tokyo, 104 web), the
+mutation pass (see the report), and a curl pass on a scratch server wired like server.mjs's
+chat block (a second process 409 on hello, inbound and ack; an ack without an epoch 400;
+status without a pid; pairing 403 without the login header; `chat-pair`; a revoke ending a
+`-N` stream at once; a second server refusing the live sockets; a 0755 override folder, log
+mode and a missing login each keeping the chat off).
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,

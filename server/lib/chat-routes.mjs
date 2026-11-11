@@ -6,11 +6,13 @@
 //
 // Cookies are `__Host-` cookies: a browser accepts them over HTTPS only, so until
 // Serve runs on HTTPS (the spec's P2) the page can't pair; curl can, and does in the
-// tests. `Tailscale-User-Login` is checked against config's `chat.login` when that
-// is set: a second factor, never the credential, since a local process can forge it.
+// tests. `Tailscale-User-Login` is checked against config's `chat.login` on every chat
+// route, pairing included: a second factor, never the credential, since a local
+// process can forge it. The chat runs only with `chat.login` set and the Host check
+// enforcing (`readChatConfig`, the 2026-11-11 review, 3 and 4).
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, isRequestId, MAX_PAGE_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
-import { COOKIE_NAME, PAIR_COOKIE_NAME, COOKIE_MAX_AGE_S, PAIR_CODE_TTL_MS, cookieHeader, clearCookieHeader } from './chat-devices.mjs';
+import { COOKIE_NAME, PAIR_COOKIE_NAME, COOKIE_MAX_AGE_S, PAIR_CODE_TTL_MS, cookieHeader, clearCookieHeader, cleanName } from './chat-devices.mjs';
 import { HEARTBEAT_FRESH_MS } from './chat-socket.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -19,7 +21,23 @@ export const SLOW_AFTER_MS = 10 * 60e3;
 export const PAGE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic']);
 const PENDING_UPLOAD_MS = 3600e3;
 const MAX_ATTACHMENTS = 4;
+const NO_STORE = { 'Cache-Control': 'no-store' };
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const LOGIN = /^[\x21-\x7e]{3,200}$/;
+
+// What config says about the chat, checked: `on` only with a `chat` object whose
+// `login` is set and with the Host check in enforce mode. Each problem is logged by
+// the caller once; any of them keeps the chat off, the rest of the dashboard runs.
+export function readChatConfig(config, hostMode) {
+  const chat = config?.chat;
+  if (chat === undefined || chat === null) return { on: false, login: null, problems: [] };
+  const problems = [];
+  if (!isObject(chat)) return { on: false, login: null, problems: ['chat must be an object; the chat stays off'] };
+  const login = typeof chat.login === 'string' && LOGIN.test(chat.login.trim()) ? chat.login.trim().toLowerCase() : null;
+  if (login === null) problems.push('chat.login must be the owner\'s tailnet login (the value Serve sends as Tailscale-User-Login); the chat stays off');
+  if (hostMode !== 'enforce') problems.push('chat needs hostCheck "enforce"; the chat stays off');
+  return { on: problems.length === 0, login, problems };
+}
 
 // The raw body of an upload, bounded, as a Buffer.
 const readRaw = (req, limit) => new Promise((resolve, reject) => {
@@ -49,20 +67,35 @@ export function chatState({ socket, store, now }) {
 }
 
 export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS }) {
-  const login = typeof config?.chat?.login === 'string' && config.chat.login ? config.chat.login : null;
+  const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
-  const streams = new Set();         // { res, deviceId }
+  const streams = new Set();         // { res, deviceId, stop }
 
-  // The device behind a request, or a 401. The login header, when configured, must
-  // match too (403): it says which tailnet user the proxy saw.
+  // The login header, when configured, must match (403): it says which tailnet user
+  // the proxy saw. Checked on every chat route, the pairing ones first of all.
+  function requireLogin(req) {
+    if (login === null) return;
+    const seen = req.headers?.['tailscale-user-login'];
+    if (typeof seen !== 'string' || seen.trim().toLowerCase() !== login) throw new HttpError(403, 'the request did not come as the owner through the tailnet');
+  }
+  // The device behind a request, or a 401.
   function requireDevice(req) {
+    requireLogin(req);
     const device = devices.authenticate(req.headers?.cookie);
     if (!device) throw new HttpError(401, 'this device is not paired');
-    if (login !== null) {
-      const seen = req.headers?.['tailscale-user-login'];
-      if (typeof seen !== 'string' || seen.trim().toLowerCase() !== login.toLowerCase()) throw new HttpError(403, 'the request did not come as the owner through the tailnet');
-    }
     return device;
+  }
+
+  // End every open stream of a device (its revoke), with one last event so the page
+  // knows why, and never on a later ping alone.
+  function closeStreams(deviceId, reason) {
+    for (const entry of [...streams]) {
+      if (entry.deviceId !== deviceId) continue;
+      streams.delete(entry);
+      entry.stop();
+      writeEvent(entry.res, reason, null, { reason });
+      try { entry.res.end(); } catch { /* gone */ }
+    }
   }
 
   const writeEvent = (res, name, id, data) => { try { res.write(`event: ${name}\n${id !== null ? `id: ${id}\n` : ''}data: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } };
@@ -82,11 +115,14 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       // ---- pairing (§2.2) ----
       if (req.method === 'POST' && path === '/api/pair/start') {
         guardWrite(req);
+        requireLogin(req);
         const body = await readBody(req);
         const r = await devices.start(isObject(body) ? body.name : null);
         if (!r.ok) throw new HttpError(r.status, r.error);
-        onEvent({ kind: 'pairing-started', name: isObject(body) ? String(body.name).slice(0, 40) : '' });
-        return json(res, 200, { code: r.code, expiresAt: r.expiresAt }, { 'Set-Cookie': cookieHeader(PAIR_COOKIE_NAME, r.pairToken, Math.round(PAIR_CODE_TTL_MS / 1000)) });
+        // The cleaned name, the one the device will carry: never the raw text.
+        log(`chat: a device asked to pair (${r.name})`);
+        onEvent({ kind: 'pairing-started', name: r.name });
+        return json(res, 200, { code: r.code, expiresAt: r.expiresAt }, { ...NO_STORE, 'Set-Cookie': cookieHeader(PAIR_COOKIE_NAME, r.pairToken, Math.round(PAIR_CODE_TTL_MS / 1000)) });
       }
       if (req.method === 'POST' && path === '/api/pair/approve') {
         guardWrite(req);
@@ -97,11 +133,12 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { ok: true, name: r.name });
       }
       if (req.method === 'GET' && path === '/api/pair/status') {
+        requireLogin(req);
         const r = await devices.status(req.headers?.cookie);
         if (r.state === 'paired') {
-          return json(res, 200, { state: 'paired', device: r.device }, { 'Set-Cookie': [cookieHeader(COOKIE_NAME, r.token, COOKIE_MAX_AGE_S), clearCookieHeader(PAIR_COOKIE_NAME)] });
+          return json(res, 200, { state: 'paired', device: r.device }, { ...NO_STORE, 'Set-Cookie': [cookieHeader(COOKIE_NAME, r.token, COOKIE_MAX_AGE_S), clearCookieHeader(PAIR_COOKIE_NAME)] });
         }
-        return json(res, 200, { state: r.state, expiresAt: r.expiresAt ?? null });
+        return json(res, 200, { state: r.state, expiresAt: r.expiresAt ?? null }, NO_STORE);
       }
       if (req.method === 'GET' && path === '/api/devices') {
         requireDevice(req);
@@ -113,6 +150,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const device = requireDevice(req);
         const r = await devices.revoke(dev[1], device.name);
         if (!r.ok) throw new HttpError(r.status, r.error);
+        closeStreams(dev[1], 'revoked');
         return json(res, 200, { ok: true });
       }
 
@@ -166,12 +204,19 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       }
       const att = /^\/api\/chat\/attachments\/([a-f0-9]{32})$/.exec(path);
       if (req.method === 'GET' && att) {
-        requireDevice(req);
-        const a = store.attachment(att[1]) ?? pendingUploads.get(att[1])?.attachment ?? null;
+        const device = requireDevice(req);
+        // A file on a message is every device's; one still pending is its uploader's alone.
+        let a = store.attachment(att[1]);
+        if (!a) {
+          const up = pendingUploads.get(att[1]);
+          if (up && up.deviceId === device.id) a = up.attachment;
+        }
         if (!a) throw new HttpError(404, 'no such attachment');
         let data;
         try { data = await readFile(store.attachmentPath(att[1])); } catch { throw new HttpError(410, 'the file is gone'); }
-        res.writeHead(200, { 'Content-Type': a.type, 'Content-Length': data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline', 'Cache-Control': 'private, max-age=3600', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+        // no-store, like the rest of the chat: a device that is revoked or lost keeps
+        // no copy of a photo in its cache, and a re-read over the tailnet is cheap.
+        res.writeHead(200, { 'Content-Type': a.type, 'Content-Length': data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
         return res.end(data);
       }
 
@@ -187,13 +232,16 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         }
         for (const p of store.openPermissions()) writeEvent(res, 'permission', null, store.publicPermission(p));
         const unsubscribe = store.subscribe(event => { const e = eventFor(event); if (e) writeEvent(res, ...e); });
+        const entry = { res, deviceId: device.id, stop: () => { clearInterval(timer); unsubscribe(); } };
+        // Each ping re-checks the device: a revoke from any path ends the stream
+        // within one ping, even when the revoke route's own close missed it.
         const timer = setInterval(() => {
+          if (!devices.isActive(device.id)) { closeStreams(device.id, 'revoked'); return; }
           try { res.write(': ping\n\n'); } catch { /* gone */ }
           writeEvent(res, 'status', null, chatState({ socket: socket.status(), store, now: now() }));
         }, pingMs);
-        const entry = { res, deviceId: device.id };
         streams.add(entry);
-        req.on('close', () => { streams.delete(entry); clearInterval(timer); unsubscribe(); });
+        req.on('close', () => { streams.delete(entry); entry.stop(); });
         return undefined;
       }
 

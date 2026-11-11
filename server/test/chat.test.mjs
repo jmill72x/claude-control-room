@@ -5,7 +5,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
-import { mkdtemp, readFile, readdir, stat, utimes, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat, utimes, rm, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -13,8 +13,8 @@ import {
   PERMISSION_TTL_MS, PREVIEW_TTL_MS, EDIT_WINDOW_MS, UNANSWERED_MAX, ATTACHMENT_TTL_MS
 } from '../lib/chat-store.mjs';
 import { createDeviceStore, readCookie, cookieHeader, newCode, COOKIE_NAME, PAIR_COOKIE_NAME, DEVICES_MAX } from '../lib/chat-devices.mjs';
-import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS } from '../lib/chat-socket.mjs';
-import { createChatRoutes, createAdminRouter, chatState, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
+import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS, SESSION_HEADER } from '../lib/chat-socket.mjs';
+import { createChatRoutes, createAdminRouter, readChatConfig, chatState, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
 import { secretShapes } from '../lib/secret-shape.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -59,9 +59,14 @@ test('messages get seqs and persist whole; a reload continues the seq and keeps 
     assert.equal(files.length, 1);
     assert.equal((await stat(join(dir, files[0]))).mode & 0o777, 0o600);
     assert.equal((await stat(join(dir, 'cursor.json'))).mode & 0o777, 0o600);
+    // The folders are 0700 after a load even when something left them looser.
+    await chmod(dir, 0o755);
+    await chmod(join(dir, 'files'), 0o755);
 
     const again = createChatStore({ dir, now: () => clock.t });
     const loaded = await again.load();
+    assert.equal((await stat(dir)).mode & 0o777, 0o700, 'the chat folder is tightened on load');
+    assert.equal((await stat(join(dir, 'files'))).mode & 0o777, 0o700, 'and the files folder');
     assert.equal(loaded.messages, 2);
     assert.equal(loaded.seq, 2);
     assert.equal(again.epoch, store.epoch, 'the epoch lives with the store');
@@ -402,31 +407,87 @@ after(async () => {
   await rm(env.dir, { recursive: true, force: true });
 });
 
-const unix = (opts) => call({ socketPath: env.sockPath, ...opts });
+// The current channel's calls carry its session token; a `stranger` has none.
+const unix = opts => call({ socketPath: env.sockPath, ...opts, headers: { ...(env.token ? { [SESSION_HEADER]: env.token } : {}), ...(opts.headers ?? {}) } });
+const stranger = opts => call({ socketPath: env.sockPath, ...opts });
+const unixStream = opts => stream({ socketPath: env.sockPath, ...opts, headers: { [SESSION_HEADER]: env.token, ...(opts.headers ?? {}) } });
+// The holder saying hello again (a reconnect): it keeps its place and gets a new token.
+const hello = async body => { const h = await unix({ method: 'POST', path: '/v1/hello', body }); if (h.status === 200) env.token = h.json.token; return h; };
 const tcp = (opts) => call({ port: env.port, ...opts });
 
-test('socket: hello gives the cursor and epoch; a second pid while the heartbeat is fresh is refused; the same pid or a stale one takes over', async () => {
-  const noHello = await unix({ method: 'POST', path: '/v1/heartbeat' });
+test('the chat runs only with chat.login set and the Host check enforcing; each miss is a problem to log', () => {
+  assert.deepEqual(readChatConfig({}, 'log'), { on: false, login: null, problems: [] });
+  assert.deepEqual(readChatConfig({ chat: null }, 'enforce'), { on: false, login: null, problems: [] });
+  assert.deepEqual(readChatConfig({ chat: { login: ' Owner@Example.com ' } }, 'enforce'), { on: true, login: 'owner@example.com', problems: [] });
+  const noLogin = readChatConfig({ chat: {} }, 'enforce');
+  assert.equal(noLogin.on, false);
+  assert.match(noLogin.problems[0], /chat\.login/);
+  const logMode = readChatConfig({ chat: { login: 'owner@example.com' } }, 'log');
+  assert.equal(logMode.on, false);
+  assert.deepEqual(logMode.problems, ['chat needs hostCheck "enforce"; the chat stays off']);
+  assert.equal(readChatConfig({ chat: { login: 'owner@example.com' } }, undefined).on, false, 'no mode at all is not enforce');
+  assert.equal(readChatConfig({ chat: { login: '' } }, 'log').problems.length, 2);
+  assert.equal(readChatConfig({ chat: { login: 'has space@example' } }, 'enforce').on, false);
+  assert.equal(readChatConfig({ chat: { login: 7 } }, 'enforce').on, false);
+  assert.equal(readChatConfig({ chat: [] }, 'enforce').on, false);
+  assert.match(readChatConfig({ chat: 'yes' }, 'enforce').problems[0], /object/);
+});
+
+test('socket: hello gives the cursor, the epoch and a session token; every other route but status needs it; a second process is refused while the heartbeat is fresh and takes over, reported, once it is stale', async () => {
+  const noHello = await stranger({ method: 'POST', path: '/v1/heartbeat' });
   assert.equal(noHello.status, 409);
-  const h = await unix({ method: 'POST', path: '/v1/hello', body: { pid: 100, version: '0.1', startedAt: env.clock.t } });
+  assert.equal((await stranger({ path: '/v1/status' })).status, 200, 'status needs no token');
+  const h = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 100, version: '0.1', startedAt: env.clock.t } });
   assert.equal(h.status, 200, h.text);
-  assert.deepEqual(h.json, { cursor: 0, epoch: env.store.epoch, seq: 0 });
-  const other = await unix({ method: 'POST', path: '/v1/hello', body: { pid: 200, version: '0.1' } });
+  assert.match(h.json.token, /^[A-Za-z0-9_-]{43}$/, 'a 32-byte random token');
+  assert.deepEqual({ ...h.json, token: undefined }, { cursor: 0, epoch: env.store.epoch, seq: 0, token: undefined });
+  env.token = h.json.token;
+  // A second process: refused on hello, and on everything else, since it has no token.
+  const other = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 200, version: '0.1' } });
   assert.equal(other.status, 409);
   assert.deepEqual(other.json, { error: 'another channel is connected and its heartbeat is fresh' });
   assert.deepEqual(env.events.at(-1), { kind: 'client-refused', pid: 200, current: 100 });
-  assert.equal((await unix({ method: 'POST', path: '/v1/hello', body: { pid: 100 } })).status, 200, 'the same pid again is fine');
+  const routes = [
+    ['GET', '/v1/inbound?after=0'], ['POST', '/v1/ack', { seq: 0, epoch: env.store.epoch }], ['POST', '/v1/heartbeat'],
+    ['POST', '/v1/reply', { clientId: 'x', text: 'hi' }], ['POST', '/v1/edit', { id: 'm_abcdef1', text: 'x' }],
+    ['POST', '/v1/permission-request', { requestId: 'A' }], ['GET', '/v1/unanswered'], ['GET', '/v1/history'], ['GET', `/v1/attachment/${'0'.repeat(32)}`]
+  ];
+  for (const [method, path, body] of routes) {
+    const r = await stranger({ method, path, body });
+    assert.equal(r.status, 409, path);
+    assert.deepEqual(r.json, { error: 'not the current channel: say hello again' });
+    const guess = await stranger({ method, path, body, headers: { [SESSION_HEADER]: 'A'.repeat(43) } });
+    assert.equal(guess.status, 409, `${path} with a wrong token`);
+    const empty = await stranger({ method, path, body, headers: { [SESSION_HEADER]: '' } });
+    assert.equal(empty.status, 409, `${path} with an empty token`);
+  }
+  assert.equal((await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 100 } })).status, 409, 'the same pid without the token is a stranger too');
+  assert.equal(env.store.size, 0, 'nothing landed');
+  assert.equal(env.store.openPermissions().length, 0);
+  // The holder may say hello again (a reconnect) and gets a new token; the old one dies.
+  const old = env.token;
+  assert.equal((await hello({ pid: 100 })).status, 200);
+  assert.notEqual(env.token, old);
+  assert.equal((await stranger({ method: 'POST', path: '/v1/heartbeat', headers: { [SESSION_HEADER]: old } })).status, 409, 'the old token is dead');
+  assert.ok(!env.events.some(e => e.kind === 'client-replaced'), 'a reconnect by the holder is no takeover');
   const hb = await unix({ method: 'POST', path: '/v1/heartbeat' });
   assert.deepEqual(hb.json, { ok: true, openPermissions: 0 });
   assert.equal(env.socket.status().channelConnected, true);
+  assert.ok(!('pid' in env.socket.status()), 'the pid stays in this process');
   env.clock.t += HEARTBEAT_FRESH_MS;
   assert.equal(env.socket.status().channelConnected, false, 'stale at 45 s');
-  assert.equal((await unix({ method: 'POST', path: '/v1/hello', body: { pid: 200 } })).status, 200, 'a stale heartbeat lets another process in');
-  assert.equal((await unix({ method: 'POST', path: '/v1/hello', body: { pid: 100 } })).status, 409, 'and now 100 is the stranger');
+  const taken = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 200 } });
+  assert.equal(taken.status, 200, 'a stale heartbeat lets another process in');
+  assert.deepEqual(env.events.at(-1), { kind: 'client-replaced', pid: 200, previous: 100, staleFor: HEARTBEAT_FRESH_MS }, 'and that is reported');
+  assert.equal((await unix({ method: 'POST', path: '/v1/heartbeat' })).status, 409, "100's token died with its place");
+  env.token = taken.json.token;
+  assert.equal((await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 100 } })).status, 409, 'and now 100 is the stranger');
   env.clock.t += HEARTBEAT_FRESH_MS;
-  assert.equal((await unix({ method: 'POST', path: '/v1/hello', body: { pid: 100 } })).status, 200);
+  const back = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 100 } });
+  assert.equal(back.status, 200);
+  env.token = back.json.token;
   assert.equal((await unix({ path: '/v1/nothing' })).status, 404);
-  assert.equal((await unix({ method: 'POST', path: '/v1/hello', body: '"text"' })).status, 400);
+  assert.equal((await stranger({ method: 'POST', path: '/v1/hello', body: '"text"' })).status, 400);
 });
 
 test('pairing over TCP and the admin socket: the first device by chat-pair, the second approved by the first; cookies are __Host-, HttpOnly, Secure, Strict', async () => {
@@ -437,13 +498,17 @@ test('pairing over TCP and the admin socket: the first device by chat-pair, the 
   }
   const cross = await tcp({ method: 'POST', path: '/api/pair/start', body: { name: 'phone' }, headers: { origin: 'https://evil.example' } });
   assert.equal(cross.status, 403);
-  const start = await tcp({ method: 'POST', path: '/api/pair/start', body: { name: 'phone' }, headers: { origin: `http://127.0.0.1:${env.port}` } });
+  const start = await tcp({ method: 'POST', path: '/api/pair/start', body: { name: 'phone\u202e\u0007' }, headers: { origin: `http://127.0.0.1:${env.port}` } });
   assert.equal(start.status, 200, start.text);
   assert.match(start.json.code, /^[A-Z]{6}$/);
+  assert.equal(start.headers['cache-control'], 'no-store');
+  assert.deepEqual(env.events.at(-1), { kind: 'pairing-started', name: 'phone' }, 'the cleaned name, never the raw one');
   const setPair = start.headers['set-cookie'][0];
   assert.match(setPair, /^__Host-jos-pair=[A-Za-z0-9_-]+; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=600$/);
   const pairCookie = setPair.split(';')[0];
-  assert.deepEqual((await tcp({ path: '/api/pair/status', headers: { cookie: pairCookie } })).json, { state: 'pending', expiresAt: start.json.expiresAt });
+  const pending = await tcp({ path: '/api/pair/status', headers: { cookie: pairCookie } });
+  assert.deepEqual(pending.json, { state: 'pending', expiresAt: start.json.expiresAt });
+  assert.equal(pending.headers['cache-control'], 'no-store');
   assert.equal((await tcp({ path: '/api/pair/status' })).json.state, 'none');
   // The first device: nobody is paired to approve from, so chat-pair on the machine does.
   const wrong = await call({ socketPath: env.adminPath, method: 'POST', path: '/admin/approve', body: { code: 'NOTITX' } });
@@ -452,6 +517,7 @@ test('pairing over TCP and the admin socket: the first device by chat-pair, the 
   assert.deepEqual(ok.json, { ok: true, name: 'phone' });
   const paired = await tcp({ path: '/api/pair/status', headers: { cookie: pairCookie } });
   assert.equal(paired.json.state, 'paired');
+  assert.equal(paired.headers['cache-control'], 'no-store');
   assert.equal(paired.json.device.name, 'phone');
   const cookies = paired.headers['set-cookie'];
   assert.equal(cookies.length, 2);
@@ -506,8 +572,8 @@ test('a message from the page is queued, reaches the channel\'s inbound stream, 
   assert.equal(listed.headers['cache-control'], 'no-store');
 
   // The channel reads it: replay from the cursor, then live.
-  await unix({ method: 'POST', path: '/v1/hello', body: { pid: 100 } });
-  const live = stream({ socketPath: env.sockPath, path: '/v1/inbound?after=0', ms: 250 });
+  assert.equal((await hello({ pid: 100 })).status, 200);
+  const live = unixStream({ path: '/v1/inbound?after=0', ms: 250 });
   await new Promise(r => setTimeout(r, 40));
   await tcp({ method: 'POST', path: '/api/chat/messages', headers: { cookie: env.ipad }, body: { clientId: 'page-2', text: 'second' } });
   const got = await live;
@@ -525,7 +591,11 @@ test('a message from the page is queued, reaches the channel\'s inbound stream, 
   assert.equal(stale.status, 409, 'an ack from a stream of another epoch moves nothing');
   assert.equal(env.store.deliveredSeq, 0);
   assert.deepEqual((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 2, epoch: env.store.epoch } })).json, { deliveredSeq: 2, epoch: env.store.epoch });
-  assert.deepEqual((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 1 } })).json, { deliveredSeq: 2, epoch: env.store.epoch }, 'no epoch given is fine, and never back');
+  const noEpoch = await unix({ method: 'POST', path: '/v1/ack', body: { seq: 1 } });
+  assert.equal(noEpoch.status, 400, 'the epoch is required');
+  assert.match(noEpoch.json.error, /epoch/);
+  assert.equal(env.store.deliveredSeq, 2);
+  assert.deepEqual((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 1, epoch: env.store.epoch } })).json, { deliveredSeq: 2, epoch: env.store.epoch }, 'never back');
   assert.equal((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 'x' } })).status, 400);
   const after = await tcp({ path: '/api/chat/messages', headers: { cookie: env.phone } });
   assert.deepEqual(after.json.messages.map(m => m.state), ['delivered', 'delivered']);
@@ -574,6 +644,8 @@ test('an upload from the page: raw image bytes, sniffed, bound to the device tha
   assert.equal(up.status, 200, up.text);
   assert.equal(up.json.type, 'image/jpeg');
   assert.equal(up.json.name, 'photo.jpg');
+  assert.equal((await tcp({ path: `/api/chat/attachments/${up.json.id}`, headers: { cookie: env.ipad } })).status, 404, 'a pending upload is its uploader\'s alone');
+  assert.equal((await tcp({ path: `/api/chat/attachments/${up.json.id}`, headers: { cookie: env.phone } })).status, 200, 'the uploader can see it');
   const wrongDevice = await tcp({ method: 'POST', path: '/api/chat/messages', headers: { cookie: env.ipad }, body: { clientId: 'page-3', text: '', attachmentIds: [up.json.id] } });
   assert.equal(wrongDevice.status, 400);
   const withFile = await tcp({ method: 'POST', path: '/api/chat/messages', headers: { cookie: env.phone }, body: { clientId: 'page-3', text: '', attachmentIds: [up.json.id] } });
@@ -583,6 +655,7 @@ test('an upload from the page: raw image bytes, sniffed, bound to the device tha
   assert.equal(got.headers['content-type'], 'image/jpeg');
   assert.equal(got.headers['x-content-type-options'], 'nosniff');
   assert.equal(got.headers['content-disposition'], 'inline');
+  assert.equal(got.headers['cache-control'], 'private, no-store');
   assert.match(got.headers['content-security-policy'], /sandbox/);
   assert.ok(got.buf.equals(JPEG));
   assert.equal((await tcp({ path: `/api/chat/attachments/${up.json.id}` })).status, 401);
@@ -616,7 +689,7 @@ test('SSE: a status event first, replay after Last-Event-ID with ids, live messa
 
 test('a permission request from the channel reaches the page as an event; the verdict from a device is single use, logged with the device, and goes down the socket', async () => {
   const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 300 });
-  const inbound = stream({ socketPath: env.sockPath, path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
+  const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
   await new Promise(r => setTimeout(r, 40));
   const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Bash', description: 'run the tests', inputPreview: 'npm test' } });
   assert.equal(opened.status, 200, opened.text);
@@ -661,26 +734,52 @@ test('status: online, waiting on you, slow after 10 minutes unanswered, offline 
   const r = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.equal(r.json.state, 'offline');
   assert.equal(r.json.channelConnected, false);
-  await unix({ method: 'POST', path: '/v1/hello', body: { pid: 300 } });
+  const taken = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 300 } });
+  assert.equal(taken.status, 200);
+  env.token = taken.json.token;
+  assert.equal(env.events.at(-1).kind, 'client-replaced');
   assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } })).json.state, 'online');
-  const s = await unix({ path: '/v1/status' });
-  assert.equal(s.json.pid, 300);
+  const s = await stranger({ path: '/v1/status' });
+  assert.ok(!('pid' in s.json), 'the pid is not on the wire');
+  assert.ok(!s.text.includes('300'));
+  assert.equal(s.json.channelConnected, true);
   assert.equal(s.json.epoch, env.store.epoch);
+  const page = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
+  assert.ok(!('pid' in page.json) && !page.text.includes('"pid"'));
 });
 
-test('a replaced inbound stream gets one last line and closes; a revoked device is shut out; the login header is a second factor when set', async () => {
-  const first = stream({ socketPath: env.sockPath, path: '/v1/inbound?after=0', ms: 400 });
+test('a replaced inbound stream gets one last line and closes; a revoke shuts the device out and ends its streams at once, or on the next ping; the login header is a second factor on every route, pairing included', async () => {
+  const first = unixStream({ path: '/v1/inbound?after=0', ms: 400 });
   await new Promise(r => setTimeout(r, 40));
-  const second = stream({ socketPath: env.sockPath, path: '/v1/inbound?after=999', ms: 100 });
+  const second = unixStream({ path: '/v1/inbound?after=999', ms: 100 });
   const got = await first;
   const lines = ndjson(got.text);
   assert.deepEqual(lines.at(-1), { type: 'replaced' });
   await second;
-  // Revoke the iPad from the phone.
+  // Revoke the iPad from the phone, while the iPad holds a stream open: the stream
+  // ends with a `revoked` event right away, long before its 2 s timeout.
   const list = await tcp({ path: '/api/devices', headers: { cookie: env.phone } });
   const ipad = list.json.devices.find(d => d.name === 'ipad');
-  assert.equal((await tcp({ method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone, origin: 'https://evil.example' } })).status, 403);
-  assert.equal((await tcp({ method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone } })).status, 200);
+  // On a router whose pings are a minute apart, so only the revoke itself can end
+  // the stream in time (the ping's own re-check is proven below).
+  const slow = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: {}, now: () => env.clock.t, onEvent: e => env.events.push(e), log: () => {}, pingMs: 60e3 });
+  const slowSrv = createServer((req, res) => slow.handler(req, res));
+  await new Promise(r => slowSrv.listen(0, '127.0.0.1', r));
+  const slowPort = slowSrv.address().port;
+  try {
+    const t0 = Date.now();
+    const ipadStream = stream({ port: slowPort, path: '/api/chat/stream', headers: { cookie: env.ipad }, ms: 2000 });
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(slow.streaming().size, 1);
+    assert.equal((await call({ port: slowPort, method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone, origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await call({ port: slowPort, method: 'DELETE', path: `/api/devices/${ipad.id}`, headers: { cookie: env.phone } })).status, 200);
+    const ended = await ipadStream;
+    assert.ok(Date.now() - t0 < 1500, 'the stream ended on the revoke, not on the timeout');
+    assert.deepEqual(sse(ended.text).at(-1), { comment: null, event: 'revoked', data: { reason: 'revoked' } });
+    assert.equal(slow.streaming().size, 0, 'no stream is left for the revoked device');
+  } finally {
+    await new Promise(r => slowSrv.close(r));
+  }
   assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.ipad } })).status, 401);
   assert.ok(env.events.some(e => e.kind === 'revoked' && e.device.name === 'ipad'));
   // The login header.
@@ -693,9 +792,26 @@ test('a replaced inbound stream gets one last line and closes; a revoked device 
     assert.equal((await call({ port, path: '/api/chat/status', headers: { cookie: env.phone, 'tailscale-user-login': 'Owner@Example.com' } })).status, 200);
     assert.equal((await call({ port, path: '/api/chat/status', headers: { cookie: env.phone, 'tailscale-user-login': 'someone@example.com' } })).status, 403);
     assert.equal((await call({ port, path: '/api/chat/status', headers: { 'tailscale-user-login': 'owner@example.com' } })).status, 401, 'the header alone is nothing');
+    // Pairing too: without the header nobody can even ask for a code or collect a cookie.
+    assert.equal((await call({ port, method: 'POST', path: '/api/pair/start', body: { name: 'intruder' } })).status, 403);
+    assert.equal((await call({ port, method: 'POST', path: '/api/pair/start', body: { name: 'intruder' }, headers: { 'tailscale-user-login': 'someone@example.com' } })).status, 403);
+    assert.equal(env.devices.pendingCode(), null, 'no pairing was started');
+    assert.equal((await call({ port, path: '/api/pair/status' })).status, 403);
+    assert.deepEqual((await call({ port, path: '/api/pair/status', headers: { 'tailscale-user-login': 'owner@example.com' } })).json, { state: 'none', expiresAt: null });
   } finally {
     await new Promise(r => srv.close(r));
   }
   assert.ok(env.routes.owns('/api/chat/messages') && env.routes.owns('/api/pair/start') && env.routes.owns('/api/devices/abc') && !env.routes.owns('/api/dashboard'));
   assert.equal(inboundEvent({ from: 'jarvis', kind: 'chat', text: 'x' }), null);
+  // A revoke that bypasses the route (the store itself) still ends the device's
+  // stream: each ping re-checks the device.
+  const phone = env.devices.list().find(d => d.name === 'phone');
+  const t1 = Date.now();
+  const phoneStream = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 2000 });
+  await new Promise(r => setTimeout(r, 40));
+  assert.equal((await env.devices.revoke(phone.id, 'test')).ok, true);
+  const gone = await phoneStream;
+  assert.ok(Date.now() - t1 < 1500, 'ended within a ping (60 ms here), not at the timeout');
+  assert.deepEqual(sse(gone.text).at(-1), { comment: null, event: 'revoked', data: { reason: 'revoked' } });
+  assert.equal(env.routes.streaming().size, 0);
 });

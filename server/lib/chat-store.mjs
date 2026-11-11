@@ -11,7 +11,7 @@
 // `verdict`), so replay carries them; the open requests also live in memory with
 // their state, expire after 10 minutes, and lose their input preview after 24 h.
 // Attachments are files under `files/<random id>`, named only by that id.
-import { open, readFile, writeFile, mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { open, readFile, writeFile, mkdir, readdir, rename, stat, unlink, chmod } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -116,7 +116,11 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   async function load() {
+    // mkdir's mode applies only to a folder it creates; one left looser by an
+    // earlier run or by hand is tightened here, every start.
     await mkdir(filesDir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700);
+    await chmod(filesDir, 0o700);
     let names = [];
     try { names = (await readdir(dir)).filter(n => /^messages-\d{4}-\d{2}\.jsonl$/.test(n)).sort(); } catch { names = []; }
     for (const name of names) {

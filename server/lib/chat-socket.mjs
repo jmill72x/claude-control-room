@@ -4,20 +4,32 @@
 // owner's: it can't make a message "from jeff" and can't answer a permission; both
 // come only through the page routes, which need the device cookie.
 //
-// One client at a time: a `hello` from a second process while the current one's
-// heartbeat is under 45 s old is refused with 409 (the channel review's point 1),
-// and the refusal is reported (`onEvent`). A hello from the same pid, or after the
-// heartbeat has gone stale, replaces the client; the old inbound stream, if any,
-// gets one last line `{"type":"replaced"}` and its socket closes.
+// One client at a time, held by a session token (the 2026-11-11 review, 1): `hello`
+// answers a random token, and every other route but `status` takes it in the
+// `X-Session-Token` header; a call without the current token gets 409, whatever it
+// says its pid is. A hello from another process while the current one's heartbeat
+// is under 45 s old is refused with 409 and reported (`onEvent`, kind
+// `client-refused`); the holder may say hello again with its token (a reconnect)
+// and gets a new one. After the heartbeat has gone stale a hello without the token
+// takes over, reported as `client-replaced` (alerted, since a takeover is what a
+// hostile local process would do); the old inbound stream, if any, gets one last
+// line `{"type":"replaced"}` and its socket closes, and the old token is dead.
 //
 // Errors are `{error}` with fixed words: never the text of a message.
 import { json, readBody, HttpError } from '../routes.mjs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, MAX_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
 
 export const HEARTBEAT_FRESH_MS = 45e3;
 export const INBOUND_PING_MS = 15e3;
+export const SESSION_HEADER = 'x-session-token';
+const newToken = () => randomBytes(32).toString('base64url');
+const same = (a, b) => {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 export const MAX_FILES = 4;
 // A reply with four 10 MB files, base64, with room to spare.
 const REPLY_BODY_MAX = 4 * ATTACHMENT_MAX_BYTES * 1.4 + 64 * 1024;
@@ -33,13 +45,23 @@ export function inboundEvent(m) {
 }
 
 export function createSocketRouter({ store, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS }) {
-  let client = null;   // { pid, version, startedAt, helloAt, lastHeartbeatAt }
+  let client = null;   // { pid, version, startedAt, helloAt, lastHeartbeatAt, token }
   let inbound = null;  // { res, stop }
   const fresh = at => client !== null && at - client.lastHeartbeatAt < HEARTBEAT_FRESH_MS;
+  // Whether the request carries the current client's token.
+  const holds = req => {
+    const t = req.headers?.[SESSION_HEADER];
+    return client !== null && typeof t === 'string' && t.length > 0 && same(t, client.token);
+  };
+  const requireHolder = req => {
+    if (!client) throw new HttpError(409, 'say hello first');
+    if (!holds(req)) throw new HttpError(409, 'not the current channel: say hello again');
+  };
 
+  // What leaves this process about the client: never its pid (the 2026-11-11 review).
   const status = () => {
     const at = now();
-    return { channelConnected: fresh(at), lastHeartbeatAt: client?.lastHeartbeatAt ?? null, helloAt: client?.helloAt ?? null, pid: client?.pid ?? null, version: client?.version ?? null, streaming: inbound !== null };
+    return { channelConnected: fresh(at), lastHeartbeatAt: client?.lastHeartbeatAt ?? null, helloAt: client?.helloAt ?? null, version: client?.version ?? null, streaming: inbound !== null };
   };
 
   function endInbound(reason) {
@@ -60,22 +82,30 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         if (!isObject(body)) throw new HttpError(400, 'the body must be an object');
         const pid = Number.isInteger(body.pid) ? body.pid : null;
         const at = now();
-        if (client && fresh(at) && client.pid !== pid) {
+        const holder = holds(req);
+        if (client && !holder && fresh(at)) {
           onEvent({ kind: 'client-refused', pid, current: client.pid });
           throw new HttpError(409, 'another channel is connected and its heartbeat is fresh');
         }
-        if (client && client.pid !== pid) log(`chat: the channel changed (pid ${client.pid} to ${pid})`);
-        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at };
+        if (client && !holder) {
+          const staleFor = at - client.lastHeartbeatAt;
+          log(`chat: the channel was replaced after a stale heartbeat (pid ${client.pid} to ${pid}, ${Math.round(staleFor / 1000)} s stale)`);
+          onEvent({ kind: 'client-replaced', pid, previous: client.pid, staleFor });
+        } else if (client) {
+          log('chat: the channel said hello again');
+        }
+        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken() };
         endInbound('replaced');
-        return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq });
+        return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq, token: client.token });
       }
+      if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
+      // Everything from here on is the current client's alone.
+      requireHolder(req);
       if (req.method === 'POST' && path === '/v1/heartbeat') {
-        if (!client) throw new HttpError(409, 'say hello first');
         client.lastHeartbeatAt = now();
         return json(res, 200, { ok: true, openPermissions: store.openPermissions().length });
       }
       if (req.method === 'GET' && path === '/v1/inbound') {
-        if (!client) throw new HttpError(409, 'say hello first');
         const after = Number.parseInt(url.searchParams.get('after') ?? '', 10);
         endInbound('replaced');
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -99,8 +129,10 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         const body = await readBody(req);
         if (!isObject(body) || !Number.isInteger(body.seq)) throw new HttpError(400, 'seq must be an integer');
         // An ack carries the epoch of the stream its line came from (spec §1.5,
-        // 2026-11-11): one from a store that has since been reset moves nothing.
-        if (body.epoch !== undefined && body.epoch !== null && String(body.epoch) !== String(store.epoch)) throw new HttpError(409, 'that epoch is not current: the store was reset since; say hello again');
+        // 2026-11-11, required since the review's point 8): one from a store that has
+        // since been reset moves nothing.
+        if (body.epoch === undefined || body.epoch === null) throw new HttpError(400, 'epoch is required: the one hello gave');
+        if (String(body.epoch) !== String(store.epoch)) throw new HttpError(409, 'that epoch is not current: the store was reset since; say hello again');
         return json(res, 200, { deliveredSeq: await store.ack(body.seq), epoch: store.epoch });
       }
       if (req.method === 'GET' && path === '/v1/unanswered') {
@@ -161,7 +193,6 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         onEvent({ kind: 'permission-opened', requestId: p.requestId, tool: p.tool });
         return json(res, 200, { requestId: p.requestId, state: p.state, openedAt: p.openedAt });
       }
-      if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
       return json(res, 404, { error: 'not found' });
     } catch (err) {
       const code = err instanceof HttpError ? err.status : 500;

@@ -610,8 +610,10 @@ nothing; it leaves no trace in the session, only a missing line in the service l
 ### The chat with the lead agent (Jarvis OS, built, not live)
 
 The chat (`~/Projects/jarvis/docs/jarvis-os-chat-spec.md`, its C2 part) is on only when
-`config.json` has a `chat` block (`{}` is enough; `"login"` adds the tailnet check below).
-It is three pieces, each with its own router:
+`config.json` has a `chat` block with `"login"` set (the owner's tailnet login, checked on
+every chat request as below) **and** `hostCheck` is `"enforce"`; anything less is a
+`config:` line at start and the chat stays off while the rest of the dashboard runs. It is
+three pieces, each with its own router:
 
 - **The store** (`server/lib/chat-store.mjs`): `server/data/chat/messages-YYYY-MM.jsonl`,
   append-only and fsynced, loaded at start. Every message has a `seq` that is never reused
@@ -627,30 +629,41 @@ It is three pieces, each with its own router:
   requests (the channel asks again) and nothing else.
 - **The channel's socket** (`server/lib/chat-socket.mjs`): socket API v1 on
   `~/.local/state/jarvis-os/channel.sock` (`JARVIS_OS_SOCKET`), 0600 in a 0700 folder,
-  as the spec's §1.5 lists it: `hello` (answers `{cursor, epoch, seq}`), `inbound` (an
+  as the spec's §1.5 lists it: `hello` (answers `{cursor, epoch, seq, token}`), `inbound` (an
   ndjson stream of the owner's messages and verdicts after a seq, a ping every 15 s),
-  `ack` (`{seq, epoch?}`; an ack whose epoch isn't current is refused with 409), `unanswered`,
-  `reply` (deduped on `clientId`; answers `{id, seq}`), `edit` (the lead's own chat messages,
-  24 hours), `history` (`before` is a message id), `attachment/:id` (the bytes with their
-  type), `permission-request`, `heartbeat` and `status`. One client at a time: a `hello` from
-  a second pid while the current heartbeat is under 45 s old gets 409 and is reported; after
-  that it takes over, and the old inbound stream gets one last line `{"type":"replaced"}`
-  before its socket closes. The socket can't make a message from the owner and can't answer
-  a permission. A reply or edit whose text looks like a credential is refused with the
-  pattern's name, never the text; no error body ever echoes a message.
+  `ack` (`{seq, epoch}`; the epoch is required, 400 without it, and one that isn't current
+  is refused with 409), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
+  `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
+  `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
+  `status`. **One client at a time, held by a session token:** `hello` answers a random
+  32-byte `token`, and every other route but `status` takes it in the `X-Session-Token`
+  header; a call without the current token gets 409 (`not the current channel: say hello
+  again`), whatever pid it claims. A `hello` from another process while the current
+  heartbeat is under 45 s old gets 409 and is reported; the holder may say `hello` again
+  with its token (a reconnect) and gets a new one, the old one dead. Once the heartbeat is
+  stale a `hello` without the token takes over: that is logged and pushed like an alert
+  (`client-replaced`), the old inbound stream gets one last line `{"type":"replaced"}`
+  before its socket closes, and the old token is dead. `status` carries the connection's
+  state and version, never the client's pid. The socket can't make a message from the
+  owner and can't answer a permission. A reply or edit whose text looks like a credential
+  is refused with the pattern's name, never the text; no error body ever echoes a message.
 - **The page's routes** (`server/lib/chat-routes.mjs`), over TCP behind the Host check:
   pairing (`POST /api/pair/start {name}` from the device, which gets a 6-letter code and a
   10-minute pairing cookie; `POST /api/pair/approve {code}` from a device already paired,
   or `bin/chat-pair <CODE>` on the machine over the admin socket
   `~/.local/state/jarvis-os/admin.sock`; then `GET /api/pair/status` hands the device its
-  cookie, once), the devices (`GET /api/devices`, `DELETE /api/devices/<id>`, at most 4
-  active), the messages (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId`
-  dedup), uploads (`POST /api/chat/attachments` with raw image bytes, `GET
-  /api/chat/attachments/<id>` served inline with nosniff and a sandboxing policy; an upload
-  can only be attached by the device that sent it), the stream (`GET /api/chat/stream`,
-  SSE: a `status` event first, then a replay after `Last-Event-ID` or `?after=` with the
-  seq as each event's id, then live `message`, `edit`, `state`, `permission` and
-  `permission-closed` events, a `: ping` and a `status` every 20 s), the verdict (`POST
+  cookie, once; the pairing answers carry `Cache-Control: no-store`), the devices (`GET
+  /api/devices`, `DELETE /api/devices/<id>`, at most 4 active; a revoke ends every open
+  stream of that device at once with a last `revoked` event, and each stream's ping
+  re-checks its device, so a revoke by any path ends it within 20 s), the messages
+  (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId` dedup), uploads (`POST
+  /api/chat/attachments` with raw image bytes, `GET /api/chat/attachments/<id>` served
+  inline with nosniff, a sandboxing policy and `Cache-Control: private, no-store`, like
+  the rest of the chat; an upload not yet on a message can be attached, and read back,
+  only by the device that sent it), the stream (`GET /api/chat/stream`, SSE: a `status`
+  event first, then a replay after `Last-Event-ID` or `?after=` with the seq as each
+  event's id, then live `message`, `edit`, `state`, `permission` and `permission-closed`
+  events, a `: ping` and a `status` every 20 s), the verdict (`POST
   /api/chat/permission/<id> {behavior}`, single use, first answer wins, logged with the
   device's name) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
   minutes unanswered, offline after 45 s without a heartbeat).
@@ -658,13 +671,21 @@ It is three pieces, each with its own router:
 The cookie is `__Host-jos` (32 random bytes, only its sha256 on file; HttpOnly, Secure,
 SameSite=Strict, 400 days). A browser accepts a `__Host-` cookie over HTTPS only, so until
 Serve runs on HTTPS (the spec's P2) a browser can't pair; curl can, which is how the
-tests and the scratch pass drive it. With `chat.login` set, every chat request must also
-carry `Tailscale-User-Login` equal to it: a second factor the Serve proxy adds, never the
-credential, since a local process can forge it. Writes keep the ingest guards (JSON only,
-same origin or none); a pairing, a revoke, a refused second channel and every verdict are
-written to the service log and pushed like an alert (ntfy and the feed). Tests:
-`server/test/chat.test.mjs`, over a real temp Unix socket and a loopback port.
-macOS caps a Unix socket path at 104 bytes; the default paths are well under it.
+tests and the scratch pass drive it. Every chat request, `/api/pair/start` and
+`/api/pair/status` included, must carry `Tailscale-User-Login` equal to `chat.login`: a
+second factor the Serve proxy adds, never the credential, since a local process can forge
+it. Writes keep the ingest guards (JSON only, same origin or none); a pairing (logged and
+pushed with the cleaned device name, never the raw text), a revoke, a refused second
+channel, a takeover after a stale heartbeat and every verdict are written to the service
+log and pushed like an alert (ntfy and the feed). At start the chat folder and its files
+folder are set to 0700 whether or not they existed, and each socket path is checked
+(`server/lib/chat-listen.mjs`): its folder must be this user's and 0700 (the default folder
+is made so; an override from `JARVIS_OS_SOCKET` or `JARVIS_OS_ADMIN_SOCKET` is checked as
+found), and a socket file is unlinked only when nothing answers on it, so a second server
+started by mistake never pulls the live one's socket away; a problem there keeps the chat
+off. Tests: `server/test/chat.test.mjs` and `chat-listen.test.mjs`, over real temp Unix
+sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
+are well under it.
 
 ### Acknowledging a known miss
 
@@ -1040,7 +1061,7 @@ and that must not reach every device on the tailnet.
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
-| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"). `chat.login`, optional, is the tailnet login every chat request's `Tailscale-User-Login` header must match. |
+| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
 | `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |

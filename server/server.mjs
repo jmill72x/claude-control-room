@@ -31,9 +31,10 @@ import { createNeedsYouStore } from './lib/needs-you.mjs';
 import { createChatStore } from './lib/chat-store.mjs';
 import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
-import { createChatRoutes, createAdminRouter } from './lib/chat-routes.mjs';
+import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
+import { prepareSocketPath } from './lib/chat-listen.mjs';
 import { homedir } from 'node:os';
-import { chmod, unlink } from 'node:fs/promises';
+import { chmod } from 'node:fs/promises';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
@@ -190,18 +191,39 @@ registry.register('notifier', async () => {
 
 const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
 
-// The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block. Its
-// store under data/chat (0700), the channel's Unix socket and the admin socket under
-// ~/.local/state/jarvis-os (0700, sockets 0600), each with its own router; the page
-// routes join the TCP router below, behind the Host check. Pairings, verdicts and a
-// refused second channel are logged and pushed like an alert.
+// The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
+// owner's `login` and the Host check enforces (lib/chat-routes.mjs, readChatConfig);
+// anything less is a `config:` line and the chat stays off. Its store under data/chat
+// (0700), the channel's Unix socket and the admin socket under ~/.local/state/jarvis-os
+// (0700, sockets 0600; an override's folder is checked the same way, and a socket a
+// live server answers on is never unlinked: lib/chat-listen.mjs), each with its own
+// router; the page routes join the TCP router below, behind the Host check. Pairings,
+// verdicts, a refused second channel and a takeover are logged and pushed like an alert.
 let chat = null;
-if (config.chat !== undefined && config.chat !== null && typeof config.chat === 'object' && !Array.isArray(config.chat)) {
+const chatSettings = readChatConfig(config, hosts.mode);
+for (const problem of chatSettings.problems) console.error(`config: ${problem}`);
+const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
+const channelSocketPath = process.env.JARVIS_OS_SOCKET || join(stateDir, 'channel.sock');
+const adminSocketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(stateDir, 'admin.sock');
+let socketsReady = false;
+if (chatSettings.on) {
+  // The channel refuses a socket looser than 0600 in a folder looser than 0700; the
+  // default folder is made so here, every start, and any folder is then checked.
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  await chmod(stateDir, 0o700);
+  const prepared = [];
+  for (const path of [channelSocketPath, adminSocketPath]) prepared.push(await prepareSocketPath(path));
+  for (const problem of prepared.flatMap(p => p.problems)) console.error(`chat: ${problem}; the chat stays off`);
+  socketsReady = prepared.every(p => p.ok);
+}
+if (chatSettings.on && socketsReady) {
   const chatDir = join(HERE, 'data', 'chat');
   await mkdir(chatDir, { recursive: true, mode: 0o700 });
+  await chmod(chatDir, 0o700);
   const chatEvents = async event => {
     const words = {
       'client-refused': 'a second chat channel tried to connect and was refused',
+      'client-replaced': `the chat channel was taken over by another process after its heartbeat went stale (${Math.round((event.staleFor ?? 0) / 1000)} s)`,
       'pairing-started': `a device asked to pair with the chat (${event.name || 'unnamed'})`,
       'pairing-approved': `a chat pairing was approved by ${event.by}`,
       paired: `a device was paired with the chat: ${event.device?.name ?? '?'} (by ${event.by})`,
@@ -212,7 +234,7 @@ if (config.chat !== undefined && config.chat !== null && typeof config.chat === 
     };
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
-    if (['client-refused', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started'].includes(event.kind)) {
+    if (['client-refused', 'client-replaced', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started'].includes(event.kind)) {
       try { await sendAlert({ topic: await getTopic(), title: 'Control Room', message: line }); } catch (err) { console.error('chat: alert failed', err?.message ?? err); }
     }
   };
@@ -224,12 +246,7 @@ if (config.chat !== undefined && config.chat !== null && typeof config.chat === 
   await chatDevices.load();
   const socketRouter = createSocketRouter({ store: chatStore, onEvent: chatEvents });
   chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents });
-  // The channel refuses a socket looser than 0600 in a folder looser than 0700.
-  const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
-  await mkdir(stateDir, { recursive: true, mode: 0o700 });
-  await chmod(stateDir, 0o700);
   const listenUnix = async (path, handler, name) => {
-    await unlink(path).catch(() => {});
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
     });
@@ -238,8 +255,8 @@ if (config.chat !== undefined && config.chat !== null && typeof config.chat === 
     console.log(`chat: ${name} socket at ${path}`);
     return s;
   };
-  await listenUnix(process.env.JARVIS_OS_SOCKET || join(stateDir, 'channel.sock'), socketRouter.handler, 'channel');
-  await listenUnix(process.env.JARVIS_OS_ADMIN_SOCKET || join(stateDir, 'admin.sock'), createAdminRouter({ devices: chatDevices, onEvent: chatEvents }), 'admin');
+  await listenUnix(channelSocketPath, socketRouter.handler, 'channel');
+  await listenUnix(adminSocketPath, createAdminRouter({ devices: chatDevices, onEvent: chatEvents }), 'admin');
 }
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
