@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+// Approve a pairing code for the chat from this machine (jarvis-os-chat-spec.md,
+// §2.2): the first device, when no paired device exists to approve from.
+//
+//   bin/chat-pair <CODE>        approve the code the new device shows
+//   bin/chat-pair --devices     list the paired devices
+//
+// Talks to the Control Room over its admin socket (JARVIS_OS_ADMIN_SOCKET, default
+// ~/.local/state/jarvis-os/admin.sock, 0600). Exit 0 on success, 1 on a refusal, 2
+// on a usage or connection problem.
+import { request } from 'node:http';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const socketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(homedir(), '.local', 'state', 'jarvis-os', 'admin.sock');
+const arg = process.argv[2];
+if (!arg || arg === '-h' || arg === '--help') {
+  console.error('usage: chat-pair <CODE> | --devices');
+  process.exit(2);
+}
+
+const call = (method, path, body) => new Promise((resolve, reject) => {
+  const req = request({ socketPath, method, path, headers: body ? { 'Content-Type': 'application/json' } : {}, timeout: 5000 }, res => {
+    let raw = '';
+    res.setEncoding('utf8');
+    res.on('data', c => { raw += c; });
+    res.on('end', () => { let parsed = null; try { parsed = JSON.parse(raw); } catch { parsed = { error: raw.slice(0, 200) }; } resolve({ status: res.statusCode, body: parsed }); });
+  });
+  req.on('timeout', () => req.destroy(new Error('timed out')));
+  req.on('error', reject);
+  if (body) req.write(JSON.stringify(body));
+  req.end();
+});
+
+try {
+  if (arg === '--devices') {
+    const { status, body } = await call('GET', '/admin/devices');
+    if (status !== 200) { console.error(body.error ?? `HTTP ${status}`); process.exit(1); }
+    for (const d of body.devices) console.log(`${d.id}  ${d.name}${d.revokedAt ? '  (revoked)' : ''}  paired ${new Date(d.createdAt).toISOString()}  seen ${d.lastSeenAt ? new Date(d.lastSeenAt).toISOString() : 'never'}`);
+    if (body.devices.length === 0) console.log('no devices');
+    if (body.pending) console.log('a pairing is pending: chat-pair <CODE> approves it');
+  } else {
+    const { status, body } = await call('POST', '/admin/approve', { code: String(arg).trim().toUpperCase() });
+    if (status !== 200) { console.error(body.error ?? `HTTP ${status}`); process.exit(1); }
+    console.log(`approved: ${body.name} can now collect its cookie (the page's pairing screen does that)`);
+  }
+} catch (err) {
+  console.error(`chat-pair: could not reach the Control Room's admin socket (${err.message})`);
+  process.exit(2);
+}

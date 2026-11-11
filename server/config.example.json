@@ -3,6 +3,7 @@
   "showAlertBanner": true,
   "allowedHosts": ["example-host.example-tailnet.ts.net"],
   "hostCheck": "log",
+  "chat": { "login": "owner@example.com" },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",

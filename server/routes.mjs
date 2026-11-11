@@ -22,19 +22,19 @@ export const BOARD_MAX_BODY = 1024 * 1024;
 // JSON type, so no answer, a board item's text included, is ever read as a page.
 const API_HEADERS = { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' };
 
-const json = (res, code, body, headers = {}) => {
+export const json = (res, code, body, headers = {}) => {
   res.writeHead(code, { ...API_HEADERS, ...headers });
   res.end(JSON.stringify(body));
 };
 
-class HttpError extends Error {
+export class HttpError extends Error {
   constructor(status, message) {
     super(message);
     this.status = status;
   }
 }
 
-const readBody = (req, limit = MAX_BODY) => new Promise((resolve, reject) => {
+export const readBody = (req, limit = MAX_BODY) => new Promise((resolve, reject) => {
   const chunks = [];
   let size = 0;
   let settled = false;
@@ -80,7 +80,7 @@ const readBody = (req, limit = MAX_BODY) => new Promise((resolve, reject) => {
 const isJson = req =>
   String(req.headers?.['content-type'] ?? '').split(';')[0].trim().toLowerCase() === 'application/json';
 
-const isCrossOrigin = req => {
+export const isCrossOrigin = req => {
   const origin = req.headers?.origin;
   if (!origin) return false;
   if (origin === 'null') return true;
@@ -91,13 +91,13 @@ const isCrossOrigin = req => {
   }
 };
 
-const guardWrite = req => {
+export const guardWrite = req => {
   if (isCrossOrigin(req)) throw new HttpError(403, 'cross-origin write refused');
   if (!isJson(req)) throw new HttpError(415, 'Content-Type must be application/json');
 };
 // A DELETE has no body, so no content type to require; a browser never sends one
 // without a preflight, which the same-origin rule then refuses.
-const guardDelete = req => {
+export const guardDelete = req => {
   if (isCrossOrigin(req)) throw new HttpError(403, 'cross-origin write refused');
 };
 

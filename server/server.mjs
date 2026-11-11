@@ -28,6 +28,12 @@ import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
+import { createChatStore } from './lib/chat-store.mjs';
+import { createDeviceStore } from './lib/chat-devices.mjs';
+import { createSocketRouter } from './lib/chat-socket.mjs';
+import { createChatRoutes, createAdminRouter } from './lib/chat-routes.mjs';
+import { homedir } from 'node:os';
+import { chmod, unlink } from 'node:fs/promises';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
@@ -183,6 +189,58 @@ registry.register('notifier', async () => {
 }, 5 * 60 * 1000);
 
 const api = createHandler({ cache, todos, config, acks: ackStore, needsYou });
+
+// The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block. Its
+// store under data/chat (0700), the channel's Unix socket and the admin socket under
+// ~/.local/state/jarvis-os (0700, sockets 0600), each with its own router; the page
+// routes join the TCP router below, behind the Host check. Pairings, verdicts and a
+// refused second channel are logged and pushed like an alert.
+let chat = null;
+if (config.chat !== undefined && config.chat !== null && typeof config.chat === 'object' && !Array.isArray(config.chat)) {
+  const chatDir = join(HERE, 'data', 'chat');
+  await mkdir(chatDir, { recursive: true, mode: 0o700 });
+  const chatEvents = async event => {
+    const words = {
+      'client-refused': 'a second chat channel tried to connect and was refused',
+      'pairing-started': `a device asked to pair with the chat (${event.name || 'unnamed'})`,
+      'pairing-approved': `a chat pairing was approved by ${event.by}`,
+      paired: `a device was paired with the chat: ${event.device?.name ?? '?'} (by ${event.by})`,
+      revoked: `a chat device was revoked: ${event.device?.name ?? '?'}`,
+      'pairing-failed': 'a chat pairing failed on three wrong codes',
+      'permission-opened': `the lead asked for a permission (${event.tool ?? 'a tool'})`,
+      verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`
+    };
+    const line = words[event.kind] ?? `chat event ${event.kind}`;
+    console.log(`chat: ${line}`);
+    if (['client-refused', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started'].includes(event.kind)) {
+      try { await sendAlert({ topic: await getTopic(), title: 'Control Room', message: line }); } catch (err) { console.error('chat: alert failed', err?.message ?? err); }
+    }
+  };
+  const chatStore = createChatStore({ dir: chatDir });
+  const loaded = await chatStore.load();
+  console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
+  await chatStore.pruneAttachments();
+  const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
+  await chatDevices.load();
+  const socketRouter = createSocketRouter({ store: chatStore, onEvent: chatEvents });
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents });
+  // The channel refuses a socket looser than 0600 in a folder looser than 0700.
+  const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  await chmod(stateDir, 0o700);
+  const listenUnix = async (path, handler, name) => {
+    await unlink(path).catch(() => {});
+    const s = createServer(async (req, res) => {
+      try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
+    });
+    await new Promise((resolve, reject) => s.listen(path, resolve).on('error', reject));
+    await chmod(path, 0o600);
+    console.log(`chat: ${name} socket at ${path}`);
+    return s;
+  };
+  await listenUnix(process.env.JARVIS_OS_SOCKET || join(stateDir, 'channel.sock'), socketRouter.handler, 'channel');
+  await listenUnix(process.env.JARVIS_OS_ADMIN_SOCKET || join(stateDir, 'admin.sock'), createAdminRouter({ devices: chatDevices, onEvent: chatEvents }), 'admin');
+}
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 
@@ -195,6 +253,7 @@ process.on('unhandledRejection', err => {
 
 // The Host check comes first, before any route, API or page alike.
 const routes = withHostGuard(async (req, res) => {
+  if (chat && chat.owns(new URL(req.url, 'http://localhost').pathname)) return chat.handler(req, res);
   if (req.url.startsWith('/api/')) return api(req, res);
   if (req.url.startsWith('/avatars/')) return serveAvatar(req, res);
   return serveStatic(req, res);
