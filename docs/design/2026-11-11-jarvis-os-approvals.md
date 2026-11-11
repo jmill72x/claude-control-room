@@ -17,7 +17,8 @@ reference) as read on 2026-11-11, for the installed CLI 2.1.322.
 
 1. Build it all now (A0 and A1), behind switches. Turn-on was to be two steps (Deny only,
    then Allow after about 3 clean days). **Jeff, later the same day: Allow goes on at
-   go-live** ("It's just us in here"). The two-flag lock stays exactly as built, because it
+   go-live** ("It's just us in here"), and at 20:37Z: one go-live, after the build
+   review's fixes (0.1), with no Deny-only step first. The two-flag lock stays exactly as built, because it
    is what stops Jarvis from enabling Allow himself: at go-live Jeff creates both flags.
    Deny-only first remains a documented fallback (NEXT.md §10, the runbook).
 2. Approvers: his iPhone, iPad and Mac. The mark is set only on the mini, over the admin
@@ -40,7 +41,7 @@ fixed:**
 | H2 nothing unset the relay variable; the server had no mode | `jarvis-start` execs claude through `env -u JARVIS_CHANNEL_PERMISSION_RELAY` unless a flag allows it. Server config `chat.approvals` is `off` (default), `deny` or `on`; off answers 403 on both permission routes. Deploy order: server first, check that a verdict gets 403, then the channel |
 | M3/M6 the auto-mode fallback and Remote Control were missing from the threat model | Both are in 6.3. The `PermissionDenied` hook (decision 3) opens a 15-minute Deny-only window; the card says why it is asking when a block for the same tool came just before |
 | M4 under A0, Jarvis could turn Allow on himself | The channel has a deny mode (`deny`, and the old `1`, drop every Allow at delivery); `allow` needs Jeff's second flag `approvals-allow` beside `approvals-enabled`. `jarvis-start` alerts #pepper on every start with the relay on and on any change of mode; the server alerts its own mode at each start and any change. `server/config.json`, `bin/chat-pair` and `~/.local/state/jarvis-os/` are on the Deny-only list for Bash as well as Edit and Write |
-| M5 G6 was a denylist | Bash is an allowlist: one command, none of ``; | & $ ` > < ( )``, newline, quotes, backslash, globs or braces, no `-c`, and a first word on a short list (git only with status, diff, log, show, rev-parse). Paths are normalised (`~`, `..`, case, the real path of the parent). Added: `.claude/`, `.mcp.json`, `machine-setup/git-hooks`, `~/Projects/jarvis/`, `.github/workflows`, `~/.zshenv` and the other shell startup files. Read, Glob and Grep are Deny-only for `~/.claude/channels/`, `~/.ssh`, `.env` files and keys; WebFetch for a query string or a host off a short list; unknown tools always |
+| M5 G6 was a denylist | (Reworked again in 0.1: Bash is now Deny-only by default.) Bash is an allowlist: one command, none of ``; | & $ ` > < ( )``, newline, quotes, backslash, globs or braces, no `-c`, and a first word on a short list (git only with status, diff, log, show, rev-parse). Paths are normalised (`~`, `..`, case, the real path of the parent). Added: `.claude/`, `.mcp.json`, `machine-setup/git-hooks`, `~/Projects/jarvis/`, `.github/workflows`, `~/.zshenv` and the other shell startup files. Read, Glob and Grep are Deny-only for `~/.claude/channels/`, `~/.ssh`, `.env` files and keys; WebFetch for a query string or a host off a short list; unknown tools always |
 | L7 repeated ids | Requests are keyed by channel session and id; a hello from a new channel process expires every open request; a repeat in one session is an unanswerable `repeat` card |
 | L8 the verdict stream | A verdict line goes to the channel only when it is `from: jeff` and `meta.requestId` names its request; it carries `answeredAt` |
 | L9 expiry | Counted from the channel's `relayedAt`; a request more than 2 minutes old on arrival is `late`: shown with "answer at the terminal", no buttons, no push |
@@ -55,8 +56,35 @@ the card). A flood of more than 5 open requests makes cards Deny-only for 10 min
 answered card stays, saying "Allow sent from iPad at 14:02. Claude Code uses it if the prompt
 was still open", until dismissed.
 
+### 0.1 Ultron's build review, as fixed (2026-11-11, later the same day)
+
+Ultron reviewed the build (board ac24e766, ef1b52b2, 8b305b6c, 3add3aa8, 0ed35868). **Jeff's
+decisions (20:37Z):** no Deny-only go-live first ("just wait and do it all at once"): go live
+once, with Allow, after these fixes pass Ultron; and page Allow for writes only inside a short
+folder allowlist (his option b: "we can always change it if it's a problem"). Built on
+`jos/approvals-fixes` in both repos; the channel is 0.4.4. Where this table and sections 1 to
+12 disagree about the Deny-only rules, this table and README "Approvals as buttons" win.
+
+| Finding | Fix |
+|---|---|
+| H-a whitespace folding: Claude Code folds each run of whitespace in a relayed preview to one space (channels reference), so `cat notes.txt` + newline + `rm -rf ~/Projects` may arrive as one "plain" command | **Bash is Deny-only on the page** (config `chat.approvalsBash`, default `"deny"`). This is the stricter of the two options, chosen because no grammar can tell `cat A B` from `cat A` + newline + `B` by the text alone. The other option is built and off: `"strict"`, a per-command grammar (a listed command; only that command's own options, exactly spelled; every other word an absolute path that passes the path rules and is not a file that can be run; no command that takes a free word, so no grep, rg, echo or which). Its known leftovers: a file made runnable between the check and the run, a number or commit id that is also a command on the path, and git reading a repo's own config. Tests use the folded form in the server suite and end to end. Section 9.2's A1-F records what a real preview looks like; until it is run, assume folding |
+| H-b the long s: APFS reads ſ (U+017F) as s, so `~/.ſsh`, `~/.zſhrc` and `LaunchAgentſ` dodged every protected name; Node's `realpathSync` and `toLowerCase` don't fold it | Anything outside printable ASCII in a Bash command, a path, a Glob pattern or a Grep glob is Deny-only (file content and search text are not paths and stay free). Real paths come from `realpathSync.native`, which answers each name as the disk stores it. Tested with ſ, the Kelvin sign (K) and fullwidth letters, and with a real folder on the mini's disk (the test confirms APFS folds ſ) |
+| M writes: the protected list was too short | Jeff's option b. Write, Edit, MultiEdit and NotebookEdit (and `touch`/`mkdir` under the strict grammar) can be allowed only inside config's `chat.approvalsWriteFolders`, by the path as written and by its real path. The default is no folders, so no page Allow for any write. The protected list stays as a second layer inside those folders: `.git`, `.claude`, `.worktrees`, `.mcp.json`, GitHub workflows, machine-setup, the jarvis repo, this repo's `server/`, `web/`, `bin/` and `mod/`, `server/config.json`, shell startup files, flag names. Read and write are both Deny-only for `~/.claude.json`, `~/.gitconfig`, `~/.config/git`, `~/.config/gh`, `~/.cloudflared`, `~/.aws`, `~/.docker`, `~/.local/bin`, `/opt/homebrew` and `~/.tmux.conf`, and a search rooted above any of them (`~`, `~/.config`, `/`) is Deny-only too |
+| 4 Glob and Grep wildcards | Both need an absolute, literal folder (`path`); a wildcard there is Deny-only. A Glob pattern or Grep glob must be relative, with literal folder names (or a whole `**`) and wildcards only in its last part. Grep reads what its glob picks, so there the last part is a literal name or `*.ext`, never one that picks key or `.env` files |
+| 5 options | The strict grammar lists each command's options; anything else (`--hostname-bin=…`, `-f/path`, `--output=…`) is refused. rg and grep are not on the list at all |
+| 6 touch, mkdir, flag names | Every path in a Bash command must be absolute. The names `approvals-*`, `channel-enabled` and `*-off` are protected in any folder |
+| 7 `..` | Deny-only in any path, absolute ones included |
+| 8 hidden characters in parsed fields | The preview is JSON text, where a hidden character can sit as an escape (`\u202e`) that only parsing brings out. Each parsed field (names and nested values included) is checked, the card's fields go through `revealHidden`, and the request is Deny-only |
+| 9 unknown input keys | Each tool has a short list of inputs it is known to take (`TOOL_KEYS`); any other key is Deny-only (`run_in_background`, `dangerouslyDisableSandbox`, …) |
+| 10 the server didn't know the channel's mode | The channel sends `relay` (`off`, `deny` or `allow`) in hello and in every heartbeat. Unless it says `allow`, the server treats `"on"` as `"deny"`: the card is Deny-only ("the channel delivers Deny only") and an Allow is refused with 403. A channel that doesn't say (0.4.3 and older) counts as unknown, so Allow needs the 0.4.4 channel. A change of the reported mode is alerted |
+| 12 the env variable alone turned the relay on | The channel reads the two flag files itself, by `jarvis-start`'s rule (a regular file of the owner's, not a symlink, in the 0700 state folder), and its mode is the stricter of the variable and the flags. The flags are read again for each request and each Allow, so removing `approvals-allow` stops Allow at once, without a restart. Ultron's monthly sweep now checks that no settings file sets `JARVIS_CHANNEL_PERMISSION_RELAY` |
+
+**Known limits, accepted or for later:** a Grep rooted in a project folder can still read an
+`.env` file inside it (the page can't see the folder's contents); hard links are not followed;
+a path whose own whitespace was folded is shown with single spaces.
+
 **Where:** README "Approvals as buttons" (claude-control-room) is the reference; the lead's
-repo holds the channel (0.4.3) and `jarvis-start`. Sections 1 to 12 below are the design as
+repo holds the channel (0.4.4) and `jarvis-start`. Sections 1 to 12 below are the design as
 reviewed, corrected where the build changed it.
 
 ## 1. In short
@@ -498,6 +526,29 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
   channel log shows the verdict delivered, and Claude Code ignores it (nothing happens).
 - A0-5. Stop the scratch Control Room, answer nothing, start it again after 3 minutes: the
   spooled request appears; a Deny sent then is dropped by the channel if older than 120 s.
+- A1-F. **What does a multi-line Bash command look like when relayed?** (board ac24e766; run
+  once, by Jeff or by Jarvis's hands at a terminal, never in Jarvis's session.) Use the go-live
+  doc's §3 scratch setup (scratch Control Room, scratch `HOME`, the dev-channel flag, no
+  Discord plugin), with `CCR_APPROVALS=deny` on the scratch server, and both flag files made
+  in the scratch `HOME`'s `.local/state/jarvis-os/` plus `JARVIS_CHANNEL_PERMISSION_RELAY=deny`
+  in the scratch session's environment, so nothing can be allowed from the page.
+  1. Start the scratch session with `--permission-mode default`, in an empty scratch folder
+     that holds a file `notes.txt`.
+  2. Ask it, word for word: "Run this exact Bash command, as one tool call, with the line
+     break kept: `cat notes.txt` then a newline then `echo second-line`". (Harmless on purpose.)
+  3. When the terminal dialog opens, do not answer yet. Copy the raw field exactly, from
+     either place: `openPermission.inputPreview` in the scratch page's `/api/chat/status`
+     (with the paired cookie), or the `permission_request` line in the scratch session's
+     `claude --debug` log, which is the text before the channel or the server touch it.
+  4. Record three things in NEXT.md §10: the CLI version (`claude --version`); the raw
+     `input_preview`; and which of these it shows between `notes.txt` and `echo`: the two
+     characters `\n` (a JSON escape: the line break survives, and the server's shell-syntax
+     rule sees it), a real line break, or a single space (folded).
+  5. Repeat once with a tab and with two spaces inside a quoted argument, and once with a
+     Write whose `content` has several lines, to learn whether folding touches every field.
+  6. Deny at the terminal. Delete the scratch `HOME`.
+  If the break survives as `\n`, `chat.approvalsBash: "strict"` becomes a real option for
+  Jeff to weigh; if it is folded, Bash stays Deny-only on the page.
 
 ### 9.3 Live checks after each restart (Jeff present, harmless commands only)
 

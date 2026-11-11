@@ -716,19 +716,20 @@ test('a permission request from the channel reaches the page as an event; the ve
   const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 300 });
   const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
   await new Promise(r => setTimeout(r, 40));
-  const preview = '{"command":"ls"}';
-  const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Bash', description: 'list the files', inputPreview: preview, relayedAt: env.clock.t } });
+  const preview = '{"file_path":"/home/owner/Projects/app/README.md"}';
+  const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Read', description: 'list the files', inputPreview: preview, relayedAt: env.clock.t } });
   assert.equal(opened.status, 200, opened.text);
   assert.equal(opened.json.state, 'open');
-  assert.equal((await unix({ method: 'POST', path: '/v1/heartbeat' })).json.openPermissions, 1);
+  // The channel says it delivers Allow (with its hello, or as here with a heartbeat).
+  assert.equal((await unix({ method: 'POST', path: '/v1/heartbeat', body: { relay: 'allow' } })).json.openPermissions, 1);
   const status = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.equal(status.json.state, 'waiting on you');
   assert.equal(status.json.openPermission.requestId, 'ABCDE');
   assert.equal(status.json.openPermission.inputPreview, preview);
-  assert.deepEqual(status.json.openPermission.fields, [['command', 'ls']]);
+  assert.deepEqual(status.json.openPermission.fields, [['file_path', '/home/owner/Projects/app/README.md']]);
   assert.equal(status.json.openPermission.canAllow, true);
-  assert.deepEqual(status.json.approvals, { mode: 'on', denyOnlyUntil: null });
-  const shown = shownHash('Bash', 'list the files', preview);
+  assert.deepEqual(status.json.approvals, { mode: 'on', relay: 'allow', denyOnlyUntil: null });
+  const shown = shownHash('Read', 'list the files', preview);
   const tap = (cookie, body, headers = pageHeaders) => tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: { ...headers, cookie }, body });
   assert.equal((await tap(env.ipad, { behavior: 'maybe', shown })).status, 400);
   assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ABCDE', headers: pageHeaders, body: { behavior: 'allow', shown } })).status, 401);
@@ -745,7 +746,7 @@ test('a permission request from the channel reaches the page as an event; the ve
   assert.equal(second.status, 409);
   assert.equal((await tcp({ method: 'POST', path: '/api/chat/permission/ZZZZZ', headers: { ...pageHeaders, cookie: env.phone }, body: { behavior: 'deny', shown } })).status, 404);
   const ev = env.events.find(e => e.kind === 'verdict');
-  assert.deepEqual(ev, { kind: 'verdict', requestId: 'ABCDE', behavior: 'allowed', device: 'ipad', tool: 'Bash' });
+  assert.deepEqual(ev, { kind: 'verdict', requestId: 'ABCDE', behavior: 'allowed', device: 'ipad', tool: 'Read' });
   const page = sse((await live).text);
   assert.deepEqual(page.filter(e => e.event === 'permission').map(e => e.data.requestId), ['ABCDE']);
   assert.deepEqual(page.filter(e => e.event === 'permission-closed').map(e => e.data.state), ['allowed']);
@@ -776,7 +777,9 @@ test('status: online, waiting on you, slow after 10 minutes unanswered, offline 
   const taken = await stranger({ method: 'POST', path: '/v1/hello', body: { pid: 300 } });
   assert.equal(taken.status, 200);
   env.token = taken.json.token;
-  assert.equal(env.events.at(-1).kind, 'client-replaced');
+  // The new channel named no relay mode, after one that said allow: that change is reported too.
+  assert.deepEqual(env.events.slice(-2).map(e => e.kind), ['client-replaced', 'approvals-relay']);
+  assert.deepEqual(env.events.at(-1), { kind: 'approvals-relay', relay: 'unknown', previous: 'allow' });
   assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } })).json.state, 'online');
   const s = await stranger({ path: '/v1/status' });
   assert.ok(!('pid' in s.json), 'the pid is not on the wire');

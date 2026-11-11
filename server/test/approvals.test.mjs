@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -28,7 +29,7 @@ const bash = cmd => rules('Bash', { command: cmd });
 // ---- the pure rules ----
 
 test('config: off unless "deny" or "on"; anything else is off with a problem; extra Deny-only patterns are lower-cased', () => {
-  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], problems: [] });
+  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], bash: 'deny', writeFolders: [], problems: [] });
   assert.equal(readApprovalsConfig({ chat: { login: 'x' } }).mode, 'off', 'the default is off (Ultron H2)');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'deny' } }).mode, 'deny');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'on' } }).mode, 'on');
@@ -96,62 +97,304 @@ test('H1: a Bash call padded with a 3,400-code-point description keeps its comma
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('Bash: one plain command whose first word is on the short list may be allowed; everything else is Deny-only (M5)', () => {
-  for (const ok of ['ls -la /tmp', 'cat README.md', 'git status', 'git log --oneline -5', 'wc -l notes.txt', 'grep -n TODO src/app.js', 'touch /tmp/scratch/a', 'mkdir -p /tmp/scratch/x']) {
-    assert.deepEqual(bash(ok), [], ok);
+// ---- Ultron's 11-11 build review: folding, non-ASCII, the write allowlist, the lows ----
+
+const APP = '/home/owner/Projects/app';
+const REPO = '/home/owner/Projects/claude-control-room';
+const WRITE = ['~/Projects/app', '/home/owner/Projects/site'];
+const strictOpts = { home: HOME, realpath: noReal, bash: 'strict', writeFolders: WRITE, repoRoot: REPO, isExecutable: p => p.endsWith('.sh') || p.endsWith('/bin/tool') };
+const strict = cmd => denyOnlyReasons({ tool: 'Bash', description: 'd', inputPreview: JSON.stringify({ command: cmd }) }, strictOpts);
+const has = (list, re) => list.some(r => re.test(r));
+const cp = n => String.fromCodePoint(n);
+
+test('Bash is Deny-only on the page by default: a relayed command may have lost its line breaks (finding 1)', () => {
+  for (const cmd of ['ls', 'pwd', 'git status', `cat ${APP}/notes.txt`, 'cat notes.txt rm -rf ~/Projects']) {
+    assert.ok(has(bash(cmd), /Bash is answered at the terminal or in Discord/), cmd);
   }
-  const deny = {
-    'ls; rm x': /shell syntax/, 'ls | sh': /shell syntax/, 'ls && rm x': /shell syntax/, 'echo $HOME': /shell syntax/,
-    'echo `id`': /shell syntax/, 'echo hi > f': /shell syntax/, 'cat < f': /shell syntax/, 'ls (x)': /shell syntax/,
-    'ls\nrm x': /shell syntax/, "cat '.ssh/id'": /shell syntax/, 'cat .s\\sh/id': /shell syntax/, 'cat ~/.ss?/id': /shell syntax/,
-    'rm -rf /tmp/x': /not on the short list/, 'bash -c ls': /not on the short list|-c/, 'sudo ls': /not on the short list/,
-    'Ls': /not on the short list/, '/bin/ls': /not on the short list/, 'git push': /only git status/, 'git -C /x status': /only git status/,
-    'git diff --output=/tmp/x': /--output/, 'rg --pre cat x': /--pre/, 'ls ~root': /another user/, 'echo -c x': /-c/
-  };
-  for (const [cmd, re] of Object.entries(deny)) assert.ok(bash(cmd).some(r => re.test(r)), `${cmd}: ${bash(cmd).join('; ')}`);
-  assert.ok(rules('Bash', { description: 'no command' }).some(r => /no command/.test(r)));
+  assert.equal(readApprovalsConfig({}).bash, 'deny', 'the default');
+  assert.equal(readApprovalsConfig({ chat: { approvalsBash: 'strict' } }).bash, 'strict');
+  for (const bad of ['on', 'allow', true, 'STRICT']) {
+    const r = readApprovalsConfig({ chat: { approvalsBash: bad } });
+    assert.equal(r.bash, 'deny', String(bad));
+    assert.equal(r.problems.length, 1);
+  }
+  // The gate carries the mode through.
+  const off = createApprovals({ mode: 'on', home: HOME, realpath: noReal });
+  assert.ok(off.assess({ tool: 'Bash', inputPreview: '{"command":"pwd"}' }).denyOnly.length > 0);
+  const on = createApprovals({ mode: 'on', home: HOME, realpath: noReal, bash: 'strict' });
+  assert.deepEqual(on.assess({ tool: 'Bash', inputPreview: '{"command":"pwd"}' }).denyOnly, []);
 });
 
-test('paths are normalised (~, .., case, the real path of the parent) and the protected and sensitive ones are Deny-only, for Bash as well as Edit and Write', () => {
-  const protectedCmds = [
-    'touch ~/.claude/settings.json', 'cat ~/.CLAUDE/x', 'touch /home/owner/Projects/app/.mcp.json', 'cat x/.git/config',
-    'cat .github/workflows/ci.yml', 'touch ~/Projects/machine-setup/git-hooks/pre-commit', 'cat ~/Projects/jarvis/README.md',
-    'cat ~/.zshenv', 'cat ~/.zshrc', 'cat server/config.json', 'cat ~/Projects/claude-control-room/bin/chat-pair',
-    'ls ~/.local/state/jarvis-os/', 'ls ~/Library/LaunchAgents', 'cat /etc/hosts', 'touch /home/owner/tmp/../.ssh/x'
+test('Bash, strict grammar: a listed command, only its own options, every other word an absolute path (findings 1 and 4)', () => {
+  const ok = [
+    'pwd', 'date', 'date -u', 'ls', 'ls -la', `ls -la ${APP}`, `cat ${APP}/README.md`, `cat -n ${APP}/a ${APP}/b`,
+    `head -n 5 ${APP}/a`, `head -n5 ${APP}/a`, `tail -20 ${APP}/a`, `tail -c 100 ${APP}/a`, `wc -l ${APP}/a`, `stat ${APP}/a`, `file ${APP}/a`,
+    `du -sh ${APP}`, 'df -h', `diff -u ${APP}/a ${APP}/b`, `touch ${APP}/new.txt`, `mkdir -p ${APP}/out/x`, 'touch ~/Projects/app/x',
+    'git status', 'git status --short', `git -C ${APP} status`, 'git diff --stat', 'git diff --cached', 'git log --oneline -5', 'git log -n 5',
+    'git show --stat HEAD', 'git show 0123abc', 'git rev-parse --short HEAD', 'git diff HEAD~2 HEAD'
   ];
-  for (const cmd of protectedCmds) assert.ok(bash(cmd).some(r => /touches|reads/.test(r)), `${cmd}: ${bash(cmd).join('; ')}`);
-  assert.ok(bash('cat ../secrets.txt').some(r => /relative path with \.\./.test(r)));
-  // A symlink: the parent's real path is judged too.
-  const link = denyOnlyReasons({ tool: 'Bash', inputPreview: JSON.stringify({ command: 'cat /home/owner/link/id_x' }) }, { home: HOME, realpath: p => (p === '/home/owner/link' ? '/home/owner/.ssh' : null) });
-  assert.ok(link.some(r => /\.ssh/.test(r)), link.join('; '));
-  assert.deepEqual(pathForms('~/a/../B', { home: HOME, realpath: noReal }), { relative: false, dotdot: false, forms: ['/home/owner/b'] });
-  for (const p of ['~/.claude/agents/x.md', '/home/owner/.mcp.json', '/home/owner/Projects/jarvis/bin/x', '/home/owner/.zshenv', '/home/owner/Projects/claude-control-room/server/config.json', '/home/owner/.local/state/jarvis-os/approvals-allow']) {
-    assert.ok(rules('Write', { file_path: p, content: 'x' }).length > 0, p);
-    assert.ok(rules('Edit', { file_path: p, old_string: 'a', new_string: 'b' }).length > 0, p);
-  }
-  assert.deepEqual(rules('Write', { file_path: '/home/owner/Projects/app/notes.md', content: 'x' }), []);
-  assert.ok(rules('Write', { file_path: 'notes.md', content: 'x' }).some(r => /absolute path/.test(r)));
-  assert.deepEqual(rules('NotebookEdit', { notebook_path: '/home/owner/a.ipynb', new_source: 'x' }), []);
+  for (const cmd of ok) assert.deepEqual(strict(cmd), [], cmd);
+  const deny = {
+    // The folded two-liners: line breaks arrive as single spaces.
+    'cat notes.txt rm -rf ~/Projects': /not an absolute path|not one of cat's/,
+    [`cat ${APP}/notes.txt rm -rf ~/Projects`]: /"rm" is not an absolute path/,
+    [`cat ${APP}/notes.txt rm ${APP}/x`]: /"rm" is not an absolute path/,
+    [`cat ${APP}/a ${APP}/deploy.sh`]: /a file that can be run/,
+    [`ls ${APP} ${APP}/bin/tool ${APP}/x`]: /a file that can be run/,
+    [`ls ${APP} /usr/bin/id`]: /system folder/, 'cat /dev/urandom': /system folder/, 'cat /etc/hosts': /system folder/,
+    [`cat ${APP}/a /opt/homebrew/bin/node ${APP}/x.js`]: /homebrew/i,
+    'pwd rm -rf /home/owner/Projects/app': /pwd takes no/,
+    [`git status rm ${APP}/x`]: /git status/,
+    'git show rm': /git show/,
+    [`touch ${APP}/a chmod 755 ${APP}/a`]: /"chmod" is not an absolute path/,
+    // Free words can't be told from a second command, so these are out even here.
+    'grep -n TODO /home/owner/Projects/app/a': /"grep" is not on the short list/,
+    'rg --hostname-bin=/home/owner/x TODO': /"rg" is not on the short list/,
+    'echo hi': /"echo" is not on the short list/, 'which node': /not on the short list/,
+    // Options: only each command's own, exactly; an attached value is refused.
+    [`cat -f/home/owner/x ${APP}/a`]: /not one of cat's/, [`ls --color=always ${APP}`]: /not one of ls's/,
+    [`head -n x ${APP}/a`]: /-n needs a number/, [`head -n ${APP}/a`]: /-n needs a number/,
+    [`tail -f ${APP}/a`]: /not one of tail's/, [`diff --output=/tmp/x ${APP}/a ${APP}/b`]: /not one of diff's/,
+    [`mkdir -m 777 ${APP}/x`]: /not one of mkdir's/, [`du -I x ${APP}`]: /not one of du's/,
+    'git push': /only git status/, 'git -c core.pager=x status': /git/, 'git diff --output=/tmp/x': /not one of git diff's/,
+    'git log --format=%H': /not one of git log's/, 'git diff main': /git diff/, 'git show HEAD 0123abc': /git show takes only/, 'git status HEAD': /git status takes only/, [`git -C ${APP}`]: /only git status/,
+    'git -C app status': /not an absolute path/,
+    // touch and mkdir need absolute paths.
+    'touch scratch.txt': /not an absolute path/, 'mkdir -p out/x': /not an absolute path/, 'cat README.md': /not an absolute path/,
+    'cat': /cat needs/, [`diff ${APP}/a`]: /diff needs/, 'ls ~root': /not an absolute path/,
+    // Shell syntax, as before.
+    'ls; rm x': /shell syntax/, 'ls | sh': /shell syntax/, 'ls && rm x': /shell syntax/, 'echo $HOME': /shell syntax/, 'echo `id`': /shell syntax/,
+    'ls > f': /shell syntax/, 'cat < f': /shell syntax/, 'ls (x)': /shell syntax/, 'ls\nrm x': /shell syntax/, "cat '.ssh/id'": /shell syntax/,
+    'cat .s\\sh/id': /shell syntax/, 'cat ~/.ss?/id': /shell syntax/, 'ls\t-la': /shell syntax/,
+    'rm -rf /tmp/x': /not on the short list/, 'bash -c ls': /not on the short list/, 'sudo ls': /not on the short list/, 'Ls': /not on the short list/, '/bin/ls': /not on the short list/
+  };
+  for (const [cmd, re] of Object.entries(deny)) assert.ok(has(strict(cmd), re), `${cmd}: ${strict(cmd).join('; ')}`);
+  assert.ok(has(rules('Bash', { description: 'no command' }), /no command/));
 });
 
-test('Read, Glob and Grep are Deny-only for the channels folder, ~/.ssh, .env files and keys; WebFetch for a query string or another site; unknown tools always', () => {
-  for (const p of ['/home/owner/.claude/channels/discord/access.json', '/home/owner/.ssh/config', '/home/owner/app/.env', '/home/owner/app/.env.local', '/home/owner/k.pem', '/home/owner/id_ed25519', '/home/owner/.netrc']) {
-    assert.ok(rules('Read', { file_path: p }).length > 0, p);
+test('Bash writes (touch, mkdir) pass only inside the write folders; reads pass the read rules', () => {
+  assert.ok(has(strict('touch /home/owner/elsewhere/a'), /outside the folders/));
+  assert.ok(has(strict('mkdir -p /home/owner/Projects/jarvis/x'), /outside the folders|jarvis repo/));
+  assert.ok(has(strict('touch ~/.local/state/jarvis-os/approvals-allow'), /outside the folders/));
+  assert.ok(has(strict(`touch ${APP}/approvals-allow`), /flag name/));
+  assert.ok(has(strict(`mkdir ${APP}/.git/hooks`), /\.git folder/));
+  assert.deepEqual(strict('cat /home/owner/elsewhere/a'), [], 'a read is not held to the write folders');
+  assert.ok(has(strict('cat /home/owner/.ssh/config'), /\.ssh/));
+  assert.ok(has(strict('ls /home/owner'), /holds protected/));
+});
+
+test('non-ASCII in a Bash command or any path is Deny-only: APFS folds what Node does not (finding 2)', () => {
+  const longS = cp(0x17f), kelvin = cp(0x212a), wideS = cp(0xff53), wideH = cp(0xff48);
+  const why = /outside plain ASCII/;
+  for (const cmd of [`cat ~/.${longS}sh/id_x`, `cat ~/.z${longS}hrc`, `ls ~/Library/LaunchAgent${longS}`, `cat ~/.doc${kelvin}er/config.json`, `cat ~/.${wideS}${wideS}${wideH}/config`, `cat ${APP}/caf${cp(0xe9)}.txt`]) {
+    assert.ok(has(strict(cmd), why), `strict: ${Array.from(cmd).map(c => c.codePointAt(0).toString(16)).join(' ')}`);
+    assert.ok(has(bash(cmd), why), 'and in the default mode');
   }
-  assert.deepEqual(rules('Read', { file_path: '/home/owner/Projects/app/README.md' }), []);
-  assert.deepEqual(rules('Read', { file_path: '/home/owner/.claude/agent-memory/x.md' }), [], 'reading other .claude files is fine');
-  assert.ok(rules('Grep', { pattern: 'x', path: '/home/owner/.ssh' }).length > 0);
-  assert.ok(rules('Glob', { pattern: '**/.env' }).length > 0);
-  assert.deepEqual(rules('Glob', { pattern: 'src/**/*.js' }), []);
+  const w = (tool, input) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, strictOpts);
+  for (const p of [`/home/owner/.${longS}sh/authorized_keys`, `${APP}/.git/hoo${kelvin}s/pre-commit`, `${APP}/${wideS}rc/a.js`, `/home/owner/Library/LaunchAgent${longS}/x.plist`]) {
+    assert.ok(has(w('Write', { file_path: p, content: 'x' }), why), 'Write');
+    assert.ok(has(w('Edit', { file_path: p, old_string: 'a', new_string: 'b' }), why), 'Edit');
+    assert.ok(has(w('Read', { file_path: p }), why), 'Read');
+    assert.ok(has(w('Grep', { pattern: 'x', path: p }), why), 'Grep');
+    assert.ok(has(w('Glob', { pattern: '*.js', path: p }), why), 'Glob path');
+    assert.ok(has(w('mcp__plugin_jarvis-channel_jarvis__reply', { text: 'x', files: [p] }), why), 'files');
+  }
+  assert.ok(has(w('Glob', { pattern: `**/.${longS}sh/*`, path: APP }), why), 'Glob pattern');
+  assert.ok(has(w('Grep', { pattern: 'x', path: APP, glob: `*.p${cp(0xff45)}m` }), why), 'Grep glob');
+  assert.ok(has(w('NotebookEdit', { notebook_path: `${APP}/n${longS}.ipynb`, new_source: 'x' }), why));
+  // Content is not a path: non-ASCII there is fine.
+  assert.deepEqual(w('Write', { file_path: `${APP}/notes.md`, content: `caf${cp(0xe9)} ${longS}` }), []);
+  assert.deepEqual(w('Grep', { pattern: `caf${cp(0xe9)}`, path: APP }), []);
+  // A control character in a path is refused the same way (a tab, a DEL).
+  assert.ok(has(w('Read', { file_path: `${APP}/a\tb` }), why));
+});
+
+test('the real path comes from realpathSync.native, which folds names the way the disk does (finding 2)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'appr-real-'));
+  try {
+    await mkdir(join(dir, 'ssh'));
+    const real = realpathSync.native(dir);
+    const asked = join(dir, cp(0x17f) + 'sh', 'x');
+    const forms = pathForms(asked, { home: HOME }).forms;
+    // Only a disk that folds the long s (APFS does) finds the folder under that name.
+    const folds = existsSync(join(dir, cp(0x17f) + 'sh'));
+    if (folds) assert.ok(forms.includes(join(real, 'ssh', 'x').toLowerCase()), 'the stored name, not the one asked for');
+    else console.log('approvals: this disk does not fold the long s; the native real path was not exercised');
+    assert.equal(folds, process.platform === 'darwin', 'macOS folds it');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('writes (Write, Edit, MultiEdit, NotebookEdit) pass only inside config\'s write folders, and the protected list still applies inside them (finding 3, the owner\'s option b)', () => {
+  const w = (tool, input, opts = strictOpts) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, opts);
+  const write = (p, opts) => w('Write', { file_path: p, content: 'x' }, opts);
+  assert.deepEqual(write(`${APP}/notes.md`), []);
+  assert.deepEqual(write('~/Projects/app/src/a.js'), []);
+  assert.deepEqual(write('/home/owner/PROJECTS/APP/notes.md'), [], 'the disk ignores case');
+  assert.deepEqual(write('/home/owner/Projects/site/index.html'), []);
+  assert.deepEqual(w('Edit', { file_path: `${APP}/a.js`, old_string: 'a', new_string: 'b', replace_all: true }), []);
+  assert.deepEqual(w('MultiEdit', { file_path: `${APP}/a.js`, edits: [{ old_string: 'a', new_string: 'b' }] }), []);
+  assert.deepEqual(w('NotebookEdit', { notebook_path: `${APP}/a.ipynb`, new_source: 'x', cell_id: 'c1' }), []);
+  for (const p of ['/home/owner/notes.md', '/home/owner/Projects/app2/a', '/home/owner/Projects/other/a', '/tmp/x', '/home/owner/Projects/apple', '/home/owner/Projects']) {
+    assert.ok(has(write(p), /outside the folders/), p);
+    assert.ok(has(w('Edit', { file_path: p, old_string: 'a', new_string: 'b' }), /outside the folders/), p);
+    assert.ok(has(w('NotebookEdit', { notebook_path: p, new_source: 'x' }), /outside the folders/), p);
+  }
+  // The safe default: no folders, so no page Allow for any write.
+  assert.ok(has(write(`${APP}/notes.md`, { home: HOME, realpath: noReal }), /outside the folders/));
+  // A symlink out of a write folder: the real path is judged too.
+  const link = { ...strictOpts, realpath: p => (p === `${APP}/link` ? '/home/owner/elsewhere' : null) };
+  assert.ok(has(write(`${APP}/link/a`, link), /outside the folders/));
+  // A write folder that is itself a link: its real path counts as inside.
+  const linked = { ...strictOpts, realpath: p => (p.startsWith(APP) ? p.replace(APP, '/vol/app') : null) };
+  assert.deepEqual(write(`${APP}/a.md`, linked), []);
+  // The second layer, inside a write folder.
+  const inside = {
+    [`${APP}/.git/config`]: /\.git folder/, [`${APP}/.claude/settings.json`]: /\.claude folder/, [`${APP}/.mcp.json`]: /\.mcp\.json/,
+    [`${APP}/.github/workflows/ci.yml`]: /workflow/, [`${APP}/.worktrees/x/a`]: /worktrees/, [`${APP}/.env`]: /\.env/,
+    [`${APP}/sub/approvals-enabled`]: /flag name/, [`${APP}/channel-enabled`]: /flag name/, [`${APP}/approvals-off`]: /flag name/, [`${APP}/anything-off`]: /flag name/,
+    [`${APP}/.zshrc`]: /shell startup/, [`${APP}/a/../../jarvis/x`]: /\.\./
+  };
+  for (const [p, re] of Object.entries(inside)) assert.ok(has(write(p), re), `${p}: ${write(p).join('; ')}`);
+  // Even when config lists them, these stay out.
+  const wide = { ...strictOpts, writeFolders: ['~/Projects', '~/.config', '/opt/homebrew/etc'] };
+  const never = {
+    '/home/owner/Projects/jarvis/bin/x': /jarvis repo/, '/home/owner/Projects/machine-setup/a': /machine-setup/, '/home/owner/Projects/.worktrees/a/b': /worktrees/,
+    [`${REPO}/server/lib/a.mjs`]: /Control Room's own code/, [`${REPO}/web/src/a.js`]: /Control Room's own code/, [`${REPO}/bin/chat-pair`]: /Control Room's own code|chat-pair/,
+    [`${REPO}/mod/a.ts`]: /Control Room's own code/, [`${REPO}/server/config.json`]: /config/, '/home/owner/.config/git/config': /git settings/, '/home/owner/.config/gh/hosts.yml': /GitHub CLI/,
+    '/opt/homebrew/etc/x': /Homebrew/
+  };
+  for (const [p, re] of Object.entries(never)) assert.ok(has(write(p, wide), re), `${p}: ${write(p, wide).join('; ')}`);
+  assert.deepEqual(write(`${REPO}/docs/a.md`, wide), [], 'the repo\'s docs are not its code');
+  assert.ok(has(write('notes.md'), /absolute path/));
+  assert.ok(has(write('~root/x'), /absolute path/));
+});
+
+test('config: the write folders must be absolute, plain and narrower than the home folder; a bad entry is dropped with a problem', () => {
+  const read = folders => readApprovalsConfig({ chat: { approvalsWriteFolders: folders } }, { home: HOME });
+  assert.deepEqual(readApprovalsConfig({}).writeFolders, [], 'the default allows no page writes');
+  assert.deepEqual(read(['~/Projects/app', '/home/owner/Projects/site/']).writeFolders, ['~/Projects/app', '/home/owner/Projects/site/']);
+  for (const bad of ['Projects/app', '~', '~/', '/', '/home', '/home/owner', '/home/owner/', '/HOME/owner', '~/a/../b', '~/a*', `~/caf${cp(0xe9)}`, '', 7, null, '~other/x']) {
+    const r = read(['~/Projects/app', bad]);
+    assert.deepEqual(r.writeFolders, ['~/Projects/app'], String(bad));
+    assert.equal(r.problems.length, 1, String(bad));
+  }
+  assert.deepEqual(read('~/Projects/app').writeFolders, []);
+  assert.equal(read('~/Projects/app').problems.length, 1);
+  assert.equal(read(Array.from({ length: 41 }, (_, i) => `~/p${i}`)).writeFolders.length, 0, 'too many is ignored whole');
+});
+
+test('read and write are both Deny-only for the account, git, cloud and tool settings (finding 3)', () => {
+  const w = (tool, input) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, { ...strictOpts, writeFolders: ['~/Projects', '~/.config', '~/.aws', '~/.docker', '~/.cloudflared', '~/.local', '/opt/homebrew'] });
+  const places = ['/home/owner/.claude.json', '/home/owner/.claude.json.backup', '/home/owner/.gitconfig', '/home/owner/.config/git/ignore', '/home/owner/.config/gh/hosts.yml',
+    '/home/owner/.cloudflared/cert.json', '/home/owner/.aws/credentials', '/home/owner/.docker/config.json', '/home/owner/.local/bin/tool', '/opt/homebrew/bin/node', '/home/owner/.tmux.conf',
+    '/home/owner/.claude/.credentials.json'];
+  for (const p of places) {
+    assert.ok(w('Read', { file_path: p }).length > 0, `Read ${p}`);
+    assert.ok(w('Write', { file_path: p, content: 'x' }).some(r => !/outside the folders/.test(r)), `Write ${p}: ${w('Write', { file_path: p, content: 'x' }).join('; ')}`);
+    assert.ok(w('Grep', { pattern: 'x', path: p }).length > 0, `Grep ${p}`);
+    assert.ok(has(strict(`cat ${p}`), /reads|touches/), `cat ${p}`);
+  }
+  // A search root above them covers them.
+  for (const root of ['/', '/home', '/home/owner', '/home/owner/.config', '/home/owner/.local', '/home/owner/.claude', '/opt', '/home/owner/.local/state']) {
+    assert.ok(has(w('Grep', { pattern: 'KEY', path: root }), /holds protected/), `Grep ${root}`);
+    assert.ok(has(w('Glob', { pattern: '**/*', path: root }), /holds protected/), `Glob ${root}`);
+  }
+  assert.deepEqual(w('Grep', { pattern: 'KEY', path: '/home/owner/Projects' }), []);
+});
+
+test('Read, Glob and Grep: absolute literal paths; wildcards only in the last part of a pattern; the channels folder, ~/.ssh, .env files and keys stay out (finding 4)', () => {
+  const r = (tool, input) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, strictOpts);
+  for (const p of ['/home/owner/.claude/channels/discord/access.json', '/home/owner/.ssh/config', '/home/owner/app/.env', '/home/owner/app/.env.local', '/home/owner/k.pem', '/home/owner/id_ed25519', '/home/owner/.netrc']) {
+    assert.ok(r('Read', { file_path: p }).length > 0, p);
+  }
+  assert.deepEqual(r('Read', { file_path: `${APP}/README.md`, offset: 1, limit: 20 }), []);
+  assert.deepEqual(r('Read', { file_path: '/home/owner/.claude/agent-memory/x.md' }), [], 'reading other .claude files is fine');
+  assert.ok(has(r('Read', { file_path: 'README.md' }), /absolute path/));
+  assert.ok(has(r('Read', { file_path: `${APP}/a/../../../.ssh/id` }), /\.\./), '.. in an absolute path');
+  assert.ok(has(r('Read', {}), /absolute path/));
+  // Glob and Grep: the folder.
+  assert.deepEqual(r('Glob', { pattern: 'src/**/*.js', path: APP }), []);
+  assert.deepEqual(r('Glob', { pattern: '**/*', path: '~/Projects/app' }), []);
+  assert.deepEqual(r('Grep', { pattern: 'TODO', path: APP, glob: '*.js', output_mode: 'content', '-n': true }), []);
+  assert.deepEqual(r('Grep', { pattern: 'a.*b[0-9]?', path: APP }), [], 'the search pattern itself is free');
+  assert.ok(has(r('Glob', { pattern: '**/*.js' }), /absolute folder/), 'no folder: the working folder is not known here');
+  assert.ok(has(r('Grep', { pattern: 'x' }), /absolute folder/));
+  assert.ok(has(r('Grep', { pattern: 'x', path: 'src' }), /absolute folder/));
+  assert.ok(r('Grep', { pattern: 'x', path: '/home/owner/.ssh' }).length > 0);
+  for (const path of ['/home/owner/.s*', '/home/owner/.ss?', '/home/owner/.[s]sh', '/home/owner/{.ssh,x}', `${APP}/*/secrets`]) {
+    assert.ok(has(r('Glob', { pattern: '*', path }), /wildcard/), `Glob ${path}`);
+    assert.ok(has(r('Grep', { pattern: 'x', path }), /wildcard/), `Grep ${path}`);
+  }
+  assert.ok(has(r('Grep', { pattern: 'x', path: `${APP}/../../.ssh` }), /\.\./));
+  // The patterns: relative, literal folders (or a whole **), wildcards in the last part only.
+  for (const pattern of ['**/.s*/id_rsa', '.s*h/**', 'a/*/b/*.js', '**/.e[n]v/x', '{.ssh,src}/x', '/home/owner/.ssh/*', '~/.ssh/*', '../*', 'a/../../*', '**/.ssh/*', '.ssh/**', '**/.env', '.claude/channels/**']) {
+    assert.ok(r('Glob', { pattern, path: APP }).length > 0, `Glob ${pattern}`);
+    assert.ok(r('Grep', { pattern: 'x', path: APP, glob: pattern }).length > 0, `Grep glob ${pattern}`);
+  }
+  for (const pattern of ['/home/owner/Projects/other/*.js', '~/Projects/other/*.js', '~']) {
+    assert.ok(has(r('Glob', { pattern, path: APP }), /names its own folder/), `Glob ${pattern}`);
+    assert.ok(has(r('Grep', { pattern: 'x', path: APP, glob: pattern }), /names its own folder/), `Grep glob ${pattern}`);
+  }
+  // Grep reads what its glob picks: only a plain `*.ext` (or a literal name) there, never one that picks key or .env files.
+  for (const glob of ['*.pem', '**/*.key', '.e*', '.env*', 'id_*', '*', '**/*', '*.p?m', '.env', 'id_rsa']) {
+    assert.ok(r('Grep', { pattern: 'x', path: APP, glob }).length > 0, `Grep glob ${glob}`);
+  }
+  for (const glob of ['*.js', '**/*.mjs', 'src/**/*.test.js', 'README.md']) assert.deepEqual(r('Grep', { pattern: 'x', path: APP, glob }), [], glob);
+  // Glob lists names only, so any last part is fine.
+  for (const pattern of ['*', '**/*', 'src/*.{js,ts}', 'a/b/c?.txt']) assert.deepEqual(r('Glob', { pattern, path: APP }), [], pattern);
+});
+
+test('input keys outside each tool\'s short list are Deny-only; so is a hidden character in any parsed field (finding 4)', () => {
+  const r = (tool, input) => denyOnlyReasons({ tool, inputPreview: typeof input === 'string' ? input : JSON.stringify(input) }, strictOpts);
+  const extra = [
+    ['Bash', { command: 'pwd', run_in_background: true }], ['Bash', { command: 'pwd', dangerouslyDisableSandbox: true }],
+    ['Write', { file_path: `${APP}/a`, content: 'x', mode: '0777' }], ['Edit', { file_path: `${APP}/a`, old_string: 'a', new_string: 'b', path: '/x' }],
+    ['Read', { file_path: `${APP}/a`, follow: true }], ['Glob', { pattern: '*', path: APP, root: '/' }], ['Grep', { pattern: 'x', path: APP, '--pre': 'sh' }],
+    ['WebFetch', { url: 'https://github.com/a', prompt: 'p', headers: {} }], ['WebSearch', { query: 'q', site: 'x' }],
+    ['NotebookEdit', { notebook_path: `${APP}/a.ipynb`, new_source: 'x', file_path: '/home/owner/.zshrc' }],
+    ['mcp__plugin_jarvis-channel_jarvis__reply', { text: 'x', path: '/x' }]
+  ];
+  for (const [tool, input] of extra) assert.ok(has(r(tool, input), /is not one this tool is known to take/), `${tool} ${Object.keys(input).join(',')}: ${r(tool, input).join('; ')}`);
+  assert.deepEqual(r('Bash', { command: 'pwd', description: 'where', timeout: 1000 }), []);
+  assert.deepEqual(r('Read', { file_path: `${APP}/a.pdf`, pages: '1-5', allow_large: true }), []);
+  assert.deepEqual(r('WebSearch', { query: 'node test runner', allowed_domains: ['nodejs.org'] }), []);
+  assert.deepEqual(r('mcp__plugin_jarvis-channel_jarvis__reply', { chat_id: 'jos', text: 'hi', reply_to: 'm_1' }), []);
+  assert.deepEqual(r('mcp__plugin_discord_discord__react', { chat_id: '1', message_id: '2', emoji: 'ok' }), []);
+  assert.ok(r('mcp__plugin_discord_discord__reply', { files: ['/home/owner/.ssh/id_rsa'] }).length > 0);
+  assert.ok(has(r('mcp__plugin_discord_discord__reply', { text: 'x', files: ['notes.md'] }), /absolute path/));
+  assert.ok(has(r('mcp__plugin_discord_discord__reply', { text: 'x', files: '/home/owner/a' }), /files/));
+  assert.ok(has(r('Write', { file_path: [`${APP}/a`], content: 'x' }), /absolute path/), 'a path that is not text');
+  // A hidden character written as a JSON escape is not in the preview's own text, only in the parsed field.
+  const escaped = '{"file_path":"/home/owner/Projects/app/a.md","content":"safe \\u202e txt.exe"}';
+  assert.ok(!escaped.includes(cp(0x202e)) && !markerReasons(escaped).length, 'the raw text carries no hidden character');
+  assert.ok(r('Write', escaped).includes('it carries invisible or direction characters'));
+  assert.deepEqual(parsePreview(escaped).fields[1], ['content', 'safe ⟦U+202E⟧ txt.exe'], 'and the card shows it');
+  assert.ok(r('Bash', '{"command":"pwd","description":"a\\u200bb"}').includes('it carries invisible or direction characters'));
+  assert.ok(r('Edit', '{"file_path":"/home/owner/Projects/app/a","old_string":"a","new_string":"b","replace_all":false,"old\\u2066string":"x"}').includes('it carries invisible or direction characters'), 'a key');
+  assert.ok(r('MultiEdit', '{"file_path":"/home/owner/Projects/app/a","edits":[{"old_string":"a","new_string":"b\\u0007"}]}').includes('it carries invisible or direction characters'), 'nested');
+  assert.equal(parsePreview('{"edits":[{"new_string":"b\\u202e"}]}').fields[0][1].includes('⟦U+202E⟧'), true);
+});
+
+test('WebFetch, WebSearch and unknown tools, as before', () => {
   assert.deepEqual(rules('WebFetch', { url: 'https://code.claude.com/docs/en/hooks.md', prompt: 'p' }), []);
-  assert.ok(rules('WebFetch', { url: 'https://code.claude.com/docs?x=1' }).some(r => /query/.test(r)));
-  assert.ok(rules('WebFetch', { url: 'https://evil.example/' }).some(r => /short list of sites/.test(r)));
-  assert.ok(rules('WebFetch', { url: 'http://code.claude.com/' }).some(r => /https/.test(r)));
-  assert.ok(rules('WebFetch', { url: 'https://u:p@github.com/' }).some(r => /https/.test(r)));
+  assert.ok(has(rules('WebFetch', { url: 'https://code.claude.com/docs?x=1' }), /query/));
+  assert.ok(has(rules('WebFetch', { url: 'https://evil.example/' }), /short list of sites/));
+  assert.ok(has(rules('WebFetch', { url: 'http://code.claude.com/' }), /https/));
+  assert.ok(has(rules('WebFetch', { url: 'https://u:p@github.com/' }), /https/));
   assert.deepEqual(rules('WebSearch', { query: 'node test runner' }), []);
-  assert.deepEqual(rules('mcp__plugin_jarvis-channel_jarvis__reply', { chat_id: 'jos', text: 'hi' }), []);
-  assert.ok(rules('mcp__plugin_discord_discord__reply', { files: ['/home/owner/.ssh/id_rsa'] }).length > 0);
-  for (const t of ['TodoWrite', 'Agent', 'mcp__other__tool', 'KillShell']) assert.ok(rules(t, { x: 1 }).some(r => /does not know/.test(r)), t);
+  for (const t of ['TodoWrite', 'Agent', 'mcp__other__tool', 'KillShell']) assert.ok(has(rules(t, { x: 1 }), /does not know/), t);
+});
+
+test('paths: ~ and case are folded, a trailing slash dropped, .. reported, and a link\'s real path judged too', () => {
+  assert.deepEqual(pathForms('~/a/B/', { home: HOME, realpath: noReal }), { relative: false, dotdot: false, forms: ['/home/owner/a/b'] });
+  assert.equal(pathForms('~/a/../B', { home: HOME, realpath: noReal }).dotdot, true, '.. counts in an absolute path too');
+  assert.equal(pathForms('/a/..', { home: HOME, realpath: noReal }).dotdot, true);
+  assert.equal(pathForms('/a/..b/c', { home: HOME, realpath: noReal }).dotdot, false, 'a name that only starts with dots');
+  assert.equal(pathForms('a/../b', { home: HOME, realpath: noReal }).dotdot, true);
+  const link = denyOnlyReasons({ tool: 'Read', inputPreview: JSON.stringify({ file_path: '/home/owner/link/id_x' }) }, { home: HOME, realpath: p => (p === '/home/owner/link' ? '/home/owner/.ssh' : null) });
+  assert.ok(has(link, /\.ssh/), link.join('; '));
+  const protectedReads = ['/home/owner/.CLAUDE/channels/x', '/home/owner/.local/state/jarvis-os/launch.json', '/home/owner/.SSH/config'];
+  for (const p of protectedReads) assert.ok(rules('Read', { file_path: p }).length > 0, p);
 });
 
 test('markers, a preview that will not parse, a cut, and config patterns are Deny-only whatever the tool', () => {
@@ -188,6 +431,9 @@ test('the gate: the kill file turns it off on the next request and both changes 
   const events = [];
   const files = new Set();
   const g = createApprovals({ mode: 'on', killPath: '/k/approvals-off', now: () => clock.t, onEvent: e => events.push(e), exists: p => files.has(p) });
+  assert.equal(g.mode(), 'deny', 'until the channel says it delivers Allow, on counts as deny');
+  assert.equal(g.serverMode(), 'on');
+  g.noteChannelRelay('allow');
   assert.equal(g.mode(), 'on');
   files.add('/k/approvals-off');
   assert.equal(g.mode(), 'off');
@@ -232,15 +478,16 @@ test('the gate: the kill file turns it off on the next request and both changes 
 test('a classifier block in the lead\'s session makes cards Deny-only for 15 minutes; another agent\'s does not; a recent block says why it is asking (M3/M6)', () => {
   const clock = { t: 1794380000000 };
   const g = createApprovals({ mode: 'on', now: () => clock.t, isLead: id => id !== 'other-agent' });
-  const p = { tool: 'Bash', description: 'd', inputPreview: '{"command":"ls"}', state: 'open', denyOnly: [] };
+  g.noteChannelRelay('allow');
+  const p = { tool: 'Read', description: 'd', inputPreview: '{"file_path":"/home/owner/Projects/app/a"}', state: 'open', denyOnly: [] };
   assert.equal(g.view(p).canAllow, true);
-  assert.equal(g.noteBlock({ sessionId: 'other-agent', tool: 'Bash', reason: '[Data Exfiltration]' }), false);
+  assert.equal(g.noteBlock({ sessionId: 'other-agent', tool: 'Read', reason: '[Data Exfiltration]' }), false);
   assert.equal(g.view(p).canAllow, true);
-  assert.equal(g.noteBlock({ sessionId: 'lead', tool: 'Bash', reason: '[Data Exfiltration]' }), true);
+  assert.equal(g.noteBlock({ sessionId: 'lead', tool: 'Read', reason: '[Data Exfiltration]' }), true);
   assert.deepEqual(g.view(p), { mode: 'on', denyOnly: ['auto mode blocked something in the last 15 minutes'], canAllow: false });
   assert.equal(g.status().denyOnlyUntil, clock.t + BLOCK_WINDOW_MS);
-  assert.equal(g.assess(p).why, 'Auto mode refused this Bash call (Data Exfiltration), so Claude Code is asking you');
-  assert.equal(g.assess({ ...p, tool: 'Read' }).why, null, 'only for the same tool');
+  assert.equal(g.assess(p).why, 'Auto mode refused this Read call (Data Exfiltration), so Claude Code is asking you');
+  assert.equal(g.assess({ ...p, tool: 'Glob' }).why, null, 'only for the same tool');
   clock.t += 2 * MIN + 1;
   assert.equal(g.assess(p).why, null, 'only right after the block');
   clock.t += BLOCK_WINDOW_MS - 2 * MIN - 2;
@@ -249,6 +496,36 @@ test('a classifier block in the lead\'s session makes cards Deny-only for 15 min
   assert.equal(g.view(p).canAllow, true);
   assert.equal(g.status().denyOnlyUntil, null);
   assert.equal(createApprovals({ mode: 'deny' }).view(p).canAllow, false, 'never in deny mode');
+});
+
+test('the channel\'s relay mode: unless it says allow, "on" counts as deny here; a change after the first report is an event (finding 5)', () => {
+  const events = [];
+  const g = createApprovals({ mode: 'on', onEvent: e => events.push(e), home: HOME, realpath: noReal });
+  const p = { tool: 'Read', description: 'd', inputPreview: '{"file_path":"/home/owner/Projects/app/a"}', state: 'open', denyOnly: [] };
+  assert.deepEqual(g.view(p), { mode: 'deny', denyOnly: ['the channel has not said it can deliver Allow'], canAllow: false }, 'before any hello');
+  assert.deepEqual(g.status(), { mode: 'deny', relay: 'unknown', denyOnlyUntil: null });
+  for (const said of [undefined, null, '', 'ALLOW', 'on', 1, true, 'off']) {
+    g.noteChannelRelay(said);
+    assert.equal(g.view(p).canAllow, false, String(said));
+    assert.equal(g.mode(), 'deny', String(said));
+  }
+  assert.equal(g.status().relay, 'off');
+  g.noteChannelRelay('deny');
+  assert.deepEqual(g.view(p), { mode: 'deny', denyOnly: ['the channel delivers Deny only'], canAllow: false });
+  assert.deepEqual(g.reasonsNow(p), ['the channel delivers Deny only'], 'the verdict route refuses Allow with this');
+  g.noteChannelRelay('allow');
+  assert.deepEqual(g.view(p), { mode: 'on', denyOnly: [], canAllow: true });
+  assert.deepEqual(g.status(), { mode: 'on', relay: 'allow', denyOnlyUntil: null });
+  g.noteChannelRelay('allow');
+  assert.deepEqual(events.filter(e => e.kind === 'approvals-relay').slice(-2), [{ kind: 'approvals-relay', relay: 'deny', previous: 'off' }, { kind: 'approvals-relay', relay: 'allow', previous: 'deny' }], 'no event for the same mode again');
+  assert.equal(events.filter(e => e.kind === 'approvals-relay')[0].previous, 'unknown', 'none for the first report');
+  // The channel's word never raises the server's own mode.
+  const deny = createApprovals({ mode: 'deny' });
+  deny.noteChannelRelay('allow');
+  assert.equal(deny.mode(), 'deny');
+  const off = createApprovals({ mode: 'off' });
+  off.noteChannelRelay('allow');
+  assert.equal(off.mode(), 'off');
 });
 
 // ---- the store ----
@@ -346,7 +623,10 @@ const call = ({ socketPath, port, method = 'GET', path, headers = {}, body }) =>
 const PAGE_HOST = 'jos.example.test';
 const PAGE = { host: PAGE_HOST, origin: `https://${PAGE_HOST}`, 'sec-fetch-site': 'same-origin' };
 
-async function setup({ mode = 'on' } = {}) {
+async function setup(opts = {}) {
+  const { mode = 'on' } = opts;
+  // An explicit `relay: undefined` is a hello that names no mode.
+  const relay = 'relay' in opts ? opts.relay : 'allow';
   const env = { clock: { t: 1794380000000 }, events: [], files: new Set() };
   env.dir = await mkdtemp(join(tmpdir(), 'appr-'));
   const now = () => env.clock.t;
@@ -374,10 +654,11 @@ async function setup({ mode = 'on' } = {}) {
   env.phone = await pair('phone');
   env.ipad = await pair('ipad');
   env.mark = (device, on) => call({ socketPath: env.adminPath, method: 'POST', path: '/admin/approver', body: { device, on } });
-  const h = await call({ socketPath: env.sockPath, method: 'POST', path: '/v1/hello', body: { pid: 1 } });
+  const h = await call({ socketPath: env.sockPath, method: 'POST', path: '/v1/hello', body: { pid: 1, relay } });
   env.token = h.json.token;
   env.unix = opts => call({ socketPath: env.sockPath, ...opts, headers: { [SESSION_HEADER]: env.token, ...(opts.headers ?? {}) } });
-  env.open = (requestId, preview = { command: 'ls' }, extra = {}) => env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId, tool: 'Bash', description: 'list', inputPreview: JSON.stringify(preview), relayedAt: env.clock.t, ...extra } });
+  // A request the page may allow by default: a Read inside a plain project folder.
+  env.open = (requestId, preview = { file_path: '/home/owner/Projects/app/README.md' }, extra = {}) => env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId, tool: 'command' in preview ? 'Bash' : 'Read', description: 'list', inputPreview: JSON.stringify(preview), relayedAt: env.clock.t, ...extra } });
   env.shown = id => { const p = env.store.permission(id); return shownHash(p.tool, p.description, p.inputPreview); };
   // `shown` defaults to the right hash; passing `shown: undefined` leaves it out.
   env.tap = (id, cookie, behavior, opts = {}) => {
@@ -488,18 +769,47 @@ test('a classifier block in the lead\'s session: Allow is Deny-only for 15 minut
   const env = await setup();
   try {
     await env.mark('phone', true);
-    env.approvals.noteBlock({ sessionId: 'lead', tool: 'Bash', reason: '[Irreversible Local Destruction]' });
+    env.approvals.noteBlock({ sessionId: 'lead', tool: 'Read', reason: '[Irreversible Local Destruction]' });
     await env.open('abcde');
     const st = await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } });
     assert.equal(st.json.approvals.denyOnlyUntil, env.clock.t + BLOCK_WINDOW_MS);
     assert.equal(st.json.openPermission.canAllow, false);
-    assert.equal(st.json.openPermission.why, 'Auto mode refused this Bash call (Irreversible Local Destruction), so Claude Code is asking you');
+    assert.equal(st.json.openPermission.why, 'Auto mode refused this Read call (Irreversible Local Destruction), so Claude Code is asking you');
     assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 403);
     clock(env, BLOCK_WINDOW_MS - 2 * MIN);
     await env.open('fghij');
     clock(env, 2 * MIN);
     assert.equal((await env.tap('fghij', env.phone, 'allow')).status, 200, 'after the window, Allow again');
   } finally { await env.close(); }
+});
+
+test('the channel in deny (or silent about its mode): the card is Deny-only and Allow is refused; a heartbeat carries a change (finding 5)', async () => {
+  for (const relay of ['deny', undefined, 'off', 'yes']) {
+    const env = await setup({ relay });
+    try {
+      await env.mark('phone', true);
+      await env.open('abcde');
+      const st = await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } });
+      assert.equal(st.json.approvals.mode, 'deny', String(relay));
+      assert.equal(st.json.approvals.relay, relay === 'deny' || relay === 'off' ? relay : 'unknown');
+      assert.equal(st.json.openPermission.canAllow, false);
+      assert.ok(st.json.openPermission.denyOnly.some(r => /the channel/.test(r)));
+      const refused = await env.tap('abcde', env.phone, 'allow');
+      assert.equal(refused.status, 403, String(relay));
+      assert.equal(env.store.permission('abcde').state, 'open');
+      // The channel's flags changed while it ran: its next heartbeat says so.
+      assert.equal((await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1, relay: 'allow' } })).status, 200);
+      assert.equal((await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } })).json.openPermission.canAllow, true);
+      // A heartbeat that says nothing changes nothing; one that says deny takes Allow away.
+      assert.equal((await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1 } })).status, 200);
+      assert.equal(env.approvals.mode(), 'on');
+      assert.equal((await env.unix({ method: 'POST', path: '/v1/heartbeat' })).status, 200, 'no body at all');
+      assert.equal(env.approvals.mode(), 'on');
+      await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1, relay: 'deny' } });
+      assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 403);
+      assert.equal((await env.tap('abcde', env.phone, 'deny')).status, 200, 'Deny still works');
+    } finally { await env.close(); }
+  }
 });
 
 test('a hello from a new channel process expires the open requests; the holder\'s own re-hello keeps them (L7)', async () => {

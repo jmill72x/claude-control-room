@@ -281,6 +281,7 @@ if (chatSettings.on && socketsReady) {
       'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`,
       'approver-changed': `${event.device?.name ?? 'a device'} ${event.on ? 'may now allow' : 'may no longer allow'} permissions (by ${event.by})`,
       'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}`,
+      'approvals-relay': `the channel now says its permission relay is ${event.relay === 'allow' ? 'allow (Deny and Allow)' : event.relay === 'deny' ? 'Deny only' : event.relay === 'off' ? 'off' : 'not stated (the page offers Deny only)'}; it was ${event.previous ?? 'unknown'}`,
       'approvals-kill': `the approvals kill file was ${event.on ? 'created: page approvals are off' : 'removed: page approvals follow config again'}`,
       'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
       'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
@@ -290,7 +291,7 @@ if (chatSettings.on && socketsReady) {
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
     if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
-      'approver-changed', 'approvals-mode', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood'].includes(event.kind)) {
+      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
@@ -318,17 +319,19 @@ if (chatSettings.on && socketsReady) {
   for (const problem of approvalSettings.problems) console.error(`config: ${problem}`);
   approvals = createApprovals({
     mode: approvalSettings.mode, patterns: approvalSettings.patterns, killPath: join(stateDir, 'approvals-off'), onEvent: chatEvents,
+    bash: approvalSettings.bash, writeFolders: approvalSettings.writeFolders,
     isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; }
   });
   approvals.killed();
-  console.log(`chat: approvals ${approvals.configured}${approvals.mode() !== approvals.configured ? ' (the kill file holds them off)' : ''}`);
+  // `serverMode` is config and the kill file; `mode` also needs the channel's word, which comes with its hello.
+  console.log(`chat: approvals ${approvals.configured}${approvals.serverMode() !== approvals.configured ? ' (the kill file holds them off)' : ''}; Bash ${approvalSettings.bash === 'strict' ? 'by the strict grammar' : 'Deny-only'}; ${approvalSettings.writeFolders.length} write folder${approvalSettings.writeFolders.length === 1 ? '' : 's'}`);
   // Alerted at every start with approvals on, and at any start whose mode differs from
   // the last start's (kept in data/chat/approvals-mode.json), off included.
   const modePath = join(chatDir, 'approvals-mode.json');
   let lastMode = null;
   try { lastMode = JSON.parse(await readFile(modePath, 'utf8'))?.mode ?? null; } catch { lastMode = null; }
   if (approvals.configured !== 'off' || (lastMode !== null && lastMode !== approvals.configured)) {
-    await chatEvents({ kind: 'approvals-mode', mode: approvals.mode(), previous: lastMode });
+    await chatEvents({ kind: 'approvals-mode', mode: approvals.serverMode(), previous: lastMode });
   }
   if (lastMode !== approvals.configured) await writeFile(modePath, JSON.stringify({ mode: approvals.configured }), { mode: 0o600 }).catch(err => console.error(`chat: could not note the approvals mode (${err?.code ?? err})`));
   const socketRouter = createSocketRouter({ store: chatStore, events, approvals, onEvent: chatEvents, verifyRestart: createChannelVerifier({ channelServer: channelServer.path, launchPath }), verifyEveryHello: Boolean(channelServer.path) });

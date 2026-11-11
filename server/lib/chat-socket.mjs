@@ -253,6 +253,10 @@ export function createSocketRouter({
         // A new channel process: the requests the old one relayed can't be answered
         // through this one (L7). The holder's own re-hello keeps them.
         if (!holder) store.newPermissionSession?.();
+        // What the channel says its permission relay does (off, deny or allow); one
+        // that doesn't say counts as unknown, and the page then offers Deny only.
+        const relay = approvals?.noteChannelRelay?.(body.relay) ?? null;
+        if (relay !== null && approvals.serverMode?.() !== 'off') log(`chat: the channel's permission relay is ${relay}`);
         if (silenceTimer !== null) { clearTimer(silenceTimer); silenceTimer = null; }
         if (byeAt !== null) {
           // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.
@@ -294,6 +298,11 @@ export function createSocketRouter({
       }
       if (req.method === 'POST' && path === '/v1/heartbeat') {
         client.lastHeartbeatAt = now();
+        // A heartbeat may carry the relay mode too, so a flag removed while the
+        // channel runs reaches the page within one beat. One without it changes nothing.
+        let beat = null;
+        try { beat = await readBody(req); } catch { beat = null; }
+        if (isObject(beat) && 'relay' in beat) approvals?.noteChannelRelay?.(beat.relay);
         return json(res, 200, { ok: true, openPermissions: store.openPermissions().length });
       }
       if (req.method === 'GET' && path === '/v1/inbound') {

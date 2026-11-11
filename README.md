@@ -968,7 +968,19 @@ send Deny or Allow once. Everything here is off until three switches agree:
   `~/.local/state/jarvis-os/approvals-enabled` exists (then `deny`: the channel relays
   and delivers only Deny), and it is `allow` only when the second flag `approvals-allow`
   exists too. Only the owner creates the flags; the server's mode alone can never let
-  Allow through.
+  Allow through. From 0.4.4 the channel also reads the two flags itself (the variable
+  alone turns nothing on, and a flag removed while it runs counts at once), and it tells
+  the server its mode: `relay` (`off`, `deny` or `allow`) in `POST /v1/hello` and in every
+  heartbeat. Unless the channel says `allow`, the server treats `"on"` as `"deny"`: cards
+  are Deny-only ("the channel delivers Deny only"), an Allow is refused with 403, and
+  `/api/chat/status` reports `approvals: { mode: "deny", relay: "deny" }`. A channel
+  that names no mode (0.4.3 and older) counts as `unknown`, so Allow needs the 0.4.4
+  channel. A change in what the channel reports is alerted.
+
+Two more config keys narrow what Allow can cover, both cautious by default (see Deny-only
+below): `chat.approvalsBash` (`"deny"`, or `"strict"`) and `chat.approvalsWriteFolders`
+(a list of folders; none unless set). At each start the log says
+`chat: approvals <mode>; Bash Deny-only; N write folders`.
 
 **A request** (`POST /v1/permission-request {requestId, tool, description, inputPreview,
 relayedAt, cut}` from the channel) keeps each field whole up to 16,100 code points (Claude
@@ -989,7 +1001,7 @@ parsed from its JSON, the command, file path or address first, each in a monospa
 that wraps, never cut by the page; then the description under "Jarvis's own summary", in a
 quieter style. Every field is a text node, never Markdown or a link. When a classifier
 block for the same tool came just before (see the hook below), the card says why it is
-asking ("Auto mode refused this Bash call (Data Exfiltration), so Claude Code is asking
+asking ("Auto mode refused this Read call (Data Exfiltration), so Claude Code is asking
 you"). Deny is one tap; Allow once is a two-step press ("Tap again to allow", 4 s). A
 Deny-only card shows its reasons and "Allow this one at the terminal or in Discord" in
 place of Allow. After a tap it reads "Deny sent from <device> at 14:02. Claude Code uses
@@ -1003,29 +1015,75 @@ order: the write guard; the mode (off answers 403 to anyone); the device cookie 
 verdicts for 10 minutes, alerted); its limits (6 a minute, 30 an hour); the `Origin`
 (required, `https`, one of `allowedHosts`) and `Sec-Fetch-Site` (when sent,
 `same-origin`); `shown`, the sha256 of `JSON.stringify([tool, description, inputPreview])`
-as delivered, which must match; for Allow, mode `on`, the device's approver mark, and no
-Deny-only reason at that moment. Every refusal changes nothing. The verdict line carries
+as delivered, which must match; for Allow, mode `on` (with a channel that reports
+`allow`), the device's approver mark, and no Deny-only reason at that moment. Every refusal changes nothing. The verdict line carries
 `answeredAt`, the tool, the hash and whether the request was Deny-only; the channel's
 inbound stream sends a verdict only when it is the owner's and names its request, and the
 channel drops one older than 120 s. More than 3 allows in 5 minutes, or more than 5 open
 requests at once (which also makes cards Deny-only for 10 minutes), are alerted.
 
 **Deny-only (`server/lib/approvals.mjs`, `denyOnlyReasons`)** is an allowlist, not a
-security boundary: it makes the riskiest requests need the terminal or Discord. Allow may
-be offered only when none of these holds: a field carries an elision, `[REDACTED]`,
-`(value unserializable)` or a cut; the preview isn't a JSON object; config's
-`chat.approvalsDenyOnly` patterns match; Bash is anything but one plain command (no
-`` ; | & $ ` > < ( ) ``, newline, quotes, backslash, globs or braces, no `-c`, `--output`,
-`--pre`) whose first word is one of `ls cat head tail wc grep rg diff stat file pwd date
-echo touch mkdir which du df` or `git status|diff|log|show|rev-parse`; any path named
-(normalised for `~`, `..`, case and the real path of its parent; a relative path with `..`
-is out) is under `.claude/`, `.mcp.json`, `.git/`, `.github/workflows`,
-`machine-setup/git-hooks`, `~/Projects/jarvis/`, `server/config.json`, `bin/chat-pair`,
-`~/.local/state/jarvis-os/`, `~/.ssh`, a shell startup file (`~/.zshenv` and the rest),
-`~/Library/LaunchAgents` or a system folder; Edit, Write and NotebookEdit the same, with
-an absolute path; Read, Glob and Grep of the channels folder, `~/.ssh`, `.env` files or
-keys; WebFetch of anything but a plain `https` address with no query string on a short
-list of documentation sites; and any tool not named here. The page can Deny anything.
+security boundary: it makes the riskiest requests need the terminal or Discord. The page
+can Deny anything. Allow may be offered only when none of these holds:
+
+- **Anything hidden or unreadable.** A field carries an elision, `[REDACTED]`,
+  `(value unserializable)` or a cut; the preview isn't a JSON object; a parsed field (its
+  name, or any text nested in it) carries an invisible or direction character, also when
+  the preview's text held it only as a JSON escape; config's `chat.approvalsDenyOnly`
+  patterns match.
+- **An input the tool isn't known to take.** Each tool has a short list (`TOOL_KEYS`:
+  Bash takes `command`, `description`, `timeout`; Write takes `file_path`, `content`; and
+  so on); any other key is Deny-only.
+- **Anything outside printable ASCII** in a Bash command, a path, a Glob pattern or a Grep
+  glob. The disk folds letters JavaScript doesn't (APFS reads the long s, U+017F, as "s"),
+  so such a name can't be judged here. File content and search text are not paths and stay
+  free.
+- **Bash,** by default (config `chat.approvalsBash`, `"deny"` unless set). Claude Code folds
+  each run of whitespace in a relayed preview to one space, so a two-line command can
+  arrive looking like one plain command, and no rule over the text alone can tell
+  `cat a b` from `cat a` then `b`. With `"strict"` the grammar in `bashGrammar` applies
+  instead: no shell syntax (`` ; | & $ ` > < ( ) ``, line breaks, tabs, quotes,
+  backslashes, globs, braces); a command on the list (`pwd date ls cat head tail wc stat
+  file du df diff touch mkdir`, and `git [-C <path>] status|diff|log|show|rev-parse`);
+  only that command's own options, exactly spelled (so no `--output=…`, no `-f/path`);
+  every other word an absolute path that passes the path rules below and is not a file
+  that can be run; for git, only `HEAD`, `HEAD~N` or a commit id beside the options.
+  Commands that take a free word (grep, rg, echo, which) are not on the list. What strict
+  leaves open: a file made runnable between the check and the run, a number or commit id
+  that is also a command on the path, and git reading a repo's own config. Keep `"deny"`
+  until a scratch session has shown how a multi-line command is relayed (design §9.2,
+  A1-F).
+- **A write outside the write folders.** Write, Edit, MultiEdit and NotebookEdit (and
+  `touch`/`mkdir` under strict) need an absolute path inside one of config's
+  `chat.approvalsWriteFolders`, by the path as written and by its real path (symlinks).
+  The default is no folders: no page Allow for any write. An entry must be absolute (or
+  `~/…`), plain ASCII, without `..` or wildcards, and narrower than the home folder; a bad
+  one is dropped with a `config:` line. At most 40.
+- **A protected place, even inside a write folder** (the second layer): `.claude/`,
+  `.mcp.json`, `.git/`, `.worktrees/`, `.github/workflows`, `machine-setup`,
+  `~/Projects/jarvis/`, this repo's `server/`, `web/`, `bin/` and `mod/`,
+  `server/config.json`, `bin/chat-pair`, a shell startup file (`~/.zshenv` and the rest),
+  the flag names `approvals-*`, `channel-enabled` and `*-off` in any folder,
+  `~/Library/LaunchAgents` or a system folder. Under strict, a Bash command that only
+  names one of these is Deny-only too.
+- **A private place, for reads as well as writes:** `~/.claude/channels/`, `~/.ssh`,
+  `~/.local/state/jarvis-os/`, `.env` files, keys and credential files, `~/.claude.json`,
+  `~/.gitconfig`, `~/.config/git`, `~/.config/gh`, `~/.cloudflared`, `~/.aws`, `~/.docker`,
+  `~/.local/bin`, `/opt/homebrew`, `~/.tmux.conf`; and any folder that holds one of them
+  (`~`, `~/.config`, `/`), since a search rooted there would reach it.
+- **A path that can't be pinned down:** relative (Read, the write tools and a channel
+  tool's `files` need an absolute path), or with a `..` part anywhere. Paths are compared
+  lower-cased, with `~` resolved and the real path of the deepest existing parent
+  (`realpathSync.native`, which answers each name as the disk stores it).
+- **Glob and Grep** without an absolute, literal folder in `path` (the session's working
+  folder isn't known here); with a wildcard in that folder; or with a pattern (Glob) or
+  glob (Grep) that is absolute, has a wildcard in a folder name (a whole `**` is fine), or
+  names a private place. Grep reads what its glob picks, so there the last part must be a
+  literal name or `*.ext`, and not one that picks key files. A Grep rooted in a project
+  folder can still read an `.env` inside it: the page can't see the folder's contents.
+- **WebFetch** of anything but a plain `https` address with no query string on a short
+  list of documentation sites; **any tool not named here.**
+
 After a classifier block in the lead's session, every card is Deny-only for 15 minutes.
 
 **Approvers.** Every paired device sees cards and may Deny; only a device with the
