@@ -777,3 +777,14 @@ button:disabled { cursor: default; }
   .o-chat-row { animation: o-chat-in 180ms ease-out; }
   @keyframes o-chat-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 }
+
+/* Files beyond photos (2026-11-11): a PDF chip that downloads, and the drop target. */
+.o-chat-pdf { color: inherit; text-decoration: none; min-height: 44px; box-sizing: border-box; max-width: 300px; }
+.o-chat-pdf:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
+.o-chat-pdf-icon { flex: 0 0 auto; }
+.o-chat-pdf-name { overflow-wrap: anywhere; }
+.o-chat-pdf-size { color: var(--c-sub); white-space: nowrap; }
+.o-chat-mine .o-chat-pdf-size { color: var(--c-mine-sub); }
+.o-chat-thread-page { position: relative; }
+.o-chat-dropzone { position: fixed; inset: 8px; z-index: 30; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--c-focus); border-radius: 16px; background: var(--c-composer); color: var(--c-heading); pointer-events: none; }
+.o-chat-mine .o-chat-pdf { background: rgba(255, 255, 255, 0.12); }

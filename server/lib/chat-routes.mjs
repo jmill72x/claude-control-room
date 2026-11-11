@@ -11,14 +11,29 @@
 // process can forge it. The chat runs only with `chat.login` set and the Host check
 // enforcing (`readChatConfig`, the 2026-11-11 review, 3 and 4).
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
-import { publicMessage, isMessageId, isClientId, isAttachmentId, isRequestId, MAX_PAGE_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
+import { publicMessage, isMessageId, isClientId, isAttachmentId, isRequestId, sniffType, MAX_PAGE_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { COOKIE_NAME, PAIR_COOKIE_NAME, COOKIE_MAX_AGE_S, PAIR_CODE_TTL_MS, cookieHeader, clearCookieHeader, cleanName } from './chat-devices.mjs';
 import { HEARTBEAT_FRESH_MS } from './chat-socket.mjs';
 import { readFile } from 'node:fs/promises';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
-export const PAGE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic']);
+// What the page may upload: photos, and PDFs (never text: the channel refuses it
+// from the page's side on purpose). Each is sniffed by its first bytes.
+export const PAGE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'application/pdf']);
+
+// How a file is served to the page. A photo shows inline in the thread; a PDF is
+// always a download, never rendered at this origin: a PDF can carry script and
+// forms, and a PDF viewer is a large parser, so `attachment` keeps it out of the
+// page's origin altogether (a sandboxing policy alone would also stop Chromium's
+// own viewer, so inline-and-sandboxed buys nothing over it). The name is ASCII in
+// `filename` and whole in `filename*`.
+export function dispositionFor(a) {
+  if (a?.type !== 'application/pdf') return 'inline';
+  const name = String(a.name ?? 'file.pdf');
+  const ascii = name.replace(/[^A-Za-z0-9 ._()-]/g, '_').slice(0, 120) || 'file.pdf';
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
 const PENDING_UPLOAD_MS = 3600e3;
 const MAX_ATTACHMENTS = 4;
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -202,11 +217,15 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         guardDelete(req);
         const device = requireDevice(req);
         const type = String(req.headers?.['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-        if (!PAGE_ATTACHMENT_TYPES.has(type)) throw new HttpError(415, 'an upload is a jpeg, png, webp or heic image');
+        if (!PAGE_ATTACHMENT_TYPES.has(type)) throw new HttpError(415, 'an upload is a jpeg, png, webp or heic image, or a pdf');
         const data = await readRaw(req, ATTACHMENT_MAX_BYTES);
+        // Sniffed before anything is written: the bytes decide, and a photo must
+        // say photo and a PDF say PDF (`%PDF-`), never one dressed as the other.
+        const sniffed = sniffType(data);
+        if (!PAGE_ATTACHMENT_TYPES.has(sniffed)) throw new HttpError(415, 'the file is not an image or a pdf');
+        if ((sniffed === 'application/pdf') !== (type === 'application/pdf')) throw new HttpError(415, 'the file is not what its type says');
         let a;
-        try { a = await store.putAttachment({ name: url.searchParams.get('name') ?? 'photo', type, data }); } catch (err) { throw new HttpError(err.status ?? 400, err.message); }
-        if (!PAGE_ATTACHMENT_TYPES.has(a.type)) throw new HttpError(415, 'the file is not an image');
+        try { a = await store.putAttachment({ name: url.searchParams.get('name') ?? (sniffed === 'application/pdf' ? 'file.pdf' : 'photo'), type, data }); } catch (err) { throw new HttpError(err.status ?? 400, err.message); }
         const at = now();
         for (const [id, up] of pendingUploads) if (at - up.at > PENDING_UPLOAD_MS) pendingUploads.delete(id);
         pendingUploads.set(a.id, { attachment: a, at, deviceId: device.id });
@@ -226,7 +245,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         try { data = await readFile(store.attachmentPath(att[1])); } catch { throw new HttpError(410, 'the file is gone'); }
         // no-store, like the rest of the chat: a device that is revoked or lost keeps
         // no copy of a photo in its cache, and a re-read over the tailnet is cheap.
-        res.writeHead(200, { 'Content-Type': a.type, 'Content-Length': data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+        res.writeHead(200, { 'Content-Type': a.type, 'Content-Length': data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': dispositionFor(a), 'Cache-Control': 'private, no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
         return res.end(data);
       }
 

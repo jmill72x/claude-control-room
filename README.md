@@ -676,9 +676,13 @@ three pieces, each with its own router:
   pairing that was approved but not yet collected, and a device revoking itself gets its
   `__Host-jos` cookie cleared), the messages
   (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId` dedup), uploads (`POST
-  /api/chat/attachments` with raw image bytes, `GET /api/chat/attachments/<id>` served
-  inline with nosniff, a sandboxing policy and `Cache-Control: private, no-store`, like
-  the rest of the chat; an upload not yet on a message can be attached, and read back,
+  /api/chat/attachments` with the raw bytes of a png, jpeg, webp or heic photo or a PDF,
+  sniffed before anything is written, a PDF by `%PDF-`, and refused when the declared type
+  and the bytes disagree; never text from the page; 10 MB; four files a message across
+  photos and PDFs; `GET /api/chat/attachments/<id>` served with nosniff, a sandboxing
+  policy and `Cache-Control: private, no-store`, like the rest of the chat: a photo
+  `inline`, a PDF always as `attachment` with its name, so no PDF is ever rendered at the
+  page's origin; an upload not yet on a message can be attached, and read back,
   only by the device that sent it), the stream (`GET /api/chat/stream`, SSE: a `status`
   event first, then a replay after `Last-Event-ID` or `?after=` with the seq as each
   event's id, then live `message`, `edit`, `state`, `permission` and `permission-closed`
@@ -711,8 +715,12 @@ three pieces, each with its own router:
   stream starts with no cards (the server replays the open requests), and a `status` that
   counts no open request drops any card still showing as open. The composer is a growing
   box (Enter sends with a keyboard, a new line on a touch screen, where the Send button
-  sends; Shift+Enter is a new line everywhere), a reply-to line, and a photo picker
-  (`accept="image/*"`): each photo is decoded with `createImageBitmap`, drawn on a canvas at
+  sends; Shift+Enter is a new line everywhere), a reply-to line, and a paperclip that picks
+  photos or PDFs (`accept="image/*,application/pdf"`); pasting a file into the box (a
+  screenshot, a copied photo or PDF) or dropping one anywhere on the thread attaches it the
+  same way, a text paste or a dragged text stays text, and a note names what was left out
+  (not a photo or PDF, a PDF over 10 MB, past four files). A PDF goes up as it is and shows
+  as a chip (name, size) that downloads. Each photo is decoded with `createImageBitmap`, drawn on a canvas at
   a 1568 px long edge, encoded as JPEG at 0.85 and uploaded raw to `/api/chat/attachments`
   before the message is sent with the ids; no `blob:` or `data:` URL is ever made (the policy
   allows neither), so the composer shows the file's name, size and new dimensions, and the

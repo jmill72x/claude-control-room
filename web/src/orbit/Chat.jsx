@@ -3,10 +3,11 @@ import { useMediaQuery } from '../hooks/useMediaQuery.js';
 import { useReducedMotion } from './useReducedMotion.js';
 import { Avatar } from './Avatar.jsx';
 import { attachmentUrl } from './chatApi.js';
-import { preparePhoto } from './photo.js';
+import { prepareFile } from './photo.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
+  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -116,7 +117,22 @@ function Thread({ chat, now, lead, onSettings }) {
   const keep = useRef(null);        // scrollHeight before an older page, to hold the view
   const lastSeqRef = useRef(null);
   const firstRef = useRef(true);
+  const addRef = useRef(null);      // the composer's way in for a dropped file
+  const [dragging, setDragging] = useState(0);
   const rows = threadRows(messages, now);
+
+  // A file dropped anywhere on the thread or the composer joins the message, as
+  // if picked. Only a drag that carries files is taken; dragged text is left to
+  // the box. The counter rides out the enter/leave pairs of the children.
+  const onDragEnter = e => { if (!dragHasFiles(e.dataTransfer)) return; e.preventDefault(); setDragging(n => n + 1); };
+  const onDragOver = e => { if (!dragHasFiles(e.dataTransfer)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
+  const onDragLeave = e => { if (!dragHasFiles(e.dataTransfer)) return; setDragging(n => Math.max(0, n - 1)); };
+  const onDrop = e => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    setDragging(0);
+    addRef.current?.(transferFiles(e.dataTransfer));
+  };
 
   // Keep the view where it was when older history lands above it.
   useLayoutEffect(() => {
@@ -159,7 +175,8 @@ function Thread({ chat, now, lead, onSettings }) {
   const cards = [...chat.permissions.values()].map(p => permissionView(p, now)).filter(p => p && p.view !== 'closed');
 
   return (
-    <div className="o-chat o-chat-thread-page">
+    <div className={`o-chat o-chat-thread-page${dragging > 0 ? ' o-chat-dropping' : ''}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {dragging > 0 && <div className="o-chat-dropzone" aria-hidden="true"><span>Drop to attach (photos and PDFs)</span></div>}
       <div className="o-chat-wrap">
         <div className={`o-chat-banner o-chat-banner-${banner.tone}`} role="status">
           <span className="o-chat-banner-dot" aria-hidden="true" />
@@ -184,7 +201,7 @@ function Thread({ chat, now, lead, onSettings }) {
               {cards.map(p => <PermissionCard key={p.requestId} p={p} chat={chat} now={now} />)}
             </div>
           )}
-          <Composer chat={chat} coarse={coarse} replyTo={quoted(messages, replyTo)} onClearReply={() => setReplyTo(null)} />
+          <Composer chat={chat} coarse={coarse} replyTo={quoted(messages, replyTo)} onClearReply={() => setReplyTo(null)} addRef={addRef} />
         </div>
       </div>
       {viewing && <ImageViewer attachment={viewing} onClose={() => setViewing(null)} />}
@@ -214,8 +231,12 @@ function Row({ m, list, lead, chat, onReply, onView }) {
         {m.attachments?.length > 0 && (
           <div className="o-chat-photos">
             {m.attachments.map((a, i) => (a.id && !pending
-              ? <button key={a.id} type="button" className="o-chat-photo" onClick={() => onView(a)} aria-label={`Open ${a.name}`}><img src={attachmentUrl(a.id)} alt={a.name} loading="lazy" /></button>
-              : <span key={a.id ?? i} className="o-chat-file">{a.name} · {fileSize(a.bytes)}{pending && !m.failed ? ' · uploading…' : ''}</span>))}
+              ? (a.type === PDF_TYPE
+                // A PDF is a chip that downloads (the server sends it as an
+                // attachment), never rendered in the page.
+                ? <a key={a.id} className="o-chat-file o-chat-pdf" href={attachmentUrl(a.id)} download={a.name} aria-label={`Download ${a.name}, PDF, ${fileSize(a.bytes)}`}><PdfIcon /><span className="o-chat-pdf-name">{a.name}</span><span className="o-chat-pdf-size">{fileSize(a.bytes)}</span></a>
+                : <button key={a.id} type="button" className="o-chat-photo" onClick={() => onView(a)} aria-label={`Open ${a.name}`}><img src={attachmentUrl(a.id)} alt={a.name} loading="lazy" /></button>)
+              : <span key={a.id ?? i} className="o-chat-file">{a.type === PDF_TYPE && <PdfIcon />}{a.name} · {fileSize(a.bytes)}{pending && !m.failed ? ' · uploading…' : ''}</span>))}
           </div>
         )}
         {m.text && <p className="o-chat-text">{m.text}</p>}
@@ -282,11 +303,13 @@ function PermissionCard({ p, chat, now }) {
   );
 }
 
+const PdfIcon = () => (
+  <svg className="o-chat-pdf-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.8h8l4.2 4.2V20a1.2 1.2 0 0 1-1.2 1.2H6A1.2 1.2 0 0 1 4.8 20V4A1.2 1.2 0 0 1 6 2.8Z M14 2.8V7h4.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M8 13h8M8 16.5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+);
+
 // ---- the composer ----
 
-const MAX_FILES = 4;
-
-function Composer({ chat, coarse, replyTo, onClearReply }) {
+function Composer({ chat, coarse, replyTo, onClearReply, addRef }) {
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
   const [preparing, setPreparing] = useState(0);
@@ -318,22 +341,45 @@ function Composer({ chat, coarse, replyTo, onClearReply }) {
     // Enter makes a new line. Shift+Enter is a new line everywhere.
     if (e.key === 'Enter' && !e.shiftKey && !coarse && !e.nativeEvent?.isComposing) { e.preventDefault(); send(); }
   };
-  const pick = async e => {
-    const picked = [...(e.target.files ?? [])].slice(0, MAX_FILES - files.length);
-    e.target.value = '';
-    if (picked.length === 0) return;
-    setNote(null);
-    setPreparing(n => n + picked.length);
-    for (const f of picked) {
+  // Picked, pasted or dropped, a file goes the same way: photos are resized to a
+  // JPEG, PDFs go as they are, four at most across both (those still being
+  // prepared count too), and what was left out is said.
+  const heldRef = useRef(0);
+  heldRef.current = files.length + preparing;
+  const addFiles = useCallback(async list => {
+    const { take, note: left } = intake(list, heldRef.current);
+    setNote(left);
+    if (take.length === 0) return;
+    heldRef.current += take.length;
+    setPreparing(n => n + take.length);
+    for (const { file, kind } of take) {
       try {
-        const ready = await preparePhoto(f);
-        setFiles(list => (list.length < MAX_FILES ? [...list, ready] : list));
+        const ready = await prepareFile(file, kind);
+        setFiles(have => (have.length < MAX_FILES ? [...have, ready] : have));
       } catch (err) {
-        setNote(`Couldn't read ${f.name}: ${err?.message ?? err}`);
+        setNote(`Couldn't read ${file.name}: ${err?.message ?? err}`);
       } finally {
         setPreparing(n => n - 1);
       }
     }
+  }, []);
+  useEffect(() => {
+    if (!addRef) return undefined;
+    addRef.current = addFiles;
+    return () => { addRef.current = null; };
+  }, [addRef, addFiles]);
+  const pick = e => {
+    const picked = [...(e.target.files ?? [])];
+    e.target.value = '';
+    if (picked.length > 0) addFiles(picked);
+  };
+  // A paste that holds a file (a screenshot, a copied photo or PDF) attaches it;
+  // a text paste goes into the box as ever.
+  const onPaste = e => {
+    const pasted = transferFiles(e.clipboardData);
+    if (pasted.length === 0) return;
+    e.preventDefault();
+    addFiles(pasted);
   };
 
   return (
@@ -346,24 +392,24 @@ function Composer({ chat, coarse, replyTo, onClearReply }) {
         </div>
       )}
       {(files.length > 0 || preparing > 0) && (
-        <ul className="o-chat-files" aria-label="Photos to send">
+        <ul className="o-chat-files" aria-label="Files to send">
           {files.map((f, i) => (
             <li key={`${f.name}-${i}`} className="o-chat-file">
-              <span>{f.name} · {fileSize(f.blob.size)}{f.width ? ` · ${f.width}×${f.height}` : ''}</span>
+              <span>{f.kind === 'pdf' && <PdfIcon />}{f.name} · {fileSize(f.blob.size)}{f.width ? ` · ${f.width}×${f.height}` : ''}</span>
               <button type="button" className="o-chat-iconbtn" aria-label={`Remove ${f.name}`} onClick={() => setFiles(list => list.filter((_, j) => j !== i))}>×</button>
             </li>
           ))}
-          {preparing > 0 && <li className="o-chat-file o-chat-sub">Preparing {preparing} photo{preparing > 1 ? 's' : ''}…</li>}
+          {preparing > 0 && <li className="o-chat-file o-chat-sub">Preparing {preparing} file{preparing > 1 ? 's' : ''}…</li>}
         </ul>
       )}
       {note && <p className="o-chat-sub" role="alert">{note}</p>}
       <div className="o-chat-composer-row">
-        <input ref={fileRef} type="file" accept="image/*" multiple className="o-chat-filepick" onChange={pick} aria-label="Choose photos" tabIndex={-1} />
-        <button type="button" className="o-chat-iconbtn o-chat-attach" aria-label="Attach a photo" disabled={files.length >= MAX_FILES} onClick={() => fileRef.current?.click()}>
-          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7a2 2 0 0 1 2-2h2l1.2-1.6h5.6L16 5h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" strokeWidth="1.7" /><circle cx="12" cy="12.5" r="3.4" fill="none" stroke="currentColor" strokeWidth="1.7" /></svg>
+        <input ref={fileRef} type="file" accept={ACCEPT} multiple className="o-chat-filepick" onChange={pick} aria-label="Choose photos or PDFs" tabIndex={-1} />
+        <button type="button" className="o-chat-iconbtn o-chat-attach" aria-label="Attach a photo or PDF" disabled={files.length + preparing >= MAX_FILES} onClick={() => fileRef.current?.click()}>
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11.2 12.3 19.4a5 5 0 0 1-7.1-7.1l8.5-8.5a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.8 1.8 0 0 1-2.5-2.5l7.8-7.8" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>
         <textarea ref={areaRef} className="o-input o-chat-area" rows={1} value={text} maxLength={MAX_TEXT} placeholder={offline ? 'Message (waits for Jarvis)' : 'Message'}
-          aria-label="Message" enterKeyHint={coarse ? 'enter' : 'send'} onChange={e => setText(e.target.value)} onKeyDown={onKey} />
+          aria-label="Message" enterKeyHint={coarse ? 'enter' : 'send'} onChange={e => setText(e.target.value)} onKeyDown={onKey} onPaste={onPaste} />
         <button type="button" className="o-cbtn o-cbtn-primary o-chat-send" disabled={!canSend} onClick={send} aria-label="Send">
           <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10 17 3l-3.2 14-4.3-5.2Zm7 1.8L13 15l2-9.4-9.6 4.6Z" /></svg>
           <span>Send</span>

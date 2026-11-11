@@ -1,4 +1,4 @@
-import { resizeTarget, PHOTO_QUALITY } from '../lib/orbit/chat.js';
+import { resizeTarget, PHOTO_QUALITY, PDF_TYPE } from '../lib/orbit/chat.js';
 
 // A picked photo, made ready to send (jarvis-os-chat-spec.md, §2.5): decoded,
 // drawn on a canvas at a 1568 px long edge and encoded as JPEG at 0.85. No
@@ -22,4 +22,13 @@ export async function preparePhoto(file) {
   } finally {
     bitmap?.close?.();
   }
+}
+
+// A file made ready to send, by its kind (`fileKind`): a photo as above; a PDF as
+// it is, typed as a PDF even when a drag brought it with no type, so the upload's
+// Content-Type matches what the server sniffs.
+export async function prepareFile(file, kind) {
+  if (kind !== 'pdf') return preparePhoto(file);
+  const blob = file.type === PDF_TYPE ? file : new Blob([file], { type: PDF_TYPE });
+  return { name: file.name || 'file.pdf', blob, width: null, height: null, originalBytes: file.size, kind: 'pdf' };
 }

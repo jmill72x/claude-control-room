@@ -183,6 +183,61 @@ export function fileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// ---- files to send: picked, pasted or dropped ----
+
+export const MAX_FILES = 4;                    // per message, photos and PDFs together
+export const FILE_MAX_BYTES = 10 * 1024 * 1024; // the server's cap
+export const PDF_TYPE = 'application/pdf';
+export const ACCEPT = 'image/*,application/pdf';
+
+// What a file goes up as: a `photo` (resized to a JPEG first), a `pdf` (sent as
+// is), or null (refused here: no text or other files from the page). A file from
+// a drag can come with no type at all, so its name decides then.
+export function fileKind(file) {
+  if (!file) return null;
+  const type = String(file.type ?? '').toLowerCase();
+  const name = String(file.name ?? '');
+  if (type.startsWith('image/')) return 'photo';
+  if (type === PDF_TYPE) return 'pdf';
+  if (type === '' && /\.pdf$/i.test(name)) return 'pdf';
+  if (type === '' && /\.(heic|heif)$/i.test(name)) return 'photo';
+  return null;
+}
+
+// The files a paste or a drop carries (a DataTransfer): `files` when the browser
+// fills it, else the file items. An empty list means a plain text paste, which
+// the box handles as ever.
+export function transferFiles(dt) {
+  if (!dt) return [];
+  const files = [...(dt.files ?? [])];
+  if (files.length > 0) return files;
+  return [...(dt.items ?? [])].filter(i => i?.kind === 'file').map(i => i.getAsFile?.()).filter(Boolean);
+}
+
+// Whether a drag carries files at all (dragover can't read them yet, only the types).
+export const dragHasFiles = dt => [...(dt?.types ?? [])].includes('Files');
+
+// Which of `files` to take, given how many are already on the message (`held`,
+// counting those still being prepared): photos and PDFs only, a PDF under 10 MB,
+// at most four in all. `note` says what was left out, or is null.
+export function intake(files, held = 0) {
+  const take = [];
+  let wrongType = 0, tooBig = 0, overCap = 0;
+  for (const f of files ?? []) {
+    const kind = fileKind(f);
+    if (!kind) { wrongType++; continue; }
+    if (kind === 'pdf' && f.size > FILE_MAX_BYTES) { tooBig++; continue; }
+    if (held + take.length >= MAX_FILES) { overCap++; continue; }
+    take.push({ file: f, kind });
+  }
+  const parts = [];
+  if (wrongType) parts.push(`only photos and PDFs can be sent (${wrongType} left out)`);
+  if (tooBig) parts.push(`a PDF must be under 10 MB (${tooBig} left out)`);
+  if (overCap) parts.push(`at most ${MAX_FILES} files a message (${overCap} left out)`);
+  const note = parts.length ? parts.join('; ').replace(/^./, c => c.toUpperCase()) + '.' : null;
+  return { take, note };
+}
+
 // ---- the thread's rows ----
 
 // Messages with a day line before the first of each day: Today, Yesterday, or

@@ -474,7 +474,17 @@ branch:** a paired device can't start a pairing and its pairing cookie is cleare
 can't mint a device after a revoke); a device revoking itself gets `__Host-jos` cleared;
 each stream starts with no cards and a `status` with `openPermissions: 0` drops open ones;
 offline wins over "waiting on you"; `unpaired()` clears the thread, cards and status; a 403
-or 404 after the stream gave up stops the 3 s reopen loop with its phase. **Left for later:** a "Start over" on a pairing resumed
+or 404 after the stream gave up stops the 3 s reopen loop with its phase. **Files beyond photos
+(Jeff's ask before launch, same branch):** paste an image or PDF into the box, drop one on the
+thread, and a paperclip that picks photos or PDFs; four files a message across both; the
+server takes `application/pdf` from the page (sniffed by `%PDF-`, 10 MB, device-bound like a
+photo, never text) and serves a PDF as `attachment` (a download: nothing PDF renders at the
+page's origin; inline with `sandbox` would also stop Chromium's own viewer), the thread shows
+it as a chip with name and size. The channel already fetches a pdf over `/v1/attachment`
+unchanged (its `sniffKind` matches `%PDF-`; a server test fetches one the way it does; the
+channel's own e2e suite was not run). Checks: 57 of 57 at 390 px in light and dark (paste,
+PDF, drop, the four-file cap, the 404 stop, the self-revoke clearing the cookie); Safari and
+iPad drag and drop are not verified. Tests now: 698 server (local time and Tokyo), 122 web. **Left for later:** a "Start over" on a pairing resumed
 after a reload can't start a new one until the pending code expires (the server allows one
 pending at a time, 10 minutes); the Chat tab mounts its stream only while open, so a message
 arriving on another tab shows nothing until Web Push (C6); the playwright-cli on the mini

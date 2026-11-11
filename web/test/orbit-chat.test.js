@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  permissionView, upsertPermission, withStatus, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -214,4 +214,54 @@ test('a reply quotes the message by id, on one short line', () => {
   assert.equal(quoteLine(null), 'an earlier message');
   assert.equal(quoteLine({ text: '', attachments: [{ id: 'a' }] }), 'Photo');
   assert.equal(quoteLine({ text: '', attachments: [{ id: 'a' }, { id: 'b' }] }), 'Photos');
+});
+
+// ---- files beyond photos: paste, drop, PDFs ----
+
+const file = (name, type, size = 1000) => ({ name, type, size });
+
+test('a file is a photo, a pdf, or refused; a typeless drag goes by its name', () => {
+  assert.equal(fileKind(file('a.png', 'image/png')), 'photo');
+  assert.equal(fileKind(file('image.png', 'IMAGE/PNG')), 'photo');
+  assert.equal(fileKind(file('x.heic', 'image/heic')), 'photo');
+  assert.equal(fileKind(file('plan.pdf', 'application/pdf')), 'pdf');
+  assert.equal(fileKind(file('plan.PDF', '')), 'pdf');
+  assert.equal(fileKind(file('IMG_1.HEIC', '')), 'photo');
+  assert.equal(fileKind(file('notes.txt', 'text/plain')), null, 'no text from the page');
+  assert.equal(fileKind(file('notes.md', '')), null);
+  assert.equal(fileKind(file('fake.pdf', 'text/html')), null, 'a declared type wins over the name');
+  assert.equal(fileKind(null), null);
+  assert.equal(ACCEPT, 'image/*,application/pdf');
+});
+
+test('a paste or drop: files when the browser fills them, else the file items; text alone gives none', () => {
+  const shot = file('image.png', 'image/png');
+  assert.deepEqual(transferFiles({ files: [shot], items: [] }), [shot]);
+  assert.deepEqual(transferFiles({ files: [], items: [{ kind: 'string', getAsFile: () => null }, { kind: 'file', getAsFile: () => shot }] }), [shot], 'a screenshot pasted on some browsers comes only as an item');
+  assert.deepEqual(transferFiles({ files: [], items: [{ kind: 'string', getAsFile: () => null }] }), [], 'a text paste carries no file');
+  assert.deepEqual(transferFiles({ files: [], items: [{ kind: 'file', getAsFile: () => null }] }), []);
+  assert.deepEqual(transferFiles(null), []);
+  assert.equal(dragHasFiles({ types: ['text/plain', 'Files'] }), true);
+  assert.equal(dragHasFiles({ types: ['text/plain', 'text/uri-list'] }), false, 'dragged text is left to the box');
+  assert.equal(dragHasFiles(null), false);
+});
+
+test('intake: photos and PDFs only, a PDF under 10 MB, four at most across both, counting those already held', () => {
+  const photo = file('a.jpg', 'image/jpeg', 9e6 * 3);
+  const pdf = file('b.pdf', 'application/pdf', 2000);
+  const big = file('c.pdf', 'application/pdf', FILE_MAX_BYTES + 1);
+  const txt = file('d.txt', 'text/plain');
+  let r = intake([photo, pdf], 0);
+  assert.deepEqual(r.take.map(t => [t.file.name, t.kind]), [['a.jpg', 'photo'], ['b.pdf', 'pdf']], 'a big photo is fine: it is resized');
+  assert.equal(r.note, null);
+  assert.equal(intake([file('e.pdf', 'application/pdf', FILE_MAX_BYTES)]).take.length, 1, '10 MB exactly is allowed');
+  r = intake([txt, big, pdf], 0);
+  assert.deepEqual(r.take.map(t => t.file.name), ['b.pdf']);
+  assert.equal(r.note, 'Only photos and PDFs can be sent (1 left out); a PDF must be under 10 MB (1 left out).');
+  r = intake([photo, pdf, photo], 2);
+  assert.deepEqual(r.take.map(t => t.kind), ['photo', 'pdf']);
+  assert.equal(r.note, `At most ${MAX_FILES} files a message (1 left out).`);
+  assert.deepEqual(intake([pdf], MAX_FILES).take, []);
+  assert.deepEqual(intake([], 0), { take: [], note: null });
+  assert.deepEqual(intake(undefined), { take: [], note: null });
 });

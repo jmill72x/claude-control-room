@@ -14,12 +14,13 @@ import {
 } from '../lib/chat-store.mjs';
 import { createDeviceStore, readCookie, cookieHeader, newCode, COOKIE_NAME, PAIR_COOKIE_NAME, DEVICES_MAX } from '../lib/chat-devices.mjs';
 import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS, SESSION_HEADER } from '../lib/chat-socket.mjs';
-import { createChatRoutes, createAdminRouter, readChatConfig, chatState, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
+import { createChatRoutes, createAdminRouter, readChatConfig, chatState, dispositionFor, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
 import { secretShapes } from '../lib/secret-shape.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]);
+const PDF = Buffer.concat([Buffer.from('%PDF-1.7\n%\xe2\xe3\n', 'latin1'), Buffer.alloc(64, 0x20)]);
 
 // ---- the store ----
 
@@ -672,6 +673,13 @@ test('an upload from the page: raw image bytes, sniffed, bound to the device tha
   assert.ok(big.status === 413 || big.status === 'closed', String(big.status));
 });
 
+test('dispositionFor: inline for a photo, a download with a safe ASCII name and the whole name for a PDF', () => {
+  assert.equal(dispositionFor({ type: 'image/jpeg', name: 'x.jpg' }), 'inline');
+  assert.equal(dispositionFor(null), 'inline');
+  assert.equal(dispositionFor({ type: 'application/pdf', name: "a\r\nb;c\\d'e*.pdf" }), `attachment; filename="a__b_c_d_e_.pdf"; filename*=UTF-8''a%0D%0Ab%3Bc%5Cd%27e%2A.pdf`);
+  assert.equal(dispositionFor({ type: 'application/pdf', name: '' }), `attachment; filename="file.pdf"; filename*=UTF-8''`);
+});
+
 test('SSE: a status event first, replay after Last-Event-ID with ids, live messages, edits and pings', async () => {
   const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone, 'last-event-id': '2' }, ms: 250 });
   await new Promise(r => setTimeout(r, 40));
@@ -754,6 +762,55 @@ test('status: online, waiting on you, slow after 10 minutes unanswered, offline 
   assert.equal(s.json.epoch, env.store.epoch);
   const page = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
   assert.ok(!('pid' in page.json) && !page.text.includes('"pid"'));
+});
+
+test('a PDF from the page: sniffed by %PDF-, never text, never dressed as a photo; served as a download; four files a message across photos and PDFs; the channel fetches it as a pdf', async () => {
+  const up = (type, body, name) => tcp({ method: 'POST', path: `/api/chat/attachments${name ? `?name=${encodeURIComponent(name)}` : ''}`, headers: { cookie: env.phone, 'content-type': type }, body });
+  const words = await up('application/pdf', Buffer.from('not a pdf at all, just words'));
+  assert.equal(words.status, 415, 'the bytes decide');
+  assert.deepEqual(words.json, { error: 'the file is not an image or a pdf' }, 'the page is never told of txt or md');
+  assert.equal((await up('application/pdf', PNG)).status, 415, 'a photo sent as a pdf');
+  assert.equal((await up('image/png', PDF)).status, 415, 'a pdf sent as a photo');
+  assert.equal((await up('text/plain', Buffer.from('plain text is not taken from the page'))).status, 415);
+  const files = await readdir(join(env.dir, 'chat', 'files')).catch(() => []);
+  const before = files.length;
+  assert.equal((await up('application/pdf', Buffer.concat([PDF, Buffer.alloc(10 * 1024 * 1024)])).catch(() => ({ status: 413 }))).status, 413, 'over 10 MB');
+  const pdf = await up('application/pdf', PDF, 'Q3 plan, "final" é.pdf');
+  assert.equal(pdf.status, 200, pdf.text);
+  assert.equal(pdf.json.type, 'application/pdf');
+  assert.equal(pdf.json.bytes, PDF.length);
+  assert.equal((await readdir(join(env.dir, 'chat', 'files'))).length, before + 1, 'the refused uploads left no file behind');
+  assert.equal((await tcp({ path: `/api/chat/attachments/${pdf.json.id}`, headers: { cookie: env.ipad } })).status, 404, 'still its uploader\'s alone');
+  // Four files at most on a message, photos and PDFs together.
+  const ids = [pdf.json.id];
+  for (let i = 0; i < 4; i++) ids.push((await up(i % 2 ? 'application/pdf' : 'image/jpeg', i % 2 ? PDF : JPEG)).json.id);
+  const five = await tcp({ method: 'POST', path: '/api/chat/messages', headers: { cookie: env.phone }, body: { clientId: 'page-pdf-5', text: 'five', attachmentIds: ids } });
+  assert.equal(five.status, 400, 'a fifth file is refused');
+  const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
+  await new Promise(r => setTimeout(r, 40));
+  const sent = await tcp({ method: 'POST', path: '/api/chat/messages', headers: { cookie: env.phone }, body: { clientId: 'page-pdf-4', text: 'the plan', attachmentIds: ids.slice(0, 4) } });
+  assert.equal(sent.status, 200, sent.text);
+  const got = await tcp({ path: `/api/chat/attachments/${pdf.json.id}`, headers: { cookie: env.ipad } });
+  assert.equal(got.status, 200);
+  assert.equal(got.headers['content-type'], 'application/pdf');
+  assert.equal(got.headers['content-disposition'], `attachment; filename="Q3 plan_ _final_ _.pdf"; filename*=UTF-8''Q3%20plan%2C%20%22final%22%20%C3%A9.pdf`);
+  assert.equal(got.headers['x-content-type-options'], 'nosniff');
+  assert.equal(got.headers['cache-control'], 'private, no-store');
+  assert.match(got.headers['content-security-policy'], /sandbox/);
+  assert.ok(got.buf.equals(PDF));
+  // A photo on the same message still shows inline.
+  assert.equal((await tcp({ path: `/api/chat/attachments/${ids[1]}`, headers: { cookie: env.ipad } })).headers['content-disposition'], 'inline');
+  // The channel's side: the inbound line lists the pdf, and its fetch gets the bytes.
+  const line = ndjson((await inbound).text).find(l => l.type === 'message' && l.text === 'the plan');
+  assert.ok(line, 'the message reached the channel');
+  const atts = line.attachments;
+  assert.deepEqual(atts.map(a => a.type), ['application/pdf', 'image/jpeg', 'application/pdf', 'image/jpeg']);
+  const fetched = await unix({ path: `/v1/attachment/${pdf.json.id}` });
+  assert.equal(fetched.status, 200);
+  assert.equal(fetched.headers['content-type'], 'application/pdf');
+  assert.equal(fetched.headers['content-disposition'], 'attachment');
+  assert.ok(fetched.buf.equals(PDF));
+  assert.equal(fetched.buf.subarray(0, 5).toString('latin1'), '%PDF-', 'what the channel\'s sniffKind looks for');
 });
 
 test('a superseded inbound stream gets one last line and closes; a revoke shuts the device out and ends its streams at once, or on the next ping; the login header is a second factor on every route, pairing included', async () => {
