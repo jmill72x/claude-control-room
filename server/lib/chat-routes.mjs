@@ -16,6 +16,7 @@ import { COOKIE_NAME, PAIR_COOKIE_NAME, COOKIE_MAX_AGE_S, PAIR_CODE_TTL_MS, cook
 import { HEARTBEAT_FRESH_MS } from './chat-socket.mjs';
 import { readFile } from 'node:fs/promises';
 import { checkSubscription } from './webpush.mjs';
+import { readAllowedHosts } from './host-guard.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -87,10 +88,26 @@ export function chatState({ socket, store, now }) {
   return { state, since: since ?? null, channelConnected: socket.channelConnected, lastHeartbeatAt: socket.lastHeartbeatAt, lastJarvisMessageAt: lastJarvis, openPermission: open.length > 0 ? store.publicPermission(open[0]) : null, openPermissions: open.length };
 }
 
+// Where a tap on a notification goes, from the subscribing page's Origin: kept only
+// when it is https and its host is one of config's `allowedHosts` (the Serve name),
+// and then only its normalised origin; anything else is null, and the push says the
+// relative `/#chat`. The write guard has already matched Origin with Host, but a
+// Host that the guard lets through in "log" mode, or a loopback page, is no place to
+// send a tap from the lock screen.
+export function notificationOrigin(raw, allowedHosts) {
+  if (typeof raw !== 'string' || raw === '' || raw === 'null') return null;
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password) return null;
+  // URL leaves out the default port, so a name listed as `name:443` matches too.
+  return allowedHosts.has(u.host) || (u.port === '' && allowedHosts.has(`${u.hostname}:443`)) ? u.origin : null;
+}
+
 // `push` is the push service (lib/chat-push.mjs), or null while notifications are
 // off: its key, and the loopback hosts a scratch push service may use (tests only).
 export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS, push = null }) {
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
+  const notifyHosts = new Set(readAllowedHosts(config).names);
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
   const streams = new Set();         // { res, deviceId, stop }
   const streamClosedAt = new Map();  // device id -> when its last stream closed (the push rule)
@@ -313,9 +330,9 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         if (!push?.on()) throw new HttpError(503, 'notifications are not set up on the server yet');
         const checked = checkSubscription(await readBody(req), { testHosts: push.testHosts ?? null });
         if (!checked.ok) throw new HttpError(400, checked.error);
-        // Where a tap on a notification goes: the page's own origin, which the write
-        // guard has just checked against this request's Host.
-        const origin = typeof req.headers?.origin === 'string' && req.headers.origin !== 'null' ? req.headers.origin : null;
+        // Where a tap on a notification goes (notificationOrigin): the Serve name's
+        // https origin, else null and a relative link.
+        const origin = notificationOrigin(req.headers?.origin, notifyHosts);
         const r = await devices.setPush(device.id, { ...checked.subscription, origin });
         if (!r.ok) throw new HttpError(r.status, r.error);
         log(`push: ${device.name} turned notifications on`);

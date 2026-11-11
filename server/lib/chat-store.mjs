@@ -28,6 +28,7 @@ export const UNANSWERED_MAX = 10;
 export const UNANSWERED_BYTES = 8 * 1024;
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_TTL_MS = 90 * DAY;
+export const ORPHAN_AFTER_MS = 3600e3;
 export const ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'application/pdf', 'text/plain', 'text/markdown']);
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const CLIENT_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
@@ -330,6 +331,25 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     try { await unlink(join(filesDir, id)); return true; } catch { return false; }
   }
 
+  // At start: a file no message carries and older than an hour is an upload that was
+  // never sent (the pending list lives in memory and died with the last run), so it
+  // goes. A younger one is left for the next start, in case a clock or a slow
+  // write says otherwise. Answers how many went.
+  async function pruneOrphans({ olderThanMs = ORPHAN_AFTER_MS } = {}) {
+    const at = now();
+    const carried = new Set(messages.flatMap(m => (m.attachments ?? []).map(a => a.id)));
+    let gone = 0;
+    for (const name of await readdir(filesDir).catch(() => [])) {
+      if (!isAttachmentId(name) || carried.has(name)) continue;
+      const path = join(filesDir, name);
+      try {
+        const info = await stat(path);
+        if (at - info.mtimeMs > olderThanMs) { await unlink(path); gone++; }
+      } catch { /* already gone */ }
+    }
+    return gone;
+  }
+
   // Files older than 90 days go; the message keeps its record of them.
   async function pruneAttachments() {
     const at = now();
@@ -358,7 +378,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     lastJeffAt: () => lastFrom('jeff'),
     openPermission, answerPermission, openPermissions, publicPermission,
     permission: id => { prunePermissions(); return permissions.get(id) ?? null; },
-    putAttachment, attachment, pruneAttachments, removeAttachment,
+    putAttachment, attachment, pruneAttachments, pruneOrphans, removeAttachment,
     attachmentPath: id => (isAttachmentId(id) ? join(filesDir, id) : null)
   };
 }

@@ -553,14 +553,26 @@ stream; a failed notice write is logged and the hello still succeeds. Web Push (
 
 **Web Push (C6) is built on the branch `jos/push` (from `jos/chat-ui` f633d74, 2026-11-11,
 local commits only), not live; README "The chat with the lead agent", the Notifications
-bullet, describes it.** Two commits: e9c2a9d (Ultron's two lows on f633d74: an upload's name
+bullet, describes it.** Three commits: e9c2a9d (Ultron's two lows on f633d74: an upload's name
 cut at 120 code points and made well formed before `encodeURIComponent`, so a PDF named
 with an emoji at the cut downloads instead of a 500; an unsent upload's file deleted when it
 expires after an hour, at most 8 waiting per device, 429) and the push commit
 (`server/lib/webpush.mjs`, `server/lib/chat-push.mjs`, `server/lib/vapid-store.mjs`,
 `bin/vapid-keygen`, the `/api/push` routes, `web/public/sw.js`, the settings sheet's
 Notifications part, the manifest's `id`, and the stream closing when the page is hidden so
-the 10 s rule sees it). Checks 11-11: RFC 8291 Appendix A reproduced byte for byte; the JWT
+the 10 s rule sees it), then the fix for Ultron's six lows from his 11-11 review of it: the
+tap's origin kept only as an `https` origin whose host is in `allowedHosts` (else `/#chat`;
+the payload's own check tightened to https and a DNS name); approval pushes capped at one
+per device each 15 s with a held one sent at the window's end while a request is open, and
+sends bounded (4 in flight, 16 queued, then dropped and logged); `vapid-keygen` treating only
+exit 44 as "no key" and stopping on any other code, reading the key back in-process (`-w`
+into memory) and failing with `MISMATCH` unless its public key is the new one; every
+`security` call naming `~/Library/Keychains/login.keychain-db`; and unsent uploads older
+than an hour deleted at start. Its checks: 745 server tests in local time and Tokyo, 127
+web, 40 mutations of the new code all caught; every `security` call in the tests goes
+through the injected fake (the real Keychain was never touched). The headless check below
+predates it: with a loopback `http` page, `navigate` is now `/#chat`, not the page's
+origin. Checks 11-11: RFC 8291 Appendix A reproduced byte for byte; the JWT
 verified with the derived key (a changed claim, another key, a non-ES256 header all fail);
 a round trip through a test receiver; the egress rule (15 refused shapes); each trigger, the
 10 s rule and its re-check, the once-a-minute limit, notices and edits skipped, 404/410

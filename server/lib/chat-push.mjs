@@ -5,25 +5,33 @@
 //   stream open in the last 10 s. A device whose stream closed under 10 s ago is
 //   checked again when the 10 s are up, and pushed only if no stream opened since
 //   the message. At most one per device a minute while it stays away.
-// - "Jarvis needs an approval": every permission request, to every device, urgent.
+// - "Jarvis needs an approval": a permission request, to every device, urgent. At
+//   most one per device each 15 s: a request inside that window is held, and pushed
+//   at its end only if a request is still open then (a burst of requests is one
+//   push, and a late one is never lost).
 // - "Jarvis is offline": once, after 5 minutes without the channel's heartbeat;
 //   once more only after it has come back.
 //
 // `notice`s (the channel's restart line), verdicts, edits and the owner's own
 // messages never push. A subscription the push service calls gone (404 or 410) is
 // deleted; a 403 (the key or the JWT refused) is an alert, at most one per window.
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+// At most 4 sends are in flight at once; the rest wait in a queue of at most 16,
+// past which a push is dropped with a log line.
 import { sendPush, vapidKeys } from './webpush.mjs';
-
-const exec = promisify(execFile);
+import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
 
 export const CHAT_QUIET_MS = 10e3;
 export const CHAT_REPEAT_MS = 60e3;
+export const APPROVAL_REPEAT_MS = 15e3;
+export const SEND_CONCURRENCY = 4;
+export const SEND_QUEUE_MAX = 16;
 export const OFFLINE_AFTER_MS = 5 * 60e3;
 export const OFFLINE_CHECK_MS = 30e3;
 export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: 'Jarvis is offline' });
 const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat' };
+// An origin a tap may go to: https, a DNS name (lowercase, as URL writes it) and an
+// optional port; nothing after it. The routes store only the Serve name's origin.
+const NAV_ORIGIN = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*(?::\d{1,5})?$/;
 const MAILTO = /^mailto:[^\s@<>()"',;:]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 // Config's `push` block: `subject` must be a mailto: address (Apple refuses a
@@ -38,24 +46,21 @@ export function readPushConfig(config) {
 }
 
 // The VAPID private key from the login Keychain (service claude-control-room,
-// account vapid-private-key; bin/vapid-keygen puts it there), read the way the ntfy
-// topic is (notify.mjs, getTopic): `security` under the service's own user. Null
-// when it is missing or unreadable; never logged.
-export async function readVapidKey({ run } = {}) {
-  const call = run ?? (async () => (await exec('/usr/bin/security', ['find-generic-password', '-s', 'claude-control-room', '-a', 'vapid-private-key', '-w'])).stdout);
-  try {
-    const v = String(await call()).trim();
-    return v || null;
-  } catch {
-    return null;
-  }
+// account vapid-private-key; bin/vapid-keygen puts it there), named by its file
+// and read into memory by lib/vapid-store.mjs under the service's own user. Null
+// when the item is missing (security's exit 44); any other failure throws, so the
+// log says the Keychain could not be read rather than that no key exists. Never
+// logged.
+export async function readVapidKey({ run = runSecurity, keychain = LOGIN_KEYCHAIN } = {}) {
+  return readStoredKey({ run, keychain });
 }
 
 // The VAPID keys and subject push sends with, or null with the reason to log.
 export async function loadVapid({ config, read = readVapidKey } = {}) {
   const settings = readPushConfig(config);
   if (!settings.subject) return { vapid: null, problems: settings.problems.length ? settings.problems : ['no push.subject in config; notifications stay off'] };
-  const priv = await read();
+  let priv;
+  try { priv = await read(); } catch (err) { return { vapid: null, problems: [`the Keychain could not be read (${String(err?.message ?? err)}); notifications stay off`] }; }
   if (!priv) return { vapid: null, problems: ['no VAPID key in the Keychain (run bin/vapid-keygen); notifications stay off'] };
   try {
     return { vapid: { ...vapidKeys(priv), subject: settings.subject }, problems: [] };
@@ -67,7 +72,7 @@ export async function loadVapid({ config, read = readVapidKey } = {}) {
 // The declarative Web Push message (iOS 18.4+; sw.js shows the same for older
 // iOS): a title, one of three bodies, where a tap goes, and the badge.
 export function payloadFor(kind, origin) {
-  const navigate = `${typeof origin === 'string' && /^https?:\/\/[^/]+$/.test(origin) ? origin : ''}/#chat`;
+  const navigate = `${typeof origin === 'string' && NAV_ORIGIN.test(origin) ? origin : ''}/#chat`;
   return { web_push: 8030, notification: { title: 'Jarvis', body: BODIES[kind], navigate, app_badge: 1 } };
 }
 
@@ -75,10 +80,14 @@ export function createPushService({
   devices, store, socket, lastStream, vapid = null,
   now = () => Date.now(), fetchImpl = fetch, log = console.log, onEvent = () => {},
   testHosts = null, startedAt = now(), setTimer = setTimeout, clearTimer = clearTimeout,
-  checkMs = OFFLINE_CHECK_MS
+  checkMs = OFFLINE_CHECK_MS, sendConcurrency = SEND_CONCURRENCY, sendQueueMax = SEND_QUEUE_MAX
 }) {
   const waiting = new Map();     // device id -> { timer, since }: a chat push held for the quiet window
   const lastChatPush = new Map(); // device id -> when its last "New message" went
+  const lastApprovalPush = new Map(); // device id -> when its last approval push went
+  const heldApproval = new Map();     // device id -> the timer for an approval held by the 15 s cap
+  const queued = [];                  // { target, kind, done } waiting for a free send
+  let inFlight = 0;
   let offlinePushed = false;
   const sending = new Set();
 
@@ -100,6 +109,45 @@ export function createPushService({
   }
   // Every send is tracked, so a test (and a shutdown) can wait for them.
   const track = p => { sending.add(p); p.finally(() => sending.delete(p)); return p; };
+
+  // A push goes through a bounded queue: at most `sendConcurrency` in flight, at
+  // most `sendQueueMax` waiting; one past that is dropped and logged.
+  function pump() {
+    while (inFlight < sendConcurrency && queued.length) {
+      const job = queued.shift();
+      inFlight++;
+      send(job.target, job.kind)
+        .catch(err => log(`push: a ${job.kind} push to ${job.target.name} failed (${err?.message ?? err})`))
+        .finally(() => { inFlight--; job.done(); pump(); });
+    }
+  }
+  function enqueue(target, kind) {
+    if (queued.length >= sendQueueMax) {
+      log(`push: ${queued.length} pushes are waiting; a ${kind} push to ${target.name} was dropped`);
+      return;
+    }
+    track(new Promise(done => { queued.push({ target, kind, done }); pump(); }));
+  }
+
+  // The 15 s cap on approval pushes for one device.
+  function considerApproval(target) {
+    const at = now();
+    const last = lastApprovalPush.get(target.id);
+    if (last !== undefined && at - last < APPROVAL_REPEAT_MS) {
+      if (!heldApproval.has(target.id)) {
+        const timer = setTimer(() => {
+          heldApproval.delete(target.id);
+          const fresh = devices.pushTargets().find(t => t.id === target.id);
+          if (fresh && store.openPermissions().length > 0) considerApproval(fresh);
+        }, last + APPROVAL_REPEAT_MS - at);
+        timer?.unref?.();
+        heldApproval.set(target.id, timer);
+      }
+      return;
+    }
+    lastApprovalPush.set(target.id, at);
+    enqueue(target, 'approval');
+  }
 
   // The 10 s rule for one device, `since` being when the message arrived.
   function considerChat(target, since) {
@@ -123,7 +171,7 @@ export function createPushService({
     const last = lastChatPush.get(target.id);
     if (last !== undefined && at - last < CHAT_REPEAT_MS && !(typeof seen === 'number' && seen > last)) return;
     lastChatPush.set(target.id, at);
-    track(send(target, 'chat'));
+    enqueue(target, 'chat');
   }
 
   function onStoreEvent(event) {
@@ -132,7 +180,7 @@ export function createPushService({
       if (m.from !== 'jarvis' || m.kind !== 'chat') return; // notices, permissions, verdicts and the owner's own
       for (const target of devices.pushTargets()) considerChat(target, m.at ?? now());
     } else if (event.type === 'permission') {
-      for (const target of devices.pushTargets()) track(send(target, 'approval'));
+      for (const target of devices.pushTargets()) considerApproval(target);
     }
   }
 
@@ -145,7 +193,7 @@ export function createPushService({
     if (now() - since < OFFLINE_AFTER_MS) return;
     offlinePushed = true;
     log('push: the channel has been offline for 5 minutes');
-    for (const target of devices.pushTargets()) track(send(target, 'offline'));
+    for (const target of devices.pushTargets()) enqueue(target, 'offline');
   }
 
   const unsubscribe = store.subscribe(onStoreEvent);
@@ -158,6 +206,6 @@ export function createPushService({
     testHosts,
     checkOffline,
     idle: async () => { while (sending.size) await Promise.allSettled([...sending]); },
-    stop: () => { unsubscribe(); clearInterval(offlineTimer); for (const w of waiting.values()) clearTimer(w.timer); waiting.clear(); }
+    stop: () => { unsubscribe(); clearInterval(offlineTimer); for (const w of waiting.values()) clearTimer(w.timer); waiting.clear(); for (const t of heldApproval.values()) clearTimer(t); heldApproval.clear(); }
   };
 }

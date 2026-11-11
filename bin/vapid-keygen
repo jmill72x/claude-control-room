@@ -7,7 +7,9 @@
 //   bin/vapid-keygen --replace   make a new one in its place
 //
 // The private key is never printed, written to a file or put on a command line;
-// it goes to `security` on stdin. Only the public key is shown. Restart the
+// it goes to `security` on stdin, and is then read back into memory and checked
+// against the public key (a mismatch fails, exit 1). Every call names the login
+// Keychain's file. Only the public key is shown. Restart the
 // service afterwards so it reads the key. Exit 0 stored, 1 refused or failed,
 // 2 usage.
 import { storeNewKey } from '../server/lib/vapid-store.mjs';

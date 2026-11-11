@@ -744,18 +744,29 @@ three pieces, each with its own router:
   to hidden, or `pagehide`) closes the stream at once, so the server knows the device isn't
   looking; looking again opens it from `?after=` and clears the home-screen badge. An
   upload not sent with a message expires after an hour and its file is deleted then (swept
-  on each upload and every 10 minutes); at most 8 wait per device (429 past that).
+  on each upload and every 10 minutes); at most 8 wait per device (429 past that). The
+  pending list lives in memory, so at start any file in `data/chat/files` that no message
+  carries and that is over an hour old is deleted too (an upload left unsent at the last
+  stop), with a `chat: removed N unsent uploads` line.
 - **Notifications** (Web Push, the spec's §3; `server/lib/webpush.mjs`,
   `server/lib/chat-push.mjs`, `web/public/sw.js`, `web/src/orbit/pushApi.js`,
   `web/src/lib/orbit/push.js`): on only when `config.json` has `push.subject` (a `mailto:`
   address; Apple refuses a localhost one) and the VAPID private key is in the login
-  Keychain (service `claude-control-room`, account `vapid-private-key`, read with
-  `security find-generic-password -s claude-control-room -a vapid-private-key -w` at
-  start); otherwise a `push:` line at start says which is missing and the chat runs
-  without them. `bin/vapid-keygen` makes the key (P-256) and stores it, the private half
+  Keychain (service `claude-control-room`, account `vapid-private-key`, read at start with
+  `security find-generic-password -s claude-control-room -a vapid-private-key -w
+  ~/Library/Keychains/login.keychain-db` into memory); otherwise a `push:` line at start
+  says which is missing and the chat runs without them. Only `security`'s exit 44 (no such
+  item) reads as "no key"; any other failure is logged as "the Keychain could not be read".
+  Every `security` call names the login Keychain's file, since given none it searches the
+  user's list, and given a path that doesn't exist it has been seen to write to the login
+  Keychain anyway. `bin/vapid-keygen` makes the key (P-256) and stores it, the private half
   sent to `security -i` on stdin so it is never on a command line, printed or written to a
   file; it refuses to replace a key unless given `--replace`, since a new key strands every
-  subscription until each device turns notifications on again. The public key is derived
+  subscription until each device turns notifications on again, and it stops (nothing made
+  or stored) when the lookup fails with anything but exit 44. After storing it reads the
+  item back into memory, derives its public key and compares it with the new one; a
+  mismatch, or a failed read, is an error that starts `MISMATCH` or says the read failed,
+  exit 1. The public key is derived
   from the private one; config holds no key. `webpush.mjs` has no dependencies: RFC 8291
   aes128gcm in one record (it reproduces the RFC's Appendix A byte for byte) and an RFC
   8292 VAPID JWT (ES256, `aud` the endpoint's origin, `exp` 12 hours, `sub` from config),
@@ -767,19 +778,24 @@ three pieces, each with its own router:
   a loopback `http` push service, exists only when a test passes it in; `server.mjs` never
   does). Routes, with the device cookie and the write guards: `GET /api/push/key`
   (`{key, subscribed}`, 503 while push is off), `POST /api/push/subscription` (the
-  browser's `PushSubscription` JSON; the page's `Origin` is kept as where a tap goes) and
+  browser's `PushSubscription` JSON; where a tap goes is the page's `Origin`, kept, as
+  `new URL(origin).origin`, only when it is `https` and its host is in `allowedHosts`,
+  else null and the push says the relative `/#chat`) and
   `DELETE /api/push/subscription`. One subscription per device, in `devices.json`; an
   endpoint another device holds moves to the new one; a revoke drops it; the device list
   says which devices have one. **What pushes, in generic words only, never a message's text
   or a tool's name:** "New message" for each chat message from the lead, to a device that
   has no stream open and has had none in the last 10 s (one that closed under 10 s ago is
   checked again when the 10 s are up and skipped if it opened a stream after the message),
-  at most once a minute per device while it stays away; "Jarvis needs an approval" for
-  every permission request, to every device, urgent; "Jarvis is offline" once after 5
+  at most once a minute per device while it stays away; "Jarvis needs an approval" for a
+  permission request, to every device, urgent, at most once per device each 15 s (a
+  request inside that window is held and pushed at its end only if a request is still
+  open then, so a burst is one push and a late one is never lost); "Jarvis is offline" once after 5
   minutes without the channel's heartbeat (counted from the server's start when there was
   none), and again only after it has come back. `notice`s, verdicts, edits and the owner's
-  own messages never push. The payload is Declarative Web Push (`{"web_push": 8030,
-  "notification": {"title": "Jarvis", "body", "navigate": "<origin>/#chat", "app_badge":
+  own messages never push. At most 4 sends are in flight at once; the rest wait in a queue
+  of at most 16, past which a push is dropped with a log line. The payload is Declarative Web Push (`{"web_push": 8030,
+  "notification": {"title": "Jarvis", "body", "navigate": "<origin>/#chat" or "/#chat", "app_badge":
   1}}`). A 404 or 410 from the push service deletes that subscription (logged with the
   device's name, never the endpoint); a 403 (the key or JWT refused) is logged and alerted
   like a refused channel, at most once per 10 minutes. `sw.js` is push only: a `push`

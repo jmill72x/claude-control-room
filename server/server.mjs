@@ -255,6 +255,10 @@ if (chatSettings.on && socketsReady) {
   const loaded = await chatStore.load();
   console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
   await chatStore.pruneAttachments();
+  // Uploads never sent before the last stop: no message carries them, so after an
+  // hour they go (lib/chat-store.mjs, pruneOrphans).
+  const orphans = await chatStore.pruneOrphans();
+  if (orphans) console.log(`chat: removed ${orphans} unsent upload${orphans === 1 ? '' : 's'} left from before the start`);
   const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
   await chatDevices.load();
   const socketRouter = createSocketRouter({ store: chatStore, onEvent: chatEvents });

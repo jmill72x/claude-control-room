@@ -10,7 +10,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
 import { makeChatEnv, openStream } from './helpers/chat-env.mjs';
-import { createPushService, readPushConfig, payloadFor, BODIES, CHAT_QUIET_MS, CHAT_REPEAT_MS, OFFLINE_AFTER_MS } from '../lib/chat-push.mjs';
+import { createPushService, readPushConfig, payloadFor, BODIES, CHAT_QUIET_MS, CHAT_REPEAT_MS, OFFLINE_AFTER_MS, APPROVAL_REPEAT_MS, SEND_CONCURRENCY, SEND_QUEUE_MAX } from '../lib/chat-push.mjs';
+import { notificationOrigin } from '../lib/chat-routes.mjs';
 import { vapidKeys, newVapidKeys, decrypt, verifyVapidJwt, b64u } from '../lib/webpush.mjs';
 
 const SEC = 1e3, MIN = 60e3;
@@ -24,10 +25,10 @@ const receiver = (endpoint = `https://web.push.apple.com/${randomBytes(6).toStri
 };
 
 // A chat env with a push service whose fetch the test controls, and manual timers.
-async function pushEnv({ status = () => 201, vapid = true, fetchImpl = null, testHosts = null } = {}) {
+async function pushEnv({ status = () => 201, vapid = true, fetchImpl = null, testHosts = null, config = {}, sendConcurrency, sendQueueMax } = {}) {
   const holder = { svc: null };
   const lazy = { on: () => holder.svc?.on() ?? false, publicKey: () => holder.svc?.publicKey() ?? null, testHosts };
-  const env = await makeChatEnv({ routes: { push: lazy } });
+  const env = await makeChatEnv({ routes: { push: lazy, config } });
   const sent = [];
   const timers = [];
   const logs = [];
@@ -39,7 +40,7 @@ async function pushEnv({ status = () => 201, vapid = true, fetchImpl = null, tes
     fetchImpl: fetchImpl ?? (async (url, init) => { sent.push({ url, init }); return { status: status(url), arrayBuffer: async () => new ArrayBuffer(0) }; }),
     setTimer: (fn, ms) => { const t = { fn, at: env.clock.t + ms, done: false }; timers.push(t); return t; },
     clearTimer: t => { t.done = true; },
-    checkMs: 3600e3
+    checkMs: 3600e3, sendConcurrency, sendQueueMax
   });
   const advance = async ms => {
     env.clock.t += ms;
@@ -71,8 +72,52 @@ test('the payload is declarative Web Push with one of three generic bodies and a
   assert.deepEqual(payloadFor('chat', ORIGIN), { web_push: 8030, notification: { title: 'Jarvis', body: 'New message', navigate: `${ORIGIN}/#chat`, app_badge: 1 } });
   assert.equal(payloadFor('approval', null).notification.navigate, '/#chat');
   assert.equal(payloadFor('offline', 'https://x.example/evil').notification.navigate, '/#chat', 'only a bare origin is used');
+  assert.equal(payloadFor('chat', 'https://x.example:8443').notification.navigate, 'https://x.example:8443/#chat');
+  for (const bad of ['http://x.example', 'https://x.example?a=1', 'https://x.example#x', 'https://x_y.example', 'https://u@x.example', 'javascript:alert(1)//', 'https://x.example\n', 'https://X.example', 'https://-x.example', 'https://x.example:', 'https://x.example:123456', 'HTTPS://x.example']) {
+    assert.equal(payloadFor('chat', bad).notification.navigate, '/#chat', bad);
+  }
   assert.equal(payloadFor('approval', ORIGIN).notification.body, 'Jarvis needs an approval');
   assert.equal(payloadFor('offline', ORIGIN).notification.body, 'Jarvis is offline');
+});
+
+test('where a tap goes: only an https origin whose host is in allowedHosts is kept, normalised; anything else is null', () => {
+  const hosts = new Set(['mini.example.ts.net', 'alt.example.ts.net:8443', 'port.example.ts.net:443']);
+  assert.equal(notificationOrigin('https://mini.example.ts.net', hosts), 'https://mini.example.ts.net');
+  assert.equal(notificationOrigin('https://MINI.Example.ts.net:443', hosts), 'https://mini.example.ts.net', 'case and the default port are normalised away');
+  assert.equal(notificationOrigin('https://alt.example.ts.net:8443', hosts), 'https://alt.example.ts.net:8443');
+  assert.equal(notificationOrigin('https://port.example.ts.net', hosts), 'https://port.example.ts.net', 'a name listed with :443 matches the bare origin');
+  for (const bad of ['http://mini.example.ts.net', 'https://alt.example.ts.net', 'https://mini.example.ts.net:8443', 'https://evil.example', 'https://user:pw@mini.example.ts.net', 'null', '', 'not a url', 'wss://mini.example.ts.net', null, undefined, 42]) {
+    assert.equal(notificationOrigin(bad, hosts), null, String(bad));
+  }
+  assert.equal(notificationOrigin('https://mini.example.ts.net', new Set()), null, 'no allowedHosts, no origin');
+});
+
+test('subscribe stores the Serve name\'s https origin and pushes navigate there; a loopback or unlisted page stores null', async () => {
+  const t = await pushEnv({ config: { allowedHosts: ['mini.example.ts.net'] } });
+  try {
+    const host = 'mini.example.ts.net';
+    const subscribe = async (d, r, origin, hostHeader) => t.env.call({ method: 'POST', path: '/api/push/subscription', headers: { cookie: d.cookie, origin, host: hostHeader }, body: r.sub });
+    const phone = await t.env.pair('phone');
+    const pr = receiver();
+    assert.equal((await subscribe(phone, pr, ORIGIN, host)).status, 200);
+    const pad = await t.env.pair('pad');
+    const qr = receiver();
+    assert.equal((await subscribe(pad, qr, 'https://other.example.ts.net', 'other.example.ts.net')).status, 200, 'the guard lets a same-origin write through');
+    const laptop = await t.env.pair('laptop');
+    const lr = receiver();
+    assert.equal((await subscribe(laptop, lr, `http://127.0.0.1:${t.env.port}`, `127.0.0.1:${t.env.port}`)).status, 200);
+    const onDisk = JSON.parse(await readFile(join(t.env.dir, 'devices.json'), 'utf8'));
+    const originOf = id => onDisk.find(d => d.id === id).push.origin;
+    assert.equal(originOf(phone.id), ORIGIN);
+    assert.equal(originOf(pad.id), null);
+    assert.equal(originOf(laptop.id), null);
+    await t.jarvis('hello');
+    await t.svc.idle();
+    const nav = (d, r) => t.opened({ ...d, r })[0].notification.navigate;
+    assert.equal(nav(phone, pr), `${ORIGIN}/#chat`);
+    assert.equal(nav(pad, qr), '/#chat');
+    assert.equal(nav(laptop, lr), '/#chat');
+  } finally { await t.close(); }
 });
 
 test('a Jarvis message pushes "New message" to each subscribed device with no stream, and never its text', async () => {
@@ -86,7 +131,7 @@ test('a Jarvis message pushes "New message" to each subscribed device with no st
     assert.equal(t.sent.length, 2);
     for (const d of [phone, pad]) {
       const [p] = t.opened(d);
-      assert.deepEqual({ ...p, headers: undefined }, { web_push: 8030, notification: { title: 'Jarvis', body: 'New message', navigate: `http://127.0.0.1:${t.env.port}/#chat`, app_badge: 1 }, headers: undefined });
+      assert.deepEqual({ ...p, headers: undefined }, { web_push: 8030, notification: { title: 'Jarvis', body: 'New message', navigate: '/#chat', app_badge: 1 }, headers: undefined }, 'a loopback http page is no origin for a tap');
       assert.equal(p.headers.Urgency, 'normal');
       assert.equal(p.headers.Topic, 'jos-chat');
       assert.equal(p.headers.TTL, '3600');
@@ -182,18 +227,17 @@ test('a burst from the lead pushes once a minute per device while it stays away'
   } finally { await t.close(); }
 });
 
-test('every permission request pushes "Jarvis needs an approval", urgent, to every device, even one that is looking', async () => {
+test('a permission request pushes "Jarvis needs an approval", urgent, to every device, even one that is looking', async () => {
   const t = await pushEnv();
   try {
     const phone = await t.device('phone');
     const pad = await t.device('pad');
     const s = await openStream({ port: t.env.port, headers: { cookie: phone.cookie } });
     await t.env.store.openPermission({ requestId: 'abcde', tool: 'Bash', description: 'rm -rf the secret folder', inputPreview: 'secret' });
-    await t.env.store.openPermission({ requestId: 'fghij', tool: 'Write', description: 'write a file', inputPreview: '' });
     await t.svc.idle();
     for (const d of [phone, pad]) {
       const got = t.opened(d);
-      assert.equal(got.length, 2);
+      assert.equal(got.length, 1);
       for (const p of got) {
         assert.equal(p.notification.body, 'Jarvis needs an approval');
         assert.equal(p.headers.Urgency, 'high');
@@ -202,6 +246,112 @@ test('every permission request pushes "Jarvis needs an approval", urgent, to eve
       }
     }
     await s.close();
+  } finally { await t.close(); }
+});
+
+test('approval pushes: at most one per device each 15 s; one held is pushed at the window\'s end while a request is open', async () => {
+  const t = await pushEnv();
+  try {
+    assert.equal(APPROVAL_REPEAT_MS, 15e3);
+    const phone = await t.device('phone');
+    const pad = await t.device('pad');
+    const count = () => [t.opened(phone).length, t.opened(pad).length];
+    await t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.advance(3 * SEC);
+    for (const id of ['bbbbb', 'ccccc', 'ddddd']) await t.env.store.openPermission({ requestId: id, tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.deepEqual(count(), [1, 1], 'a burst inside the window is held');
+    await t.advance(APPROVAL_REPEAT_MS - 3 * SEC - 1);
+    assert.deepEqual(count(), [1, 1], 'not before the 15 s are up');
+    await t.advance(1);
+    assert.deepEqual(count(), [2, 2], 'one more at the window\'s end, requests being open');
+    await t.advance(5 * APPROVAL_REPEAT_MS);
+    assert.deepEqual(count(), [2, 2], 'and only one: nothing repeats on its own');
+    await t.env.store.openPermission({ requestId: 'eeeee', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.deepEqual(count(), [3, 3], 'a request after the window pushes at once');
+    await t.env.store.openPermission({ requestId: 'fffff', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.advance(APPROVAL_REPEAT_MS);
+    assert.deepEqual(count(), [4, 4], 'and a second window holds and sends the same way');
+    await t.env.store.openPermission({ requestId: 'ggggg', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.ok(t.timers.some(x => !x.done), 'one held');
+    t.svc.stop();
+    assert.ok(t.timers.every(x => x.done), 'stop clears the held approvals');
+  } finally { await t.close(); }
+});
+
+test('approval pushes: one held while every request is answered by the window\'s end is never sent', async () => {
+  const t = await pushEnv();
+  try {
+    const phone = await t.device('phone');
+    await t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.env.store.openPermission({ requestId: 'bbbbb', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.equal(t.opened(phone).length, 1);
+    for (const id of ['aaaaa', 'bbbbb']) assert.equal((await t.env.store.answerPermission(id, 'allow', 'phone')).ok, true);
+    await t.advance(APPROVAL_REPEAT_MS);
+    assert.equal(t.opened(phone).length, 1);
+    // A device revoked while its push was held gets nothing either.
+    await t.env.store.openPermission({ requestId: 'ccccc', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.equal(t.opened(phone).length, 2);
+    await t.env.store.openPermission({ requestId: 'ddddd', tool: 'Bash', description: 'x', inputPreview: '' });
+    assert.equal((await t.env.devices.revoke(phone.id, 'test')).ok, true);
+    await t.advance(APPROVAL_REPEAT_MS);
+    assert.equal(t.opened(phone).length, 2);
+  } finally { await t.close(); }
+});
+
+test('sends are bounded: at most N in flight, a queue of at most M, and one past that is dropped and logged', async () => {
+  assert.equal(SEND_CONCURRENCY, 4);
+  assert.equal(SEND_QUEUE_MAX, 16);
+  const gates = [];
+  let inFlight = 0, most = 0, done = 0;
+  const fetchImpl = async () => {
+    inFlight++; most = Math.max(most, inFlight);
+    await new Promise(r => gates.push(r));
+    inFlight--; done++;
+    return { status: 201, arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const t = await pushEnv({ fetchImpl, sendConcurrency: 1, sendQueueMax: 2 });
+  try {
+    for (const name of ['phone', 'pad', 'laptop', 'desk']) await t.device(name);
+    await t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    for (let i = 0; i < 20 && gates.length === 0; i++) await new Promise(r => setImmediate(r));
+    assert.equal(inFlight, 1, 'one in flight');
+    const dropped = t.logs.filter(l => /pushes are waiting; a approval push to \S+ was dropped/.test(l));
+    assert.equal(dropped.length, 1, 'one in flight, two waiting, the fourth dropped');
+    while (done < 3) {
+      while (gates.length) gates.shift()();
+      await new Promise(r => setImmediate(r));
+    }
+    await t.svc.idle();
+    assert.equal(done, 3);
+    assert.equal(most, 1, 'never two at once');
+  } finally { await t.close(); }
+});
+
+test('sends are bounded: a limit of 2 runs two at once and sends the rest after, dropping none', async () => {
+  const gates = [];
+  let inFlight = 0, most = 0;
+  const fetchImpl = async () => {
+    inFlight++; most = Math.max(most, inFlight);
+    await new Promise(r => gates.push(r));
+    inFlight--;
+    return { status: 201, arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const t = await pushEnv({ fetchImpl, sendConcurrency: 2 });
+  try {
+    for (const name of ['phone', 'pad', 'laptop', 'desk']) await t.device(name);
+    await t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    for (let i = 0; i < 20 && gates.length < 2; i++) await new Promise(r => setImmediate(r));
+    assert.equal(inFlight, 2);
+    let rounds = 0;
+    while (rounds++ < 50 && (gates.length || inFlight)) { while (gates.length) gates.shift()(); await new Promise(r => setImmediate(r)); }
+    await t.svc.idle();
+    assert.equal(most, 2);
+    assert.equal(t.logs.filter(l => /dropped/.test(l)).length, 0);
   } finally { await t.close(); }
 });
 
@@ -277,6 +427,7 @@ test('a 404 or a 410 deletes that device\'s subscription; a 403 alerts and keeps
     assert.ok(t.logs.some(l => /failed \(500\)/.test(l)));
     for (const l of t.logs) assert.ok(!l.includes('push.apple.com'), 'no endpoint in the log');
     t.sent.length = 0;
+    await t.advance(APPROVAL_REPEAT_MS);
     await t.env.store.openPermission({ requestId: 'lllll', tool: 'Bash', description: 'x', inputPreview: '' });
     await t.svc.idle();
     assert.equal(t.sent.length, 2, 'the deleted ones get nothing more');
@@ -405,7 +556,16 @@ test('the VAPID key: read from the Keychain item, derived, and each missing piec
   const bad = await loadVapid({ config: { push: { subject: 'mailto:owner@example.com' } }, read: async () => 'AAAA' });
   assert.equal(bad.vapid, null);
   assert.ok(!bad.problems[0].includes('AAAA'), 'the key never reaches the log');
-  assert.equal(await readVapidKey({ run: async () => ` ${priv}\n` }), priv);
-  assert.equal(await readVapidKey({ run: async () => { throw new Error('The specified item could not be found'); } }), null);
-  assert.equal(await readVapidKey({ run: async () => '\n' }), null);
+  // Through the injected `run` only: never the real Keychain.
+  const calls = [];
+  const fake = (code, stdout = '') => async (args, input, opts) => { calls.push({ args, opts }); return { code, stderr: '', stdout }; };
+  assert.equal(await readVapidKey({ run: fake(0, ` ${priv}\n`), keychain: '/k/login.keychain-db' }), priv);
+  assert.deepEqual(calls[0].args, ['find-generic-password', '-s', 'claude-control-room', '-a', 'vapid-private-key', '-w', '/k/login.keychain-db']);
+  assert.equal(calls[0].opts.capture, true);
+  assert.equal(await readVapidKey({ run: fake(44), keychain: '/k/login.keychain-db' }), null);
+  assert.equal(await readVapidKey({ run: fake(0, '\n'), keychain: '/k/login.keychain-db' }), null);
+  await assert.rejects(readVapidKey({ run: fake(36), keychain: '/k/login.keychain-db' }), /exit 36/);
+  const locked = await loadVapid({ config: { push: { subject: 'mailto:owner@example.com' } }, read: () => readVapidKey({ run: fake(36), keychain: '/k/login.keychain-db' }) });
+  assert.equal(locked.vapid, null);
+  assert.match(locked.problems[0], /^the Keychain could not be read \(security could not read the key \(exit 36\)\)/);
 });
