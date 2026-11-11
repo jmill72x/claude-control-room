@@ -633,6 +633,43 @@ holds in a browser (their logic is unit-tested, the wiring not), and anything on
 whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
 use of the 192/512 icons (it uses the apple-touch-icon).
 
+**Chat Markdown and loopback-only ingest, staged on `jos/md-ingest` (from main a82420a,
+2026-11-11), not committed, not live.** Two board items (883b96d0, 1881027f). (1) **Markdown in
+the Chat thread** (Jeff: "bold text isn't coming across"): `web/src/lib/orbit/markdown.js` (a
+dependency-free, escaping-first parser returning plain objects) and `web/src/orbit/Markdown.jsx`
+(React elements, no `dangerouslySetInnerHTML`), used for every chat bubble's text, both sides;
+the reply quote drops the markers; events, notices, permission lines and push bodies unchanged.
+README "The chat with the lead agent" (the Chat tab bullet) has the subset and the link rules.
+(2) **Ingest from this machine only** (Ultron 11-11 H1): `server/lib/local-caller.mjs`, checked
+first on `/api/ingest/{crons,projects,credits,needs-you}`: a loopback socket, a loopback Host and
+none of the proxy headers Serve adds, else 403 before the body is read; README "What the ingest
+endpoints require" has the rule. Posters found: none for crons, projects or credits (no script,
+launchd job or other repo; all three panels unfed since the 11-11 restart), and the needs-you hook
+(README's entry, on `127.0.0.1`, not yet in settings.json), so no token and no config change were
+needed. **Go-live:** Ultron's review, C&P, a service restart (the ingest change is server-side),
+then `cd web && npm run build` (the page change needs no new server; either order works).
+**Post-restart check:** from the mini, `curl -s -o /dev/null -w '%{http_code}' -X POST
+https://<mini-hostname>.<tailnet>.ts.net/api/ingest/crons -H 'Content-Type: application/json'
+-d '{}'` answers 403 (it was 400, the body refused, before); the same with `-H 'Host:
+127.0.0.1:8322'` added still answers 403, its log line naming `x-forwarded-for` (Serve passes
+on the client's Host, so the proxy headers are what hold); and the same to `http://127.0.0.1:
+8322/api/ingest/crons` answers 400. **Ultron's 11-11 review: ingest go, Markdown go with M2,
+all fixed on the branch:** M2 (a bare or `<…>` URL shown as URL rebuilt it; a written label
+followed by the real host), L3 (README: the proxy headers hold against Serve, the Host check is
+for DNS rebinding), L4 (the 403 closes the connection), L6 (`Tailscale-Funnel-Request`,
+`Tailscale-Headers-Info`, `Via` added), L7 (a mailto keeps only its address), L8 (bidi and
+zero-width characters dropped from labels). Left for the board: ingest on a Unix socket or a
+token, a refusal counter, Vision's monthly Serve check. **Verified:** server
+796 tests in local time and Tokyo (8 new), web 182 (the Markdown file's 22 new), oxlint clean but
+the old Lanes warning; 17 server mutations all caught, 41 web ones all caught but 2 equivalent (the raw href
+length guard, which the rebuilt href's cap repeats, and a naive URL-end scan, linear anyway since
+the scan's span is always consumed); an SSR render of hostile messages through the real component
+(only the allowed tags and attributes, every href http(s)/mailto with target and rel); headless
+Chromium (1223 shell) on a static page with orbit.css at 390 and 820, light and dark: no sideways
+page scroll, code blocks scroll inside the bubble, links in the bubble's ink. **Unverified:** what
+Serve actually sends (taken from Tailscale's documented behaviour; the post-restart check proves
+it), Safari, the live chat store's real messages.
+
 **Three tab fixes staged on `jos/qol-nav` (from main 2b53124, 2026-11-11), not committed, not
 live.** Jeff's ask that day: a badge on Chat for an unseen message, a header that stays in reach
 while scrolling, and the sideways swipe on the iPad. README "The Orbit page" (the header bullet

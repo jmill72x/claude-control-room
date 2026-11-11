@@ -208,6 +208,7 @@ const call = async (handler, method, url, body, headers = {}) => {
     method, url,
     headers: { host: '127.0.0.1:8322', ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     on(evt, fn) { if (evt === 'data' && body !== undefined) fn(Buffer.from(raw)); if (evt === 'end') fn(); return req; },
+    socket: { remoteAddress: '127.0.0.1' },
     unpipe() {}, pause() {}
   };
   const res = mockRes();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useMediaQuery } from '../hooks/useMediaQuery.js';
 import { useReducedMotion } from './useReducedMotion.js';
 import { Avatar } from './Avatar.jsx';
+import Markdown from './Markdown.jsx';
 import { attachmentUrl } from './chatApi.js';
 import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
@@ -247,7 +248,7 @@ function Row({ m, list, lead, chat, onReply, onView }) {
               : <span key={a.id ?? i} className="o-chat-file">{a.type === PDF_TYPE && <PdfIcon />}{a.name} · {fileSize(a.bytes)}{pending && !m.failed ? ' · uploading…' : ''}</span>))}
           </div>
         )}
-        {m.text && <p className="o-chat-text">{m.text}</p>}
+        {m.text && <Markdown text={m.text} className="o-chat-text o-md" />}
         <div className="o-chat-meta">
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}

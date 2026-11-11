@@ -3,6 +3,8 @@
 // resize and the retry-safe ids. Checked by web/test/orbit-chat.test.js; the
 // components in src/orbit/Chat.jsx only render what these return.
 
+import { markdownPlain } from './markdown.js';
+
 export const PERMISSION_TTL_MS = 10 * 60e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
 export const PHOTO_LONG_EDGE = 1568;
@@ -297,10 +299,12 @@ export const quoteWho = q => (!q ? 'Reply' : q.from === 'jeff' ? 'You' : q.kind 
 // The message a reply quotes, by id, when the page holds it.
 export const quoted = (list, id) => (id ? list.find(m => m.id === id) ?? null : null);
 
-// A quote's one line: the first 90 characters, newlines folded.
+// A quote's one line: the first 90 characters, newlines folded, a chat message's
+// Markdown markers dropped (an event's words are plain text and stay as they are).
 export const quoteLine = m => {
   if (!m) return 'an earlier message';
-  const text = String(m.text ?? '').replace(/\s+/g, ' ').trim();
+  const raw = String(m.text ?? '');
+  const text = (m.kind === 'event' ? raw : markdownPlain(raw)).replace(/\s+/g, ' ').trim();
   if (text) return text.length > 90 ? `${text.slice(0, 89)}…` : text;
   return m.attachments?.length ? `Photo${m.attachments.length > 1 ? 's' : ''}` : 'an earlier message';
 };

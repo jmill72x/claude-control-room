@@ -23,6 +23,8 @@ const call = async (handler, method, url, body, headers = {}) => {
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       ...headers
     },
+    // A program on this machine: the ingest routes take no other caller.
+    socket: { remoteAddress: '127.0.0.1' },
     destroy() { this.destroyed = true; },
     on(evt, fn) {
       if (evt === 'data' && body !== undefined) fn(Buffer.from(raw));

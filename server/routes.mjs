@@ -1,5 +1,6 @@
 import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
+import { localCaller } from './lib/local-caller.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
 import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
 import { readRoster } from './lib/roster.mjs';
@@ -164,6 +165,24 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
   };
   // The alerts as raised, before any acknowledgement, from the panels alone.
   const rawAlerts = now => buildAlerts(panels(now), config, now);
+  // The ingest takes posts from this machine only (lib/local-caller.mjs): Serve puts
+  // this port on the tailnet, and what an ingest accepts becomes alerts and pushes.
+  // Refused before the body is read. Each route and reason is logged once, the first
+  // 20, so a flood doesn't fill the log; the line names a header, never its value.
+  const refusedSeen = new Set();
+  const guardLocal = (req, path) => {
+    const why = localCaller(req);
+    if (!why) return;
+    const key = `${path} ${why}`;
+    if (!refusedSeen.has(key) && refusedSeen.size < 20) {
+      refusedSeen.add(key);
+      log(`ingest: refused a post to ${path} that did not come from this machine (${why})`);
+    }
+    // Answered with Connection: close (like a 413), so the unread body is never drained.
+    const refused = new HttpError(403, 'the ingest takes posts from this machine only');
+    refused.close = true;
+    throw refused;
+  };
 
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
@@ -284,6 +303,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
       // which four fields are read and the session's id is the only one kept (with
       // the newest `at` per session, to drop a post that arrives out of order).
       if (path === '/api/ingest/needs-you' && req.method === 'POST') {
+        guardLocal(req, path);
         guardWrite(req);
         if (!needsYou.record) throw new HttpError(503, 'needs-you is not set up on this server');
         const checked = checkNeedsYou(await readBody(req));
@@ -295,6 +315,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
 
       const ingest = path.match(/^\/api\/ingest\/(crons|projects|credits)$/);
       if (ingest && req.method === 'POST') {
+        guardLocal(req, path);
         guardWrite(req);
         const body = await readBody(req);
         const checked = validateIngest(ingest[1], body);
@@ -312,10 +333,10 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
       // whole in-memory cache) down with it.
       const status = err instanceof HttpError ? err.status : 500;
       if (status === 500) console.error('api error', path, err);
-      if (status === 413) {
+      if (status === 413 || err?.close) {
         // The client is still uploading; answer and hang up rather than
         // reading the rest of a body already refused.
-        res.writeHead(413, { ...API_HEADERS, Connection: 'close' });
+        res.writeHead(status, { ...API_HEADERS, Connection: 'close' });
         return res.end(JSON.stringify({ error: String(err.message) }));
       }
       return json(res, status, { error: String(err?.message ?? err) });

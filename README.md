@@ -535,7 +535,43 @@ of them in the week to 2026-10-20.
 
 ### What the ingest endpoints require
 
-They are unauthenticated by design (loopback only), so they are narrow instead:
+They take posts from this machine only (`server/lib/local-caller.mjs`, since 2026-11-11;
+tested by `server/test/ingest-local.test.mjs`).
+The server binds `127.0.0.1`, but Tailscale Serve, on this same machine, passes the
+tailnet's requests to that port, so before this any device on the tailnet could post a
+fake cron failure that showed as an alert and was pushed. Every request through Serve
+arrives from `127.0.0.1` too, so the socket's address alone proves nothing; what Serve adds
+does. A post to any `/api/ingest/*` route (`needs-you` included) is refused with a 403
+("the ingest takes posts from this machine only"), before its body is read, unless:
+
+- it arrived on a loopback socket (`127.0.0.1` or `::1`);
+- it carries none of the headers a proxy adds, not even empty: `Forwarded`, `Via`,
+  `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
+  `Tailscale-User-Login`, `-Name` and `-Profile-Pic`, `Tailscale-Funnel-Request` and
+  `Tailscale-Headers-Info`. This is the layer that holds against Serve: Serve sets
+  `X-Forwarded-For` and `X-Forwarded-Host` on every request it passes on (and drops any
+  `Tailscale-User-*` a client sent before adding its own), but it passes on whatever
+  `Host` the client sent, so a tailnet client can send `Host: 127.0.0.1:8322`; and
+- its `Host` is loopback (`127.0.0.1`, `localhost` or `[::1]`, any port). This one
+  guards against DNS rebinding (a page on another domain re-pointed at `127.0.0.1` names
+  its own host), not against Serve.
+
+The refusal is a 403 with `Connection: close`, like a 413, so the unread body is never
+drained.
+
+So post to `http://127.0.0.1:8322/…` from this machine, never to the tailnet name, even
+from the machine itself. Each refused route and reason is logged once (the first 20), naming
+the header but never its value: `ingest: refused a post to /api/ingest/crons that did not
+come from this machine (it came through a proxy (x-forwarded-for))`. A program on this
+machine can still post, the same trust as the files the collectors read. Every poster
+found on 2026-11-11 posts on loopback: the README's own `curl` example and the `needs-you`
+hook below. No script, launchd job or other repo under `~/Projects` posted to `crons`,
+`projects` or `credits`, and those three panels had never been fed since the last restart
+(no Claude cloud routine can reach the machine's loopback, so one that wanted to report in
+would need a poster on this machine). The board (`/api/todos`) and the acks keep the
+tailnet: the page writes them through Serve.
+
+They are narrow too:
 
 - `Content-Type: application/json` — required. This also stops them being CORS
   *simple* requests, which is what made them reachable from any page the browser
@@ -746,7 +782,29 @@ three pieces, each with its own router:
   machine); a pairing started before a reload resumes from its cookie. The thread puts the
   owner on the right and the lead on the left with his avatar, day lines, times, reply
   quotes, an "edited" mark, and notices (a channel restart, a permission asked, a verdict)
-  as quiet centred lines. Ticks on the owner's chat messages: none while queued, one once
+  as quiet centred lines. A chat message's text, the lead's and the owner's alike, is shown
+  as a small Markdown subset (since 2026-11-11; `web/src/lib/orbit/markdown.js`, rendered
+  by `web/src/orbit/Markdown.jsx`, tested by `web/test/orbit-markdown.test.js`): bold and
+  italic (`*`, `_`; an underscore inside a word stays literal), inline code, fenced code
+  blocks (they scroll sideways inside the bubble), bulleted and numbered lists (nested by
+  indent, at most 6 deep), headings shown as bold lines, `[text](url)` links, and bare or
+  `<…>`-wrapped `http(s)` URLs. A link's target must be `http`, `https` or `mailto`, is
+  rebuilt by `URL`, and opens in a new tab (`target="_blank"`, `rel="noopener
+  noreferrer"`); any other target leaves the whole `[text](url)` as text. A link can't
+  pass for somewhere else (Ultron's 11-11 M2): a bare or `<…>` URL is shown as `URL`
+  rebuilt it, not as typed (a look-alike host in punycode, `。` as a dot, a backslash as
+  a slash, a bidi override in the path percent-encoded); a written label is followed by
+  the real host, muted ("the board (evil.example)", with its port if any), unless the
+  label is the href itself; bidi controls (U+202A-202E, U+2066-2069) and zero-width
+  characters (U+200B-200D, U+FEFF) are dropped from a label; and a `mailto` keeps only
+  its address (no `?subject=…&body=…`), which is also its suffix. Raw HTML is shown
+  as the text it is, and images (`![alt](url)`) stay text. The parser returns plain objects
+  and the component builds React elements from them, so every character reaches the page
+  as a text node (no `dangerouslySetInnerHTML`). It runs in linear time (no backtracking
+  regex; the tests time pathological shapes), caps emphasis nesting at 8, and shows a text
+  over 64,000 characters as one plain paragraph. A paragraph keeps its line breaks. Event
+  lines, notices, permission lines and push bodies stay plain text; a reply quote shows a
+  chat message's words without its markers. Ticks on the owner's chat messages: none while queued, one once
   the channel acked it (`state: delivered`), two once a later chat message from the lead
   exists; a bubble the server hasn't answered shows "…", a failed send shows Retry and
   Discard. The latest 50 load first and older pages (`?before=<id>`) load as the top comes
@@ -870,7 +928,7 @@ context, which is how the headless checks of the Chat tab pair against a scratch
 (the Serve proxy's login header is added by that scratch server alone). Every chat request, `/api/pair/start` and
 `/api/pair/status` included, must carry `Tailscale-User-Login` equal to `chat.login`: a
 second factor the Serve proxy adds, never the credential, since a local process can forge
-it. Writes keep the ingest guards (JSON only, same origin or none); a pairing (logged and
+it. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
 log and pushed like an alert (ntfy and the feed). A refused channel and a takeover push at
@@ -1020,7 +1078,7 @@ alerts can be acked; a limit, a projection or a credit expiry moves on its own.
   pushes it again. Nothing is pushed for an ack itself; the service log gets one line
   (`ack: cron by jeff until <time> (<key>)`), without the note.
 
-The writes take the ingest endpoints' guards (JSON only, same origin or no `Origin`),
+The writes take the board's write guards (JSON only, same origin or no `Origin`),
 a 4 KB body, and the file `server/data/acks.json` holds at most 50 entries, expired ones
 pruned on each read and write. Each write goes to a temp file beside it (mode 0600) and
 takes the file's place by rename, so a crash leaves the old list, never half a new one. Anyone who can reach the page can ack: the server binds
