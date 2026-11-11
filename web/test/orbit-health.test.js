@@ -3,7 +3,7 @@
 // Every job, service and name is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { healthChips, healthDetail, when } from '../src/lib/orbit/health.js';
+import { healthChips, healthDetail, when, byName } from '../src/lib/orbit/health.js';
 
 const at = (d, h, min = 0) => new Date(2026, 9, d, h, min).getTime(); // October 2026, local
 const NOW = at(21, 15, 0); // Wed 10-21, 3:00 PM
@@ -183,4 +183,12 @@ test('when() reads a moment ahead as well as behind: an expiry this week is "Fri
   assert.equal(when(at(23, 8, 0), NOW), 'Fri 8:00 AM');
   assert.equal(when(at(21, 18, 0), NOW), '6:00 PM');
   assert.equal(when(at(28, 8, 0), NOW), '10-28 8:00 AM');
+});
+
+test('who acked, as a name: the owner and an agent by their word, a script that did not say as "a local script"', () => {
+  assert.equal(byName('jeff'), 'Jeff');
+  assert.equal(byName('jarvis'), 'Jarvis');
+  assert.equal(byName('local'), 'a local script');
+  assert.equal(byName(''), 'someone');
+  assert.equal(byName(undefined), 'someone');
 });

@@ -536,22 +536,33 @@ alerts can be acked; a limit, a projection or a credit expiry moves on its own.
 - `POST /api/acks` with `{ "key", "note"?, "until"?, "by"? }`: the key must name an
   alert raised **now**, so nothing can be acked in advance. `until` is a time in
   milliseconds; left out, it is the job's next run plus 2 hours (24 hours when there
-  is no next run), and it may never be more than 14 days away. `note` is one line of at
-  most 200 characters with the board title's character rules. `by` is a word of at most
-  40 letters, digits and hyphens; the page leaves it out and the server reads that as
-  the owner, while a script names itself. Answers the active list.
+  is no next run), and it may never be more than 14 days away. When the alert's
+  `since` is unknown (a job without the job-status overlay, an ingested cron) a new
+  failure could not be told from the acked one, so the cap is 24 hours and the page
+  offers no 7-day choice. `note` is one line of at most 200 characters with the board
+  title's character rules. `by` is a word of at most 40 letters, digits and hyphens.
+  Left out, it is the owner (`jeff`) when the request carries an `Origin` header,
+  which a browser always sends and so the page does; with no `Origin` (curl, a
+  script) it is recorded as `local`, so a script that wants its name on the ack says
+  it (`"by": "jarvis"`). Answers the active list.
 - `DELETE /api/acks/<key>` (URL-encoded): un-ack. Answers the list.
 - `GET /api/acks`: the active list, also in `/api/dashboard` as `acks`.
 - `/api/dashboard`: `alerts` leaves out a covered alert, which goes in `acked` with its
   ack; the covered `crons[]`, `health.jobs.list[]` and `health.services[]` entries gain
-  `ack: { key, kind, since, by, note, at, until }`. The notifier pushes nothing for a
+  `ack: { key, kind, since, by, note, at, until }`. The health list carries no launchd
+  labels, so its row is found by the display name; when two jobs share one (two labels
+  with the same last part and no names for them in `jobs`, or two failed rows with one
+  name) no health row is marked, since marking both would show an ack on a job nobody
+  acked. The crons panel, keyed by label, still carries it, and the alert is in `acked`
+  either way; distinct names in `jobs` lift the ambiguity. The notifier pushes nothing for a
   covered alert and forgets its key, so an ack that lapses with the condition still live
   pushes it again. Nothing is pushed for an ack itself; the service log gets one line
   (`ack: cron by jeff until <time> (<key>)`), without the note.
 
 The writes take the ingest endpoints' guards (JSON only, same origin or no `Origin`),
 a 4 KB body, and the file `server/data/acks.json` holds at most 50 entries, expired ones
-pruned on each read and write. Anyone who can reach the page can ack: the server binds
+pruned on each read and write. Each write goes to a temp file beside it (mode 0600) and
+takes the file's place by rename, so a crash leaves the old list, never half a new one. Anyone who can reach the page can ack: the server binds
 loopback and the tailnet is the owner's own devices. This is not a board write.
 
 ```bash
@@ -880,6 +891,8 @@ and that must not reach every device on the tailnet.
 |---|---|---|
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
+| `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
+| `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
 | `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |
 | `plan.cycle` | `"monthly"` \| `"30d"`, default `"monthly"` | How the anchor rolls forward. `"monthly"` repeats on the same day-of-month (clamped at short months: a 31st anchor becomes the 30th in April, the 28th/29th in February) — this is how Anthropic actually bills. `"30d"` advances in fixed 30-day blocks instead. Change this in one place if the billing model turns out not to be monthly. |
@@ -1078,6 +1091,18 @@ Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB, an
 acknowledgement 4 KB; its DELETE has no body and keeps the origin rule). What
 reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
 field by field (the health strip's and To push's above).
+
+**The Host check** (`server/lib/host-guard.mjs`, the 2026-11-10 review) runs before any
+route, API and pages alike. The same-origin rule compares `Origin` with `Host`, and DNS
+rebinding defeats that on its own: a page on an attacker's name, re-pointed at
+`127.0.0.1`, sends `Origin: http://attacker.example` with `Host: attacker.example:8322`,
+and the two match. So the request's `Host` must be one this server answers to:
+`127.0.0.1:<port>`, `localhost:<port>`, or a name in config's `allowedHosts` (the Serve
+name, with or without a port; a bare name also matches `:80` and `:443`). `hostCheck`
+in config is `"log"` by default, which serves the request and writes one `host:` line
+per distinct unlisted value (the first 20), so the list is proven against real traffic
+before `"enforce"` turns a miss into a 421. The service log, not an assumption, says
+which `Host` the Serve proxy passes. A refused request never reaches a route.
 
 Everything the static handler sends (both pages, their scripts, styles and fonts, the
 single-page fallback and its refusals) carries `Content-Security-Policy: default-src

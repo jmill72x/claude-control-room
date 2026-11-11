@@ -8,6 +8,10 @@ const HOUR = 3600e3;
 export const WEEK_MS = 7 * 24 * HOUR;
 // The server's default: the next run plus this. Here only for the label.
 export const AFTER_NEXT_MS = 2 * HOUR;
+// When the failure's start is unknown (no `since`), the server caps an ack at 24
+// hours, so the form offers no 7-day choice and the default says 24 hours when the
+// next run is further off than that.
+export const UNKNOWN_SINCE_CAP_MS = 24 * HOUR;
 export const ACKABLE = new Set(['cron', 'service']);
 export const MAX_NOTE = 200;
 
@@ -15,12 +19,14 @@ export const canAck = alert => Boolean(alert) && ACKABLE.has(alert.kind) && type
 
 // The form's choices: the server's default (its next run plus 2 h, or 24 hours
 // when there is no next run), and 7 days. `until` undefined means "the default".
+// With no `since` there is only the default, and it never passes 24 hours.
 export function untilChoices(alert, now) {
-  const next = Number.isFinite(alert?.nextRunAt) && alert.nextRunAt > now ? alert.nextRunAt : null;
-  return [
-    { id: 'next', label: next ? `Until its next run (${when(next + AFTER_NEXT_MS, now)})` : 'For 24 hours', until: undefined },
-    { id: 'week', label: `For 7 days (${when(now + WEEK_MS, now)})`, until: now + WEEK_MS }
-  ];
+  const known = Number.isFinite(alert?.since);
+  let next = Number.isFinite(alert?.nextRunAt) && alert.nextRunAt > now ? alert.nextRunAt : null;
+  if (next !== null && !known && next + AFTER_NEXT_MS > now + UNKNOWN_SINCE_CAP_MS) next = null;
+  const first = { id: 'next', label: next ? `Until its next run (${when(next + AFTER_NEXT_MS, now)})` : 'For 24 hours', until: undefined };
+  if (!known) return [first];
+  return [first, { id: 'week', label: `For 7 days (${when(now + WEEK_MS, now)})`, until: now + WEEK_MS }];
 }
 
 // The POST body: the key, a trimmed note when there is one, `until` for the

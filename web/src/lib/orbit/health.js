@@ -22,8 +22,9 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 // ---- acknowledgements (server/lib/acks.mjs) ----
 
-// Who acked, as a name: "jeff" is Jeff, "jarvis" is Jarvis.
-export const byName = by => (typeof by === 'string' && by !== '' ? by[0].toUpperCase() + by.slice(1) : 'someone');
+// Who acked, as a name: "jeff" is Jeff, "jarvis" is Jarvis, and "local" (a script on
+// the server that didn't name itself) is said as such.
+export const byName = by => (by === 'local' ? 'a local script' : typeof by === 'string' && by !== '' ? by[0].toUpperCase() + by.slice(1) : 'someone');
 
 // A covered row's words: "acknowledged by Jeff until Fri 6:45 PM · mini restarted before login".
 export function ackLine(ack, now) {

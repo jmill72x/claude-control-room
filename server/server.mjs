@@ -26,6 +26,7 @@ import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
+import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
@@ -54,6 +55,12 @@ for (const problem of healthSettings.problems) console.error(`config: ${problem}
 // The To push tile's git-read path and repos (lib/to-push.mjs), checked the same way.
 const toPushSettings = readToPushConfig(config, roster.agents.map(a => a.key));
 for (const problem of toPushSettings.problems) console.error(`config: ${problem}`);
+// The Host allowlist (lib/host-guard.mjs): loopback on this port, plus the names in
+// config's `allowedHosts` (the Tailscale Serve name). `hostCheck` is "log" until a
+// day of logs shows the list is right, then "enforce".
+const hosts = readAllowedHosts(config);
+for (const problem of hosts.problems) console.error(`config: ${problem}`);
+if (hosts.names.length === 0) console.error('config: allowedHosts names no host, so only 127.0.0.1 and localhost on this port pass the Host check');
 // job-status and git-read run on a timer, so each must be a program only this user
 // can change (lib/program-check.mjs). One that isn't is left out like a bad entry,
 // and that feature reads "not set up" until it is fixed and the service restarts.
@@ -169,11 +176,16 @@ process.on('unhandledRejection', err => {
   console.error('unhandled rejection (ignored, process kept alive)', err);
 });
 
+// The Host check comes first, before any route, API or page alike.
+const routes = withHostGuard(async (req, res) => {
+  if (req.url.startsWith('/api/')) return api(req, res);
+  if (req.url.startsWith('/avatars/')) return serveAvatar(req, res);
+  return serveStatic(req, res);
+}, allowedHostSet(PORT, hosts.names), { mode: hosts.mode });
+
 const server = createServer(async (req, res) => {
   try {
-    if (req.url.startsWith('/api/')) return await api(req, res);
-    if (req.url.startsWith('/avatars/')) return await serveAvatar(req, res);
-    return await serveStatic(req, res);
+    await routes(req, res);
   } catch (err) {
     console.error('request failed', req.method, req.url, err);
     if (res.headersSent) return res.end();

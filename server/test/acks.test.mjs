@@ -3,12 +3,12 @@
 // so the tests hold in any time zone.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  activeAcks, matchingAck, applyAcks, checkAckRequest, makeAck, addAck, removeAck, decoratePayload, sameSince,
-  ACK_MAX, ACK_CAP_MS, ACK_AFTER_NEXT_MS, ACK_NO_NEXT_MS, SINCE_TOLERANCE_MS, DEFAULT_BY, ackLogLine
+  activeAcks, matchingAck, applyAcks, checkAckRequest, makeAck, addAck, removeAck, decoratePayload, sameSince, ambiguousNames,
+  ACK_MAX, ACK_CAP_MS, ACK_AFTER_NEXT_MS, ACK_NO_NEXT_MS, ACK_UNKNOWN_SINCE_CAP_MS, SINCE_TOLERANCE_MS, PAGE_BY, LOCAL_BY, ackLogLine
 } from '../lib/acks.mjs';
 import { createAckStore } from '../acks.mjs';
 import { createCache } from '../cache.mjs';
@@ -77,10 +77,21 @@ test('a malformed entry in the file is ignored, never thrown on', () => {
 // ---- the request ----
 
 test('a request is a key, an optional one-line note, an optional until and who', () => {
-  assert.deepEqual(checkAckRequest({ key: KEY }), { ok: true, value: { key: KEY, note: null, by: DEFAULT_BY, until: undefined } });
+  assert.deepEqual(checkAckRequest({ key: KEY }, { fromPage: true }), { ok: true, value: { key: KEY, note: null, by: PAGE_BY, until: undefined } });
   assert.deepEqual(checkAckRequest({ key: KEY, note: '  next run Fri ', by: 'jarvis', until: NOW + DAY }).value,
     { key: KEY, note: 'next run Fri', by: 'jarvis', until: NOW + DAY });
   assert.equal(checkAckRequest({ key: KEY, note: '' }).value.note, null);
+});
+
+test('who acked, when the request does not say: the owner from the page, "local" from a script', () => {
+  assert.equal(PAGE_BY, 'jeff');
+  assert.equal(LOCAL_BY, 'local');
+  assert.equal(checkAckRequest({ key: KEY }, { fromPage: true }).value.by, 'jeff');
+  assert.equal(checkAckRequest({ key: KEY }).value.by, 'local', 'no Origin, no by: a script that did not name itself');
+  assert.equal(checkAckRequest({ key: KEY }, { fromPage: false }).value.by, 'local');
+  assert.equal(checkAckRequest({ key: KEY, by: null }).value.by, 'local');
+  assert.equal(checkAckRequest({ key: KEY, by: 'jarvis' }, { fromPage: true }).value.by, 'jarvis', 'a given by always wins');
+  assert.equal(checkAckRequest({ key: KEY, by: 'jarvis' }).value.by, 'jarvis');
 });
 
 test('a bad request says what is wrong', () => {
@@ -99,7 +110,7 @@ test('a bad request says what is wrong', () => {
 });
 
 test('the ack takes since from the alert, and the default until from its next run plus 2 h', () => {
-  const r = makeAck(cronAlert(), checkAckRequest({ key: KEY, note: 'known' }).value, NOW);
+  const r = makeAck(cronAlert(), checkAckRequest({ key: KEY, note: 'known' }, { fromPage: true }).value, NOW);
   assert.deepEqual(r, { ok: true, value: { key: KEY, kind: 'cron', since: SINCE, by: 'jeff', note: 'known', at: NOW, until: NEXT + ACK_AFTER_NEXT_MS } });
 });
 
@@ -125,6 +136,23 @@ test('until is the caller\'s when given, later than now and within the 14-day ca
 test('the default never reaches past the cap either', () => {
   const far = cronAlert({ nextRunAt: NOW + 20 * DAY });
   assert.equal(makeAck(far, checkAckRequest({ key: KEY }).value, NOW).value.until, NOW + ACK_CAP_MS);
+});
+
+test('with no since, an ack reaches at most 24 hours: the default is cut to it, and a longer until is refused', () => {
+  assert.equal(ACK_UNKNOWN_SINCE_CAP_MS, DAY);
+  const unknown = cronAlert({ since: null });
+  const req = until => ({ ...checkAckRequest({ key: KEY }).value, until });
+  assert.equal(makeAck(unknown, req(undefined), NOW).value.until, NOW + DAY, 'next run + 2 h is 3 days off, so the cap wins');
+  assert.equal(makeAck(unknown, req(undefined), NOW).value.since, null);
+  assert.equal(makeAck(cronAlert({ since: null, nextRunAt: NOW + 3 * HOUR }), req(undefined), NOW).value.until, NOW + 5 * HOUR, 'a nearer next run keeps its default');
+  assert.equal(makeAck(unknown, req(NOW + DAY), NOW).value.until, NOW + DAY);
+  const r = makeAck(unknown, req(NOW + DAY + 1), NOW);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /24 hours/);
+  assert.match(r.error, /isn't known/);
+  assert.match(makeAck(unknown, req(NOW + 7 * DAY), NOW).error, /24 hours/, 'the 7-day choice is refused');
+  assert.equal(makeAck(cronAlert(), req(NOW + 7 * DAY), NOW).ok, true, 'with a since, 7 days is fine');
+  assert.equal(makeAck({ ...serviceAlert, since: undefined }, { ...req(undefined), key: serviceAlert.key }, NOW).value.until, NOW + DAY);
 });
 
 test('only a live cron or service alert can be acked', () => {
@@ -188,6 +216,37 @@ test('a covered cron, job and service entry gains the ack; verdicts and the cach
   assert.equal(decoratePayload(payload, []), payload);
 });
 
+test('a display name two jobs share marks no health row: the ack would show on a job nobody acked', () => {
+  // Two labels whose last part is the same, and no names in config: both read "friday".
+  const a = { name: 'friday', label: 'com.example.a.friday', ok: false, state: 'failed', last: 'Failed · 1' };
+  const b = { name: 'friday', label: 'com.example.b.friday', ok: false, state: 'failed', last: 'Failed · 1' };
+  const rows = [{ name: 'friday', state: 'failed', reason: 'exit 1' }, { name: 'friday', state: 'failed', reason: 'exit 1' }];
+  const payload = { crons: { status: 'ok', data: [a, b] }, health: { status: 'ok', data: { jobs: { status: 'ok', list: rows }, services: [] } } };
+  const ackA = { ...ack(), key: `cron:launchd:${a.label}` };
+  const { acked } = applyAcks([cronAlert({ key: ackA.key })], [ackA], NOW);
+  assert.equal(acked.length, 1);
+  const out = decoratePayload(payload, acked);
+  assert.equal(out.crons.data[0].ack.key, ackA.key, 'the crons panel, keyed by label, still carries it');
+  assert.equal(out.crons.data[1].ack, undefined);
+  assert.equal(out.health.data.jobs.list[0].ack, undefined, 'neither health row is marked');
+  assert.equal(out.health.data.jobs.list[1].ack, undefined);
+  // Distinct names in config lift the ambiguity, and the right row is marked.
+  const named = { 'com.example.a.friday': { name: 'Friday A' }, 'com.example.b.friday': { name: 'Friday B' } };
+  const distinct = { ...payload, health: { status: 'ok', data: { jobs: { status: 'ok', list: [{ ...rows[0], name: 'Friday B' }, { ...rows[1], name: 'Friday A' }] }, services: [] } } };
+  const fixed = decoratePayload(distinct, acked, named);
+  assert.equal(fixed.health.data.jobs.list[0].ack, undefined);
+  assert.equal(fixed.health.data.jobs.list[1].ack.key, ackA.key);
+  // Only one of the two listed by the crons panel: still ambiguous, from the two failed rows alone.
+  const oneCron = { ...payload, crons: { status: 'ok', data: [a] } };
+  assert.equal(decoratePayload(oneCron, acked).health.data.jobs.list[0].ack, undefined);
+  // The same label listed twice is one job, not two.
+  assert.deepEqual([...ambiguousNames([a, a], [], {})], []);
+  assert.deepEqual([...ambiguousNames([a, b], [], {})], ['friday']);
+  assert.deepEqual([...ambiguousNames([], rows, {})], ['friday']);
+  assert.deepEqual([...ambiguousNames([], [rows[0], { name: 'friday', state: 'ok' }], {})], [], 'an OK row with the name is never marked anyway');
+  assert.deepEqual([...ambiguousNames(null, null)], []);
+});
+
 test('the log line names the kind, who, until when and the key, never the note', () => {
   const line = ackLogLine(ack({ note: 'private words' }));
   assert.match(line, /^ack: cron by jeff until 2026-\d\d-\d\dT.*Z \(cron:launchd:com\.example\.friday\)$/);
@@ -212,8 +271,13 @@ test('the store reads an absent file as nothing, writes whole, prunes on read an
     assert.equal(JSON.parse(await readFile(path, 'utf8')).length, 1, 'a write prunes');
     await store.remove(KEY, NOW + 1000);
     assert.deepEqual(await store.read(NOW + 1000), []);
-    await writeFile(path, '{not json');
+    await rm(path);
+    await writeFile(path, '{not json'); // a fresh file, with the default mode
     assert.deepEqual(await store.read(NOW), [], 'a corrupt file reads as nothing');
+    assert.notEqual((await stat(path)).mode & 0o777, 0o600);
+    await store.add(ack(), NOW);
+    assert.equal((await stat(path)).mode & 0o777, 0o600, 'the file is the service user\'s alone, even replacing one that was not');
+    assert.deepEqual(await readdir(join(dir, 'data')), ['acks.json'], 'no temp file is left beside it');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -225,6 +289,26 @@ test('two writes at once land in order, neither lost', async () => {
     const store = createAckStore(join(dir, 'acks.json'));
     await Promise.all([store.add(ack(), NOW), store.add(ack({ key: 'cron:launchd:com.example.two' }), NOW)]);
     assert.deepEqual((await store.read(NOW)).map(a => a.key).sort(), [KEY, 'cron:launchd:com.example.two']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a write goes to a temp file first and takes the file\'s place whole: a write that fails leaves the old list', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'acks-'));
+  try {
+    const path = join(dir, 'acks.json');
+    const store = createAckStore(path);
+    await store.add(ack(), NOW);
+    const before = await readFile(path, 'utf8');
+    // A directory where the file should go: the temp file is written, then the
+    // rename can't land, so the add fails and the temp file goes.
+    await mkdir(join(dir, 'nested', 'acks.json'), { recursive: true });
+    const bad = createAckStore(join(dir, 'nested', 'acks.json'));
+    await assert.rejects(bad.add(ack(), NOW));
+    assert.equal(await readFile(path, 'utf8'), before, 'the other file is untouched');
+    assert.deepEqual(await readdir(join(dir, 'nested')), ['acks.json'], 'no temp file is left beside the failed write');
+    assert.deepEqual((await readdir(dir)).sort(), ['acks.json', 'nested']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -286,13 +370,13 @@ test('POST /api/acks acks a live alert, which then leaves alerts for acked and m
   assert.deepEqual(before.acked, []);
   assert.deepEqual(before.acks, []);
 
-  const res = await call(h, 'POST', '/api/acks', { key: KEY, note: 'mini restarted before login' });
+  const res = await call(h, 'POST', '/api/acks', { key: KEY, note: 'mini restarted before login' }, { origin: 'http://127.0.0.1:8322' });
   assert.equal(res.statusCode, 200, res.body);
   const list = JSON.parse(res.body);
   assert.equal(list.length, 1);
   assert.equal(list[0].since, SINCE, 'since comes from the cron, not the caller');
   assert.equal(list[0].until, NEXT + ACK_AFTER_NEXT_MS);
-  assert.equal(list[0].by, 'jeff');
+  assert.equal(list[0].by, 'jeff', 'the page (an Origin header) is the owner');
   assert.equal(d.logged.length, 1);
   assert.match(d.logged[0], /^ack: cron by jeff until /);
 
@@ -316,6 +400,30 @@ test('POST /api/acks acks a live alert, which then leaves alerts for acked and m
   assert.deepEqual(again.alerts.map(a => a.key), ['limit:Weekly']);
   assert.equal(again.health.data.services[0].ack.by, 'jarvis');
   assert.equal(again.health.data.services[0].state, 'down');
+});
+
+test('a POST with no Origin and no by is recorded as local, never as the owner', async () => {
+  const d = deps();
+  const h = createHandler(d);
+  const res = await call(h, 'POST', '/api/acks', { key: KEY });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(JSON.parse(res.body)[0].by, 'local');
+  assert.match(d.logged[0], /^ack: cron by local until /);
+});
+
+test('an alert with no since takes at most 24 hours over the route too', async () => {
+  const d = deps();
+  d.cache.set('crons', [{ ...failedCron, lastRunAt: undefined }]);
+  const h = createHandler(d);
+  const week = await call(h, 'POST', '/api/acks', { key: KEY, until: Date.now() + 7 * DAY });
+  assert.equal(week.statusCode, 400);
+  assert.match(JSON.parse(week.body).error, /24 hours/);
+  const dflt = await call(h, 'POST', '/api/acks', { key: KEY });
+  assert.equal(dflt.statusCode, 200, dflt.body);
+  const made = JSON.parse(dflt.body)[0];
+  assert.equal(made.since, null);
+  assert.ok(made.until - made.at <= DAY && made.until - made.at > DAY - 60e3);
+  assert.equal((await dashboard(h)).alerts.some(a => a.key === KEY), false, 'covered: both since unknown');
 });
 
 test('a new failure of an acked job is red again, and an expired ack lapses', async () => {

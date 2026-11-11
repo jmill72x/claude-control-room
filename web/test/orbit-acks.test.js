@@ -27,6 +27,17 @@ test('the choices: its next run plus 2 h when there is one, else 24 hours; and 7
   assert.equal(AFTER_NEXT_MS, 2 * 3600e3);
 });
 
+test('with no since there is no 7-day choice, and the default never says more than 24 hours', () => {
+  const unknown = { ...cron, since: null };
+  assert.deepEqual(untilChoices(unknown, NOW), [{ id: 'next', label: 'For 24 hours', until: undefined }], 'its next run is 3 days off');
+  assert.deepEqual(untilChoices({ ...unknown, nextRunAt: at(10, 20, 0) }, NOW), [{ id: 'next', label: 'Until its next run (10:00 PM)', until: undefined }], 'a next run within the day keeps its label');
+  assert.equal(untilChoices({ ...unknown, nextRunAt: at(11, 13, 1) }, NOW)[0].label, 'For 24 hours', 'next run + 2 h one minute past the cap');
+  assert.equal(untilChoices({ ...cron, since: undefined }, NOW).length, 1);
+  assert.equal(untilChoices({ ...service, since: null }, NOW).length, 1);
+  assert.equal(untilChoices(service, NOW).length, 2, 'a down service with a downSince keeps both');
+  assert.deepEqual(ackBody(unknown, { choice: 'week' }, NOW), { key: cron.key }, 'asking for the week falls back to the default');
+});
+
 test('the body: the key, a trimmed note when given, until for the 7-day choice only, never by', () => {
   assert.deepEqual(ackBody(cron, { note: '  mini restarted before login ', choice: 'next' }, NOW),
     { key: cron.key, note: 'mini restarted before login' });

@@ -213,7 +213,8 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, log = cons
         if (req.method === 'POST') {
           guardWrite(req);
           if (!acks.add) throw new HttpError(503, 'acknowledgements are not set up on this server');
-          const checked = checkAckRequest(await readBody(req, ACK_MAX_BODY));
+          // A browser sends Origin on every POST; a script on this machine sends none.
+          const checked = checkAckRequest(await readBody(req, ACK_MAX_BODY), { fromPage: Boolean(req.headers?.origin) });
           if (!checked.ok) throw new HttpError(400, checked.error);
           const now = Date.now();
           const alert = rawAlerts(now).find(a => a.key === checked.value.key) ?? null;

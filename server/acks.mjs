@@ -1,7 +1,10 @@
 // The ack file: server/data/acks.json (gitignored, beside notified.json), a JSON
 // list written whole on each change. Reads prune expired entries; writes prune
-// them too and keep at most ACK_MAX. One write at a time, in order.
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+// them too and keep at most ACK_MAX. One write at a time, in order. Each write goes
+// to a temp file beside it, mode 0600, then takes the file's place by rename, so a
+// crash mid-write leaves the old list, never half of a new one, and the file is
+// only ever the service user's to read (the 2026-11-10 security review).
+import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { activeAcks, addAck, removeAck } from './lib/acks.mjs';
 
@@ -22,9 +25,17 @@ export function createAckStore(path) {
     }
   }
 
+  let writes = 0;
   async function persist(list) {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify(list, null, 2));
+    const tmp = `${path}.tmp-${process.pid}-${++writes}`;
+    try {
+      await writeFile(tmp, JSON.stringify(list, null, 2), { mode: 0o600, flag: 'wx' });
+      await rename(tmp, path);
+    } catch (err) {
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
     return list;
   }
 

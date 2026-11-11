@@ -417,7 +417,21 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Phase 1a, the acknowledge mechanism, is built and staged (2026-11-10), not live.** README
+**Ultron's 1a review, answered on the branch `jos/hardening` (2026-11-10 overnight, local
+commits only):** a Host allowlist before every route (`server/lib/host-guard.mjs`; config's
+`allowedHosts` names the Serve name, `hostCheck` is `"log"` until a day of clean logs, then
+`"enforce"`); the ack file written by temp file and rename at mode 0600; an ack for an alert
+with no `since` capped at 24 hours, with no 7-day choice on the page; `by` defaults to the
+owner only when the request carries an `Origin` header, else `local`; and a display name two
+jobs share marks no health row. README: "The Host check" under Security, the config table, and
+"Acknowledging a known miss". Not built: the ack-notification push (Jeff hasn't decided).
+**Before the restart that takes it live, Jarvis adds to `config.json`:** `"allowedHosts":
+["<the Serve name>"]` (no `hostCheck`, so it logs). **After it:** `grep host: ` on the service
+log over a day; no line for the Serve name means the list is right, and `"hostCheck":
+"enforce"` goes in with the next restart. A line naming a Host that Jeff's devices do use
+means the list is missing that name (add it, don't enforce yet).
+
+**Phase 1a, the acknowledge mechanism, is built and committed (96cd2b6, 2026-11-10), not live.** README
 "Acknowledging a known miss" describes it: `server/lib/acks.mjs` (pure), `server/acks.mjs`
 (the file `server/data/acks.json`), `POST`/`DELETE`/`GET /api/acks`, `acks` and `acked` in
 `/api/dashboard`, `ack` on covered crons, jobs and services, the notifier silenced for a
