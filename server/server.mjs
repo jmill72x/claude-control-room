@@ -34,6 +34,9 @@ import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
 import { prepareSocketPath } from './lib/chat-listen.mjs';
+import { createEvents, readEventsConfig } from './lib/events.mjs';
+import { createEventSocketRouter } from './lib/event-socket.mjs';
+import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
@@ -172,6 +175,13 @@ const writeSent = async next => {
   await writeFile(SENT_PATH, JSON.stringify(next, null, 2));
 };
 
+// Events (lib/events.mjs): made from the notifier's alerts after acks, once the chat
+// is on (below). Until then, and with the chat off, the hook is absent.
+let events = null;
+const eventsSettings = readEventsConfig(config);
+for (const problem of eventsSettings.problems) console.error(`config: ${problem}`);
+const serviceNames = new Set(healthSettings.services.map(s => s.name));
+
 registry.register('notifier', async () => {
   // No ntfy topic is a normal state, and no longer a reason to skip the run:
   // every alert also goes to #pepper, which needs no topic, and publish() turns
@@ -186,7 +196,8 @@ registry.register('notifier', async () => {
     readSent,
     writeSent,
     acks: await ackStore.read(now),
-    send: entry => sendAlert({ topic, title: entry.title, message: entry.message })
+    send: entry => sendAlert({ topic, title: entry.title, message: entry.message }),
+    events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys }))
   });
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
@@ -208,6 +219,14 @@ for (const problem of chatSettings.problems) console.error(`config: ${problem}`)
 const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
 const channelSocketPath = process.env.JARVIS_OS_SOCKET || join(stateDir, 'channel.sock');
 const adminSocketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(stateDir, 'admin.sock');
+// The event socket (lib/event-socket.mjs) and the kill switch (lib/events.mjs).
+const eventSocketPath = process.env.JARVIS_OS_EVENTS_SOCKET || join(stateDir, 'events.sock');
+const eventsOffPath = join(stateDir, 'events-off');
+// Who may say hello after a bye (lib/chat-verify.mjs): config's `chat.channelServer` and
+// the lead's launcher's `launch.json`.
+const channelServer = readChannelServer(config);
+if (chatSettings.on) for (const problem of channelServer.problems) console.error(`config: ${problem}`);
+const launchPath = join(stateDir, 'launch.json');
 let socketsReady = false;
 if (chatSettings.on) {
   // The channel refuses a socket looser than 0600 in a folder looser than 0700; the
@@ -232,7 +251,10 @@ if (chatSettings.on && socketsReady) {
   const chatEvents = async event => {
     const words = {
       'client-refused': 'a second chat channel tried to connect and was refused',
-      'client-replaced': `the chat channel was taken over by another process after its heartbeat went stale (${Math.round((event.staleFor ?? 0) / 1000)} s)`,
+      'client-replaced': event.unverified
+        ? `a process tried to take the chat channel's place after its bye and was refused (${event.unverified})`
+        : `the chat channel was taken over by another process after its heartbeat went stale (${Math.round((event.staleFor ?? 0) / 1000)} s)`,
+      'channel-silent': `the chat channel said bye and has not come back in ${Math.round((event.after ?? 0) / 60e3)} minutes`,
       'pairing-started': `a device asked to pair with the chat (${event.name || 'unnamed'})`,
       'pairing-approved': `a chat pairing was approved by ${event.by}`,
       paired: `a device was paired with the chat: ${event.device?.name ?? '?'} (by ${event.by})`,
@@ -244,7 +266,7 @@ if (chatSettings.on && socketsReady) {
     };
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
-    if (['client-refused', 'client-replaced', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden'].includes(event.kind)) {
+    if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
@@ -261,7 +283,10 @@ if (chatSettings.on && socketsReady) {
   if (orphans) console.log(`chat: removed ${orphans} unsent upload${orphans === 1 ? '' : 's'} left from before the start`);
   const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
   await chatDevices.load();
-  const socketRouter = createSocketRouter({ store: chatStore, onEvent: chatEvents });
+  events = createEvents({ store: chatStore, ledgerPath: join(HERE, 'data', 'events.json'), killSwitchPath: eventsOffPath, sources: eventsSettings.sources, triagePerDay: eventsSettings.triagePerDay });
+  await events.load();
+  console.log(`events: on${events.killed() ? ' (the kill switch is on: events are stored, never delivered)' : ''}, ${eventsSettings.sources.size} socket source${eventsSettings.sources.size === 1 ? '' : 's'} allowed`);
+  const socketRouter = createSocketRouter({ store: chatStore, events, onEvent: chatEvents, verifyRestart: createChannelVerifier({ channelServer: channelServer.path, launchPath }), verifyEveryHello: Boolean(channelServer.path) });
   // Web Push (lib/chat-push.mjs): on with config's `push.subject` and the VAPID key
   // in the Keychain; otherwise a `push:` line says why and the chat runs without it.
   const { vapid, problems: pushProblems } = await loadVapid({ config });
@@ -280,6 +305,14 @@ if (chatSettings.on && socketsReady) {
   };
   await listenUnix(channelSocketPath, socketRouter.handler, 'channel');
   await listenUnix(adminSocketPath, createAdminRouter({ devices: chatDevices, onEvent: chatEvents }), 'admin');
+  // The event socket is apart from the other two; a problem with its path keeps it
+  // off and leaves the chat (and the notifier's events) running.
+  const eventPrep = await prepareSocketPath(eventSocketPath);
+  for (const problem of eventPrep.problems) console.error(`events: ${problem}; the event socket stays off`);
+  if (eventPrep.ok) {
+    await listenUnix(eventSocketPath, createEventSocketRouter({ events, sources: eventsSettings.sources }), 'event')
+      .catch(err => console.error(`events: the event socket did not start (${err?.code ?? err?.message ?? err})`));
+  }
 }
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });

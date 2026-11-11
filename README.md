@@ -621,8 +621,9 @@ three pieces, each with its own router:
   append-only and fsynced, loaded at start. Every message has a `seq` that is never reused
   (the highest on file plus one), and `cursor.json` holds `epoch`, a random id made when the
   store is first created, so a client can tell a store that was emptied and restarted. A
-  message is `{ seq, id, at, from: jeff|jarvis|system, kind: chat|permission|verdict|notice,
-  text, replyTo, device, attachments, editedAt, state, meta }`; the page and the channel
+  message is `{ seq, id, at, from: jeff|jarvis|system, kind: chat|permission|verdict|notice|event,
+  text, replyTo, device, attachments, editedAt, state, meta }` (only `system` makes an
+  `event`; see "Events" below); the page and the channel
   never see its `clientId`. Permission requests and verdicts are messages too (so a replay
   carries them) and the open requests live in memory, expiring after 10 minutes and losing
   their input preview after 24 hours. Attachments are files under `data/chat/files/<random
@@ -631,9 +632,9 @@ three pieces, each with its own router:
   requests (the channel asks again) and nothing else.
 - **The channel's socket** (`server/lib/chat-socket.mjs`): socket API v1 on
   `~/.local/state/jarvis-os/channel.sock` (`JARVIS_OS_SOCKET`), 0600 in a 0700 folder,
-  as the spec's §1.5 lists it: `hello` (takes `{pid, version, startedAt}`, `startedAt` in
+  as the spec's §1.5 lists it: `hello` (takes `{pid, version, startedAt, capabilities?}`, `startedAt` in
   epoch milliseconds; answers `{cursor, epoch, seq, token}`), `inbound` (an ndjson stream of
-  the owner's messages and verdicts after a seq, a ping every 15 s; it replays the whole
+  the owner's messages, verdicts and events (see "Events") after a seq, a ping every 15 s; it replays the whole
   backlog after `after`, a page of 100 at a time until the store has no more, listening for
   live messages before the replay starts and holding them until it ends, so each seq is sent
   once and none falls in between; it waits for `drain` whenever the buffer fills, and a
@@ -644,7 +645,9 @@ three pieces, each with its own router:
   seq that was never written to it), `bye` (a clean exit: the place is free at once, the
   inbound stream ends with `{"type":"bye"}`, logged, never pushed; a fresh `hello` after
   a bye logs the gap, "quick" under 5 s, and records a quiet `notice` from `system`,
-  "Jarvis's channel restarted HH:MM" in local time, shown in the chat and never pushed), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
+  "Jarvis's channel restarted HH:MM" in local time, shown in the chat and never pushed; that
+  hello must pass the restart check below, and a bye with no hello for 2 minutes is alerted
+  once as `channel-silent`), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
   `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
   `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
   `status`. **One client at a time, held by a session token:** `hello` answers a random
@@ -663,6 +666,29 @@ three pieces, each with its own router:
   state and version, never the client's pid. The socket can't make a message from the
   owner and can't answer a permission. A reply or edit whose text looks like a credential
   is refused with the pattern's name, never the text; no error body ever echoes a message.
+  **The restart check** (`server/lib/chat-verify.mjs`, Ultron's channel-fixes review,
+  finding 1): the channel says bye on SIGINT, SIGTERM and SIGHUP, which any process running
+  as the owner can send, so the hello after a bye must come from the pid it declares, and
+  that pid must (a) be alive, (b) run exactly `node <chat.channelServer>` (config's absolute
+  path to the released channel's `server.mjs`, nothing after it), and (c) descend within 8
+  parent hops from the pid in `~/.local/state/jarvis-os/launch.json` (`{"pid": N}`, written
+  by the lead's launcher; opened without following a symlink and without blocking, a regular
+  file of this user's with no group or world bits). After a bye two more rules hold, since
+  the pid is only declared and the dying channel's own pid (stopped with SIGSTOP) passes
+  (a)-(c): the pid that said bye is refused outright, and (d) the process must have started
+  no earlier than 2 s before the bye. One `/bin/ps -axww -o pid=,ppid=,lstart=,command=`
+  (no shell, the C locale and the server's TZ, 2 s timeout) answers all four; lstart is read
+  in local time, and a line whose date isn't a real one (a wrong weekday included) is left
+  out. If any check fails, ps fails, or `chat.channelServer` is unset, the hello is
+  **refused** (409) and alerted as a takeover (`client-replaced`, with the reason), and the
+  place stays free for the real channel, whose hello is checked the same way. Refusing
+  rather than letting it in with an alert was chosen because a wrong process holding the
+  token can read every message, and a real channel that is refused just retries. Hellos
+  are taken one at a time, so a check in flight can't be raced. **Once `chat.channelServer`
+  is set, every hello without the current session token is checked** with (a)-(c), the
+  first one after a dashboard start and a stale-heartbeat takeover included (a refused
+  takeover is not logged as one); only the holder's own re-hello with its token is not.
+  Without the setting, only hellos after a bye are checked, and they all fail.
 - **The page's routes** (`server/lib/chat-routes.mjs`), over TCP behind the Host check:
   pairing (`POST /api/pair/start {name}` from the device, which gets a 6-letter code and a
   10-minute pairing cookie; `POST /api/pair/approve {code}` from a device already paired,
@@ -843,6 +869,97 @@ started by mistake never pulls the live one's socket away; a problem there keeps
 off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-limit.test.mjs`, over real temp Unix
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
+
+### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
+
+An event is a short line from `system` (kind `event`) in the chat store, handed to the lead's
+live session by the channel. Slice 1 makes one only for a **failed launchd job** or a **down
+service**, so a failure reaches the lead without anyone typing. The design and its review
+are in the planner's notes (`2026-11-11-jos-pillar3-events.md`, sections 6 and 7); the code
+is `server/lib/events.mjs`, `server/lib/event-socket.mjs`, the event case in
+`server/lib/chat-socket.mjs` and the notifier's hook; tests in `server/test/events.test.mjs`
+and `web/test/orbit-events.test.js`. Events run only while the chat is on.
+
+- **What makes one.** The notifier, every 5 minutes, from its alerts *after acks*: only kind
+  `cron` with a `cron:launchd:*` key and kind `service`, never `service:session:*` (the
+  lead's own session) and never a key in config's `events.excludeKeys`. Ingested crons,
+  waits, limits, projections, the board and credits never make events. An acked alert
+  makes none.
+- **What it says.** Fixed templates with typed fields only: `Job <name> failed (exit N) at
+  HH:MM`, `Service <name> is down since HH:MM`, `N jobs failed: …` for several at once, and
+  `N more job failures held back since HH:MM (limits: …)`. A job is named only by its own
+  entry in config's `jobs` (a plain name; never an inherited property), else "a launchd
+  job": a launchd label is a plist file name any program running as the owner can pick, so
+  it never goes in. A service's name goes in only when `health.services` lists it. A cron's
+  `last` words, labels, log text and ingest names never go in. The exit code
+  comes from the crons panel's numeric `exit` field. Times are the server's local time.
+- **Limits, on the server.** Dedupe by alert key while the condition lives, in a ledger of
+  its own (`server/data/events.json`, 0600, apart from `notified.json`, so a failed push and
+  a failed event never block each other). A burst within 60 s of a source's last event waits
+  for the window's end and goes as one. At most 6 an hour per source and 30 a day in all
+  (rolling); past that the candidates are held and counted, and once the source is under
+  its caps again one "held back" line goes, which counts toward no cap and starts no other
+  summary. Quiet hours (22:00 to 07:00) hold events that are not failures until 07:00, at
+  most 100 of them; past that they are only counted and join the held-back summary at 07:00.
+  Slice 1 has only failures. A store that refuses an event leaves no dedupe key behind, so
+  the next pass tries again. `takeTriage()` keeps a daily budget (`events.triagePerDay`,
+  default 10) for slice 2's headless triage runs; nothing spends it yet.
+- **The kill switch** is the file `~/.local/state/jarvis-os/events-off`. While it exists no
+  event is delivered (checked at delivery), and what would have been made meanwhile is only
+  counted (and deduped): at most one line an hour, `N events suppressed since HH:MM: events
+  were off` (type `suppressed`), stored with `state: "off"`, counted toward no cap and never
+  delivered, even after the file goes; what is left when it goes comes in one last line. The
+  page shows those with "Not sent to Jarvis: events were off".
+- **Delivery.** An event goes to the channel only when the channel's `hello` said
+  `"capabilities": ["events"]` (an older channel acks line types it doesn't know, which would
+  swallow events), while it is under 2 hours old and, if it came from an alert, while at
+  least one of its alert keys is still live (present and unacked at the last pass). Anything
+  else fails closed: the event is skipped on the stream, the cursor moves past it as usual,
+  and the store marks it `state: "undelivered"` (never delivered later), which the page
+  shows as "Not delivered to Jarvis". Web Push never fires for an event; the
+  alert's own push already did.
+- **Replies.** The lead answers an event with `reply` and `replyTo` set to the event's `id`
+  (or a summary's `id`). `unanswered()`, the page's ticks and its "slow" state ignore such a
+  reply: answering an event answers nothing the owner said. Events are never the owner's.
+- **The page** shows an event as a notice line, its words as plain text (React text nodes;
+  the tab has no HTML sinks, and a test checks that).
+
+**The channel's side.** `POST /v1/hello` takes an optional `capabilities`, a list of
+strings; `["events"]` asks for event lines. Without it (absent, not a list, or no
+`"events"`), the session gets no event line at all. The inbound line (`GET /v1/inbound`,
+one ndjson line; every value is the server's):
+
+```json
+{"type":"event","seq":42,"id":"m_mh8x2k9qabcdefgh","at":1794380040000,"source":"launchd",
+ "event":"job-failed","text":"Job Morning digest failed (exit 1) at 09:14","count":1,
+ "ids":["m_mh8x2k9qabcdefgh"]}
+```
+
+- `source`: `launchd`, `service`, or a socket source's name; `mixed` on a summary of several.
+- `event`: `job-failed`, `service-down`, `held-back`, `count` (a socket source), or `summary`.
+- `count`: the failures (or the socket source's count) the line stands for.
+- `ids`: the event messages the line covers; one for a single event.
+- **After `hello`** (the replay of the backlog, and whatever arrives during it), the events
+  waiting are merged into one line with `"event":"summary"`, `text` = `N events while the
+  channel was away: <each event's words, "; " between, at most 10, then "; and N more">`,
+  and `seq` and `id` those of the last event it covers, so seq order holds and one ack
+  covers them all. An owner's message in the backlog sends the events gathered before it
+  first, so a replay can carry more than one summary. One waiting event goes as itself.
+  Live events go one by one. The channel acks an event line's `seq` like any other.
+
+**The event socket** (Ultron's M4), `~/.local/state/jarvis-os/events.sock`
+(`JARVIS_OS_EVENTS_SOCKET`), 0600 in the 0700 folder, apart from the channel's and the
+admin socket, with one route: `POST /v1/event` with the body `{ "source": "<name>",
+"count": N, "ref": "<opaque id>" }` and nothing else (`ref` optional: letters, digits, `_`
+and `-`, at most 64; a repeated `ref` within 24 hours answers `{"status":"duplicate"}`).
+The source must be on config's `events.sources` allowlist, `{ "<name>": { "title": "NAS
+drop", "failure": false } }`, which is **empty by default, so slice 1 refuses every post**
+(403). Free text, an unknown field or source, a bad count (1 to 10000) and a body over 1 KB
+are refused with fixed words; the words are built on the server (`<title>: N new at
+HH:MM`), and the caps, quiet hours and kill switch apply. Answers: 201 `{"status":"made"}`,
+or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the owner may
+post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
+leaves the chat up.
 
 ### Acknowledging a known miss
 
@@ -1232,7 +1349,8 @@ and that must not reach every device on the tailnet.
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
-| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. |
+| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. |
+| `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
 | `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |

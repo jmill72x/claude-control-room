@@ -38,6 +38,15 @@
 // channel restarted HH:MM" in the server's local time, so the chat shows it. It is
 // never pushed or alerted (no `onEvent`), and the channel's own stream skips it.
 //
+// The hello after a bye is checked (Ultron's channel-fixes review, finding 1): the
+// channel says bye on a signal any same-user process can send, so `verifyRestart(pid)`
+// (lib/chat-verify.mjs: alive, running the released channel's server.mjs, under the
+// lead's launch) must pass. If it fails, or no verifier was given, the hello is refused
+// with 409 and alerted as `client-replaced` (with `unverified` set), and the place stays
+// free for the real channel. A bye with no hello after it within 2 minutes is alerted
+// once, as `channel-silent` (finding 5). Hellos are handled one at a time, so a check in
+// flight can't be raced.
+//
 // Errors are `{error}` with fixed words: never the text of a message.
 import { json, readBody, HttpError } from '../routes.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -51,10 +60,17 @@ export const INBOUND_PING_MS = 15e3;
 export const HEARTBEAT_MISSED_MS = 20e3;
 export const REPLAY_PAGE = 100;
 export const SESSION_HEADER = 'x-session-token';
+// What a channel names in hello's `capabilities` to be sent events.
+export const EVENTS_CAPABILITY = 'events';
+export const UNDELIVERED = 'undelivered';
 // What a stream may hold unsent before it is cut: a stalled holder's ceiling.
 export const INBOUND_BUFFER_MAX = 4 * 1024 * 1024;
 // A hello this soon after a bye is a quick restart (named in the log line).
 export const QUICK_RESTART_MS = 5e3;
+// A bye with no hello after it for this long is alerted, once.
+export const BYE_SILENCE_MS = 120e3;
+// After a bye, the new channel must have started no earlier than this before it.
+export const BYE_START_SLACK_MS = 2e3;
 const pad2 = n => String(n).padStart(2, '0');
 // HH:MM in the server's local time.
 export const clockTime = at => { const d = new Date(at); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
@@ -69,16 +85,56 @@ export const MAX_FILES = 4;
 const REPLY_BODY_MAX = 4 * ATTACHMENT_MAX_BYTES * 1.4 + 64 * 1024;
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-// What goes down the inbound stream: the owner's chat messages and verdicts.
-export function inboundEvent(m) {
+// What goes down the inbound stream: the owner's chat messages, verdicts and events
+// (lib/events.mjs). An event goes only when `eventOk(m)` says so at that moment: the
+// channel said at hello that it handles events (`capabilities: ["events"]`, Ultron's
+// L4: an older channel acks a line type it doesn't know, which would swallow it), the
+// kill switch is off, it was not made while the switch was on, it is under 2 h old and
+// its alert is still live. One that fails any of these is skipped, failing closed, and
+// marked `undelivered` in the store so the page says so (Ultron's L3). Its line carries the template's words and typed fields,
+// never an alert key or a label beyond what the words say (README, "Events").
+export function toInbound(m, { eventOk = () => false } = {}) {
+  if (m.kind === 'event') {
+    if (m.from !== 'system' || !eventOk(m)) return null;
+    const ev = m.meta?.event ?? {};
+    return { type: 'event', seq: m.seq, id: m.id, at: m.at, source: typeof ev.source === 'string' ? ev.source : 'unknown', event: typeof ev.type === 'string' ? ev.type : 'unknown', text: m.text, count: Number.isInteger(ev.count) ? ev.count : 1, ids: [m.id] };
+  }
   if (m.from === 'jeff' && m.kind === 'chat') {
     return { type: 'message', seq: m.seq, id: m.id, at: m.at, text: m.text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
   }
   if (m.kind === 'verdict') return { type: 'verdict', seq: m.seq, requestId: m.meta?.requestId ?? null, behavior: m.meta?.behavior ?? m.text, device: m.device ?? null };
   return null;
 }
+// The name the tests and older callers know.
+export const inboundEvent = toInbound;
 
-export function createSocketRouter({ store, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS, inboundBufferMax = INBOUND_BUFFER_MAX }) {
+// The events a replay found waiting, as one line: a single one as itself, several as a
+// `summary` whose seq and id are the last one's (so an ack covers them all and seq
+// order holds) and whose `ids` name every one, for a reply's replyTo.
+export const SUMMARY_LIST_MAX = 10;
+export function summaryLine(events) {
+  if (events.length === 1) return events[0];
+  const last = events[events.length - 1];
+  const sources = [...new Set(events.map(e => e.source))];
+  const shown = events.slice(0, SUMMARY_LIST_MAX).map(e => e.text);
+  const more = events.length - shown.length;
+  const text = `${events.length} events while the channel was away: ${shown.join('; ')}${more > 0 ? `; and ${more} more` : ''}`;
+  return { type: 'event', seq: last.seq, id: last.id, at: last.at, source: sources.length === 1 ? sources[0] : 'mixed', event: 'summary', text, count: events.reduce((n, e) => n + (e.count ?? 1), 0), ids: events.map(e => e.id) };
+}
+
+// `events` (lib/events.mjs) decides whether a stored event may go now; without it no
+// event is ever delivered.
+export function createSocketRouter({
+  store, events = null, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = INBOUND_PING_MS, inboundBufferMax = INBOUND_BUFFER_MAX,
+  verifyRestart = async () => ({ ok: false, reason: 'no verifier' }),
+  // Check every hello without the current token, not only after a bye (set once
+  // config's chat.channelServer is).
+  verifyEveryHello = false,
+  byeSilenceMs = BYE_SILENCE_MS,
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+  clearTimer = t => clearTimeout(t)
+}) {
+  const eventOk = m => Boolean(events?.deliverable(m, now()));
   // { pid, version, startedAt, helloAt, lastHeartbeatAt, token, sentSeq, streamClosedAt }
   // sentSeq: how far this session's inbound streams have gone (every seq up to it was
   // written to one, or lay at or below the `after` the channel asked from), the most
@@ -87,6 +143,10 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
   let client = null;
   let inbound = null;  // { res, stop }
   let byeAt = null;    // when the last client said bye, until the next hello
+  let byePid = null;   // the pid that said it
+  let silenceTimer = null;
+  let helloLock = Promise.resolve();
+  const oneAtATime = fn => { const next = helloLock.then(fn, fn); helloLock = next.catch(() => {}); return next; };
   const fresh = at => {
     if (client === null) return false;
     const age = at - client.lastHeartbeatAt;
@@ -125,12 +185,48 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
       if (req.method === 'POST' && path === '/v1/hello') {
         const body = await readBody(req);
         if (!isObject(body)) throw new HttpError(400, 'the body must be an object');
+        return await oneAtATime(() => hello(req, res, body));
+      }
+      return await rest(req, res, url, path);
+    } catch (err) {
+      return fail(res, path, err);
+    }
+  }
+
+  function fail(res, path, err) {
+    const code = err instanceof HttpError ? err.status : 500;
+    if (code === 500) console.error('chat socket error', path, err);
+    if (res.headersSent) return res.end();
+    return json(res, code, { error: code === 500 ? 'internal error' : String(err.message) });
+  }
+
+  async function hello(req, res, body) {
+    {
+      {
         const pid = Number.isInteger(body.pid) ? body.pid : null;
         const at = now();
         const holder = holds(req);
         if (client && !holder && fresh(at)) {
           onEvent({ kind: 'client-refused', pid, current: client.pid });
           throw new HttpError(409, 'another channel is connected and its heartbeat is fresh');
+        }
+        // After a bye the place is free, and whoever says hello must prove to be the
+        // released channel under the lead's launch, started since the bye and not the
+        // process that said it; with verifyEveryHello, every hello without the token is
+        // checked the same way (less the start time). Anything less is refused and alerted.
+        const afterBye = !client && byeAt !== null;
+        if (!holder && (afterBye || verifyEveryHello)) {
+          let verdict;
+          if (afterBye && pid !== null && pid === byePid) verdict = { ok: false, reason: 'the pid that said bye' };
+          else {
+            try { verdict = await verifyRestart(pid, { notBefore: afterBye ? byeAt - BYE_START_SLACK_MS : null }); } catch { verdict = { ok: false, reason: 'the check failed' }; }
+          }
+          if (!verdict?.ok) {
+            const reason = verdict?.reason ?? 'the check failed';
+            log(`chat: a hello${afterBye ? ' after the bye' : ''} was refused: ${reason} (pid ${pid})`);
+            onEvent({ kind: 'client-replaced', pid, previous: null, staleFor: 0, unverified: reason });
+            throw new HttpError(409, 'a hello must come from the released channel; this one could not be verified');
+          }
         }
         if (client && !holder) {
           const staleFor = at - client.lastHeartbeatAt;
@@ -140,9 +236,13 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
           log('chat: the channel said hello again');
         }
         // startedAt is the channel process's start in epoch milliseconds (kept, not served).
-        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null };
+        // `capabilities`: what this channel handles beyond messages and verdicts; only
+        // `events` means anything yet. Absent or malformed, it handles none.
+        const events = Array.isArray(body.capabilities) && body.capabilities.includes(EVENTS_CAPABILITY);
+        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null, events };
         const { token } = client;
         endInbound(holder ? 'superseded' : 'replaced');
+        if (silenceTimer !== null) { clearTimer(silenceTimer); silenceTimer = null; }
         if (byeAt !== null) {
           // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.
           const gap = Math.max(0, at - byeAt);
@@ -154,15 +254,31 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         }
         return json(res, 200, { cursor: store.deliveredSeq, epoch: store.epoch, seq: store.seq, token });
       }
+    }
+  }
+
+  async function rest(req, res, url, path) {
+    {
       if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
       // Everything from here on is the current client's alone.
       requireHolder(req);
       if (req.method === 'POST' && path === '/v1/bye') {
         // A clean exit (stdin EOF): the place is free now, not in 45 s. Logged, not alerted.
+        byePid = client.pid;
         client = null;
         byeAt = now();
         endInbound('bye');
         log('chat: the channel said bye');
+        // No hello within 2 minutes: the lead's session has lost the chat. Alerted once.
+        if (silenceTimer !== null) clearTimer(silenceTimer);
+        const since = byeAt;
+        silenceTimer = setTimer(() => {
+          silenceTimer = null;
+          if (client === null && byeAt === since) {
+            log(`chat: no hello in ${Math.round(byeSilenceMs / 1000)} s since the channel's bye`);
+            onEvent({ kind: 'channel-silent', after: byeSilenceMs });
+          }
+        }, byeSilenceMs);
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && path === '/v1/heartbeat') {
@@ -210,11 +326,32 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         let done = Math.min(Number.isInteger(asked) && asked >= 0 ? asked : store.deliveredSeq, store.seq);
         if (done > session.sentSeq) session.sentSeq = done;
         // Each message once, in seq order: what this stream has gone past is skipped.
+        // While the stream catches up (the replay, and what arrived during it), events
+        // wait in `gathered` and go as one summary line just before the next other
+        // line, or at the end of the catch-up, so seq order holds on the wire.
+        let catchingUp = true;
+        let gathered = [];
+        const flushGathered = () => {
+          if (gathered.length === 0) return true;
+          const line = summaryLine(gathered);
+          gathered = [];
+          return send(line);
+        };
+        const sessionEventOk = x => session.events === true && eventOk(x);
+        // An event this stream passes over unsent: marked so the page shows it (never
+        // an owner's or lead's message; never one already `off`).
+        const skipped = m => {
+          if (m.kind !== 'event' || m.from !== 'system' || m.state === 'off' || m.state === UNDELIVERED) return;
+          store.setState?.(m.id, UNDELIVERED)?.catch?.(err => log(`chat: an event's undelivered mark failed (${err?.message ?? err})`));
+        };
         const deliver = m => {
           if (m.seq <= done) return true;
           done = m.seq;
-          const ev = inboundEvent(m);
-          const ok = ev ? send(ev) : true;
+          const ev = toInbound(m, { eventOk: sessionEventOk });
+          if (!ev) skipped(m);
+          let ok = true;
+          if (ev?.type === 'event' && catchingUp) gathered.push(ev);
+          else if (ev) { ok = flushGathered(); ok = send(ev) && ok; }
           if (done > session.sentSeq) session.sentSeq = done;
           return ok;
         };
@@ -248,6 +385,8 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         const waiting = held;
         held = null;
         for (const m of waiting) deliver(m);
+        catchingUp = false;
+        if (!flushGathered() && !closed) await drained();
         if (closed) return undefined;
         timer = setInterval(() => send({ type: 'ping' }), pingMs);
         return undefined;
@@ -325,11 +464,6 @@ export function createSocketRouter({ store, now = () => Date.now(), onEvent = ()
         return json(res, 200, { requestId: p.requestId, state: p.state, openedAt: p.openedAt });
       }
       return json(res, 404, { error: 'not found' });
-    } catch (err) {
-      const code = err instanceof HttpError ? err.status : 500;
-      if (code === 500) console.error('chat socket error', path, err);
-      if (res.headersSent) return res.end();
-      return json(res, code, { error: code === 500 ? 'internal error' : String(err.message) });
     }
   }
 

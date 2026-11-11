@@ -14,14 +14,27 @@ const okOnly = snapshot => {
   return out;
 };
 
-export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [] }) {
+// `events` (optional): `(alerts, { observable }) => Promise`, the event
+// hook (lib/events.mjs), given the alerts after acks. It keeps a ledger of its own and
+// runs in its own try, so a failed push and a failed event never block each other.
+export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [], events = null, log = console.error }) {
   // An acknowledged alert (lib/acks.mjs) is not pushed. Its key is then forgotten
   // by the rule below, so when the ack lapses with the condition still live, the
   // alert is new again and pushed again: an expiry re-notifies, which is its job.
   const { alerts } = applyAcks(buildAlerts(okOnly(snapshot), config ?? {}, now), acks, now);
   // The raw snapshot, not okOnly(snapshot): observability is about whether a
   // source reported this run at all, which okOnly's blanking already erases.
-  const alreadySent = prune((await readSent()) ?? {}, alerts, observableSources(snapshot));
+  const observable = observableSources(snapshot);
+  let eventsOut = null;
+  if (events) {
+    try {
+      eventsOut = await events(alerts, { observable });
+    } catch (err) {
+      log(`events: the pass failed (${err?.message ?? err})`);
+      eventsOut = { error: true };
+    }
+  }
+  const alreadySent = prune((await readSent()) ?? {}, alerts, observable);
   const unsentKeys = new Set(newKeys(alerts, alreadySent));
 
   let sent = 0, skipped = 0;
@@ -43,5 +56,5 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
   }
 
   await writeSent(alreadySent);
-  return { alerts: alerts.length, sent, skipped };
+  return { alerts: alerts.length, sent, skipped, ...(eventsOut ? { events: eventsOut } : {}) };
 }

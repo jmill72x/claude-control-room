@@ -82,11 +82,14 @@ export const oldestId = list => { const first = list.find(m => Number.isInteger(
 // was refused or the network dropped (a Retry); `queued`: the server has it but
 // the channel hasn't; `delivered`: one tick; `answered`: two, once the lead's
 // next chat message (a higher seq) exists. Only the owner's chat messages have ticks.
+// The lead's reply to an event (its replyTo names one) answers the event, not the
+// owner, as the server's unanswered() reads it.
 export function tickFor(m, list) {
   if (!m || m.from !== 'jeff' || m.kind !== 'chat') return null;
   if (m.failed) return 'failed';
   if (!Number.isInteger(m.seq)) return 'sending';
-  if (list.some(x => x.from === 'jarvis' && x.kind === 'chat' && Number.isInteger(x.seq) && x.seq > m.seq)) return 'answered';
+  const toEvent = x => Boolean(x.replyTo) && list.some(e => e.id === x.replyTo && e.kind === 'event');
+  if (list.some(x => x.from === 'jarvis' && x.kind === 'chat' && Number.isInteger(x.seq) && x.seq > m.seq && !toEvent(x))) return 'answered';
   return m.state === 'delivered' ? 'delivered' : 'queued';
 }
 
@@ -275,6 +278,21 @@ export function threadRows(list, now = Date.now()) {
   }
   return rows;
 }
+
+// An event's notice line (server lib/events.mjs): the server's template words, as
+// plain text (React escapes them; nothing here is ever HTML), and whether it was
+// kept from the lead because the kill switch was on when it was made.
+// `note`: why the lead never got it, when it didn't: made while events were off, or
+// skipped at delivery (too old, cleared, the switch on, or a channel without events).
+export function eventLine(m) {
+  const text = String(m?.text ?? '').replace(/\s+/g, ' ').trim() || 'An event';
+  const off = m?.state === 'off';
+  const note = off ? 'Not sent to Jarvis: events were off' : m?.state === 'undelivered' ? 'Not delivered to Jarvis' : null;
+  return { text, off, note };
+}
+
+// Who a quote is from, in the reply's header.
+export const quoteWho = q => (!q ? 'Reply' : q.from === 'jeff' ? 'You' : q.kind === 'event' ? 'Event' : 'Jarvis');
 
 // The message a reply quotes, by id, when the page holds it.
 export const quoted = (list, id) => (id ? list.find(m => m.id === id) ?? null : null);

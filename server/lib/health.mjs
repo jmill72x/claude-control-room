@@ -173,7 +173,8 @@ export function overlayCrons(crons, answer, now) {
     const v = jobVerdict(entry, answer.generatedAt);
     const state = v.state === 'new' ? 'never' : v.state;
     const last = state === 'failed' ? failedWord(entry) : state === 'never' ? 'Not yet run' : 'OK';
-    return { ...c, ok: state !== 'failed', state, last, lastRunAt: v.lastRunAt };
+    const exit = state === 'failed' && Number.isInteger(entry.lastExit) && entry.lastExit !== 0 ? entry.lastExit : null;
+    return { ...c, ok: state !== 'failed', state, last, exit, lastRunAt: v.lastRunAt };
   }).sort(cronOrder);
 }
 

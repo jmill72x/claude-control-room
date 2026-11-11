@@ -117,6 +117,8 @@ export function buildCron({ label, plist, statusRow }, now = Date.now()) {
     // shows today's, and the agent views name a routine's runs from them.
     dueAt: cal ? dueBetween(cal, now - WEEK_MS, now) : [],
     ok,
+    // A failed run's exit code, as a number (an event's words; lib/events.mjs).
+    exit: ok ? null : status,
     state: neverRan ? 'never' : ok ? 'ok' : 'failed',
     last: neverRan ? 'Not yet run' : ok ? 'OK' : `Failed · ${status}`
   };

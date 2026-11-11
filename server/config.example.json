@@ -3,8 +3,9 @@
   "showAlertBanner": true,
   "allowedHosts": ["example-host.example-tailnet.ts.net"],
   "hostCheck": "log",
-  "chat": { "login": "owner@example.com" },
+  "chat": { "login": "owner@example.com", "channelServer": "/absolute/path/to/jarvis-local/plugins/jarvis-channel/server.mjs" },
   "push": { "subject": "mailto:owner@example.com" },
+  "events": { "sources": {}, "excludeKeys": [], "triagePerDay": 10 },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",

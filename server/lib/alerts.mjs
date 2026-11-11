@@ -39,6 +39,8 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
           kind: 'cron',
           key: `cron:${source}:${cron.label ?? cron.name}`,
           since: Number.isFinite(cron.lastRunAt) ? cron.lastRunAt : null,
+          // The exit code as a number, for the event's words (lib/events.mjs); never `last`.
+          exit: Number.isInteger(cron.exit) ? cron.exit : null,
           nextRunAt: Number.isFinite(cron.nextRunAt) ? cron.nextRunAt : null
         });
       }

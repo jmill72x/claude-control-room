@@ -10,7 +10,7 @@ import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
-  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName
+  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -215,6 +215,11 @@ function Thread({ chat, now, lead, onSettings }) {
 function Row({ m, list, lead, chat, onReply, onView }) {
   // A notice carries its own time in its words ("… restarted 08:06").
   if (m.kind === 'notice') return <li className="o-chat-notice"><span>{m.text}</span></li>;
+  // An event (server lib/events.mjs): a notice line, its words as plain text.
+  if (m.kind === 'event') {
+    const ev = eventLine(m);
+    return <li className="o-chat-notice o-chat-event"><span>{ev.text}</span>{ev.note && <span>{ev.note}</span>}<time className="o-mono">{hhmm(m.at)}</time></li>;
+  }
   if (m.kind === 'permission') {
     return <li className="o-chat-notice"><span>Jarvis asked for a permission{m.meta?.tool ? ` (${m.meta.tool})` : ''}: {m.text}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
   }
@@ -230,7 +235,7 @@ function Row({ m, list, lead, chat, onReply, onView }) {
     <li className={`o-chat-row ${mine ? 'o-chat-mine' : 'o-chat-theirs'}${m.failed ? ' o-chat-failed' : ''}${pending ? ' o-chat-pending' : ''}`}>
       {!mine && <span className="o-chat-avatar"><Avatar agent={lead} fallback="J" size={28} tone="day" /></span>}
       <div className="o-chat-bubble">
-        {(m.replyTo || quote) && <blockquote className="o-chat-quote"><span className="o-chat-quote-who">{quote ? (quote.from === 'jeff' ? 'You' : 'Jarvis') : 'Reply'}</span>{quoteLine(quote)}</blockquote>}
+        {(m.replyTo || quote) && <blockquote className="o-chat-quote"><span className="o-chat-quote-who">{quoteWho(quote)}</span>{quoteLine(quote)}</blockquote>}
         {m.attachments?.length > 0 && (
           <div className="o-chat-photos">
             {m.attachments.map((a, i) => (a.id && !pending

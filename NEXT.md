@@ -611,8 +611,8 @@ cookie answers the key; after Jeff turns it on, `devices.json` shows `push` on h
 and a message from Jarvis while the app is closed arrives as "New message". The 192 and
 512 px manifest icons came with `jos/polish` (below).
 
-**The polish batch is staged on `jos/polish` (from main 329c4f5, 2026-11-11), after the
-chat went live on Jeff's iPhone that morning.** Three fixes for what he hit: (1) the pairing
+**The polish batch is committed on main (66607bb, 2026-11-11), after the chat went live on
+Jeff's iPhone that morning.** Three fixes for what he hit: (1) the pairing
 screen's name box starts filled from the user agent (`defaultDeviceName` in
 `web/src/lib/orbit/chat.js`: iPhone, iPad, also an iPad that reports a Mac, Mac, else "This
 device"), so "Get a code" is enabled at once; (2) the page reloads itself once after a new
@@ -632,6 +632,56 @@ holds it and it reloads within 5 s of leaving). **Unverified:** the composer and
 holds in a browser (their logic is unit-tested, the wiring not), and anything on real iOS:
 whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
 use of the 192/512 icons (it uses the apple-touch-icon).
+
+**Events, pillar 3 slice 1 ("a failed job wakes Jarvis"), staged on `jos/events` (from main
+66607bb, 2026-11-11), not committed, not live.** Jeff approved the design 11-11 ("Go with
+your recos for now"); Ultron's review was go with changes, all built in. README "Events"
+has the rules and the exact inbound line the channel must handle (`{"type":"event", seq,
+id, at, source, event, text, count, ids}`, a `summary` after hello). What's in it:
+`server/lib/events.mjs` (templates, own ledger `data/events.json`, dedupe, 60 s coalescing,
+6/h per source and 30/day with one held-back summary, quiet-hours hook, kill switch file,
+2 h expiry and liveness, a daily triage budget unused until slice 2), the notifier hook
+after acks (its own try), `kind: 'event'` in the store (only `system` makes one;
+`unanswered()`, ticks and "slow" ignore replies to events), the event case and replay
+summary in `chat-socket.mjs`, the event-only socket `events.sock` (`POST /v1/event`, typed
+`{source, count, ref?}`, sources allowlist empty by default), a numeric `exit` on the crons
+panel, and the page's notice line. **Ultron's review (11-11, go with changes: 1 medium, 4
+low), all fixed on the branch:** M1 a job is named only by its own config `jobs` entry
+(never the label, never an inherited property); L2 a refused store append takes its dedupe
+keys back; L3 an event skipped at delivery is marked `undelivered` (page: "Not delivered to
+Jarvis") and never delivered later; L4 events go only to a channel whose hello says
+`"capabilities": ["events"]`; L5 the kill switch only counts (one `off` "suppressed" line an
+hour) and the quiet hold is bounded at 100. **Verified:** server 775 tests (local and
+Tokyo), web 140; 23 mutations of the first build and 12 of the fixes, all caught; the page
+built to a scratch folder. **Unverified:** `server.mjs`'s wiring (only `node --check`; no
+full server run, by the rule against starting one with collectors), and anything with the
+real channel. **Also on this branch, the gate for channel 0.4.1+ (Ultron's channel-fixes
+review, findings 1 and 5; board 58ea9069 and cf4afe50):** the hello after a bye is checked
+(`server/lib/chat-verify.mjs`: the declared pid alive, running exactly `node
+<chat.channelServer>`, under the pid in `~/.local/state/jarvis-os/launch.json` within 8
+hops); a failure is refused with 409 and alerted as `client-replaced`; a bye with no hello
+for 2 minutes is alerted once (`channel-silent`). Ultron's final read (11-11) added: after a
+bye the pid that said bye is refused, and the process must have started no earlier than
+2 s before the bye (ps `lstart`, read in local time); once `chat.channelServer` is set,
+every hello without the session token is checked (first hello after a start, stale
+takeovers); a coalesced event's dedupe keys are set only after it is made. 12 tests in
+`chat-verify.test.mjs` (ps and launch.json faked or temp files), 23 mutations all caught
+(one dead month check removed); the server suite is 788 (local and Tokyo). The lstart
+parser was checked against real `/bin/ps` output for its own process in both TZs.
+**Before the restart that takes it live:** Jarvis adds `"channelServer": "<the release
+worktree>/jarvis-local/plugins/jarvis-channel/server.mjs"` to `config.json`'s `chat` block,
+and the lead's launcher writes `launch.json` (`{"pid": N}`, 0600) with its own pid. Without
+both, the channel can't come back after any bye, and with `channelServer` set but no
+`launch.json`, no hello at all gets in (fails closed). **Unverified:** the check against the
+live channel (after the restart, the channel must be in: `chat:` log lines show any
+refusal and its reason). **Go-live order:** Jeff's C&P, Jarvis's channel side (send `capabilities:
+["events"]` in hello, handle `type:"event"`, deliver as `chat_id="jos-events"` with
+`event_is_data="1"`, reply to `jos`), a restart
+(Vision), the web build, then Vision fails a test job and watches the event arrive. **Post-
+restart checks:** the log has `events: on, 0 socket sources allowed` and `chat: event socket
+at …/events.sock`; `stat -f %Lp ~/.local/state/jarvis-os/events.sock` is 600; a POST to it
+answers 403; `data/events.json` appears after the first notifier pass. Slice 2 (Vision's
+inbox and NAS watchers, through headless triage) adds sources to `events.sources`.
 
 **Phase 1b is built on the branch `jos/1b` (from `jos/hardening`, 2026-11-10 overnight, local
 commits only), not live.** README "The Orbit page" (the Now chip, Needs you, Today's routines,

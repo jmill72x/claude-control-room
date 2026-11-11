@@ -16,7 +16,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
-export const CHAT_KINDS = new Set(['chat', 'permission', 'verdict', 'notice']);
+// `event` (lib/events.mjs): a templated line from `system` for the lead's session.
+export const CHAT_KINDS = new Set(['chat', 'permission', 'verdict', 'notice', 'event']);
 export const CHAT_FROM = new Set(['jeff', 'jarvis', 'system']);
 export const MAX_TEXT = 32000;
 export const MAX_PAGE_TEXT = 8000;
@@ -163,6 +164,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     return serial(async () => {
       if (!CHAT_FROM.has(from)) throw new Error('from must be jeff, jarvis or system');
       if (!CHAT_KINDS.has(kind)) throw new Error('kind is not one of the chat kinds');
+      if (kind === 'event' && from !== 'system') throw new Error('only system makes events');
       if (typeof text !== 'string' || text.length > MAX_TEXT) throw new Error(`text must be a string of at most ${MAX_TEXT} characters`);
       if (replyTo !== null && !isMessageId(replyTo)) throw new Error('replyTo must be a message id');
       if (clientId !== null && !isClientId(clientId)) throw new Error('clientId must be an id of at most 80 characters');
@@ -226,12 +228,17 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     return out;
   }
 
-  // The owner's messages after the lead's last one, within 24 hours, at most 10
-  // messages or 8 KB of text: what the channel reads after a restart.
+  // Whether one of the lead's messages answers the owner: a reply to an event
+  // (replyTo an event's id) answers the event, not anything the owner said.
+  const answersOwner = m => m.from === 'jarvis' && !(m.replyTo && byId.get(m.replyTo)?.kind === 'event');
+
+  // The owner's messages after the lead's last answer to the owner, within 24 hours,
+  // at most 10 messages or 8 KB of text: what the channel reads after a restart.
+  // Events are never the owner's, and the lead's replies to them answer nothing here.
   function unanswered() {
     const at = now();
     let lastJarvis = 0;
-    for (const m of messages) if (m.from === 'jarvis' && m.seq > lastJarvis) lastJarvis = m.seq;
+    for (const m of messages) if (answersOwner(m) && m.seq > lastJarvis) lastJarvis = m.seq;
     const out = [];
     let bytes = 0;
     for (const m of messages) {
@@ -243,7 +250,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     return out;
   }
 
-  const lastFrom = who => messages.reduce((best, m) => (m.from === who && m.at > best ? m.at : best), 0) || null;
+  const lastFrom = (who, ok = () => true) => messages.reduce((best, m) => (m.from === who && ok(m) && m.at > best ? m.at : best), 0) || null;
 
   function ack(n) {
     return serial(async () => {
@@ -374,7 +381,8 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     get epoch() { return epoch; },
     get deliveredSeq() { return deliveredSeq; },
     get size() { return messages.length; },
-    lastJarvisAt: () => lastFrom('jarvis'),
+    // The page's "slow" state: an answer to an event is not an answer to the owner.
+    lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
     openPermission, answerPermission, openPermissions, publicPermission,
     permission: id => { prunePermissions(); return permissions.get(id) ?? null; },

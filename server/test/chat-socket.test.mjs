@@ -69,7 +69,7 @@ async function setup({ wrap = s => s, router = {} } = {}) {
   const logs = [];
   const store = createChatStore({ dir: join(dir, 'chat'), now: () => clock.t });
   await store.load();
-  const socket = createSocketRouter({ store: wrap(store), now: () => clock.t, onEvent: e => events.push(e), log: l => logs.push(l), pingMs: 60e3, ...router });
+  const socket = createSocketRouter({ store: wrap(store), now: () => clock.t, onEvent: e => events.push(e), log: l => logs.push(l), pingMs: 60e3, verifyRestart: async () => ({ ok: true }), ...router });
   const socketPath = join(dir, 's.sock');
   // `pending`: handlers not yet returned (an inbound one returns once its replay ends).
   const srv = createServer(async (req, res) => { env.pending++; try { await socket.handler(req, res); } finally { env.pending--; } });
