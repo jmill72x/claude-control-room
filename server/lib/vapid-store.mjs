@@ -5,8 +5,11 @@
 // memory only. Only the public key is printed; it is public by design.
 //
 // Every call names the login Keychain's file: `security` given no keychain searches
-// the user's list, and given one that doesn't exist it has been seen to write to the
-// login Keychain anyway (2026-11-11), so the path is spelled out and checked.
+// the user's list, and given one that doesn't exist it writes to the login Keychain
+// anyway. That was seen in a manual probe during development, not by the tests: it
+// left a stray item (service zz-test, account zz-test), deleted on 2026-11-11 with
+// the owner's OK. So the path is spelled out and checked, and tests must only ever
+// call `security` through the injected fake `run`, never the real one.
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

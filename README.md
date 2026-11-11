@@ -780,7 +780,8 @@ three pieces, each with its own router:
   (`{key, subscribed}`, 503 while push is off), `POST /api/push/subscription` (the
   browser's `PushSubscription` JSON; where a tap goes is the page's `Origin`, kept, as
   `new URL(origin).origin`, only when it is `https` and its host is in `allowedHosts`,
-  else null and the push says the relative `/#chat`) and
+  else null and the push says the relative `/#chat`; the payload checks it again: https,
+  a DNS name whose last label starts with a letter, so no IP literal, and an optional port) and
   `DELETE /api/push/subscription`. One subscription per device, in `devices.json`; an
   endpoint another device holds moves to the new one; a revoke drops it; the device list
   says which devices have one. **What pushes, in generic words only, never a message's text
@@ -790,11 +791,13 @@ three pieces, each with its own router:
   at most once a minute per device while it stays away; "Jarvis needs an approval" for a
   permission request, to every device, urgent, at most once per device each 15 s (a
   request inside that window is held and pushed at its end only if a request is still
-  open then, so a burst is one push and a late one is never lost); "Jarvis is offline" once after 5
+  open then, so a burst is one push; a push the send queue drops starts no window and
+  is tried again every 15 s while a request is open); "Jarvis is offline" once after 5
   minutes without the channel's heartbeat (counted from the server's start when there was
   none), and again only after it has come back. `notice`s, verdicts, edits and the owner's
   own messages never push. At most 4 sends are in flight at once; the rest wait in a queue
-  of at most 16, past which a push is dropped with a log line. The payload is Declarative Web Push (`{"web_push": 8030,
+  of at most 16, past which a push is dropped with a log line (a dropped "New message"
+  starts no minute, so the next message pushes). The payload is Declarative Web Push (`{"web_push": 8030,
   "notification": {"title": "Jarvis", "body", "navigate": "<origin>/#chat" or "/#chat", "app_badge":
   1}}`). A 404 or 410 from the push service deletes that subscription (logged with the
   device's name, never the endpoint); a 403 (the key or JWT refused) is logged and alerted

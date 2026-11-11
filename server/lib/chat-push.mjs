@@ -8,7 +8,9 @@
 // - "Jarvis needs an approval": a permission request, to every device, urgent. At
 //   most one per device each 15 s: a request inside that window is held, and pushed
 //   at its end only if a request is still open then (a burst of requests is one
-//   push, and a late one is never lost).
+//   push). One the send queue drops (below) starts no window and is held the same
+//   way, tried again every 15 s while a request is open, so a request left open
+//   is announced as soon as the queue has room.
 // - "Jarvis is offline": once, after 5 minutes without the channel's heartbeat;
 //   once more only after it has come back.
 //
@@ -16,7 +18,8 @@
 // messages never push. A subscription the push service calls gone (404 or 410) is
 // deleted; a 403 (the key or the JWT refused) is an alert, at most one per window.
 // At most 4 sends are in flight at once; the rest wait in a queue of at most 16,
-// past which a push is dropped with a log line.
+// past which a push is dropped with a log line. A dropped push starts none of the
+// windows above, so the next message or request pushes as if it never happened.
 import { sendPush, vapidKeys } from './webpush.mjs';
 import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
 
@@ -30,8 +33,9 @@ export const OFFLINE_CHECK_MS = 30e3;
 export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: 'Jarvis is offline' });
 const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat' };
 // An origin a tap may go to: https, a DNS name (lowercase, as URL writes it) and an
-// optional port; nothing after it. The routes store only the Serve name's origin.
-const NAV_ORIGIN = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*(?::\d{1,5})?$/;
+// optional port; nothing after it. The last label starts with a letter, so an IPv4
+// literal is no DNS name. The routes store only the Serve name's origin.
+const NAV_ORIGIN = /^https:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)*[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?(?::\d{1,5})?$/;
 const MAILTO = /^mailto:[^\s@<>()"',;:]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 // Config's `push` block: `subject` must be a mailto: address (Apple refuses a
@@ -111,7 +115,8 @@ export function createPushService({
   const track = p => { sending.add(p); p.finally(() => sending.delete(p)); return p; };
 
   // A push goes through a bounded queue: at most `sendConcurrency` in flight, at
-  // most `sendQueueMax` waiting; one past that is dropped and logged.
+  // most `sendQueueMax` waiting; one past that is dropped and logged. True when the
+  // push was queued, false when it was dropped.
   function pump() {
     while (inFlight < sendConcurrency && queued.length) {
       const job = queued.shift();
@@ -124,29 +129,42 @@ export function createPushService({
   function enqueue(target, kind) {
     if (queued.length >= sendQueueMax) {
       log(`push: ${queued.length} pushes are waiting; a ${kind} push to ${target.name} was dropped`);
-      return;
+      return false;
     }
     track(new Promise(done => { queued.push({ target, kind, done }); pump(); }));
+    return true;
   }
 
-  // The 15 s cap on approval pushes for one device.
+  // An approval held for `ms`: then pushed if the device is still paired and a
+  // request is still open. One timer per device.
+  function holdApproval(target, ms) {
+    if (heldApproval.has(target.id)) return;
+    const timer = setTimer(() => {
+      heldApproval.delete(target.id);
+      const fresh = devices.pushTargets().find(t => t.id === target.id);
+      if (fresh && store.openPermissions().length > 0) considerApproval(fresh);
+    }, ms);
+    timer?.unref?.();
+    heldApproval.set(target.id, timer);
+  }
+
+  // The 15 s cap on approval pushes for one device. The window starts only when a
+  // push is queued; one the queue drops is held for a window and tried again.
   function considerApproval(target) {
     const at = now();
     const last = lastApprovalPush.get(target.id);
     if (last !== undefined && at - last < APPROVAL_REPEAT_MS) {
-      if (!heldApproval.has(target.id)) {
-        const timer = setTimer(() => {
-          heldApproval.delete(target.id);
-          const fresh = devices.pushTargets().find(t => t.id === target.id);
-          if (fresh && store.openPermissions().length > 0) considerApproval(fresh);
-        }, last + APPROVAL_REPEAT_MS - at);
-        timer?.unref?.();
-        heldApproval.set(target.id, timer);
-      }
+      holdApproval(target, last + APPROVAL_REPEAT_MS - at);
       return;
     }
-    lastApprovalPush.set(target.id, at);
-    enqueue(target, 'approval');
+    if (enqueue(target, 'approval')) {
+      lastApprovalPush.set(target.id, at);
+      // A retry still held from a drop is covered by this push.
+      const held = heldApproval.get(target.id);
+      if (held !== undefined) { clearTimer(held); heldApproval.delete(target.id); }
+    } else {
+      holdApproval(target, APPROVAL_REPEAT_MS);
+    }
   }
 
   // The 10 s rule for one device, `since` being when the message arrived.
@@ -170,8 +188,7 @@ export function createPushService({
     }
     const last = lastChatPush.get(target.id);
     if (last !== undefined && at - last < CHAT_REPEAT_MS && !(typeof seen === 'number' && seen > last)) return;
-    lastChatPush.set(target.id, at);
-    enqueue(target, 'chat');
+    if (enqueue(target, 'chat')) lastChatPush.set(target.id, at); // a dropped one starts no minute
   }
 
   function onStoreEvent(event) {

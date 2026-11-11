@@ -73,8 +73,11 @@ test('the payload is declarative Web Push with one of three generic bodies and a
   assert.equal(payloadFor('approval', null).notification.navigate, '/#chat');
   assert.equal(payloadFor('offline', 'https://x.example/evil').notification.navigate, '/#chat', 'only a bare origin is used');
   assert.equal(payloadFor('chat', 'https://x.example:8443').notification.navigate, 'https://x.example:8443/#chat');
-  for (const bad of ['http://x.example', 'https://x.example?a=1', 'https://x.example#x', 'https://x_y.example', 'https://u@x.example', 'javascript:alert(1)//', 'https://x.example\n', 'https://X.example', 'https://-x.example', 'https://x.example:', 'https://x.example:123456', 'HTTPS://x.example']) {
+  for (const bad of ['http://x.example', 'https://x.example?a=1', 'https://x.example#x', 'https://x_y.example', 'https://u@x.example', 'javascript:alert(1)//', 'https://x.example\n', 'https://X.example', 'https://-x.example', 'https://x.example:', 'https://x.example:123456', 'HTTPS://x.example', 'https://127.0.0.1', 'https://10.0.0.5:8443', 'https://1.2.3.4.5', 'https://x.example.123', 'https://x.-ab']) {
     assert.equal(payloadFor('chat', bad).notification.navigate, '/#chat', bad);
+  }
+  for (const good of ['https://123.example', 'https://host-1.ts.net', 'https://localhost:8443', 'https://x.a1']) {
+    assert.equal(payloadFor('chat', good).notification.navigate, `${good}/#chat`, good);
   }
   assert.equal(payloadFor('approval', ORIGIN).notification.body, 'Jarvis needs an approval');
   assert.equal(payloadFor('offline', ORIGIN).notification.body, 'Jarvis is offline');
@@ -330,6 +333,93 @@ test('sends are bounded: at most N in flight, a queue of at most M, and one past
     assert.equal(done, 3);
     assert.equal(most, 1, 'never two at once');
   } finally { await t.close(); }
+});
+
+// A push service the test can stall: while `stalled`, each send waits for its gate.
+// With one send at a time and a queue of 2, the fourth device's push is dropped.
+async function droppingEnv() {
+  const gates = [];
+  const urls = [];
+  const state = { stalled: true };
+  const fetchImpl = async url => {
+    if (state.stalled) await new Promise(r => gates.push(r));
+    urls.push(url);
+    return { status: 201, arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const t = await pushEnv({ fetchImpl, sendConcurrency: 1, sendQueueMax: 2 });
+  const devs = [];
+  for (const name of ['phone', 'pad', 'laptop', 'desk']) devs.push(await t.device(name));
+  const count = d => urls.filter(u => u === d.r.sub.endpoint).length;
+  const counts = () => devs.map(count);
+  const firstInFlight = async () => { for (let i = 0; i < 20 && gates.length === 0; i++) await new Promise(r => setImmediate(r)); };
+  const unstall = async () => { state.stalled = false; while (gates.length) gates.shift()(); await t.svc.idle(); };
+  const droppedOne = () => {
+    const c = counts();
+    assert.equal(c.filter(n => n === 0).length, 1, `one device got nothing: ${c}`);
+    return devs[c.indexOf(0)];
+  };
+  return { t, devs, count, counts, firstInFlight, unstall, droppedOne };
+}
+
+test('a dropped approval push starts no 15 s window: a new request inside it pushes to that device at once', async () => {
+  const d = await droppingEnv();
+  try {
+    await d.t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    await d.firstInFlight();
+    await d.unstall();
+    assert.equal(d.t.logs.filter(l => /was dropped/.test(l)).length, 1);
+    const lost = d.droppedOne();
+    await d.t.advance(3 * SEC);
+    await d.t.env.store.openPermission({ requestId: 'bbbbb', tool: 'Bash', description: 'x', inputPreview: '' });
+    await d.t.svc.idle();
+    assert.deepEqual(d.counts(), d.devs.map(() => 1), 'the dropped device is pushed now; the rest are held by their window');
+    await d.t.advance(APPROVAL_REPEAT_MS - 3 * SEC);
+    assert.deepEqual(d.counts(), d.devs.map(x => x === lost ? 1 : 2), 'the rest get their held push at the window\'s end; the dropped one\'s window began at 3 s');
+    await d.t.advance(5 * APPROVAL_REPEAT_MS);
+    assert.deepEqual(d.counts(), d.devs.map(x => x === lost ? 1 : 2), 'the retry held from the drop was cancelled by the 3 s push, so nothing more');
+  } finally { await d.t.close(); }
+});
+
+test('a dropped approval push is held and tried again at the window\'s end while a request is open, and not once all are answered', async () => {
+  const d = await droppingEnv();
+  try {
+    await d.t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    await d.firstInFlight();
+    await d.unstall();
+    const lost = d.droppedOne();
+    await d.t.advance(APPROVAL_REPEAT_MS - 1);
+    assert.equal(d.count(lost), 0, 'not before the 15 s are up');
+    await d.t.advance(1);
+    assert.deepEqual(d.counts(), d.devs.map(() => 1), 'the dropped device is pushed at the window\'s end, the others not again');
+    await d.t.advance(5 * APPROVAL_REPEAT_MS);
+    assert.deepEqual(d.counts(), d.devs.map(() => 1), 'and only once');
+  } finally { await d.t.close(); }
+  const e = await droppingEnv();
+  try {
+    await e.t.env.store.openPermission({ requestId: 'aaaaa', tool: 'Bash', description: 'x', inputPreview: '' });
+    await e.firstInFlight();
+    await e.unstall();
+    const lost = e.droppedOne();
+    assert.equal((await e.t.env.store.answerPermission('aaaaa', 'allow', 'phone')).ok, true);
+    await e.t.advance(APPROVAL_REPEAT_MS);
+    assert.equal(e.count(lost), 0, 'no request open at the window\'s end, no push');
+  } finally { await e.t.close(); }
+});
+
+test('a dropped "New message" starts no minute: the next message pushes to that device', async () => {
+  const d = await droppingEnv();
+  try {
+    await d.t.jarvis('one');
+    await d.firstInFlight();
+    await d.unstall();
+    assert.equal(d.t.logs.filter(l => /a chat push to \S+ was dropped/.test(l)).length, 1);
+    const lost = d.droppedOne();
+    await d.t.advance(5 * SEC);
+    await d.t.jarvis('two');
+    await d.t.svc.idle();
+    assert.deepEqual(d.counts(), d.devs.map(() => 1), 'the dropped device is pushed; the rest are inside their minute');
+    assert.ok(d.t.timers.every(x => x.done), 'nothing held for a chat push');
+  } finally { await d.t.close(); }
 });
 
 test('sends are bounded: a limit of 2 runs two at once and sends the rest after, dropping none', async () => {

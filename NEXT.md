@@ -570,7 +570,16 @@ into memory) and failing with `MISMATCH` unless its public key is the new one; e
 `security` call naming `~/Library/Keychains/login.keychain-db`; and unsent uploads older
 than an hour deleted at start. Its checks: 745 server tests in local time and Tokyo, 127
 web, 40 mutations of the new code all caught; every `security` call in the tests goes
-through the injected fake (the real Keychain was never touched). The headless check below
+through the injected fake (the real Keychain was never touched). Ultron's re-read of 3143721 (go to merge, 11-11) left three
+points, fixed in one more commit: a push the full send queue drops no longer starts its
+window (`enqueue` says whether it queued; the 15 s approval window and the "New message"
+minute start only then), and a dropped approval is held and tried again every 15 s while a
+request is open (a later successful push cancels that retry); the payload's origin check
+wants the last label to start with a letter, so `https://127.0.0.1` and
+`https://10.0.0.5:8443` fall back to `/#chat`; vapid-store's header says the stray
+zz-test item came from a manual probe during development, not the tests, and was deleted
+11-11 with Jeff's OK. 748 server tests in local time and Tokyo, 127 web, 7 mutations of
+the new code all caught. The headless check below
 predates it: with a loopback `http` page, `navigate` is now `/#chat`, not the page's
 origin. Checks 11-11: RFC 8291 Appendix A reproduced byte for byte; the JWT
 verified with the derived key (a changed claim, another key, a non-ES256 header all fail);
