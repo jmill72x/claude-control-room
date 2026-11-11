@@ -293,7 +293,7 @@ start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redes
 - Phase 2: the health strip.
 - Phase 3: the agent views.
 - Phase 4: Waiting on you.
-- Phase 5: the flip.
+- Phase 5: the flip (live 2026-11-10, below).
 - Phase 6: the OpenTelemetry cross-check.
 
 Jeff approved the plan on 2026-10-20 (committed as `5c577e3`), and that evening answered
@@ -390,3 +390,19 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   - After C&P: one restart (Jarvis's rollout), then nothing to build; the scratch build
     of the web is identical to the live one. Check the service log for `config:` lines
     after the restart. Phase 5 then waits only on Jeff's word.
+- **Phase 5, the flip (Jeff's word, 2026-11-10: "Flip now").** `web/index.html` is the Orbit page and the old one is
+  `web/classic.html` ("Control Room (classic)"); `/orbit.html` has no file and gets the
+  Orbit page from the server's fallback (a test pins that), hash and all. No server
+  change, so no restart: the web build alone put it live (2026-11-10, same bundle as the
+  scratch build; the build before it is in that run's scratchpad only). Checks: 600 server tests (local
+  and Tokyo) and 80 web tests; headless Chromium on a scratch server with an invented
+  board, at 390 and 1440 px: `/`, `/orbit.html`, `#board`, `#board/<id>` on both, and
+  `/classic.html` render with no sideways scroll, no policy violation and no console
+  error; on both addresses the Board tab, Overview, a Waiting on you card, Open on the
+  board and Back work; an injected inline script on `/` is blocked. After the live build,
+  a read-only pass (no request but GET) of the live `/`, `/orbit.html`, `#board` on both
+  and `/classic.html` at 390 and 1440: no policy violation, no console error. The one
+  finding is old: the classic page scrolls sideways at 390 on the live data (440 px
+  wide), with its CSS unchanged by the flip; it goes with the page. Safari is Jeff's
+  look. **Next, a week after it goes live:** delete `classic.html`, its components and
+  CSS (and the `classic` Vite entry), and rewrite README and this file for the new page.

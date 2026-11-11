@@ -103,6 +103,21 @@ test('an unknown in-root path falls back to the SPA shell, not to a 403', async 
   assert.match(res.body, /doctype/);
 });
 
+// Orbit Phase 5: the Orbit page moved from /orbit.html to /, and the build no longer
+// writes an orbit.html. Saved links and open tabs on the old address (#board/<id>
+// included, which the browser keeps) must still get the Orbit page, not a 404.
+test('/orbit.html, the Orbit page before the flip, still answers with the page at /', async () => {
+  const { dist } = fixture();
+  writeFileSync(join(dist, 'classic.html'), '<!doctype html>classic');
+  const root = await get(dist, '/');
+  const old = await get(dist, '/orbit.html');
+  assert.equal(old.statusCode, 200);
+  assert.equal(old.headers['Content-Type'], 'text/html');
+  assert.equal(old.body, root.body);
+  const classic = await get(dist, '/classic.html');
+  assert.equal(classic.body, '<!doctype html>classic');
+});
+
 test('resolved paths never leave the web root', () => {
   const { dist } = fixture();
   const root = resolve(dist);
@@ -125,11 +140,11 @@ test("the pages' policy is the review's, plus no form submits, with nothing loos
 
 test('every answer carries the policy and nosniff: both pages, their assets, the fallback and the refusals', async () => {
   const { dist } = fixture();
-  writeFileSync(join(dist, 'orbit.html'), '<!doctype html>orbit');
+  writeFileSync(join(dist, 'classic.html'), '<!doctype html>classic');
   writeFileSync(join(dist, 'assets', 'app.css'), 'body{}');
   writeFileSync(join(dist, 'assets', 'font.woff2'), 'wOF2');
   const types = {
-    '/': 'text/html', '/index.html': 'text/html', '/orbit.html': 'text/html',
+    '/': 'text/html', '/index.html': 'text/html', '/classic.html': 'text/html', '/orbit.html': 'text/html',
     '/assets/app.js': 'text/javascript', '/assets/app.css': 'text/css', '/assets/font.woff2': 'font/woff2',
     '/some/client/route': 'text/html', '/../../server/config.json': 'text/plain'
   };

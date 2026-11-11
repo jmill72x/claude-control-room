@@ -260,12 +260,15 @@ Reading the limits from `cachedUsageUtilization` in `~/.claude.json` instead, wi
 cache changed only at this poll's own runs, so nothing else on the machine keeps it
 fresh, and it doesn't hold the drivers block either.
 
-## The Orbit page (being built beside this one)
+## The Orbit page (the page at `/` since Phase 5)
 
 A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
-`docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Until it replaces this page (Phase
-5), it is a second page in the same build, at **`/orbit.html`**, and the page at `/` is
-unchanged. Its Overview runs in the approved order: Waiting on you, Usage limits beside
+`docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Since Phase 5 (the flip,
+2026-11-10) it is the page at **`/`** (`web/index.html`), and the page this README
+describes elsewhere is at **`/classic.html`** (`web/classic.html`) until it is deleted a
+week later. `/orbit.html`, its address before the flip, has no file of its own: the
+server's single-page fallback answers it with the same page, so saved links and
+`#board/<id>` addresses keep working. Its Overview runs in the approved order: Waiting on you, Usage limits beside
 the agent work map, Today agent by agent, Latest runs, Next 24 hours, then Burn beside the
 week's heat map. Phases 1 to 4 give it:
 
@@ -463,7 +466,7 @@ claude-control-room/
     todos.json          the column 03 backlog (gitignored)
     todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
     data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
-  web/               React + Vite, two pages: index.html (this page) and orbit.html (the redesign);
+  web/               React + Vite, two pages: index.html (the Orbit page) and classic.html (this page, until deleted);
                      the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
   mod/               Claude Code mod: the dashboard as a side pane, and /control-room summary
@@ -537,7 +540,7 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 610 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd server && npm test      # 600 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
 cd web && npm test         # 80 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
