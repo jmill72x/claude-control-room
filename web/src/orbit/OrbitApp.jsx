@@ -6,6 +6,8 @@ import { parseRoute, routeHash, freshness, headerDate } from '../lib/orbit/page.
 import { boardTotals } from '../lib/orbit/board.js';
 import { Overview } from './Overview.jsx';
 import { HealthChips, HealthDetail } from './Health.jsx';
+import { AlertStrip } from './Acks.jsx';
+import { unack } from './ackApi.js';
 import { BoardBand, BoardTab } from './Board.jsx';
 import { useBoardFilters } from './useBoardFilters.js';
 
@@ -28,7 +30,7 @@ function useRoute() {
 }
 
 export function OrbitApp() {
-  const { payload, error, receivedAt } = useDashboard();
+  const { payload, error, receivedAt, refresh } = useDashboard();
   const board = useBoard();
   const filters = useBoardFilters();
   const [route, go] = useRoute();
@@ -91,19 +93,13 @@ export function OrbitApp() {
               <span className="o-dot" aria-hidden="true" />{fresh.label}
             </span>
           </div>
-          {chip && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail" />}
+          {chip && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail"
+            onUnack={async key => { await unack(key); await refresh(); }} />}
           {isBoard && <BoardBand board={board} roster={roster} totals={totals} filters={filters} />}
         </div>
       </header>
 
-      {alerts.length > 0 && (
-        <div className="o-alerts" role="alert">
-          <div className="o-wrap o-alerts-inner">
-            <span className="o-mono o-alerts-tag">Attention</span>
-            {alerts.map((a, i) => <span key={i}>{a.text}</span>)}
-          </div>
-        </div>
-      )}
+      <AlertStrip alerts={alerts} now={now} onChanged={refresh} />
 
       {isBoard
         ? <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}

@@ -286,3 +286,21 @@ test('a service alert is raised even when automatic credits return early', () =>
   const alerts = buildAlerts({ ...healthEnv([svc('launchd', 'Tunnel', 'down', NOW - DAY)]), accountCredits: env({ grants: [] }) }, {}, NOW);
   assert.deepEqual(alerts.map(a => a.key), ['service:launchd:Tunnel']);
 });
+
+// For an acknowledgement (lib/acks.mjs): the instance of the failure and the next run.
+test('a cron alert carries since (lastRunAt) and nextRunAt from its source, null when unknown', () => {
+  const crons = [
+    { name: 'friday', label: 'com.example.friday', ok: false, lastRunAt: NOW - 270 * 3600e3, nextRunAt: NOW + DAY },
+    { name: 'bare', label: 'com.example.bare', ok: false }
+  ];
+  const alerts = buildAlerts({ crons: env(crons) }, {}, NOW);
+  assert.deepEqual(alerts.map(a => [a.key, a.since, a.nextRunAt]), [
+    ['cron:launchd:com.example.friday', NOW - 270 * 3600e3, NOW + DAY],
+    ['cron:launchd:com.example.bare', null, null]
+  ]);
+});
+
+test('a service alert carries since (downSince)', () => {
+  const alerts = buildAlerts(healthEnv([svc('launchd', 'Tunnel', 'down', NOW - DAY)]), {}, NOW);
+  assert.equal(alerts[0].since, NOW - DAY);
+});

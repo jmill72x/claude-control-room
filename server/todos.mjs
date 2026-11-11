@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename, unlink, readdir, realpath, stat } f
 import { dirname, join, basename, resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { AGENT_KEY } from './lib/roster.mjs';
+import { UNSAFE_CHARS, UNSAFE_SAYS } from './lib/text.mjs';
 
 const LANES = new Set(['idea', 'doing', 'done']);
 // Priority is optional: absent or null means "not set", and the UI renders
@@ -47,17 +48,6 @@ export const isInstant = v => {
   return Boolean(m) && isDueDate(m[1]) && Number.isFinite(Date.parse(v));
 };
 
-// C0 and C1 control characters (a newline, a tab, an escape), the ones that
-// reorder text (U+202A-202E, U+2066-2069), and since the 2026-10-21 security
-// review the invisible ones: the zero-width space (U+200B), the word joiner
-// (U+2060), the byte-order mark (U+FEFF) and the direction marks (U+200E, U+200F,
-// U+061C). A title and an ask are one-line labels; a direction override can make
-// one read as something else, and an invisible character can hide text inside it.
-// The joiners U+200C and U+200D stay allowed: U+200D sits inside combined emoji (a
-// person and a laptop make one picture), so refusing it would bounce an ordinary
-// edit. The detail text may hold any of them.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
-const UNSAFE_SAYS = 'must not hold control characters, invisible characters or characters that change text direction';
 
 function checkFields(t) {
   const bad = message => new InvalidBoardError(`item ${JSON.stringify(t.id)}: ${message}`);

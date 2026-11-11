@@ -177,6 +177,10 @@ export function overlayCrons(crons, answer, now) {
   }).sort(cronOrder);
 }
 
+// A job's name on the page: config's, or the label's last part. The health panel
+// sends no label; an acknowledgement (lib/acks.mjs) finds the row by this name.
+export const jobDisplayName = (label, jobNames = {}) => jobNames?.[label]?.name ?? (label.split('.').pop() || label);
+
 // The Jobs chip: every job job-status reports that no service chip speaks for.
 // Failed first, then in job-status's own order (by label), so related jobs
 // stay together. `status` is ok, unset (no path in config) or error.
@@ -188,7 +192,7 @@ export function buildJobs({ settings, answer, error = null, crons = [], jobNames
   const list = answer.jobs.filter(j => !claimed.has(j.label)).map(j => {
     const v = jobVerdict(j, answer.generatedAt);
     return {
-      name: jobNames?.[j.label]?.name ?? (j.label.split('.').pop() || j.label),
+      name: jobDisplayName(j.label, jobNames),
       schedule: typeof schedules.get(j.label) === 'string' ? schedules.get(j.label) : null,
       state: v.state,
       reason: v.reason

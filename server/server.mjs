@@ -22,6 +22,7 @@ import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
 import { createTodoStore } from './todos.mjs';
+import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
@@ -63,6 +64,8 @@ const programProblems = await vetPrograms([
 for (const problem of programProblems) console.error(`config: ${problem}`);
 const cache = createCache();
 const todos = createTodoStore(join(HERE, 'todos.json'));
+// Acknowledged alerts (lib/acks.mjs), beside notified.json; gitignored with it.
+const ackStore = createAckStore(join(HERE, 'data', 'acks.json'));
 const registry = createRegistry(cache);
 
 const history = createHistory({ dir: join(HERE, 'data') });
@@ -149,12 +152,13 @@ registry.register('notifier', async () => {
     now,
     readSent,
     writeSent,
+    acks: await ackStore.read(now),
     send: entry => sendAlert({ topic, title: entry.title, message: entry.message })
   });
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
 
-const api = createHandler({ cache, todos, config });
+const api = createHandler({ cache, todos, config, acks: ackStore });
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 

@@ -7,18 +7,33 @@ import { clock, ago } from './page.js';
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const pad = n => String(n).padStart(2, '0');
 
-// A moment as the strip says it: "1:30 PM" today, "Mon 1:30 PM" this week,
-// "10-02 1:30 PM" before that.
+// A moment as the strip says it: "1:30 PM" today, "Mon 1:30 PM" within six days
+// either way (an ack's expiry lies ahead), "10-02 1:30 PM" beyond that.
 export function when(ts, now) {
   if (!Number.isFinite(ts)) return '—';
   const d = new Date(ts);
   const today = new Date(now);
   if (d.toDateString() === today.toDateString()) return clock(ts);
-  if (now - ts < 6 * 24 * 3600e3) return `${WEEKDAYS[d.getDay()]} ${clock(ts)}`;
+  if (Math.abs(now - ts) < 6 * 24 * 3600e3) return `${WEEKDAYS[d.getDay()]} ${clock(ts)}`;
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock(ts)}`;
 }
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// ---- acknowledgements (server/lib/acks.mjs) ----
+
+// Who acked, as a name: "jeff" is Jeff, "jarvis" is Jarvis.
+export const byName = by => (typeof by === 'string' && by !== '' ? by[0].toUpperCase() + by.slice(1) : 'someone');
+
+// A covered row's words: "acknowledged by Jeff until Fri 6:45 PM · mini restarted before login".
+export function ackLine(ack, now) {
+  const note = typeof ack?.note === 'string' && ack.note !== '' ? ` · ${ack.note}` : '';
+  return `acknowledged by ${byName(ack?.by)} until ${when(ack?.until, now)}${note}`;
+}
+
+// A failed job with an active ack still reads `failed`; the server never rewrites
+// a verdict. The chip and the rows set it aside instead.
+const isAcked = j => j?.state === 'failed' && Boolean(j.ack);
 
 // ---- the chips ----
 
@@ -27,8 +42,13 @@ function jobsChip(jobs) {
   if (jobs?.status !== 'ok') return { value: 'unknown', tone: 'idle' };
   const list = Array.isArray(jobs.list) ? jobs.list : [];
   if (list.length === 0) return { value: 'none', tone: 'idle' };
-  const failed = list.filter(j => j.state === 'failed').length;
-  return failed > 0 ? { value: `${failed} failed`, tone: 'bad' } : { value: 'all OK', tone: 'ok' };
+  const failed = list.filter(j => j.state === 'failed' && !j.ack).length;
+  const acked = list.filter(isAcked).length;
+  const ackWord = acked > 0 ? ` · ${plural(acked, 'ack', 'acks')}` : '';
+  if (failed > 0) return { value: `${failed} failed${ackWord}`, tone: 'bad' };
+  // Grey, not green: the acked job did fail, and the chip says so without shouting.
+  if (acked > 0) return { value: `all OK${ackWord}`, tone: 'idle' };
+  return { value: 'all OK', tone: 'ok' };
 }
 
 // This server can't report itself down, so its chip says what the page
@@ -41,12 +61,18 @@ function selfChip(fresh) {
   return { value: '…', tone: 'idle' };
 }
 
-function serviceChip(s, fresh) {
+function serviceChipPlain(s, fresh) {
   if (s.kind === 'self') return selfChip(fresh);
   if (s.state === 'unknown') return { value: 'unknown', tone: 'idle' };
   if (s.kind === 'launchd') return s.state === 'running' ? { value: 'running', tone: 'ok' } : { value: 'not running', tone: 'bad' };
   if (s.kind === 'pi') return s.state === 'up' ? { value: s.label ?? 'up', tone: 'ok' } : { value: s.label ?? s.state, tone: 'bad' };
   return s.state === 'up' ? { value: 'up', tone: 'ok' } : { value: 'down', tone: 'bad' };
+}
+
+// A down service with an active ack: the same words, set aside in grey.
+function serviceChip(s, fresh) {
+  const chip = serviceChipPlain(s, fresh);
+  return s.ack && chip.tone === 'bad' ? { value: `${chip.value} · acked`, tone: 'idle' } : chip;
 }
 
 // Jobs first, then each service in config's order. No chips at all from a
@@ -69,20 +95,25 @@ const JOB_STATE = {
   failed: { state: 'failed', tone: 'bad' }
 };
 
-function jobsDetail(jobs) {
+function jobsDetail(jobs, now) {
   if (jobs?.status === 'unset') return { title: 'Scheduled jobs', note: 'Not set up: config.json names no job-status.', rows: [] };
   if (jobs?.status !== 'ok') return { title: 'Scheduled jobs', note: `Unknown: job-status ${jobs?.error ?? 'has not answered'}.`, rows: [] };
   const list = Array.isArray(jobs.list) ? jobs.list : [];
-  const failed = list.filter(j => j.state === 'failed').length;
+  const failed = list.filter(j => j.state === 'failed' && !j.ack).length;
+  const acked = list.filter(isAcked).length;
   const fresh = list.filter(j => j.state === 'new').length;
   const note = [plural(list.length, 'job', 'jobs')];
   if (failed > 0) note.push(`${failed} failed`);
+  if (acked > 0) note.push(`${acked} acknowledged`);
   if (fresh > 0) note.push(`${fresh} ${fresh === 1 ? "hasn't had its" : "haven't had their"} first run yet`);
   return {
     title: 'Scheduled jobs',
     note: note.join(' · '),
     rows: list.map(j => {
       const s = JOB_STATE[j.state] ?? JOB_STATE.failed;
+      // An acked job: its row in grey, the ack's words, and an Un-ack button
+      // (the row's `ack.key` is what the button deletes).
+      if (isAcked(j)) return { name: j.name, when: j.schedule ?? 'no schedule', state: ackLine(j.ack, now), tone: 'idle', ack: { key: j.ack.key } };
       return {
         name: j.name,
         when: j.schedule ?? 'no schedule',
@@ -153,7 +184,7 @@ export function healthDetail(env, key, fresh, now) {
   if (!data || !key) return null;
   const late = env.status === 'stale' && Number.isFinite(env.fetchedAt) ? `Reading from ${ago(now - env.fetchedAt)} · ` : '';
   if (key === 'jobs') {
-    const d = jobsDetail(data.jobs);
+    const d = jobsDetail(data.jobs, now);
     return { ...d, note: `${late}${d.note}` };
   }
   const s = (Array.isArray(data.services) ? data.services : []).find(x => x.key === key);
@@ -162,6 +193,8 @@ export function healthDetail(env, key, fresh, now) {
     : s.kind === 'self' ? selfRows(s, fresh, now)
       : s.kind === 'launchd' ? launchdRows(s, now)
         : piRows(s, now);
+  // A down service with an active ack gets one more row, with the Un-ack button.
+  if (s.ack) rows.push({ name: 'Acknowledged', when: ackLine(s.ack, now), state: 'acked', tone: 'idle', ack: { key: s.ack.key } });
   const note = [s.about, NOTES[s.kind]].filter(Boolean).join(' · ');
   return { title: s.name, note: `${late}${note}`, rows };
 }

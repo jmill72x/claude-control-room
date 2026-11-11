@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { healthChips, healthDetail } from '../lib/orbit/health.js';
 import { unavailable } from '../lib/orbit/page.js';
 
@@ -19,20 +20,33 @@ export function HealthChips({ env, fresh, open, onToggle, detailId }) {
   ));
 }
 
-export function HealthDetail({ env, fresh, open, now, id }) {
+// `onUnack(key)` deletes an acknowledgement (server/lib/acks.mjs) and refreshes;
+// a row with `ack` shows the button. A failed un-ack is said in the panel's note.
+export function HealthDetail({ env, fresh, open, now, id, onUnack }) {
+  const [problem, setProblem] = useState(null);
+  const [busy, setBusy] = useState(null);
   const d = healthDetail(env, open, fresh, now);
   if (!d) return null;
+  const unack = async key => {
+    setBusy(key);
+    setProblem(null);
+    try { await onUnack(key); } catch (err) { setProblem(`Couldn't un-ack: ${err?.message ?? err}`); } finally { setBusy(null); }
+  };
   return (
     <section id={id} className="o-health-detail" aria-label={`${d.title}: details`}>
       <div className="o-health-head">
         <h2 className="o-mono">{d.title}</h2>
-        {d.note && <span>{d.note}</span>}
+        {(problem || d.note) && <span role={problem ? 'status' : undefined}>{problem ?? d.note}</span>}
       </div>
       {d.rows.map((r, i) => (
-        <div key={i} className={`o-health-row o-tone-${r.tone}`}>
+        <div key={i} className={`o-health-row o-tone-${r.tone}${r.ack ? ' o-health-row-ack' : ''}`}>
           <span className="o-hchip-dot" aria-hidden="true" />
           <span className="o-health-what"><b>{r.name}</b>{r.when ? <span> · {r.when}</span> : null}</span>
           <span className="o-mono o-health-state">{r.state}</span>
+          {r.ack && onUnack && (
+            <button type="button" className="o-unack" disabled={busy === r.ack.key} onClick={() => unack(r.ack.key)}
+              aria-label={`Un-ack ${r.name}`}>{busy === r.ack.key ? '…' : 'Un-ack'}</button>
+          )}
         </div>
       ))}
     </section>

@@ -406,3 +406,33 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   wide), with its CSS unchanged by the flip; it goes with the page. Safari is Jeff's
   look. **Next, a week after it goes live:** delete `classic.html`, its components and
   CSS (and the `classic` Vite entry), and rewrite README and this file for the new page.
+
+## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a built, staged)
+
+Jeff's pick of 2026-11-10: the Control Room becomes the one home screen (what's running,
+what's waiting on you, today's routines, usage, approvals), built on the Orbit page. The
+design is `docs/design/2026-11-10-jarvis-os-home.md`; Jeff answered its decisions on 11-10
+(the doc's §9: all yes, approvals "both" buttons and Discord DMs, the product's name "Jarvis
+OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside Jarvis OS,
+replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
+half (the classic page's deletion, about 11-17) is still open.
+
+**Phase 1a, the acknowledge mechanism, is built and staged (2026-11-10), not live.** README
+"Acknowledging a known miss" describes it: `server/lib/acks.mjs` (pure), `server/acks.mjs`
+(the file `server/data/acks.json`), `POST`/`DELETE`/`GET /api/acks`, `acks` and `acked` in
+`/api/dashboard`, `ack` on covered crons, jobs and services, the notifier silenced for a
+covered alert, the Jobs chip's grey "all OK · 1 ack", the strip's Acknowledge form and the
+details' Un-ack. Tests: server 630 and web 87 in local time and Tokyo; 41 mutations caught;
+headless Chromium at 390 and 1440 on a scratch server: ack, un-ack, expiry, a new failure
+not covered, the CSP's four probes blocked. **To go live, in this order:** Ultron's light
+review of the write endpoint (the design's §8), Jeff's C&P, the service restart (Vision or
+Jeff), then `cd web && npm run build` (the new page needs `refresh` from the new server's
+`acked`; the old page ignores the new fields, so the build may follow the restart at any
+time). **Post-restart checks:** `GET /api/dashboard` carries `acks: []` and `acked: []`; the
+Friday alert (if still red before Fri 11-13 16:45) can be acked from the iPad and the chip
+reads "all OK · 1 ack"; `server/data/acks.json` appears on the first ack; one `ack:` line in
+the service log. **Known limits:** a cron's `since` is matched within 5 minutes because
+job-status rounds a log's age to 0.01 h; a launchd job without the job-status overlay has no
+`lastRunAt`, so its ack's `since` is null and a re-run can't be told apart until it expires;
+two jobs whose display names collide would both show one ack (the health panel carries no
+labels). **Follow-ups:** the mod's one-line "acked" suffix (`crons[].ack`), and Phase 1b.

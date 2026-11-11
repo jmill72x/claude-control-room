@@ -142,3 +142,45 @@ test('a moment: the time today, the weekday this week, the date before that', ()
   assert.equal(when(at(2, 13, 30), NOW), '10-02 1:30 PM');
   assert.equal(when(null, NOW), '—');
 });
+
+// ---- acknowledgements (server/lib/acks.mjs puts `ack` on a covered job or service) ----
+
+const ACK = { key: 'cron:launchd:com.example.brief', kind: 'cron', since: at(13, 6, 0), by: 'jeff', note: 'mini restarted before login', at: NOW, until: at(23, 8, 0) };
+
+test('the Jobs chip sets an acked failure aside: grey "all OK · 1 ack", and a real failure still counts', () => {
+  const chip = j => healthChips(env({ jobs: j, services: [] }), OK)[0];
+  assert.deepEqual([chip(jobs([J('Brief', 'failed', { ack: ACK }), J('Scan', 'ok')])).value, chip(jobs([J('Brief', 'failed', { ack: ACK })])).tone], ['all OK · 1 ack', 'idle']);
+  assert.deepEqual([chip(jobs([J('Brief', 'failed', { ack: ACK }), J('Scan', 'failed')])).value, chip(jobs([J('Brief', 'failed', { ack: ACK }), J('Scan', 'failed')])).tone], ['1 failed · 1 ack', 'bad']);
+  assert.equal(chip(jobs([J('Brief', 'failed', { ack: ACK }), J('Scan', 'failed', { ack: ACK })])).value, 'all OK · 2 acks');
+  assert.equal(chip(jobs([J('Brief', 'ok', { ack: ACK })])).value, 'all OK', 'an ack on a job that is OK again means nothing');
+});
+
+test('the Jobs details: the acked row in grey with the ack\'s words and its key for Un-ack', () => {
+  const d = healthDetail(env({ jobs: jobs([J('Brief', 'failed', { ack: ACK }), J('Scan', 'failed', { reason: 'exit 1' })]), services: [] }), 'jobs', OK, NOW);
+  assert.equal(d.note, '2 jobs · 1 failed · 1 acknowledged');
+  assert.deepEqual(d.rows[0], {
+    name: 'Brief', when: 'Every day, 06:00', tone: 'idle',
+    state: 'acknowledged by Jeff until Fri 8:00 AM · mini restarted before login',
+    ack: { key: 'cron:launchd:com.example.brief' }
+  });
+  assert.deepEqual(d.rows[1], { name: 'Scan', when: 'Every day, 06:00', state: 'failed: exit 1', tone: 'bad' });
+  const noNote = healthDetail(env({ jobs: jobs([J('Brief', 'failed', { ack: { ...ACK, note: null, by: 'jarvis' } })]), services: [] }), 'jobs', OK, NOW);
+  assert.equal(noNote.rows[0].state, 'acknowledged by Jarvis until Fri 8:00 AM');
+});
+
+test('a down service with an ack: the chip goes grey with "· acked", and its details gain an Un-ack row', () => {
+  const down = { ...services[2], state: 'down', launchd: 'not running', downSince: at(21, 13, 0), ack: { ...ACK, key: 'service:launchd:Tunnel', kind: 'service' } };
+  const chips = healthChips(env({ jobs: jobs([]), services: [down] }), OK);
+  assert.deepEqual([chips[1].value, chips[1].tone], ['not running · acked', 'idle']);
+  const d = healthDetail(env({ jobs: jobs([]), services: [down] }), 'launchd:Tunnel', OK, NOW);
+  assert.deepEqual(d.rows.at(-1), { name: 'Acknowledged', when: 'acknowledged by Jeff until Fri 8:00 AM · mini restarted before login', state: 'acked', tone: 'idle', ack: { key: 'service:launchd:Tunnel' } });
+  assert.equal(d.rows[0].tone, 'bad', 'the verdict row is still red: the ack hides nothing here');
+  const up = healthChips(env({ jobs: jobs([]), services: [{ ...down, state: 'running', ack: down.ack }] }), OK)[1];
+  assert.deepEqual([up.value, up.tone], ['running', 'ok'], 'an ack on a service that is back means nothing');
+});
+
+test('when() reads a moment ahead as well as behind: an expiry this week is "Fri 8:00 AM"', () => {
+  assert.equal(when(at(23, 8, 0), NOW), 'Fri 8:00 AM');
+  assert.equal(when(at(21, 18, 0), NOW), '6:00 PM');
+  assert.equal(when(at(28, 8, 0), NOW), '10-28 8:00 AM');
+});

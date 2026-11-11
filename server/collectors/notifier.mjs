@@ -1,5 +1,6 @@
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
+import { applyAcks } from '../lib/acks.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
 // its last good reading, which is right to keep showing on screen — but pushing
@@ -13,8 +14,11 @@ const okOnly = snapshot => {
   return out;
 };
 
-export async function runNotifier({ snapshot, config, now, readSent, writeSent, send }) {
-  const alerts = buildAlerts(okOnly(snapshot), config ?? {}, now);
+export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [] }) {
+  // An acknowledged alert (lib/acks.mjs) is not pushed. Its key is then forgotten
+  // by the rule below, so when the ack lapses with the condition still live, the
+  // alert is new again and pushed again: an expiry re-notifies, which is its job.
+  const { alerts } = applyAcks(buildAlerts(okOnly(snapshot), config ?? {}, now), acks, now);
   // The raw snapshot, not okOnly(snapshot): observability is about whether a
   // source reported this run at all, which okOnly's blanking already erases.
   const alreadySent = prune((await readSent()) ?? {}, alerts, observableSources(snapshot));

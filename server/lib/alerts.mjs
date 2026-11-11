@@ -29,10 +29,15 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
   for (const [source, crons] of cronSources) {
     for (const cron of crons) {
       if (cron?.ok === false) {
+        // `since` and `nextRunAt` are for an acknowledgement (lib/acks.mjs): the
+        // instance of this failure, and when the job should next run. Only the
+        // job-status overlay knows `lastRunAt`; without it the instance is unknown.
         alerts.push({
           text: `${cron.name} cron ${cron.last ?? 'failed'}`,
           kind: 'cron',
-          key: `cron:${source}:${cron.label ?? cron.name}`
+          key: `cron:${source}:${cron.label ?? cron.name}`,
+          since: Number.isFinite(cron.lastRunAt) ? cron.lastRunAt : null,
+          nextRunAt: Number.isFinite(cron.nextRunAt) ? cron.nextRunAt : null
         });
       }
     }
@@ -84,7 +89,8 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
   for (const s of snapshot.health?.data?.services ?? []) {
     if ((s?.kind === 'session' || s?.kind === 'launchd') && s.state === 'down' &&
         Number.isFinite(s.downSince) && now - s.downSince >= SERVICE_DOWN_ALERT_MS) {
-      alerts.push({ text: `${s.name} is not running`, kind: 'service', key: `service:${s.key}` });
+      // `since` is the instance, for an acknowledgement (lib/acks.mjs).
+      alerts.push({ text: `${s.name} is not running`, kind: 'service', key: `service:${s.key}`, since: s.downSince });
     }
   }
 

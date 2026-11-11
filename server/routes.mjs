@@ -3,6 +3,9 @@ import { validateIngest } from './lib/validate-ingest.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
 import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
 import { readRoster } from './lib/roster.mjs';
+import {
+  applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine
+} from './lib/acks.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -89,6 +92,11 @@ const guardWrite = req => {
   if (isCrossOrigin(req)) throw new HttpError(403, 'cross-origin write refused');
   if (!isJson(req)) throw new HttpError(415, 'Content-Type must be application/json');
 };
+// A DELETE has no body, so no content type to require; a browser never sends one
+// without a preflight, which the same-origin rule then refuses.
+const guardDelete = req => {
+  if (isCrossOrigin(req)) throw new HttpError(403, 'cross-origin write refused');
+};
 
 // The board's revision travels as an HTTP entity tag, so the body stays the
 // bare list it has always been: a plain `curl` GET-modify-PUT never sees it.
@@ -136,7 +144,19 @@ export function pageConfig(config, planData) {
   };
 }
 
-export function createHandler({ cache, todos, config }) {
+// The acks (lib/acks.mjs) when the server runs without a store: nothing is
+// acknowledged, and a POST says so.
+const NO_ACKS = { read: async () => [], add: null, remove: null };
+
+export function createHandler({ cache, todos, config, acks = NO_ACKS, log = console.log }) {
+  const panels = now => {
+    const payload = {};
+    for (const key of PANELS) payload[key] = cache.get(key, now);
+    return payload;
+  };
+  // The alerts as raised, before any acknowledgement, from the panels alone.
+  const rawAlerts = now => buildAlerts(panels(now), config, now);
+
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
@@ -148,8 +168,7 @@ export function createHandler({ cache, todos, config }) {
 
       if (req.method === 'GET' && path === '/api/dashboard') {
         const now = Date.now();
-        const payload = {};
-        for (const key of PANELS) payload[key] = cache.get(key, now);
+        let payload = panels(now);
         // A hardcoded 'ok' claimed a source that may not exist: with no
         // config.json the plan and credits panels rendered nothing at all under
         // their labels, with no marker saying why.
@@ -172,9 +191,50 @@ export function createHandler({ cache, todos, config }) {
             ? (config.error ?? 'no config.json on this machine — plan and credits have no source')
             : null
         };
-        payload.alerts = config.showAlertBanner ? buildAlerts(payload, config, now) : [];
+        // An acknowledged alert (lib/acks.mjs) leaves `alerts` for `acked`, each
+        // with its ack, and the covered cron, job and service entries gain `ack`.
+        // Their verdicts don't change: `ok` stays false, `state` stays failed.
+        const active = await acks.read(now);
+        const { alerts, acked } = applyAcks(buildAlerts(payload, config, now), active, now);
+        payload = decoratePayload(payload, acked, readRoster(config).jobs);
+        payload.alerts = config.showAlertBanner ? alerts : [];
+        payload.acked = config.showAlertBanner ? acked : [];
+        payload.acks = active;
         payload.serverTime = now;
         return json(res, 200, payload);
+      }
+
+      // Acknowledging a known miss (docs/design/2026-11-10-jarvis-os-home.md, §6).
+      // Anyone who reaches the page may ack: the tailnet, which is the owner's own
+      // devices, and a script on this machine. The board's guards, a 4 KB body, and
+      // the key must name an alert raised NOW, so nothing can be acked in advance.
+      if (path === '/api/acks') {
+        if (req.method === 'GET') return json(res, 200, await acks.read(Date.now()));
+        if (req.method === 'POST') {
+          guardWrite(req);
+          if (!acks.add) throw new HttpError(503, 'acknowledgements are not set up on this server');
+          const checked = checkAckRequest(await readBody(req, ACK_MAX_BODY));
+          if (!checked.ok) throw new HttpError(400, checked.error);
+          const now = Date.now();
+          const alert = rawAlerts(now).find(a => a.key === checked.value.key) ?? null;
+          if (!alert) throw new HttpError(404, 'no such alert is raised now: only a live alert can be acknowledged');
+          const made = makeAck(alert, checked.value, now);
+          if (!made.ok) throw new HttpError(400, made.error);
+          const list = await acks.add(made.value, now);
+          log(ackLogLine(made.value));
+          return json(res, 200, list);
+        }
+      }
+      const unack = path.match(/^\/api\/acks\/(.+)$/);
+      if (unack && req.method === 'DELETE') {
+        guardDelete(req);
+        if (!acks.remove) throw new HttpError(503, 'acknowledgements are not set up on this server');
+        let key;
+        try { key = decodeURIComponent(unack[1]); } catch { throw new HttpError(400, 'the key is not valid URL encoding'); }
+        if (!isAckKey(key)) throw new HttpError(400, 'the key must be one line of at most 200 characters');
+        const list = await acks.remove(key, Date.now());
+        log(unackLogLine(key));
+        return json(res, 200, list);
       }
 
       if (path === '/api/todos') {

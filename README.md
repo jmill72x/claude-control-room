@@ -461,11 +461,12 @@ claude-control-room/
     collectors/     one module per source, each on its own timer, cache-only reads at request time
     cache.mjs        in-memory: { data, fetchedAt, status, error } per panel
     history.mjs      append-only /usage snapshot store — see "Pace, history, and the usage-drivers panel"
-    routes.mjs        /api/dashboard · /api/todos · /api/ingest/* (and server.mjs serves /avatars/<key>.png)
+    routes.mjs        /api/dashboard · /api/todos · /api/ingest/* · /api/acks (and server.mjs serves /avatars/<key>.png)
+    acks.mjs           the acknowledgement file — see "Acknowledging a known miss"
     config.json        user-set values with no API source (gitignored — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
     todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
-    data/              usage-history-YYYY-MM.jsonl, append-only, gitignored (runtime data, not source)
+    data/              usage-history-YYYY-MM.jsonl, append-only, plus notified.json and acks.json; gitignored (runtime data, not source)
   web/               React + Vite, two pages: index.html (the Orbit page) and classic.html (this page, until deleted);
                      the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
@@ -516,6 +517,55 @@ curl -X POST http://127.0.0.1:8322/api/ingest/crons \
   -H 'Content-Type: application/json' \
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
+
+### Acknowledging a known miss
+
+A failed job or a down service can be **acknowledged**: silenced for a bounded time
+without changing its verdict. The case: a weekly job misses one run (the machine
+restarted before anyone logged in), job-status allows it 192 hours without a log write,
+so it reads failed from day 8 until its next run on day 14, and the only answer used to
+be "wait". The design is `docs/design/2026-11-10-jarvis-os-home.md`, section 6.
+
+An ack covers **one instance of one condition**: the alert's `key` plus `since` (a
+cron's `lastRunAt`, a service's `downSince`), both taken from the alert's own source,
+never from the caller. If the job runs again and fails again, `since` moves and the
+alert is red again. `ok` stays `false` and `state` stays `failed` throughout; the page
+sets the row aside in grey instead of painting it green. Only `cron` and `service`
+alerts can be acked; a limit, a projection or a credit expiry moves on its own.
+
+- `POST /api/acks` with `{ "key", "note"?, "until"?, "by"? }`: the key must name an
+  alert raised **now**, so nothing can be acked in advance. `until` is a time in
+  milliseconds; left out, it is the job's next run plus 2 hours (24 hours when there
+  is no next run), and it may never be more than 14 days away. `note` is one line of at
+  most 200 characters with the board title's character rules. `by` is a word of at most
+  40 letters, digits and hyphens; the page leaves it out and the server reads that as
+  the owner, while a script names itself. Answers the active list.
+- `DELETE /api/acks/<key>` (URL-encoded): un-ack. Answers the list.
+- `GET /api/acks`: the active list, also in `/api/dashboard` as `acks`.
+- `/api/dashboard`: `alerts` leaves out a covered alert, which goes in `acked` with its
+  ack; the covered `crons[]`, `health.jobs.list[]` and `health.services[]` entries gain
+  `ack: { key, kind, since, by, note, at, until }`. The notifier pushes nothing for a
+  covered alert and forgets its key, so an ack that lapses with the condition still live
+  pushes it again. Nothing is pushed for an ack itself; the service log gets one line
+  (`ack: cron by jeff until <time> (<key>)`), without the note.
+
+The writes take the ingest endpoints' guards (JSON only, same origin or no `Origin`),
+a 4 KB body, and the file `server/data/acks.json` holds at most 50 entries, expired ones
+pruned on each read and write. Anyone who can reach the page can ack: the server binds
+loopback and the tailnet is the owner's own devices. This is not a board write.
+
+```bash
+curl -X POST http://127.0.0.1:8322/api/acks -H 'Content-Type: application/json' \
+  -d '{"key":"cron:launchd:<label>","note":"restarted before login; next run Fri","by":"jarvis"}'
+curl -X DELETE http://127.0.0.1:8322/api/acks/cron%3Alaunchd%3A<label>
+```
+
+On the Orbit page, each ack-able alert in the red strip has an **Acknowledge** button
+that opens a two-field form (a note, and "until its next run" or "for 7 days"). The
+Jobs chip then reads "all OK · 1 ack" in grey, its details show the row in grey with
+"acknowledged by <who> until Fri 6:45 PM · <note>" and an **Un-ack** button, and a down
+service's details gain the same row. The classic page and the mod ignore the new
+fields and keep showing the job red.
 
 ### Inside Claude Code: the mod
 
@@ -1024,7 +1074,8 @@ in the ntfy app (iOS/Android) or at `https://ntfy.sh/<your-topic>` to receive pu
 ## Security
 
 The server binds `127.0.0.1`, and the tailnet reaches it only through Tailscale Serve.
-Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB). What
+Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB, an
+acknowledgement 4 KB; its DELETE has no body and keeps the origin rule). What
 reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
 field by field (the health strip's and To push's above).
 

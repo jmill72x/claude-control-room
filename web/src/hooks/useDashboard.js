@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+// The dashboard payload, polled; `refresh` asks for it now (after a write such
+// as an acknowledgement, so the page shows the result without waiting a poll).
 export function useDashboard(intervalMs = 30000) {
   const [state, setState] = useState({ payload: null, error: null, receivedAt: null });
+  const loadRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -20,10 +23,12 @@ export function useDashboard(intervalMs = 30000) {
         if (!cancelled) setState(prev => ({ ...prev, error: String(err.message) }));
       }
     };
+    loadRef.current = load;
     load();
     const id = setInterval(load, intervalMs);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => { cancelled = true; clearInterval(id); loadRef.current = null; };
   }, [intervalMs]);
 
-  return state;
+  const refresh = useCallback(() => loadRef.current?.(), []);
+  return { ...state, refresh };
 }

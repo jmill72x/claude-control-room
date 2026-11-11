@@ -123,6 +123,13 @@ button:disabled { cursor: default; }
 .o-health-what span { color: var(--night-sub); }
 .o-health-state { max-width: 45vw; font-size: 11.5px; text-align: right; color: var(--night-sub); overflow-wrap: anywhere; }
 .o-health-row.o-tone-bad .o-health-state { color: var(--bad); }
+/* An acknowledged row (server/lib/acks.mjs): grey words and an Un-ack button. */
+.o-health-row-ack { grid-template-columns: 14px minmax(0, 1fr) auto auto; }
+.o-unack {
+  min-height: 44px; margin: -6px 0; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(248, 247, 243, 0.4);
+  background: transparent; color: var(--paper); font-size: 11.5px; font-weight: 600;
+}
+.o-unack:disabled { opacity: 0.6; }
 
 .o-eyebrow-night { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--night-sub); }
 .o-sub-night { font-size: 13px; color: var(--night-sub); }
@@ -155,6 +162,27 @@ button:disabled { cursor: default; }
 .o-alerts { background: var(--accent); color: #FFFFFF; }
 .o-alerts-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding-top: 10px; padding-bottom: 10px; font-size: 13.5px; font-weight: 600; }
 .o-alerts-tag { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--navy); }
+/* One alert and its Acknowledge button; the form opens under the strip's line. */
+.o-alert { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.o-ack-btn {
+  min-height: 44px; margin: -4px 0; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.7);
+  background: transparent; color: #FFFFFF; font-size: 12.5px; font-weight: 600;
+}
+.o-ack-btn:disabled { opacity: 0.6; }
+.o-ack-save { background: #FFFFFF; border-color: #FFFFFF; color: var(--accent-ink); }
+.o-ack-form {
+  flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 0 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.3); font-weight: 500; font-size: 13px;
+}
+.o-ack-what { flex: 1 1 100%; font-weight: 600; font-size: 13.5px; }
+.o-ack-field { display: flex; align-items: center; gap: 8px; flex: 1 1 280px; min-width: 0; }
+.o-ack-label { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.9; white-space: nowrap; }
+.o-ack-input { flex: 1 1 auto; min-width: 0; min-height: 44px; font-size: 15px; }
+.o-ack-choices { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.o-ack-choice { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.o-ack-choice input { width: 18px; height: 18px; margin: 0; accent-color: #FFFFFF; }
+.o-ack-actions { display: flex; gap: 8px; }
+.o-ack-error { flex: 1 1 100%; }
 
 /* ---- panels ---- */
 
