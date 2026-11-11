@@ -8,7 +8,8 @@ import { ack } from './ackApi.js';
 // the strip. Saving POSTs to /api/acks and asks the page to reload the payload:
 // the alert then leaves the strip and the Jobs chip reads "all OK · 1 ack".
 
-function AckForm({ alert, now, onDone, onCancel }) {
+// `variant` is 'strip' (white on the red strip) or 'card' (in a Needs you card).
+export function AckForm({ alert, now, onDone, onCancel, variant = 'strip' }) {
   const [note, setNote] = useState('');
   const [choice, setChoice] = useState('next');
   const [busy, setBusy] = useState(false);
@@ -30,7 +31,7 @@ function AckForm({ alert, now, onDone, onCancel }) {
   };
 
   return (
-    <form className="o-ack-form" onSubmit={submit} aria-label={`Acknowledge: ${alert.text}`}>
+    <form className={`o-ack-form${variant === 'card' ? ' o-ack-form-card' : ''}`} onSubmit={submit} aria-label={`Acknowledge: ${alert.text}`}>
       <span className="o-ack-what">Acknowledge: {alert.text}</span>
       <label className="o-ack-field">
         <span className="o-ack-label">Note</span>

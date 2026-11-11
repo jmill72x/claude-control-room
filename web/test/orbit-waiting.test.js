@@ -154,7 +154,7 @@ test('all cards: due soon, then to push, then decide or do; the first 9, then Sh
   const cards = waitingCards({ items, today: TODAY, roster: ROSTER, toPushEnv: env([repo('garden-app', { staged: 1 })]) });
   const view = waitingView(cards);
   assert.equal(view.total, 12);
-  assert.deepEqual(view.tiles.map(t => [t.id, t.n]), [['due', 1], ['decide', 10], ['push', 1]]);
+  assert.deepEqual(view.tiles.map(t => [t.id, t.n]), [['due', 1], ['decide', 10], ['push', 1], ['alerts', 0]]);
   assert.equal(view.shown.length, WAIT_SHOWN);
   assert.deepEqual(view.shown.slice(0, 3).map(c => c.group), ['due', 'push', 'decide']);
   assert.equal(view.more, 12);
@@ -223,4 +223,64 @@ test('Next 24 hours places the You events among the jobs and resets, soonest fir
   const extra = youEvents([item('a', { ask: ask('do', { time: '10:00' }), due: '2026-10-22', title: 'Post the teaser' })], NOW);
   const { events } = next24({ crons, limits: [], jobs: { 'com.example.digest': { name: 'Morning digest', owner: 'juniper' } }, now: NOW, extra: [...extra, { t: at(23, 9), name: 'You: too late', kind: 'you' }] });
   assert.deepEqual(events.map(e => [e.name, e.kind, e.at]), [['Morning digest', 'job', '7:30 AM'], ['You: Post the teaser', 'you', '10:00 AM']]);
+});
+
+// ---- the Alerts tile (Jarvis OS Phase 1b) ----
+
+import { alertCards, waitCard } from '../src/lib/orbit/waiting.js';
+
+const NOW_MS = new Date(2026, 9, 21, 15, 0).getTime(); // the TODAY above, 3:00 PM local
+const cronAlert = { text: 'friday cron Overdue · log 270 h old', kind: 'cron', key: 'cron:launchd:com.example.friday', since: NOW_MS - 3600e3, nextRunAt: NOW_MS + 86400e3 };
+const limitAlert = { text: 'Weekly at 90%', kind: 'limit', key: 'limit:Weekly' };
+const svcAlert = { text: 'Tunnel is not running', kind: 'service', key: 'service:launchd:Tunnel', since: NOW_MS - 600e3 };
+const wait = { who: 'Juniper Vale', kind: 'permission', since: NOW_MS - 3 * 60e3, key: 'needs-you:abcdefabcdef' };
+
+test('alert cards: waits first, then each raised alert with what to do; acked ones counted, not shown', () => {
+  const { cards, acked } = alertCards({ alerts: [cronAlert, limitAlert, svcAlert, { kind: 'needs-you', key: 'needs-you:x', text: 'x' }], acked: [{ key: 'k', ack: {} }], needsYou: [wait], now: NOW_MS });
+  assert.equal(acked, 1);
+  assert.deepEqual(cards.map(c => [c.key, c.chip, c.look, Boolean(c.alert)]), [
+    ['wait:needs-you:abcdefabcdef', 'Waiting', 'hot', false],
+    ['alert:cron:launchd:com.example.friday', 'Job failed', 'alert', true],
+    ['alert:limit:Weekly', 'Limit', 'alert', false],
+    ['alert:service:launchd:Tunnel', 'Service down', 'alert', true]
+  ], 'a needs-you alert is not a second card: its wait is already one');
+  assert.equal(cards[1].title, cronAlert.text);
+  assert.match(cards[1].what, /acknowledge it/);
+  assert.match(cards[1].what, /next run plus 2 hours/);
+  assert.match(cards[3].what, /24 hours/);
+  assert.match(cards[2].what, /resets on its own/);
+  assert.equal(cards[1].alert, cronAlert, 'the Acknowledge action needs the alert itself');
+  assert.equal(cards[2].itemId, null);
+  assert.deepEqual(alertCards({ alerts: null, acked: null, needsYou: null, now: NOW_MS }), { cards: [], acked: 0 });
+});
+
+test('a waiting session\'s card: who, what kind of wait, since when, and where to answer', () => {
+  const c = waitCard(wait, NOW_MS);
+  assert.equal(c.title, 'Juniper Vale is waiting on a permission prompt');
+  assert.match(c.what, /in Discord for Juniper Vale/);
+  assert.match(c.what, /Waiting 3 min ago/);
+  assert.equal(c.meta, 'since 2:57 PM');
+  assert.equal(c.answerUrl, 'https://discord.com/channels/@me');
+  const nobody = waitCard({ who: null, kind: 'idle', since: NOW_MS - 60e3, key: 'needs-you:000000000000' }, NOW_MS);
+  assert.equal(nobody.title, 'A session is waiting on an idle prompt');
+  assert.match(nobody.what, /for the lead/);
+  assert.equal(waitCard({ ...wait, kind: 'question' }, NOW_MS).title, 'Juniper Vale is waiting on a question');
+});
+
+test('the Alerts tile counts alerts and waits, says how many are acked, and sits among the cards after Due soon', () => {
+  const items = [item('due', { ask: ask(), due: '2026-10-22' }), item('d', { ask: ask('decide') })];
+  const cards = waitingCards({ items, today: TODAY, roster: ROSTER, toPushEnv: env([repo('garden-app', { staged: 1 })]), alerts: [cronAlert, limitAlert], acked: [{ key: 'service:launchd:Tunnel', ack: {} }], needsYou: [wait], now: NOW_MS });
+  const view = waitingView(cards);
+  assert.equal(view.total, 6);
+  assert.deepEqual(view.tiles.map(t => [t.id, t.label, t.n, t.sub ?? null]), [['due', 'Due soon', 1, null], ['decide', 'Decide or do', 1, null], ['push', 'To push', 1, null], ['alerts', 'Alerts', 3, '1 acked']]);
+  assert.deepEqual(view.shown.map(c => c.group), ['due', 'alerts', 'alerts', 'alerts', 'push', 'decide']);
+  const only = waitingView(cards, { filter: 'alerts' });
+  assert.deepEqual(only.shown.map(c => c.key), ['wait:needs-you:abcdefabcdef', 'alert:cron:launchd:com.example.friday', 'alert:limit:Weekly']);
+  assert.equal(only.showing, 'Showing 3 alerts and waits. Tap the tile again for all 6.');
+  const none = waitingView(waitingCards({ items: [], today: TODAY, roster: ROSTER, toPushEnv: env([]) }), { filter: 'alerts' });
+  assert.equal(none.tiles[3].n, 0);
+  assert.equal(none.tiles[3].sub, null);
+  assert.equal(none.empty, 'No alert is raised, and no session is waiting on you.');
+  // A page talking to an older server: no alerts passed, the tile reads 0 and nothing breaks.
+  assert.equal(waitingView(waitingCards({ items: [], today: TODAY, roster: ROSTER, toPushEnv: env([]) })).total, 0);
 });

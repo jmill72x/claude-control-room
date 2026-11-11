@@ -1,10 +1,12 @@
-// Waiting on you (Orbit plan, Phase 4): the count, the three tiles and the
-// cards at the top of the Overview, and Jeff's own items on Next 24 hours.
-// Plain functions over the board's items and the server's `toPush` panel,
-// checked by web/test/orbit-waiting.test.js.
+// Needs you (Orbit plan, Phase 4 as Waiting on you; widened in Jarvis OS Phase 1b):
+// the count, the four tiles and the cards at the top of the Overview, and Jeff's
+// own items on Next 24 hours. Plain functions over the board's items, the server's
+// `toPush` panel, its alerts and the sessions waiting on a person, checked by
+// web/test/orbit-waiting.test.js.
 import { dayNumber } from '../due.js';
 import { PRIORITIES, rank, cardTitle, ownerOf, agentOf } from './board.js';
-import { clock, unavailable } from './page.js';
+import { clock, ago, unavailable } from './page.js';
+import { canAck } from './acks.js';
 
 export const WAIT_SHOWN = 9;
 export const DUE_SOON_DAYS = 7;
@@ -110,6 +112,72 @@ export function pushView(env, roster) {
   return { known: true, cards, notes };
 }
 
+// ---- alerts and the sessions waiting on you ----
+
+const ALERT_CHIPS = { cron: 'Job failed', service: 'Service down', limit: 'Limit', projection: 'Projection', credits: 'Credits', board: 'Board', 'needs-you': 'Waiting' };
+const KIND_WORDS = { permission: 'a permission prompt', idle: 'an idle prompt', question: 'a question' };
+
+// What to do about an alert the page can't act on, by kind.
+function alertWhat(alert) {
+  if (canAck(alert)) {
+    return alert.kind === 'cron'
+      ? 'If the miss is known, acknowledge it: the alert stays quiet until the job\'s next run plus 2 hours (or as long as you choose), and a new failure brings it back.'
+      : 'If the outage is known, acknowledge it: the alert stays quiet for 24 hours (or as long as you choose), and it comes back if the service is still down after that.';
+  }
+  if (alert.kind === 'limit') return 'Nothing to tap: the limit resets on its own. Ease off this window, or wait for the reset on the Usage rings.';
+  if (alert.kind === 'projection') return 'Nothing to tap: at this pace the window runs out before it resets. Slow down, or let it.';
+  if (alert.kind === 'credits') return 'Spend or let lapse: the money leaves on its own at the date shown.';
+  if (alert.kind === 'board') return 'Archive the done lane before a save is refused.';
+  return 'Open the dashboard\'s panels for the detail.';
+}
+
+function alertCard(alert, acked = false) {
+  return {
+    key: `alert:${alert.key}`,
+    group: 'alerts',
+    look: acked ? 'decide' : 'alert',
+    chip: acked ? 'Acked' : ALERT_CHIPS[alert.kind] ?? 'Alert',
+    title: alert.text,
+    what: alertWhat(alert),
+    why: null,
+    owner: null,
+    fallback: '!',
+    meta: alert.kind === 'cron' ? 'a scheduled job' : alert.kind === 'service' ? 'an always-on service' : `a ${alert.kind} alert`,
+    itemId: null,
+    alert: canAck(alert) ? alert : null
+  };
+}
+
+// A session waiting on a person (the server's `needsYou`, from a Claude Code hook):
+// who, what kind of wait, since when, and where to answer.
+export function waitCard(w, now) {
+  const who = w.who ?? 'A session';
+  return {
+    key: `wait:${w.key}`,
+    group: 'alerts',
+    look: 'hot',
+    chip: 'Waiting',
+    title: `${who} is waiting on ${KIND_WORDS[w.kind] ?? 'an answer'}`,
+    what: `Answer it where the session runs: in Discord for ${who === 'A session' ? 'the lead' : who}, or in its terminal. Waiting ${ago(now - w.since)}.`,
+    why: 'Until you answer, that session sits idle.',
+    owner: null,
+    fallback: who[0] ?? '?',
+    meta: `since ${clock(w.since)}`,
+    itemId: null,
+    alert: null,
+    answerUrl: 'https://discord.com/channels/@me'
+  };
+}
+
+// The Alerts tile's cards: the sessions waiting first (they block work), then the
+// raised alerts in the server's order. Acked alerts are counted for the label,
+// never shown as cards.
+export function alertCards({ alerts, acked, needsYou, now }) {
+  const waits = (Array.isArray(needsYou) ? needsYou : []).filter(w => Number.isFinite(w?.since)).map(w => waitCard(w, now));
+  const raised = (Array.isArray(alerts) ? alerts : []).filter(a => typeof a?.key === 'string' && a.kind !== 'needs-you').map(a => alertCard(a));
+  return { cards: [...waits, ...raised], acked: Array.isArray(acked) ? acked.length : 0 };
+}
+
 // ---- the cards ----
 
 function itemCard(t, order, roster, soon) {
@@ -133,8 +201,9 @@ function itemCard(t, order, roster, soon) {
 
 // Every card, by tile. Due soon: the soonest first (an overdue item before
 // all), then by the ask's time and priority. Decide or do: by priority, the
-// ones in Doing first. To push: by repo name.
-export function waitingCards({ items, today, roster, toPushEnv }) {
+// ones in Doing first. To push: by repo name. Alerts: the sessions waiting, then
+// the alerts raised now.
+export function waitingCards({ items, today, roster, toPushEnv, alerts = [], acked = [], needsYou = [], now = Date.now() }) {
   const due = [];
   const decide = [];
   (Array.isArray(items) ? items : []).forEach((t, order) => {
@@ -145,17 +214,21 @@ export function waitingCards({ items, today, roster, toPushEnv }) {
   due.sort((a, b) => a.sort.diff - b.sort.diff || a.sort.time.localeCompare(b.sort.time) || a.sort.rank - b.sort.rank || a.sort.order - b.sort.order);
   decide.sort((a, b) => a.sort.rank - b.sort.rank || a.sort.lane - b.sort.lane || a.sort.order - b.sort.order);
   const push = pushView(toPushEnv, roster);
-  return { due, decide, push: push.cards, pushKnown: push.known, pushNotes: push.notes };
+  const a = alertCards({ alerts, acked, needsYou, now });
+  return { due, decide, push: push.cards, pushKnown: push.known, pushNotes: push.notes, alerts: a.cards, ackedCount: a.acked };
 }
 
-const TILE_WORDS = { due: 'due soon', decide: 'to decide or do', push: 'to push' };
+const TILE_WORDS = { due: 'due soon', decide: 'to decide or do', push: 'to push', alerts: 'alerts and waits' };
 
 // What the panel shows: the count, the tiles, and the cards of the picked tile
-// (or all of them: due soon, then to push, then decide or do), the first 9
-// unless all are asked for.
+// (or all of them: due soon, then alerts and waits, then to push, then decide or
+// do), the first 9 unless all are asked for.
 export function waitingView(cards, { filter = null, all = false } = {}) {
-  const total = cards.due.length + cards.decide.length + cards.push.length;
-  const list = filter === 'due' ? cards.due : filter === 'decide' ? cards.decide : filter === 'push' ? cards.push : [...cards.due, ...cards.push, ...cards.decide];
+  const alertsList = cards.alerts ?? [];
+  const ackedCount = cards.ackedCount ?? 0;
+  const total = cards.due.length + cards.decide.length + cards.push.length + alertsList.length;
+  const list = filter === 'due' ? cards.due : filter === 'decide' ? cards.decide : filter === 'push' ? cards.push
+    : filter === 'alerts' ? alertsList : [...cards.due, ...alertsList, ...cards.push, ...cards.decide];
   const shown = all ? list : list.slice(0, WAIT_SHOWN);
   const capped = shown.length < list.length;
   // Without a To push reading its count is unknown, never a zero: the tile
@@ -170,7 +243,8 @@ export function waitingView(cards, { filter = null, all = false } = {}) {
     tiles: [
       { id: 'due', label: 'Due soon', n: cards.due.length },
       { id: 'decide', label: 'Decide or do', n: cards.decide.length },
-      { id: 'push', label: 'To push', n: cards.pushKnown ? cards.push.length : null }
+      { id: 'push', label: 'To push', n: cards.pushKnown ? cards.push.length : null },
+      { id: 'alerts', label: 'Alerts', n: alertsList.length, sub: ackedCount > 0 ? `${ackedCount} acked` : null }
     ],
     shown,
     more: capped ? list.length : 0,
@@ -185,7 +259,8 @@ const EMPTY = {
   board: 'Nothing on the board is waiting on you.',
   due: 'Nothing that waits on you is due in the next 7 days.',
   decide: 'No decision or task is waiting on you.',
-  push: 'Nothing is staged to commit, and nothing is waiting to be pushed.'
+  push: 'Nothing is staged to commit, and nothing is waiting to be pushed.',
+  alerts: 'No alert is raised, and no session is waiting on you.'
 };
 
 // ---- Next 24 hours ----

@@ -1,22 +1,33 @@
+import { useState } from 'react';
 import { localToday } from '../lib/due.js';
 import { waitingCards, waitingView } from '../lib/orbit/waiting.js';
 import { Avatar } from './Avatar.jsx';
+import { AckForm } from './Acks.jsx';
 
-// Waiting on you, at the top of the Overview (Orbit plan, Phase 4): the count,
-// three tiles that each show only their cards, and cards that open in place.
-// Items come from the board (their `ask`), and To push from the server's
-// `toPush` panel. `state` lives in OrbitApp, so Back from the board finds the
-// panel as it was left.
+// Needs you, at the top of the Overview (Orbit plan, Phase 4 as Waiting on you;
+// Jarvis OS Phase 1b widened it): the count, four tiles that each show only their
+// cards, and cards that open in place. Items come from the board (their `ask`), To
+// push from the server's `toPush` panel, and Alerts from its `alerts`, `acked` and
+// `needsYou`. `state` lives in OrbitApp, so Back from the board finds the panel as
+// it was left.
 
 const ICONS = {
   due: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
   decide: <><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7" /><path d="M18 10.5c0 4-6 3.5-11 5.5" /></>,
-  push: <><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></>
+  push: <><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></>,
+  alerts: <><path d="M12 3 2 20h20L12 3z" /><path d="M12 10v4" /><path d="M12 17.5v.5" /></>
 };
 
 const domId = key => `o-wait-${String(key).replace(/[^A-Za-z0-9_-]/g, '_')}`;
 
-function WaitCard({ card, open, onToggle, onOpenItem }) {
+// An alert card's one action: Acknowledge, which opens the same form as the strip.
+function AckAction({ alert, now, onChanged }) {
+  const [open, setOpen] = useState(false);
+  if (!open) return <button type="button" className="o-btn o-btn-accent" onClick={() => setOpen(true)}>Acknowledge</button>;
+  return <AckForm alert={alert} now={now} variant="card" onCancel={() => setOpen(false)} onDone={() => { setOpen(false); onChanged?.(); }} />;
+}
+
+function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
   const bodyId = domId(card.key);
   const tone = card.look === 'hot' ? 'night' : 'day';
   return (
@@ -48,9 +59,16 @@ function WaitCard({ card, open, onToggle, onOpenItem }) {
           <div className="o-wcard-foot">
             <span className="o-wcard-who">
               <Avatar agent={card.owner} fallback={card.fallback} size={22} tone={tone} />
-              <b>{card.owner?.name ?? 'No owner'}</b>
+              <b>{card.owner?.name ?? (card.group === 'alerts' ? 'Control Room' : 'No owner')}</b>
               <span>{card.meta}</span>
             </span>
+            {card.alert && <AckAction alert={card.alert} now={now} onChanged={onChanged} />}
+            {card.answerUrl && (
+              <a className="o-btn o-wcard-board" href={card.answerUrl}>
+                Answer in Discord
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></svg>
+              </a>
+            )}
             {card.itemId !== null && (
               <button type="button" className="o-btn o-wcard-board" onClick={() => onOpenItem(card.itemId)}>
                 Open on the board
@@ -64,8 +82,11 @@ function WaitCard({ card, open, onToggle, onOpenItem }) {
   );
 }
 
-export function Waiting({ board, payload, roster, now, state, setState, onOpenItem }) {
-  const cards = waitingCards({ items: board.todos, today: localToday(new Date(now)), roster, toPushEnv: payload?.toPush });
+export function Waiting({ board, payload, roster, now, state, setState, onOpenItem, onChanged }) {
+  const cards = waitingCards({
+    items: board.todos, today: localToday(new Date(now)), roster, toPushEnv: payload?.toPush,
+    alerts: payload?.alerts, acked: payload?.acked, needsYou: payload?.needsYou, now
+  });
   const view = waitingView(cards, { filter: state.filter, all: state.all });
   const loading = !board.loaded;
   const pick = id => setState(s => ({ filter: s.filter === id ? null : id, open: null, all: false }));
@@ -77,7 +98,7 @@ export function Waiting({ board, payload, roster, now, state, setState, onOpenIt
       <div className="o-wait-head">
         <div className="o-wait-count">
           <span className="o-wait-big">{loading ? '—' : view.total}</span>
-          <h2 id="o-wait" className="o-h2 o-h2-accent o-wait-title">Waiting<br />on you</h2>
+          <h2 id="o-wait" className="o-h2 o-h2-accent o-wait-title">Needs<br />you</h2>
         </div>
         <div role="group" aria-label="Show only" className="o-wait-tiles">
           {view.tiles.map(t => (
@@ -87,7 +108,7 @@ export function Waiting({ board, payload, roster, now, state, setState, onOpenIt
               </span>
               <span className="o-wtile-text">
                 <span className="o-wtile-n">{loading || t.n === null ? '—' : t.n}</span>
-                <span className="o-mono o-wtile-label">{t.label}</span>
+                <span className="o-mono o-wtile-label">{t.label}{t.sub ? <span className="o-wtile-sub"> · {t.sub}</span> : null}</span>
               </span>
             </button>
           ))}
@@ -103,7 +124,7 @@ export function Waiting({ board, payload, roster, now, state, setState, onOpenIt
           )}
           <div className="o-wcards">
             {view.shown.map(c => (
-              <WaitCard key={c.key} card={c} open={state.open === c.key} onOpenItem={onOpenItem}
+              <WaitCard key={c.key} card={c} open={state.open === c.key} onOpenItem={onOpenItem} now={now} onChanged={onChanged}
                 onToggle={() => setState(s => ({ ...s, open: s.open === c.key ? null : c.key }))} />
             ))}
             {view.empty && (

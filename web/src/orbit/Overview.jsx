@@ -8,7 +8,13 @@ import {
 import { Note } from './Note.jsx';
 import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
 import { Waiting } from './Waiting.jsx';
+import { Routines } from './Routines.jsx';
 import { youEvents } from '../lib/orbit/waiting.js';
+import { useMediaQuery } from '../hooks/useMediaQuery.js';
+import { useMore } from './useMore.js';
+
+// Below this the Overview is a phone: the lower panels fold under "More".
+export const PHONE_QUERY = '(max-width: 700px)';
 
 const DAY = 24 * 3600 * 1000;
 const money = v => (Number.isFinite(v) ? `$${Number.isInteger(v) ? v : v.toFixed(2)}` : null);
@@ -224,17 +230,17 @@ function HeatMap({ payload }) {
   );
 }
 
-// The approved round 4 order: Waiting on you, Usage limits beside the agent work
-// map, Today agent by agent, Latest runs, Next 24 hours, then Burn beside the
-// week's heat map.
-export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem }) {
-  return (
-    <main className="o-wrap o-main">
-      <Waiting board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} />
-      <div className="o-row">
-        <UsageLimits payload={payload} now={now} />
-        <AgentMap payload={payload} now={now} roster={roster} />
-      </div>
+// The Jarvis OS order (docs/design/2026-11-10-jarvis-os-home.md, §4): Needs you,
+// then Usage limits beside Today's routines, then the rest in the round 4 order:
+// the agent work map, Today agent by agent, Latest runs, Next 24 hours, Burn beside
+// the week's heat map. On a phone the rest sits under one "More" disclosure that
+// remembers its state per viewer, so the first two screens are what Jeff came for.
+export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged }) {
+  const phone = useMediaQuery(PHONE_QUERY);
+  const [more, setMore] = useMore();
+  const rest = (
+    <>
+      <AgentMap payload={payload} now={now} roster={roster} />
       <TodayByAgent payload={payload} now={now} roster={roster} />
       <LatestRuns payload={payload} now={now} roster={roster} />
       <NextDay payload={payload} now={now} roster={roster} items={board.todos} />
@@ -242,6 +248,24 @@ export function Overview({ payload, now, roster, board, waiting, setWaiting, onO
         <Burn payload={payload} />
         <HeatMap payload={payload} />
       </div>
+    </>
+  );
+  return (
+    <main className="o-wrap o-main">
+      <Waiting board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} onChanged={onChanged} />
+      <div className="o-row">
+        <UsageLimits payload={payload} now={now} />
+        <Routines payload={payload} now={now} />
+      </div>
+      {!phone ? rest : (
+        <section className="o-more-fold" aria-label="More panels">
+          <button type="button" className="o-btn o-more-toggle" aria-expanded={more} aria-controls="o-more-panels" onClick={() => setMore(!more)}>
+            <svg className={`o-wcard-turn${more ? ' o-turned' : ''}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+            {more ? 'Less' : 'More: agents, latest runs, next 24 hours, burn, this week'}
+          </button>
+          {more && <div id="o-more-panels" className="o-more-panels">{rest}</div>}
+        </section>
+      )}
     </main>
   );
 }

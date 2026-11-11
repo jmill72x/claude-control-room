@@ -6,6 +6,8 @@ import { parseRoute, routeHash, freshness, headerDate } from '../lib/orbit/page.
 import { boardTotals } from '../lib/orbit/board.js';
 import { Overview } from './Overview.jsx';
 import { HealthChips, HealthDetail } from './Health.jsx';
+import { NowChip, NowDetail } from './Now.jsx';
+import { nowFromPayload } from '../lib/orbit/now.js';
 import { AlertStrip } from './Acks.jsx';
 import { unack } from './ackApi.js';
 import { BoardBand, BoardTab } from './Board.jsx';
@@ -59,6 +61,8 @@ export function OrbitApp() {
   const totals = boardTotals(board.todos);
   const isBoard = route.tab === 'board';
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
+  // The Now chip (Now.jsx), rebuilt each tick: its ages move by the second.
+  const nowChip = isBoard ? null : nowFromPayload({ payload, roster, now });
 
   useEffect(() => {
     document.title = isBoard ? 'Board · Control Room' : 'Control Room';
@@ -93,8 +97,14 @@ export function OrbitApp() {
               <span className="o-dot" aria-hidden="true" />{fresh.label}
             </span>
           </div>
-          {chip && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail"
+          {chip && chip !== 'now' && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail"
             onUnack={async key => { await unack(key); await refresh(); }} />}
+          {nowChip && (
+            <div className="o-nowrow">
+              <NowChip chip={nowChip} open={chip === 'now'} detailId="o-now-detail" onToggle={() => setChip(open => (open === 'now' ? null : 'now'))} />
+            </div>
+          )}
+          {chip === 'now' && nowChip && <NowDetail chip={nowChip} now={now} id="o-now-detail" />}
           {isBoard && <BoardBand board={board} roster={roster} totals={totals} filters={filters} />}
         </div>
       </header>
@@ -105,7 +115,7 @@ export function OrbitApp() {
         ? <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
             onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />
         : <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
-            onOpenItem={id => openItem(id, 'waiting')} />}
+            onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} />}
     </div>
   );
 }
