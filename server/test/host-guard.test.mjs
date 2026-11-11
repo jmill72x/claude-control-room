@@ -17,9 +17,12 @@ test('config names hosts with or without a port; anything else is a problem, not
   assert.deepEqual(readAllowedHosts({}), { names: [], mode: 'log', problems: [] });
   assert.deepEqual(readAllowedHosts({ allowedHosts: ['Mini.Example-Net.ts.net', 'box.lan:8080'], hostCheck: 'enforce' }),
     { names: ['mini.example-net.ts.net', 'box.lan:8080'], mode: 'enforce', problems: [] });
-  const odd = readAllowedHosts({ hostCheck: 'refuse' });
-  assert.equal(odd.mode, 'log', 'an unknown mode logs, never refuses');
-  assert.deepEqual(odd.problems, ['hostCheck must be one of log, enforce']);
+  for (const v of ['refuse', 'LOG', '', 1, null, true]) {
+    const odd = readAllowedHosts({ hostCheck: v });
+    assert.equal(odd.mode, 'enforce', `an unknown mode (${JSON.stringify(v)}) enforces, never logs`);
+    assert.deepEqual(odd.problems, ['hostCheck must be one of log, enforce; an unknown value enforces']);
+  }
+  assert.equal(readAllowedHosts({ hostCheck: undefined }).mode, 'log', 'left out is the default');
   const bad = readAllowedHosts({ allowedHosts: ['has space.example', 'a..b', 42, 'x.example:99999', '-lead.example', ''] });
   assert.deepEqual(bad.names, []);
   assert.equal(bad.problems.length, 6);

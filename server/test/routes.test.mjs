@@ -132,9 +132,17 @@ test('a malformed ingest body is rejected and never cached', async () => {
   assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
 });
 
-test('invalid JSON is a 400, not a crash', async () => {
+test('invalid JSON is a 400 with fixed words: nothing of the body comes back', async () => {
   const res = await call(createHandler(deps()), 'POST', '/api/ingest/crons', '{not json');
   assert.equal(res.statusCode, 400);
+  // Node 26's parser quotes the body around the fault in its message; a malformed
+  // body may hold a credential, so the marker must not come back in any form.
+  const marker = 'MARKER-' + 'q7'.repeat(8);
+  const leaky = await call(createHandler(deps()), 'POST', '/api/ingest/crons', `{"token": "${marker}" trailing`);
+  assert.equal(leaky.statusCode, 400);
+  assert.ok(!leaky.body.includes('MARKER'), leaky.body);
+  assert.ok(!leaky.body.includes('q7q7'), leaky.body);
+  assert.deepEqual(JSON.parse(leaky.body), { error: 'invalid JSON' });
 });
 
 test('a cross-origin to-do write is refused', async () => {

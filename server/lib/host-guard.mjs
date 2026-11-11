@@ -12,7 +12,8 @@
 // `hostCheck` says what happens to a Host that isn't listed: `"log"` (the default)
 // logs it and lets the request through, so the list can be proven against a day of
 // real traffic first (what Host the Serve proxy passes is read from the log, not
-// assumed); `"enforce"` refuses it with 421.
+// assumed); `"enforce"` refuses it with 421. Any other value is a config problem
+// and enforces: a typo in the setting must never leave the check off.
 
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)*$/i;
 const HOST_PORT = /^(.*?)(?::(\d{1,5}))?$/;
@@ -20,7 +21,7 @@ const MAX_LOGGED = 20;
 export const HOST_CHECK_MODES = ['log', 'enforce'];
 
 // What the config says, checked: the names that pass, the mode, and the problems
-// to log once. An unknown mode falls back to logging, never to refusing.
+// to log once. An unknown mode enforces, never the looser default.
 export function readAllowedHosts(config) {
   const problems = [];
   const names = [];
@@ -28,7 +29,10 @@ export function readAllowedHosts(config) {
   const rawMode = config?.hostCheck;
   if (rawMode !== undefined) {
     if (HOST_CHECK_MODES.includes(rawMode)) mode = rawMode;
-    else problems.push(`hostCheck must be one of ${HOST_CHECK_MODES.join(', ')}`);
+    else {
+      mode = 'enforce';
+      problems.push(`hostCheck must be one of ${HOST_CHECK_MODES.join(', ')}; an unknown value enforces`);
+    }
   }
   const raw = config?.allowedHosts;
   if (raw === undefined) return { names, mode, problems };

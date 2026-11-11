@@ -892,7 +892,7 @@ and that must not reach every device on the tailnet.
 | `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
-| `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. |
+| `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
 | `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |
 | `plan.cycle` | `"monthly"` \| `"30d"`, default `"monthly"` | How the anchor rolls forward. `"monthly"` repeats on the same day-of-month (clamped at short months: a 31st anchor becomes the 30th in April, the 28th/29th in February) — this is how Anthropic actually bills. `"30d"` advances in fixed 30-day blocks instead. Change this in one place if the billing model turns out not to be monthly. |
@@ -1101,8 +1101,10 @@ and the two match. So the request's `Host` must be one this server answers to:
 name, with or without a port; a bare name also matches `:80` and `:443`). `hostCheck`
 in config is `"log"` by default, which serves the request and writes one `host:` line
 per distinct unlisted value (the first 20), so the list is proven against real traffic
-before `"enforce"` turns a miss into a 421. The service log, not an assumption, says
-which `Host` the Serve proxy passes. A refused request never reaches a route.
+before `"enforce"` turns a miss into a 421; a value that is neither is a `config:`
+problem and enforces. The service log, not an assumption, says which `Host` the Serve
+proxy passes. A refused request never reaches a route. A body that isn't JSON gets a
+fixed `invalid JSON`, never the parser's message, which quotes the body around the fault.
 
 Everything the static handler sends (both pages, their scripts, styles and fonts, the
 single-page fallback and its refusals) carries `Content-Security-Policy: default-src

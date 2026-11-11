@@ -61,8 +61,10 @@ const readBody = (req, limit = MAX_BODY) => new Promise((resolve, reject) => {
     if (settled) return;
     try {
       stop(resolve, JSON.parse(Buffer.concat(chunks).toString() || 'null'));
-    } catch (err) {
-      stop(reject, new HttpError(400, `invalid JSON: ${err.message}`));
+    } catch {
+      // Fixed words: the parser's message quotes the body around the fault, which
+      // could be a credential or a board item's text (the 2026-11-11 review, 5).
+      stop(reject, new HttpError(400, 'invalid JSON'));
     }
   });
   req.on('error', err => stop(reject, new HttpError(400, String(err?.message ?? err))));

@@ -425,6 +425,9 @@ with no `since` capped at 24 hours, with no 7-day choice on the page; `by` defau
 owner only when the request carries an `Origin` header, else `local`; and a display name two
 jobs share marks no health row. README: "The Host check" under Security, the config table, and
 "Acknowledging a known miss". Not built: the ack-notification push (Jeff hasn't decided).
+Ultron's 11-11 re-review (go with conditions) is answered on the same branch: `readBody` answers
+a fixed `invalid JSON` (Node 26's parser message quoted the body around the fault), and an
+unknown `hostCheck` value enforces and logs a `config:` problem instead of falling back to log.
 **Before the restart that takes it live, Jarvis adds to `config.json`:** `"allowedHosts":
 ["<the Serve name>"]` (no `hostCheck`, so it logs). **After it:** `grep host: ` on the service
 log over a day; no line for the Serve name means the list is right, and `"hostCheck":
