@@ -779,6 +779,11 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-card-key { font-size: 0.75em; font-weight: 600; letter-spacing: 0.02em; color: var(--c-sub); }
 .o-chat-card-marker { background: none; color: var(--c-bad); font-weight: 700; outline: 1px dashed var(--c-bad); outline-offset: 1px; border-radius: 3px; }
 .o-chat-card-hidden { margin: 0; font-size: 0.85em; font-weight: 600; color: var(--c-bad); }
+/* The exact command: a row per line, the line breaks and tabs drawn. */
+.o-chat-card-exact { display: flex; flex-direction: column; gap: 0; white-space: normal; }
+.o-chat-card-line { min-height: 1.4em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.o-chat-card-line + .o-chat-card-line { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--c-rule); }
+.o-chat-card-break { margin: 0 2px 0 4px; color: var(--c-amber); font-weight: 700; user-select: none; }
 .o-chat-card-summary { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--c-rule); }
 .o-chat-card-summary .o-chat-card-desc { font-size: 0.88em; color: var(--c-sub); overflow-wrap: anywhere; max-height: 20vh; overflow: auto; }
 .o-chat-card-denyonly { display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; color: var(--c-sub); }

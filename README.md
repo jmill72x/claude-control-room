@@ -950,7 +950,7 @@ are well under it.
 ### Approvals as buttons (Jarvis OS; built, switched off)
 
 Design and decisions: `docs/design/2026-11-11-jarvis-os-approvals.md` (with Ultron's 11-11
-findings folded in). Claude Code's channel permission relay sends a tool-approval prompt
+findings folded in; section 0.2 is his final read and the exact-command hook). Claude Code's channel permission relay sends a tool-approval prompt
 of the lead's session to the terminal, the Discord DM and the Jarvis OS channel at once,
 and applies whichever answer comes first. The page can show such a prompt as a card and
 send Deny or Allow once. Everything here is off until three switches agree:
@@ -977,10 +977,14 @@ send Deny or Allow once. Everything here is off until three switches agree:
   that names no mode (0.4.3 and older) counts as `unknown`, so Allow needs the 0.4.4
   channel. A change in what the channel reports is alerted.
 
-Two more config keys narrow what Allow can cover, both cautious by default (see Deny-only
-below): `chat.approvalsBash` (`"deny"`, or `"strict"`) and `chat.approvalsWriteFolders`
-(a list of folders; none unless set). At each start the log says
-`chat: approvals <mode>; Bash Deny-only; N write folders`.
+Four more config keys narrow what Allow can cover, all cautious by default (see Deny-only
+below): `chat.approvalsWriteFolders` (a list of folders; none unless set),
+`chat.approvalsWriteProtected` (places inside those folders that stay Deny-only; none
+unless set), `chat.approvalsBash` (`"deny"`, or `"exact"`) and `chat.approvalsBashCommands`
+(commands the page may allow in `"exact"` mode, each compared character for character;
+none unless set). At each start the log says
+`chat: approvals <mode>; Bash Deny-only; N write folders, M protected places inside them`
+and, with approvals on, `chat: approvals write folders: <the accepted list>`.
 
 **A request** (`POST /v1/permission-request {requestId, tool, description, inputPreview,
 relayedAt, cut}` from the channel) keeps each field whole up to 16,100 code points (Claude
@@ -994,12 +998,18 @@ by the channel session and id: a hello from a new channel process expires every 
 `repeat` entry nobody can answer here (Claude Code drops channel verdicts for a repeated
 id). The description is model text: one that looks like it holds a credential
 (`secret-shape.mjs`) is replaced on disk by a fixed line, and the card shows it from
-memory only. The preview stays in memory and is dropped after 24 hours.
+memory only. The preview stays in memory and is dropped after 24 hours. A Bash request
+may also carry `exact`, the command's exact text from the exact-command hook (below):
+memory only, never logged or written to disk, and dropped when the request is answered or
+expires.
 
 **The card** (Chat tab) leads with the real thing: the tool, then the preview's fields
 parsed from its JSON, the command, file path or address first, each in a monospace block
 that wraps, never cut by the page; then the description under "Jarvis's own summary", in a
-quieter style. Every field is a text node, never Markdown or a link. When a classifier
+quieter style. When the server matched the hook's report to a Bash request, the card
+shows an "Exact command" block first: each line on its own row with a `↵` where it ends
+and a `⇥` for a tab, so two lines can never read as one. Every field is a text node,
+never Markdown or a link. When a classifier
 block for the same tool came just before (see the hook below), the card says why it is
 asking ("Auto mode refused this Read call (Data Exfiltration), so Claude Code is asking
 you"). Deny is one tap; Allow once is a two-step press ("Tap again to allow", 4 s). A
@@ -1015,7 +1025,8 @@ order: the write guard; the mode (off answers 403 to anyone); the device cookie 
 verdicts for 10 minutes, alerted); its limits (6 a minute, 30 an hour); the `Origin`
 (required, `https`, one of `allowedHosts`) and `Sec-Fetch-Site` (when sent,
 `same-origin`); `shown`, the sha256 of `JSON.stringify([tool, description, inputPreview])`
-as delivered, which must match; for Allow, mode `on` (with a channel that reports
+as delivered (with the exact command as a fourth item when the card showed one), which
+must match; for Allow, mode `on` (with a channel that reports
 `allow`), the device's approver mark, and no Deny-only reason at that moment. Every refusal changes nothing. The verdict line carries
 `answeredAt`, the tool, the hash and whether the request was Deny-only; the channel's
 inbound stream sends a verdict only when it is the owner's and names its request, and the
@@ -1041,42 +1052,77 @@ can Deny anything. Allow may be offered only when none of these holds:
 - **Bash,** by default (config `chat.approvalsBash`, `"deny"` unless set). Claude Code folds
   each run of whitespace in a relayed preview to one space, so a two-line command can
   arrive looking like one plain command, and no rule over the text alone can tell
-  `cat a b` from `cat a` then `b`. With `"strict"` the grammar in `bashGrammar` applies
-  instead: no shell syntax (`` ; | & $ ` > < ( ) ``, line breaks, tabs, quotes,
-  backslashes, globs, braces); a command on the list (`pwd date ls cat head tail wc stat
-  file du df diff touch mkdir`, and `git [-C <path>] status|diff|log|show|rev-parse`);
-  only that command's own options, exactly spelled (so no `--output=…`, no `-f/path`);
-  every other word an absolute path that passes the path rules below and is not a file
-  that can be run; for git, only `HEAD`, `HEAD~N` or a commit id beside the options.
-  Commands that take a free word (grep, rg, echo, which) are not on the list. What strict
-  leaves open: a file made runnable between the check and the run, a number or commit id
-  that is also a command on the path, and git reading a repo's own config. Keep `"deny"`
-  until a scratch session has shown how a multi-line command is relayed (design §9.2,
-  A1-F).
+  `cat a b` from `cat a` then `b`. With `"exact"` the page may allow a Bash request only
+  when the exact-command hook (below) reported its real text and the server matched the
+  two; with no report, or two reports that differ, the card is Deny-only. Then two tiers:
+  - *Tier 1, one plain line.* The exact text has no line break and no tab and passes the
+    grammar in `bashGrammar`: no shell syntax (`` ; | & $ ` > < ( ) ``, quotes,
+    backslashes, globs, braces); a command on the list (`pwd date ls cat head tail wc stat
+    file du df diff touch mkdir`, and `git [-C <path>] status|diff|log|show|rev-parse`);
+    only that command's own options, exactly spelled (so no `--output=…`, no `-f/path`);
+    every other word an absolute path that passes the path rules below and is not a file
+    that can be run; for git, only `HEAD`, `HEAD~N` or a commit id beside the options.
+    Commands that take a free word (grep, rg, echo, which) are not on the list. What it
+    leaves open: a file made runnable between the check and the run, and git reading a
+    repo's own config.
+  - *Tier 2, a listed command.* The exact text equals an entry of
+    `chat.approvalsBashCommands`, character for character, line breaks and tabs included.
+    Each entry is plain ASCII (line breaks and tabs allowed), at most 2,000 characters, at
+    most 50; a list that can't be read is ignored whole. The default is none.
+  - Everything else is Deny-only on the page.
 - **A write outside the write folders.** Write, Edit, MultiEdit and NotebookEdit (and
-  `touch`/`mkdir` under strict) need an absolute path inside one of config's
+  `touch`/`mkdir` in tier 1) need an absolute path inside one of config's
   `chat.approvalsWriteFolders`, by the path as written and by its real path (symlinks).
   The default is no folders: no page Allow for any write. An entry must be absolute (or
-  `~/…`), plain ASCII, without `..` or wildcards, and narrower than the home folder; a bad
-  one is dropped with a `config:` line. At most 40.
+  `~/…`), plain ASCII, without `..` or wildcards, and narrower than the home folder; it may
+  not be `~/Projects` itself, nor hold or sit inside `~/Projects/jarvis`, `machine-setup`
+  or this repo's `server/`, `web/`, `bin/` and `mod/` (so the repo's root is refused and
+  its `docs/` is fine), by the path as written and by its real path. A bad one is dropped
+  with a `config:` line. At most 40.
 - **A protected place, even inside a write folder** (the second layer): `.claude/`,
-  `.mcp.json`, `.git/`, `.worktrees/`, `.github/workflows`, `machine-setup`,
+  `.mcp.json`, `.git/`, `.worktrees/`, `machine-setup`,
   `~/Projects/jarvis/`, this repo's `server/`, `web/`, `bin/` and `mod/`,
   `server/config.json`, `bin/chat-pair`, a shell startup file (`~/.zshenv` and the rest),
   the flag names `approvals-*`, `channel-enabled` and `*-off` in any folder,
-  `~/Library/LaunchAgents` or a system folder. Under strict, a Bash command that only
+  `~/Library/LaunchAgents` or a system folder. In tier 1, a Bash command that only
   names one of these is Deny-only too.
+- **Code inside a write folder** (the second layer, continued; a write there would be run
+  later by a scheduled job, the next git command, an install, a deploy or the next Claude
+  Code session). Generic, in any folder: an existing file with an execute bit; anything
+  under `.venv/`, `node_modules/`, `.husky/` or `.github/`; and the names `CLAUDE.md`,
+  `AGENTS.md`, `skill.md`, `.gitignore`, `.gitattributes`, `.gitmodules`, `package.json`,
+  `package-lock.json`, `pyproject.toml`, `requirements*.txt`, `setup.py`, `setup.cfg`,
+  `conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`, `Makefile`,
+  `GNUmakefile`, `wrangler.jsonc`, `wrangler.json`, `wrangler.toml`, `*.plist`, `.envrc`,
+  `_headers` and `_redirects` (compared without regard to case). Per folder: config's
+  `chat.approvalsWriteProtected`, a list of absolute paths (or `~/…`), each protecting
+  that file or everything under that folder, by the path as written and by its real
+  path: a repo's `scripts/`, `src/`, `ops/`, a job's `launchd/` folder, a drafts folder
+  a job posts from. At most 200 entries; if the list can't be read (not a list, or an
+  entry that isn't an absolute plain path) the page allows no writes at all until it is
+  fixed, with a `config:` line, since dropping one entry would quietly unprotect a place.
 - **A private place, for reads as well as writes:** `~/.claude/channels/`, `~/.ssh`,
   `~/.local/state/jarvis-os/`, `.env` files, keys and credential files, `~/.claude.json`,
   `~/.gitconfig`, `~/.config/git`, `~/.config/gh`, `~/.cloudflared`, `~/.aws`, `~/.docker`,
-  `~/.local/bin`, `/opt/homebrew`, `~/.tmux.conf`; and any folder that holds one of them
-  (`~`, `~/.config`, `/`), since a search rooted there would reach it.
+  `~/.local/bin`, `/opt/homebrew`, `~/.tmux.conf`, `~/Library` (all of it),
+  `~/.claude/projects` (transcripts), `~/.gnupg`, `~/.config/gcloud`, any `*_history`
+  file, any `browser-profile` or `.wrangler` folder, and this repo's `server/config.json`
+  and `server/data/`; and any folder that holds one of them
+  (`~`, `~/.config`, `~/.claude`, this repo's root, `/`), since a search rooted there
+  would reach it.
 - **A path that can't be pinned down:** relative (Read, the write tools and a channel
-  tool's `files` need an absolute path), or with a `..` part anywhere. Paths are compared
+  tool's `files` need an absolute path), with a `..` part anywhere, whose last part is a
+  symbolic link (`lstat`), or, for a write, with a space in it (the relay folds
+  whitespace, so the real name can't be known). Paths are compared
   lower-cased, with `~` resolved and the real path of the deepest existing parent
   (`realpathSync.native`, which answers each name as the disk stores it).
+- **A channel reply's `files` outside the outbox.** A reply tool of either channel
+  (Discord's or the Jarvis OS one) can attach any file the session can read, so the page
+  may allow `files` only inside `~/.local/state/jarvis/outbox/`, by the path as written
+  and by its real path; the private-place rules still apply inside it.
 - **Glob and Grep** without an absolute, literal folder in `path` (the session's working
-  folder isn't known here); with a wildcard in that folder; or with a pattern (Glob) or
+  folder isn't known here); with a wildcard in that folder; rooted at `~/Projects` itself
+  (every repo at once); or with a pattern (Glob) or
   glob (Grep) that is absolute, has a wildcard in a folder name (a whole `**` is fine), or
   names a private place. Grep reads what its glob picks, so there the last part must be a
   literal name or `*.ext`, and not one that picks key files. A Grep rooted in a project
@@ -1113,9 +1159,73 @@ never leaves the session. The entry, for `~/.claude/settings.json` (the owner ad
 }
 ```
 
+**The exact-command hook.** The relay's preview can't say whether a Bash command has one
+line or two, so a second hook reports the command's real text. It is a `PermissionRequest`
+hook, which Claude Code runs just before it asks for permission, with the tool's whole
+input (`tool_name`, `tool_input`, `session_id`; hooks reference, checked 2026-11-11 for
+CLI 2.1.322). That event's hooks *can* decide a request, so this one is built so that it
+never does:
+
+- it prints nothing (jq's output goes into curl, curl's and every error go to
+  `/dev/null`), and "exit code 0 with no output means the hook has no decision to
+  report, so the tool call continues through the normal permission flow" (hooks
+  reference);
+- it always exits 0 (`|| true`), whether jq, curl or the server fails, and it sets no
+  `onFailure`, so even a failure or a timeout "renders no decision";
+- its matcher is `Bash` only, it is not `async` (the report must land before the prompt
+  is relayed), and it is limited to 3 seconds (curl to 2), after which Claude Code goes
+  on without it;
+- it sends four fields to this machine's loopback address: the event, the session id,
+  the tool name and the command. The description, the working folder, the transcript
+  path and the permission suggestions stay in the session.
+
+`POST /api/ingest/exact-command` (this machine only, like every ingest) takes a report
+only when `hook_event_name` is `PermissionRequest`, `tool_name` is `Bash` (a `Bash`
+matcher also fires for Monitor commands; those are refused) and the command is at most
+4,000 characters. The server keeps it only in `"exact"` mode with approvals on, only when
+the session is the lead's by name (the sessions panel; any other session's report is
+dropped unread), in memory only, for 2 minutes, at most 40 reports. The log line says
+what became of it (`exact-command: a Bash report, from the lead's session, kept for 2
+minutes`), never the command or the session.
+
+When a Bash request then arrives over the relay, the server matches by content, not by
+any id (the relay carries none): among the reports received from 30 seconds before the
+channel got the prompt to 5 seconds after, it takes those whose text, with each run of
+whitespace folded to one space by the server's own rule (`foldWhitespace`), equals the
+preview's command character for character (or equals it outright, for a relay that did
+not fold). Exactly one distinct text is the match: the card shows it and the `shown` hash
+covers it. Two that differ are Deny-only with an alert (`approvals-exact-conflict`), also
+when the second arrives after the card opened; so a forged report (any local process can
+post to the loopback ingest) can only tie with the real one, never replace it. None is
+Deny-only. A text with anything but printable ASCII, line breaks and tabs is never shown
+as exact (a carriage return included), and a preview with an elision or a `[REDACTED]`
+mask gets none. What the design leans on, and section 9.2 of the design tests in a scratch
+session before `"exact"` is turned on: that the hook's post lands before the relayed
+request (in auto mode's fallback prompts too), and that Claude Code's fold and the
+server's agree. If either fails, nothing matches and Bash stays Deny-only: the hook's
+absence is never an Allow.
+
+The entry, for `~/.claude/settings.json` (the owner adds it, after the security review
+has re-read it; the dashboard never writes that file):
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [{ "matcher": "Bash", "hooks": [{ "type": "command", "timeout": 3, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,command:.tool_input.command}' 2>/dev/null | /usr/bin/curl -s -m 2 -X POST http://127.0.0.1:8322/api/ingest/exact-command -H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1 || true" }] }]
+  }
+}
+```
+
+No other hook on the machine may return `updatedInput` for a permission request (a hook
+that rewrites the command after the card was shown would make the exact text a lie): the
+security sweep checks that, and that this entry is present and unchanged. The test suite
+runs this very command against a scratch server: the body is the command character for
+character (line breaks, tabs, CRLF, leading and trailing spaces), nothing is printed, and
+it exits 0 with the server down.
+
 The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
-`server/test/approvals.test.mjs`, plus the PermissionDenied ingest in
-`server/test/needs-you.test.mjs`.
+`server/test/approvals.test.mjs`, `server/test/exact-commands.test.mjs`, plus the
+PermissionDenied ingest in `server/test/needs-you.test.mjs`.
 
 ### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
 
@@ -1360,8 +1470,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 749 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 136 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 887 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 199 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 

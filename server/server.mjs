@@ -216,7 +216,12 @@ registry.register('notifier', async () => {
 // kill file beside the sockets, and the classifier-block window fed by the needs-you
 // ingest. Made once the chat is on; until then a block is only logged.
 let approvals = null;
-const api = createHandler({ cache, todos, config, acks: ackStore, needsYou, onBlock: value => approvals?.noteBlock(value) ?? false });
+const api = createHandler({
+  cache, todos, config, acks: ackStore, needsYou,
+  onBlock: value => approvals?.noteBlock(value) ?? false,
+  // A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
+  onExact: value => approvals?.noteExact(value) ?? 'off'
+});
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
 // owner's `login` and the Host check enforces (lib/chat-routes.mjs, readChatConfig);
@@ -286,12 +291,13 @@ if (chatSettings.on && socketsReady) {
       'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
       'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
       'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
-      'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: page approvals are Deny only for 10 minutes`
+      'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: page approvals are Deny only for 10 minutes`,
+      'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)'
     };
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
     if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
-      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood'].includes(event.kind)) {
+      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
@@ -319,12 +325,17 @@ if (chatSettings.on && socketsReady) {
   for (const problem of approvalSettings.problems) console.error(`config: ${problem}`);
   approvals = createApprovals({
     mode: approvalSettings.mode, patterns: approvalSettings.patterns, killPath: join(stateDir, 'approvals-off'), onEvent: chatEvents,
-    bash: approvalSettings.bash, writeFolders: approvalSettings.writeFolders,
-    isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; }
+    bash: approvalSettings.bash, bashCommands: approvalSettings.bashCommands,
+    writeFolders: approvalSettings.writeFolders, writeProtected: approvalSettings.writeProtected,
+    isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; },
+    // Exact-command reports count from the lead's session by name only.
+    isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName
   });
   approvals.killed();
   // `serverMode` is config and the kill file; `mode` also needs the channel's word, which comes with its hello.
-  console.log(`chat: approvals ${approvals.configured}${approvals.serverMode() !== approvals.configured ? ' (the kill file holds them off)' : ''}; Bash ${approvalSettings.bash === 'strict' ? 'by the strict grammar' : 'Deny-only'}; ${approvalSettings.writeFolders.length} write folder${approvalSettings.writeFolders.length === 1 ? '' : 's'}`);
+  console.log(`chat: approvals ${approvals.configured}${approvals.serverMode() !== approvals.configured ? ' (the kill file holds them off)' : ''}; Bash ${approvalSettings.bash === 'exact' ? `by the hook's exact command (${approvalSettings.bashCommands.length} listed)` : 'Deny-only'}; ${approvalSettings.writeFolders.length} write folder${approvalSettings.writeFolders.length === 1 ? '' : 's'}, ${approvalSettings.writeProtected.length} protected place${approvalSettings.writeProtected.length === 1 ? '' : 's'} inside them`);
+  // The accepted write folders, by name, so a start shows what the page may allow writes in.
+  if (approvals.configured !== 'off') console.log(`chat: approvals write folders: ${approvalSettings.writeFolders.length ? approvalSettings.writeFolders.join(', ') : 'none'}`);
   // Alerted at every start with approvals on, and at any start whose mode differs from
   // the last start's (kept in data/chat/approvals-mode.json), off included.
   const modePath = join(chatDir, 'approvals-mode.json');

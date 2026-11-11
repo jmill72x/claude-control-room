@@ -417,66 +417,103 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Approvals as buttons (board 2422f9d1): built 2026-11-11 and merged switched off (main
-314502f; the lead's repo build/v1 d4b2dff); Ultron's build-review fixes built the same day
-on `jos/approvals-fixes` in both repos, staged, not committed.** Design, Jeff's decisions
-and both fix tables: `docs/design/2026-11-11-jarvis-os-approvals.md` (sections 0 and 0.1);
-reference: README "Approvals as buttons". The fixes (board ac24e766, ef1b52b2, 8b305b6c,
-3add3aa8, 0ed35868), all in `server/lib/approvals.mjs` unless said:
+**Approvals as buttons (board 2422f9d1): merged switched off (main 679c9fb; the lead's repo
+build/v1 7703f35, channel 0.4.4), and the last build before go-live is staged, not committed,
+on `jos/approvals-final` in both repos** (worktrees `~/Projects/.worktrees/ccr-approvals-final`
+and `~/Projects/.worktrees/jarvis-approvals-final`; channel 0.4.5). Design, Jeff's decisions
+and the three fix tables: `docs/design/2026-11-11-jarvis-os-approvals.md` (sections 0, 0.1
+and 0.2); reference: README "Approvals as buttons". This build closes Ultron's final read of
+2026-11-11 (board 97332dd5, bf222809, 4f52c42f) and adds exact Bash commands (board
+320ecc71), on Jeff's three yeses of 21:32Z (keep the 7 write folders but protect the code in
+them; build the exact-command hook; Discord's folded preview stays as it is for now):
 
-- Bash is Deny-only on the page (`chat.approvalsBash`, default `"deny"`): a relayed command
-  may have lost its line breaks. A strict grammar is built behind `"strict"`, off.
-- Anything outside printable ASCII in a command, path or glob is Deny-only (APFS folds ſ);
-  real paths come from `realpathSync.native`.
-- Writes can be allowed only inside `chat.approvalsWriteFolders` (Jeff's option b; none by
-  default), with the protected list as a second layer, and more private places for read
-  and write (`~/.claude.json`, git, gh, cloudflared, aws, docker, `~/.local/bin`,
-  `/opt/homebrew`, tmux).
-- The lows: Glob/Grep wildcards, per-command options, absolute paths, flag names, `..`,
-  hidden characters in parsed fields, unknown input keys.
-- The channel (0.4.4, the lead's repo, worktree `~/Projects/.worktrees/jarvis-approvals-fixes`)
-  reads the two flags itself and reports its mode in hello and every heartbeat; the server
-  (`chat-socket.mjs`) treats `"on"` as `"deny"` unless the channel says `allow`. Ultron's
-  sweep prompts check that no settings file sets the relay variable.
+- **A second layer inside the write folders** (`server/lib/approvals.mjs`): generic rules
+  (an existing file with an execute bit; `.venv`, `node_modules`, `.husky`, `.github`; names
+  tools load or run, from `CLAUDE.md` to `_redirects`) and config's
+  `chat.approvalsWriteProtected`, a list of paths, by the path as written and its real path.
+  A protected list that can't be read turns page writes off whole.
+- **Channel reply files:** only inside `~/.local/state/jarvis/outbox/`, by real path, for
+  both reply tools.
+- **Lows:** more private reads (`*_history`, `browser-profile`, `.wrangler`, `.gnupg`,
+  `.config/gcloud`, all of `~/Library`, `~/.claude/projects`, this repo's
+  `server/config.json` and `server/data/`); a search rooted at `~/Projects` is Deny-only; a
+  space in a write path and a last-part symlink are Deny-only; a write folder may not be
+  `~/Projects` nor hold or sit inside the lead's repo, machine-setup or this repo's code, and
+  the accepted list is logged at each start. Channel 0.4.5 finds the flag folder from the
+  account's own home; Ultron's two prompts check more settings files, the launchd jobs'
+  environment, the hook's presence and that no hook returns `updatedInput`.
+- **Exact Bash** (`server/lib/exact-commands.mjs`, `POST /api/ingest/exact-command`, the
+  card's "Exact command" block, README's hook entry): `chat.approvalsBash` is now `"deny"`
+  (default) or `"exact"`; `"strict"` is gone. In `"exact"` the page may allow a Bash request
+  only with the hook's report of its exact text, matched by content, and then only a strict
+  one-liner (tier 1) or a command listed in `chat.approvalsBashCommands` (tier 2).
 
-Nothing is on: no `chat.approvals` in config, no flags, no hook, no restart, no web build
-(these fixes change no page code), release worktree and reviewed hash unmoved.
+Tests (2026-11-11): server 887 in local time and Tokyo (was 864); web 199; the lead's repo:
+channel 87, end to end 22 against this branch's server (scenario 19 is this build), Python
+683 run with the 58 failures a worktree always has (the same list as an export of HEAD).
+Mutations: 167 on the server's new checks against the final code, 165 caught; the two left
+are equivalent (the Bash-mode guard in `assess`, since `noteExact` keeps no report outside
+"exact" mode, and `=== 1` for "one candidate", where two is already a conflict). A first
+pass had seven survivors: those two, three dead checks (removed) and two missing tests
+(written). 6 of 6 caught on the channel's flag-folder change. Headless Chromium
+(cached 1223 shell) on a scratch build and scratch server at 390 light and 1440 dark, 32
+checks: the exact block leads, one row per line, the marks drawn, text never markup, Allow
+offered only for a one-liner or a listed command, no sideways scroll, no CSP violation.
+The recommended config values were run read-only against the real folders: all 18 paths
+exist, each write Ultron showed is Deny-only and the docs and content files still pass.
 
-*Go-live runbook: one step, with Allow (Jeff, 2026-11-11 20:37Z: "just wait and do it all
-at once").* There is no Deny-only stage. Each step waits on the one before; the server
-always goes before the channel (Ultron H2).
+Nothing is on: no `chat.approvals` in config, no flags, no hooks installed, no restart, no
+live web build (this build changes page code, so step 4 below builds), release worktree
+and reviewed hash unmoved.
 
-1. Ultron re-reads `jos/approvals-fixes` in both repos; Jeff's C&P for each (Jarvis commits
-   and merges: this repo to main, the lead's to build/v1).
+*Go-live runbook: one step for approvals with Allow (Jeff, 2026-11-11 20:37Z: "just wait
+and do it all at once"); exact Bash is a second, later step (12 and 13).* Each step waits
+on the one before; the server always goes before the channel (Ultron H2).
+
+1. Ultron re-reads `jos/approvals-final` in both repos, the hook entry in README "The
+   exact-command hook" included; Jeff's C&P for each (Jarvis commits and merges: this repo
+   to main, the lead's to build/v1).
 2. Config, before any restart (Jarvis, with Jeff's OK; back up `server/config.json` first).
-   Inside the `chat` block add:
-   `"approvals": "on"` and
-   `"approvalsWriteFolders": [ … ]`, the folders Jeff approved (Pepper's proposal went to
-   Jarvis in her 11-11 report: Jeff's own project repos by name and this repo's `docs/`,
-   never the jarvis repo, machine-setup, the config repos or a `.worktrees` folder; the
-   list is not kept in this public repo). Each entry is absolute or `~/…`. Leave
-   `approvalsBash` out: Bash stays Deny-only on the page until A1-F below is run.
+   Inside the `chat` block add four keys; leave `approvalsBash` and `approvalsBashCommands`
+   out (Bash stays Deny-only on the page until step 13):
+   - `"approvals": "on"`
+   - `"approvalsWriteFolders"`: the seven folders Jeff approved (six of his project repos
+     and this repo's `docs/`), each as `~/Projects/<name>`.
+   - `"approvalsWriteProtected"`: eleven paths inside those folders, each as
+     `~/Projects/<repo>/<path>`: in the league tool's repo `ops`, `src`, `tests`, `leagues`
+     and `data/browser-profile`; in the posting agent's repo `scripts`, `launchd`, `drafts`
+     and `config.json`; in the site's repo `scripts`; in the league data repo
+     `MANIFEST.sha256`.
+   This repo is public, so the block with the real folder names, ready to paste, is in the
+   lead's repo: `docs/jarvis-os-channel-golive.md`, section 5 (18 lines of JSON; a check on
+   2026-11-11 found all 18 paths on disk). No other key changes.
 3. Restart the Control Room (Vision or Jeff:
    `launchctl kickstart -k gui/$(id -u)/net.milleradvisorypartners.control-room`). Checks:
-   the log says `chat: approvals on; Bash Deny-only; N write folders` (N as listed) and no `config:` line
-   about approvals; #pepper gets "chat approvals are on (Deny and Allow once) at this
+   the log says
+   `chat: approvals on; Bash Deny-only; 7 write folders, 11 protected places inside them`,
+   then `chat: approvals write folders:` with the seven names, and no `config:` line about
+   approvals (a line "until it is fixed the page allows no writes" means a typo in the
+   protected list); #pepper gets "chat approvals are on (Deny and Allow once) at this
    start"; `/api/chat/status` on a paired device shows
    `approvals: { mode: "deny", relay: "unknown" }` (the old channel names no mode, so the
-   page can only Deny until step 7: that is the server-first order doing its job).
-   No web build is needed for the fixes; the approvals page code went live with the
-   earlier build if that was run, else `cd web && npm run build` now.
-4. Approvers (Jeff, on the mini): `~/Projects/claude-control-room/bin/chat-pair --devices`,
+   page can only Deny until step 8: that is the server-first order doing its job).
+4. The page (Jarvis, after step 3): `cd ~/Projects/claude-control-room/web && npm run build`.
+   The new card code is needed for the exact-command block and its hash; the old page keeps
+   working for everything else (and a tap from an old page on a card that carries an exact
+   command is refused, never accepted).
+5. Approvers (Jeff, on the mini): `~/Projects/claude-control-room/bin/chat-pair --devices`,
    then `bin/chat-pair approver "<name>" on` for the iPhone, the iPad and the Mac (pair the
    Mac first if it isn't listed; at most 4 devices). Each change posts to #pepper.
-5. The hook (Jarvis with Jeff): add README "Approvals as buttons"'s `PermissionDenied`
-   entry to `~/.claude/settings.json`. Check: the next auto-mode refusal logs
-   `needs-you: PermissionDenied (<tool>), page approvals are Deny only for 15 minutes`.
-6. The channel: move the release worktree to the merged build/v1 commit (channel 0.4.4)
+6. The classifier-block hook (Jarvis with Jeff): add README "Approvals as buttons"'s
+   `PermissionDenied` entry to `~/.claude/settings.json`. Check: the next auto-mode refusal
+   logs `needs-you: PermissionDenied (<tool>), page approvals are Deny only for 15 minutes`.
+7. The channel: move the release worktree to the merged build/v1 commit (channel 0.4.5)
    after Ultron's re-vet, and record the new reviewed hash (the go-live doc's step 3b, Jeff
-   or Vision). Vision confirms neither the launchd environment nor any settings `env`
-   block has `JARVIS_CHANNEL_PERMISSION_RELAY` (belt and braces: `env -u` clears it for
-   claude, and 0.4.4 wants the flags too).
-7. Both flags, then the restart (Jeff, on the mini, from a terminal outside the jarvis
+   or Vision). Vision confirms neither the launchd environment nor any settings `env` block
+   has `JARVIS_CHANNEL_PERMISSION_RELAY`, `JARVIS_CHANNEL_TEST` or `HOME` (belt and braces:
+   `env -u` clears the first for claude, and 0.4.5 wants the flags in the account's own
+   state folder).
+8. Both flags, then the restart (Jeff, on the mini, from a terminal outside the jarvis
    session):
    `(umask 077; : > ~/.local/state/jarvis-os/approvals-enabled; : > ~/.local/state/jarvis-os/approvals-allow)`
    then `~/Projects/jarvis/bin/jarvis-start --restart`. Checks: `~/Library/Logs/jarvis.log`
@@ -484,30 +521,59 @@ always goes before the channel (Ultron H2).
    relay deny and allow"; the Control Room log says
    `chat: the channel's permission relay is allow`; `/api/chat/status` now shows
    `approvals: { mode: "on", relay: "allow" }`.
-8. Live checks (design §9.3), harmless requests only: a prompt shows the card, the DM and
+9. Live checks (design §9.3), harmless requests only: a prompt shows the card, the DM and
    the push within seconds; Deny from the page closes the terminal dialog; Allow once from
-   a marked device works for a Read, and for a Write inside a write folder; Allow from an
-   unmarked device is refused; any Bash prompt, and a Write outside the folders, show Deny
-   only with the reason; `rm ~/.local/state/jarvis-os/approvals-allow` turns the next card
-   Deny-only within one heartbeat (15 s), with a #pepper line (put the flag back after);
+   a marked device works for a Read, and for a Write of a notes or docs file inside a write
+   folder; Allow from an unmarked device is refused; these show Deny only with the reason:
+   any Bash prompt, a Write outside the folders, a Write of a script or `CLAUDE.md` inside
+   one, and a reply that attaches a file from outside the outbox;
+   `rm ~/.local/state/jarvis-os/approvals-allow` turns the next card Deny-only within one
+   heartbeat (15 s), with a #pepper line (put the flag back after);
    `touch ~/.local/state/jarvis-os/approvals-off` hides the next card (then `rm`).
 
-*Scratch check still owed (board ac24e766):* design §9.2 A1-F, the multi-line Bash relay,
-run once at a terminal in a scratch session. It decides whether `"approvalsBash": "strict"`
-is ever worth offering; nothing in the go-live waits on it.
+*Exact Bash, after the go-live has run clean (each needs Jeff's OK):*
+
+10. The scratch test, design §9.2 A1-H with A1-F in the same sitting (Jeff, or Jarvis's
+    hands at a terminal; never Jarvis's session): it must show the hook's report landing
+    before the relayed request, in an auto-mode fallback prompt too, and the two folds
+    agreeing. Record the CLI version and each result here. A fail leaves Bash Deny-only
+    and goes back to Pepper.
+11. The exact-command hook (Jarvis with Jeff, after Ultron re-vets the entry): add README
+    "The exact-command hook"'s `PermissionRequest` entry to `~/.claude/settings.json`,
+    unchanged. It reports to the loopback ingest and decides nothing; while the server's
+    Bash mode is `"deny"` the server drops every report unread (log:
+    `exact-command: a Bash report, dropped (approvals for Bash are not in "exact" mode)`).
+12. Config (Jarvis, with Jeff's OK): in the `chat` block add `"approvalsBash": "exact"` and
+    `"approvalsBashCommands": []` (empty: tier 1 only; Jeff adds a command here, exactly as
+    it is typed, line breaks as `\n`, when he wants the page to allow it), then the service
+    restart (Vision or Jeff, the command of step 3). Checks: the log says
+    `chat: approvals on; Bash by the hook's exact command (0 listed); 7 write folders, 11
+    protected places inside them`; a `cat` of a notes file in the lead's session shows the
+    card with "Exact command, one line" and Allow once; a two-line command shows both rows
+    and Deny only; the log has
+    `exact-command: a Bash report, from the lead's session, kept for 2 minutes` and never
+    the command.
+13. Ultron's next sweep confirms the hook is present and unchanged and that no hook
+    returns `updatedInput`.
 
 *Rollback:* `touch ~/.local/state/jarvis-os/approvals-off` (page side, at once, alerted);
 `rm ~/.local/state/jarvis-os/approvals-allow` (Allow off at the channel at once, no
 restart); `rm` both flags and `jarvis-start --restart` (the relay off); `chat.approvals`
-back to `"off"` and restart.
+back to `"off"` and restart. Exact Bash alone: set `"approvalsBash": "deny"` (or remove
+the key) and restart, or remove the hook entry (either one is enough: no report, or no
+mode, means Deny-only).
 
 *Unverified:* WebKit (headless checks were Chromium only, at 390 and 1440 px); whether a
 subagent's prompt relays and whether both channels get each request (design A0-3, first
 live prompt settles it); the `PermissionDenied` payload against a live block (built from
-the hooks reference, 2026-11-11); whether Claude Code really folds a multi-line command
-(A1-F; the rules assume it does); whether the real Glob, Grep and channel tools send only
-the input keys on `TOOL_KEYS` (taken from the tools' published inputs, not from a live
-prompt: a key missing from the list only makes that card Deny-only).
+the hooks reference, 2026-11-11); everything A1-H tests (that the `PermissionRequest` hook
+runs before the relay, in fallback prompts too, that its `tool_input.command` is the text
+that runs, and that Claude Code's fold equals the server's: the input shape was checked
+against the hooks reference for CLI 2.1.322, not against a live prompt); whether the
+sessions panel names the lead's session within the minute after a restart (until it does,
+reports are dropped and Bash cards are Deny-only: the safe side); whether the real Glob,
+Grep and channel tools send only the input keys on `TOOL_KEYS` (a key missing from the list
+only makes that card Deny-only).
 
 **Phase 2, the Feed tab (board fbc77b53), staged on `jos/feed` (from main 80c0569,
 2026-11-11), not committed, not live; its writer is staged in the lead's repo on

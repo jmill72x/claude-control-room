@@ -84,8 +84,90 @@ folder allowlist (his option b: "we can always change it if it's a problem"). Bu
 a path whose own whitespace was folded is shown with single spaces.
 
 **Where:** README "Approvals as buttons" (claude-control-room) is the reference; the lead's
-repo holds the channel (0.4.4) and `jarvis-start`. Sections 1 to 12 below are the design as
-reviewed, corrected where the build changed it.
+repo holds the channel (0.4.5 since 0.2 below) and `jarvis-start`. Sections 1 to 12 below
+are the design as reviewed, corrected where the build changed it.
+
+### 0.2 Ultron's final read, and exact Bash commands (2026-11-11, night)
+
+Ultron read the merged build once more before go-live (board 97332dd5, bf222809, 4f52c42f)
+and designed a safe way to approve shell commands (board 320ecc71). **Jeff's decisions
+(21:32Z): yes to all three.** Keep the write folders he approved, but protect the code
+inside them; build the exact-command hook for Bash; accept that the Discord DM has the same
+folded-preview blind spot for now (the DM is the official plugin's; no work there). Built
+on `jos/approvals-final` in both repos; the channel is 0.4.5. Where this section and the
+ones before it disagree, this section and the README win; in particular
+`chat.approvalsBash: "strict"` no longer exists as a value (a grammar over a folded
+preview was never sound): the values are `"deny"` and `"exact"`.
+
+| Finding | Fix |
+|---|---|
+| High (gated Allow): inside the write folders a page Allow could write code that runs later without anyone asking: a scheduled job's scripts and source, a virtualenv's `.pth`, a posting agent's drafts and `skill.md`, `CLAUDE.md`, `.gitignore`, a Worker's `wrangler.jsonc`, a workflow folder | A second layer inside the write folders, in two parts. **Generic rules** (any folder): an existing file with an execute bit; anything under `.venv`, `node_modules`, `.husky` or `.github`; the names `CLAUDE.md`, `AGENTS.md`, `skill.md`, `.gitignore`, `.gitattributes`, `.gitmodules`, `package.json`, `package-lock.json`, `pyproject.toml`, `requirements*.txt`, `setup.py`, `conftest.py`, `sitecustomize.py`, `*.pth`, `Makefile`, `wrangler.jsonc`, `wrangler.toml`, `*.plist`, `.envrc`, `_headers`, `_redirects` (and, added while building, their twins `setup.cfg`, `usercustomize.py`, `GNUmakefile`, `wrangler.json`). **Per folder:** config `chat.approvalsWriteProtected`, a flat list of absolute paths, each protecting a file or a whole folder (a repo's `src/`, `ops/`, `tests/`, `scripts/`, `launchd/`, a drafts folder a job posts from, a manifest). Both are judged on the path as written and on its real path, and a protected entry that is itself a link protects its target too. The recommended entries for the owner's folders are in the go-live runbook's config block (kept outside this public repo, see NEXT.md §10). A list the server can't read turns page writes off whole. Every write Ultron showed as allowed is a test that now says Deny-only, and the docs, notes and content files beside them still pass |
+| Medium: a channel reply's `files` could attach almost any readable file to a Discord message (a shell history, say) | The page may allow `files` only inside `~/.local/state/jarvis/outbox/`, the folder made for sending, by the path as written and by its real path; anything else is Deny-only. Same rule for the Discord and the Jarvis OS reply tools |
+| Lows: private reads | Added for reads and writes: `*_history` files, any `browser-profile` or `.wrangler` folder, `~/.gnupg`, `~/.config/gcloud`, all of `~/Library` (no exception was needed: a prompt for a log there can be answered at the terminal or in Discord), `~/.claude/projects` (transcripts), and the Control Room's `server/config.json` and `server/data/` |
+| Lows: wide searches | A Grep or Glob rooted at `~/Projects` itself is Deny-only, as is one rooted at `~/Library` or above the Control Room's config and data (its repo root, `server/`) |
+| Lows: paths | A space in a write path is Deny-only (the relay folds whitespace; a tab or a line break already was). The last part of any path is `lstat`ed and a symbolic link is Deny-only |
+| Lows: write folders | A folder is refused when it is `~/Projects`, or holds or sits inside the lead's repo, machine-setup or the Control Room's `server/`, `web/`, `bin/`, `mod/`, by its real path too. The accepted list is logged at each start |
+| Lows: the channel | The flag folder is found from the account's own home (`os.userInfo()`), not `$HOME`, which a settings `env` block could redirect (0.4.5). The security sweep's check now covers `settings.local.json`, the project settings under `~/Projects`, the managed settings, and the `com.jeff.jarvis*` jobs' `EnvironmentVariables`, for the relay variable, the channel's test switch and `HOME` |
+
+**Exact Bash commands (Ultron's design).** The relay's preview folds whitespace, so it
+can't say whether a command is one line or two. Claude Code's `PermissionRequest` hook does
+get the tool's real input, and runs just before the prompt. Section 3.2 explains why that
+hook was not chosen to *decide* anything, and that stands: this one only reports.
+
+1. **The hook never decides.** It prints nothing, always exits 0, has the matcher `Bash`
+   only, is not `async`, sets no `onFailure`, and is limited to 3 seconds (its curl to 2).
+   The hooks reference: "Exit code 0 with no output means the hook has no decision to
+   report, so the tool call continues through the normal permission flow", and a timed-out
+   hook "renders no decision". No report at the server means Deny-only on the page. The
+   entry is in the README; the suite runs that very command against a scratch server.
+2. **Matching is by content.** The relay carries no id the hook also sees, so the server
+   (`lib/exact-commands.mjs`, `lib/approvals.mjs`) takes the reports from the lead's session
+   (by its roster name, never "a session nobody can name") that arrived from 30 s before
+   the channel got the prompt to 5 s after, and keeps those whose text, under the server's
+   own fold (each run of whitespace to one space, nothing trimmed), equals the preview's
+   command character for character. Pepper's addition: a report that equals the preview
+   outright also counts, for a relay that did not fold; it is the stronger match, not a
+   looser one. Exactly one distinct text is the match. Two that differ are Deny-only and
+   alerted (`approvals-exact-conflict`).
+3. **A forged report can only tie.** Any local process can post to the loopback ingest.
+   Its text either equals the real report (the same candidate) or differs (two candidates:
+   Deny-only, alerted). The check runs again at each look and at the Allow tap, so a second
+   report that lands after the card opened is caught too, and the card then stays Deny-only.
+   A real command that can't be shown (below) still counts as a candidate, so a forged
+   plain copy of it ties as well. What is left: a forged report while the real hook failed
+   to post at all (it timed out, or the entry was removed), which the sweep's "the hook is
+   present and unchanged" check and the 3-second limit narrow, and which is the same
+   same-user trust as section 6.3's last rows.
+4. **No hook may return `updatedInput`.** A hook that rewrites the input would change the
+   command after the card showed it. The security sweep checks that no other
+   `PermissionRequest` hook exists and that no hook command contains `updatedInput`, and
+   that this entry is present and unchanged.
+5. **What may be shown.** The exact text must be printable ASCII plus line breaks and tabs
+   (a carriage return is refused), and the preview must carry no elision and no
+   `[REDACTED]` mask; otherwise the card gets no exact text and is Deny-only. A report is
+   kept in memory only, for the lead's session only, for 2 minutes, at most 40, and never
+   logged; a matched text stays with its open request and is dropped when that closes.
+6. **The card** shows the exact text first, one row per line, with `↵` where a line ends
+   and `⇥` for a tab, and says how many lines there are. The `shown` hash covers it: a tap
+   that hashed only the preview is refused (409).
+7. **Policy.** `chat.approvalsBash` is a mode: `"deny"` (the default; no report is even
+   kept) or `"exact"`. In `"exact"`: tier 1, one line that passes the strict grammar, which
+   is sound now that the line breaks are known; tier 2, a text equal to an entry of
+   `chat.approvalsBashCommands` (empty by default), line breaks included; everything else
+   Deny-only on the page until Face ID per Allow (Phase C).
+8. **Install.** The README has the entry. Jarvis adds it with Jeff after Ultron has
+   re-read it; the server takes reports only in `"exact"` mode, so the two switches are
+   independent and the hook alone turns nothing on.
+9. **Proof before `"exact"` is used.** Section 9.2's A1-H: a scratch session shows that the
+   hook's post lands before the relayed request, in auto mode's fallback prompts too, and
+   that the two folds agree on tabs, CRLF and leading and trailing spaces. If either fails,
+   nothing matches and Bash stays Deny-only: a miss is never an Allow.
+
+**Known limits, accepted or for later:** the Discord DM still shows the folded preview
+(Jeff's third yes); a Grep rooted in a project folder can read an `.env` or a protected
+file inside it; tier 1 leaves a file made runnable between the check and the run, and git
+reading a repo's own config; trailing spaces in the exact text are not drawn; a hard link
+is not followed.
 
 ## 1. In short
 
@@ -529,9 +611,14 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
 - A1-F. **What does a multi-line Bash command look like when relayed?** (board ac24e766; run
   once, by Jeff or by Jarvis's hands at a terminal, never in Jarvis's session.) Use the go-live
   doc's §3 scratch setup (scratch Control Room, scratch `HOME`, the dev-channel flag, no
-  Discord plugin), with `CCR_APPROVALS=deny` on the scratch server, and both flag files made
-  in the scratch `HOME`'s `.local/state/jarvis-os/` plus `JARVIS_CHANNEL_PERMISSION_RELAY=deny`
-  in the scratch session's environment, so nothing can be allowed from the page.
+  Discord plugin), with `CCR_APPROVALS=deny` on the scratch server, and the one flag
+  `approvals-enabled` made in the scratch `HOME`'s `.local/state/jarvis-os/`, with
+  `JARVIS_CHANNEL_PERMISSION_RELAY=deny` and
+  `JARVIS_CHANNEL_FLAGS_DIR="$S/home/.local/state/jarvis-os"` in the scratch session's
+  environment (the session itself runs with the real `HOME`, and from 0.4.5 the channel
+  looks for flags in the account's own state folder unless this test knob names another),
+  so nothing can be allowed from the page and the real flag folder is never touched. Run it
+  in the same sitting as A1-H below, which uses the same setup.
   1. Start the scratch session with `--permission-mode default`, in an empty scratch folder
      that holds a file `notes.txt`.
   2. Ask it, word for word: "Run this exact Bash command, as one tool call, with the line
@@ -547,8 +634,63 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
   5. Repeat once with a tab and with two spaces inside a quoted argument, and once with a
      Write whose `content` has several lines, to learn whether folding touches every field.
   6. Deny at the terminal. Delete the scratch `HOME`.
-  If the break survives as `\n`, `chat.approvalsBash: "strict"` becomes a real option for
-  Jeff to weigh; if it is folded, Bash stays Deny-only on the page.
+  Since 0.2 the answer no longer decides a config value (`"strict"` is gone); it tells
+  which branch of the exact-command match real requests take: the fold, or the outright
+  match for a preview that kept its `\n`.
+- A1-H. **Does the exact-command hook report before the relay, and do the two folds
+  agree?** (board 320ecc71; hard requirement 9 of 0.2. Run once, by Jeff or by Jarvis's
+  hands at a terminal, never in Jarvis's session, before `chat.approvalsBash` is ever set to
+  `"exact"`, and again after any Claude Code update that touches hooks or channels.) It
+  touches nothing live: the hook is given to the scratch session alone and posts to the
+  scratch server's port, never :8322.
+  1. *Setup,* as the go-live doc's §3.0, from the commits under test (export this repo's
+     `server` and `bin/chat-pair`, and the lead's repo's `jarvis-local`). Terminal A, the
+     scratch server, with five more variables:
+     `CCR_APPROVALS=deny CCR_APPROVALS_BASH=exact CCR_EXACT_ANY_SESSION=1 CCR_EXACT_DEBUG=1 CCR_PORT=8399`
+     (deny: nothing can be allowed; any-session: a scratch session has no roster name;
+     debug: the harness prints the reported and the previewed command, JSON-escaped, for
+     these harmless commands only). Then
+     `(umask 077; : > "$S/home/.local/state/jarvis-os/approvals-enabled")`.
+  2. *The scratch session,* terminal B, in `$S/work` holding a file `notes.txt`. Add to
+     §3.0's command the environment
+     `JARVIS_CHANNEL_PERMISSION_RELAY=deny JARVIS_CHANNEL_FLAGS_DIR="$S/home/.local/state/jarvis-os"`
+     and put the hook in the session's own `--settings` JSON beside `enabledPlugins`: the
+     README's exact-command entry, word for word, with `127.0.0.1:8322` changed to
+     `127.0.0.1:8399`. Start it with `--permission-mode default`. Check the channel's line
+     in the debug log: `permission relay on (deny only)`.
+  3. *The order, manual mode.* Ask: "Run this exact Bash command as one tool call:
+     `cat notes.txt`". When the dialog opens, read terminal A. Pass: a line
+     `exact-command report: kept, 13 characters`, then
+     `exact-check <id>: the newest report came N ms before the relay; exact text on the card: yes`
+     with N positive. A negative N, or `no report has come`, is a fail: the hook does not
+     run before the relay, and `"exact"` stays off. Deny at the terminal.
+  4. *The fold.* Repeat step 3 with each of these, asking each time for the exact command
+     as one tool call, and Deny each at the terminal: (a) `cat notes.txt` then a line break
+     then `echo second-line`; (b) `cat` then a tab then `notes.txt`; (c) the two-line command
+     with a carriage return and a line break between the lines; (d) `cat notes.txt` with two
+     leading and two trailing spaces; (e) `echo 'a  b'` (two spaces inside quotes). For each,
+     terminal A prints the previewed command, the reported text and
+     `the server's fold of the report EQUALS the preview's command` or `DIFFERS FROM`. Pass:
+     EQUALS for (a), (b), (d) and (e), and `exact text on the card: yes` (the card is still
+     Deny-only for (a), (b) and (e): more than one line, a tab, shell syntax). For (c) the
+     report carries a carriage return, so the pass is `exact text on the card: no` with the
+     reason "characters outside plain ASCII, line breaks and tabs", whatever the fold line
+     says. Any DIFFERS FROM is a finding for Pepper with the two printed texts (the model
+     may not reproduce odd spacing exactly: the reported text shows what it really sent).
+     Record the CLI version and each result in NEXT.md §10.
+  5. *The order, auto mode's fallback.* Restart the scratch session with
+     `--permission-mode auto` and ask for something the classifier is likely to hand back
+     to a person, for example "Run this exact Bash command as one tool call:
+     `curl -s https://example.com -o notes.txt`" (harmless; Deny it). When a dialog opens,
+     the same two lines must appear in the same order with N positive. If auto mode simply
+     runs or refuses the command without a dialog, try another until one prompts; if none
+     does in a few tries, record "no fallback prompt seen" and leave `"exact"` off until
+     one has been observed.
+  6. *A1-F, in the same session:* steps 1 to 5 of A1-F above (the raw `input_preview`),
+     which the lines of step 4 here already show for Bash; do its Write case too.
+  7. *Clean up:* `/exit` both sessions, stop the scratch server, remove the test plugin as
+     §3.7 of the go-live doc says, delete `$S`. Nothing was installed in
+     `~/.claude/settings.json` and no real flag was made.
 
 ### 9.3 Live checks after each restart (Jeff present, harmless commands only)
 
@@ -605,8 +747,10 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
 ## 12. Rules this design keeps
 
 - Tailnet only; the server binds 127.0.0.1; nothing new faces the internet.
-- No new `claude -p` run. No hook added. No change to `~/.claude/settings.json` or managed
-  settings.
+- No new `claude -p` run. The design itself needs no hook; two report-only hooks were
+  added by Jeff's decisions (the async `PermissionDenied` one in section 0, the
+  exact-command one in 0.2), each drafted in the README for the owner to install, and
+  neither can decide a request. No change to managed settings.
 - No test write at :8322; scratch servers and a scratch Claude session only, never Jarvis's
   session for a test, never another session's tmux.
 - The repo stays anonymous: no hostnames, tailnet name, Discord ids or device names in

@@ -194,7 +194,24 @@ export const hasMarker = p => cardFields(p).some(([, v]) => MARKER.test(v)) || M
 
 // What the server compares a verdict against (Ultron L11): the fields exactly as
 // they were delivered, never as rendered.
-export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '']);
+// When the card also showed a Bash command's exact text (`exact`, from the hook's
+// report), the hash covers it as a fourth item, as the server's does.
+export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '', ...(typeof p?.exact === 'string' ? [p.exact] : [])]);
+
+// The exact command as rows the card draws with every line break and tab visible:
+// one row per line, `end` true where a line break follows it, each row's text split
+// at its tabs. A last row left empty by a final line break is not drawn: the mark on
+// the row before it says the break is there.
+export function exactRows(text) {
+  if (typeof text !== 'string' || text === '') return [];
+  const lines = text.split('\n');
+  const rows = lines.map((line, i) => ({
+    parts: line.split('\t').flatMap((t, j) => [...(j > 0 ? [{ tab: true }] : []), ...(t !== '' ? [{ text: t }] : [])]),
+    end: i < lines.length - 1
+  }));
+  if (rows.length > 1 && rows[rows.length - 1].parts.length === 0) rows.pop();
+  return rows;
+}
 export async function sha256Hex(text, subtle = globalThis.crypto?.subtle) {
   if (!subtle) throw new Error('this page cannot check what it showed here (no secure context)');
   const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));

@@ -5,14 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
-import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, chmod, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   revealHidden, readApprovalsConfig, capField, markerReasons, parsePreview, shownHash, pathForms, denyOnlyReasons, blockReasonWords,
-  verdictOriginProblem, createApprovals, cutMarker, FIELD_MAX, BLOCK_WINDOW_MS, LATE_AFTER_MS, VERDICTS_PER_MINUTE,
+  verdictOriginProblem, createApprovals, cutMarker, NO_EXACT, okWriteFolder, protectedWhy, sensitiveWhy, FIELD_MAX, BLOCK_WINDOW_MS, LATE_AFTER_MS, VERDICTS_PER_MINUTE,
   VERDICTS_PER_HOUR, REFUSALS_FOR_LOCKOUT, LOCKOUT_MS, ALLOW_BURST, FLOOD_OPEN
 } from '../lib/approvals.mjs';
 import { createChatStore, PERMISSION_TTL_MS } from '../lib/chat-store.mjs';
@@ -29,7 +29,7 @@ const bash = cmd => rules('Bash', { command: cmd });
 // ---- the pure rules ----
 
 test('config: off unless "deny" or "on"; anything else is off with a problem; extra Deny-only patterns are lower-cased', () => {
-  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], bash: 'deny', writeFolders: [], problems: [] });
+  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], bash: 'deny', bashCommands: [], writeFolders: [], writeProtected: [], problems: [] });
   assert.equal(readApprovalsConfig({ chat: { login: 'x' } }).mode, 'off', 'the default is off (Ultron H2)');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'deny' } }).mode, 'deny');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'on' } }).mode, 'on');
@@ -102,8 +102,11 @@ test('H1: a Bash call padded with a 3,400-code-point description keeps its comma
 const APP = '/home/owner/Projects/app';
 const REPO = '/home/owner/Projects/claude-control-room';
 const WRITE = ['~/Projects/app', '/home/owner/Projects/site'];
-const strictOpts = { home: HOME, realpath: noReal, bash: 'strict', writeFolders: WRITE, repoRoot: REPO, isExecutable: p => p.endsWith('.sh') || p.endsWith('/bin/tool') };
-const strict = cmd => denyOnlyReasons({ tool: 'Bash', description: 'd', inputPreview: JSON.stringify({ command: cmd }) }, strictOpts);
+// "exact" mode with the hook's report in hand: `strict(cmd)` judges a command whose exact
+// text is `cmd` (tier 1, the strict grammar). No test here touches the disk: `isLink` and
+// `isExecutable` are stand-ins.
+const strictOpts = { home: HOME, realpath: noReal, bash: 'exact', writeFolders: WRITE, repoRoot: REPO, isExecutable: p => p.endsWith('.sh') || p.endsWith('/bin/tool'), isLink: () => false };
+const strict = cmd => denyOnlyReasons({ tool: 'Bash', description: 'd', inputPreview: JSON.stringify({ command: cmd }) }, { ...strictOpts, exact: cmd });
 const has = (list, re) => list.some(r => re.test(r));
 const cp = n => String.fromCodePoint(n);
 
@@ -112,8 +115,8 @@ test('Bash is Deny-only on the page by default: a relayed command may have lost 
     assert.ok(has(bash(cmd), /Bash is answered at the terminal or in Discord/), cmd);
   }
   assert.equal(readApprovalsConfig({}).bash, 'deny', 'the default');
-  assert.equal(readApprovalsConfig({ chat: { approvalsBash: 'strict' } }).bash, 'strict');
-  for (const bad of ['on', 'allow', true, 'STRICT']) {
+  assert.equal(readApprovalsConfig({ chat: { approvalsBash: 'exact' } }).bash, 'exact');
+  for (const bad of ['on', 'allow', true, 'EXACT', 'strict']) {
     const r = readApprovalsConfig({ chat: { approvalsBash: bad } });
     assert.equal(r.bash, 'deny', String(bad));
     assert.equal(r.problems.length, 1);
@@ -121,11 +124,12 @@ test('Bash is Deny-only on the page by default: a relayed command may have lost 
   // The gate carries the mode through.
   const off = createApprovals({ mode: 'on', home: HOME, realpath: noReal });
   assert.ok(off.assess({ tool: 'Bash', inputPreview: '{"command":"pwd"}' }).denyOnly.length > 0);
-  const on = createApprovals({ mode: 'on', home: HOME, realpath: noReal, bash: 'strict' });
-  assert.deepEqual(on.assess({ tool: 'Bash', inputPreview: '{"command":"pwd"}' }).denyOnly, []);
+  // "exact" without a report from the hook is still Deny-only (the hook never decides).
+  const on = createApprovals({ mode: 'on', home: HOME, realpath: noReal, bash: 'exact' });
+  assert.deepEqual(on.assess({ tool: 'Bash', inputPreview: '{"command":"pwd"}' }).denyOnly, [NO_EXACT]);
 });
 
-test('Bash, strict grammar: a listed command, only its own options, every other word an absolute path (findings 1 and 4)', () => {
+test('Bash tier 1, the strict grammar over the exact text: a listed command, only its own options, every other word an absolute path (findings 1 and 4)', () => {
   const ok = [
     'pwd', 'date', 'date -u', 'ls', 'ls -la', `ls -la ${APP}`, `cat ${APP}/README.md`, `cat -n ${APP}/a ${APP}/b`,
     `head -n 5 ${APP}/a`, `head -n5 ${APP}/a`, `tail -20 ${APP}/a`, `tail -c 100 ${APP}/a`, `wc -l ${APP}/a`, `stat ${APP}/a`, `file ${APP}/a`,
@@ -164,8 +168,8 @@ test('Bash, strict grammar: a listed command, only its own options, every other 
     'cat': /cat needs/, [`diff ${APP}/a`]: /diff needs/, 'ls ~root': /not an absolute path/,
     // Shell syntax, as before.
     'ls; rm x': /shell syntax/, 'ls | sh': /shell syntax/, 'ls && rm x': /shell syntax/, 'echo $HOME': /shell syntax/, 'echo `id`': /shell syntax/,
-    'ls > f': /shell syntax/, 'cat < f': /shell syntax/, 'ls (x)': /shell syntax/, 'ls\nrm x': /shell syntax/, "cat '.ssh/id'": /shell syntax/,
-    'cat .s\\sh/id': /shell syntax/, 'cat ~/.ss?/id': /shell syntax/, 'ls\t-la': /shell syntax/,
+    'ls > f': /shell syntax/, 'cat < f': /shell syntax/, 'ls (x)': /shell syntax/, 'ls\nrm x': /more than one line/, "cat '.ssh/id'": /shell syntax/,
+    'cat .s\\sh/id': /shell syntax/, 'cat ~/.ss?/id': /shell syntax/, 'ls\t-la': /more than one line, or a tab/, [`cat ${APP}/a\n`]: /more than one line/,
     'rm -rf /tmp/x': /not on the short list/, 'bash -c ls': /not on the short list/, 'sudo ls': /not on the short list/, 'Ls': /not on the short list/, '/bin/ls': /not on the short list/
   };
   for (const [cmd, re] of Object.entries(deny)) assert.ok(has(strict(cmd), re), `${cmd}: ${strict(cmd).join('; ')}`);
@@ -256,7 +260,7 @@ test('writes (Write, Edit, MultiEdit, NotebookEdit) pass only inside config\'s w
   };
   for (const [p, re] of Object.entries(inside)) assert.ok(has(write(p), re), `${p}: ${write(p).join('; ')}`);
   // Even when config lists them, these stay out.
-  const wide = { ...strictOpts, writeFolders: ['~/Projects', '~/.config', '/opt/homebrew/etc'] };
+  const wide = { ...strictOpts, writeFolders: ['~/Projects', `${REPO}/docs`, '~/.config', '/opt/homebrew/etc'] };
   const never = {
     '/home/owner/Projects/jarvis/bin/x': /jarvis repo/, '/home/owner/Projects/machine-setup/a': /machine-setup/, '/home/owner/Projects/.worktrees/a/b': /worktrees/,
     [`${REPO}/server/lib/a.mjs`]: /Control Room's own code/, [`${REPO}/web/src/a.js`]: /Control Room's own code/, [`${REPO}/bin/chat-pair`]: /Control Room's own code|chat-pair/,
@@ -299,7 +303,7 @@ test('read and write are both Deny-only for the account, git, cloud and tool set
     assert.ok(has(w('Grep', { pattern: 'KEY', path: root }), /holds protected/), `Grep ${root}`);
     assert.ok(has(w('Glob', { pattern: '**/*', path: root }), /holds protected/), `Glob ${root}`);
   }
-  assert.deepEqual(w('Grep', { pattern: 'KEY', path: '/home/owner/Projects' }), []);
+  assert.deepEqual(w('Grep', { pattern: 'KEY', path: '/home/owner/Projects/app' }), []);
 });
 
 test('Read, Glob and Grep: absolute literal paths; wildcards only in the last part of a pattern; the channels folder, ~/.ssh, .env files and keys stay out (finding 4)', () => {
@@ -345,7 +349,7 @@ test('Read, Glob and Grep: absolute literal paths; wildcards only in the last pa
 });
 
 test('input keys outside each tool\'s short list are Deny-only; so is a hidden character in any parsed field (finding 4)', () => {
-  const r = (tool, input) => denyOnlyReasons({ tool, inputPreview: typeof input === 'string' ? input : JSON.stringify(input) }, strictOpts);
+  const r = (tool, input) => denyOnlyReasons({ tool, inputPreview: typeof input === 'string' ? input : JSON.stringify(input) }, tool === 'Bash' ? { ...strictOpts, exact: 'pwd' } : strictOpts);
   const extra = [
     ['Bash', { command: 'pwd', run_in_background: true }], ['Bash', { command: 'pwd', dangerouslyDisableSandbox: true }],
     ['Write', { file_path: `${APP}/a`, content: 'x', mode: '0777' }], ['Edit', { file_path: `${APP}/a`, old_string: 'a', new_string: 'b', path: '/x' }],
@@ -635,7 +639,7 @@ async function setup(opts = {}) {
   await env.store.load();
   env.devices = createDeviceStore({ path: join(env.dir, 'devices.json'), now, onEvent });
   await env.devices.load();
-  env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other' });
+  env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, ...(opts.gate ?? {}) });
   env.socket = createSocketRouter({ store: env.store, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
   env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals });
   env.sockPath = join(env.dir, 'c.sock');
@@ -659,7 +663,7 @@ async function setup(opts = {}) {
   env.unix = opts => call({ socketPath: env.sockPath, ...opts, headers: { [SESSION_HEADER]: env.token, ...(opts.headers ?? {}) } });
   // A request the page may allow by default: a Read inside a plain project folder.
   env.open = (requestId, preview = { file_path: '/home/owner/Projects/app/README.md' }, extra = {}) => env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId, tool: 'command' in preview ? 'Bash' : 'Read', description: 'list', inputPreview: JSON.stringify(preview), relayedAt: env.clock.t, ...extra } });
-  env.shown = id => { const p = env.store.permission(id); return shownHash(p.tool, p.description, p.inputPreview); };
+  env.shown = id => { const p = env.store.permission(id); return shownHash(p.tool, p.description, p.inputPreview, p.exact); };
   // `shown` defaults to the right hash; passing `shown: undefined` leaves it out.
   env.tap = (id, cookie, behavior, opts = {}) => {
     const shown = 'shown' in opts ? opts.shown : env.store.permission(id) ? env.shown(id) : 'f'.repeat(64);
@@ -879,5 +883,313 @@ test('a padded preview over 16,000 code points is cut, marked on the card and De
     const fromChannel = await env.open('fghij', { command: 'ls' }, { cut: true });
     assert.equal(fromChannel.status, 200);
     assert.ok(env.store.permission('fghij').denyOnly.includes('it was cut short'), 'the channel\'s own cut counts');
+  } finally { await env.close(); }
+});
+
+// ---- Ultron's final read (2026-11-11): code inside the write folders, reply files, the lows ----
+
+// Invented stand-ins for the kinds of repo the owner's write folders hold: a tool that
+// scheduled jobs run, a posting agent, a site, a data repo, a contact form.
+const P = '/home/owner/Projects';
+const FINAL_WRITE = [`${P}/league`, `${P}/league-data`, `${P}/post-agent`, `${P}/contact`, `${P}/content`, `${P}/site`, `${REPO}/docs`];
+const FINAL_PROTECTED = [
+  '~/Projects/league/ops', '~/Projects/league/src', '~/Projects/league/tests', '~/Projects/league/leagues', '~/Projects/league/data/browser-profile',
+  '~/Projects/post-agent/scripts', '~/Projects/post-agent/launchd', '~/Projects/post-agent/drafts', '~/Projects/post-agent/config.json',
+  '~/Projects/site/scripts', '~/Projects/league-data/MANIFEST.sha256'
+];
+const finalOpts = { home: HOME, realpath: noReal, writeFolders: FINAL_WRITE, writeProtected: FINAL_PROTECTED, repoRoot: REPO, isExecutable: () => false, isLink: () => false };
+const wr = (p, opts = finalOpts) => denyOnlyReasons({ tool: 'Write', inputPreview: JSON.stringify({ file_path: p, content: 'x' }) }, opts);
+const ed = (p, opts = finalOpts) => denyOnlyReasons({ tool: 'Edit', inputPreview: JSON.stringify({ file_path: p, old_string: 'a', new_string: 'b' }) }, opts);
+const rd = (p, opts = finalOpts) => denyOnlyReasons({ tool: 'Read', inputPreview: JSON.stringify({ file_path: p }) }, opts);
+
+test('the second layer: every write Ultron showed as allowed is now Deny-only, by a generic rule or by config\'s protected places (board 97332dd5)', () => {
+  const deny = {
+    [`${P}/league/ops/run_alert.sh`]: /config protects/,
+    [`${P}/league/src/sffl/cli.py`]: /config protects/,
+    [`${P}/league/tests/test_cli.py`]: /config protects/,
+    [`${P}/league/leagues/one/settings.json`]: /config protects/,
+    [`${P}/league/.venv/lib/python3.12/site-packages/x.pth`]: /\.venv folder/,
+    [`${P}/post-agent/scripts/draft.mjs`]: /config protects/,
+    [`${P}/post-agent/launchd/job.plist`]: /config protects/,
+    [`${P}/post-agent/drafts/pending/abc123.json`]: /config protects/,
+    [`${P}/post-agent/config.json`]: /config protects/,
+    [`${P}/post-agent/skill.md`]: /by its name \(skill\.md\)/,
+    [`${P}/league/CLAUDE.md`]: /by its name \(claude\.md\)/,
+    [`${P}/league/.gitignore`]: /by its name/,
+    [`${P}/contact/wrangler.jsonc`]: /by its name/,
+    [`${P}/site/.github/dependabot.yml`]: /\.github folder/,
+    [`${P}/site/.github/workflows/deploy.yml`]: /workflow/,
+    [`${P}/site/scripts/build.mjs`]: /config protects/,
+    [`${P}/league-data/MANIFEST.sha256`]: /config protects/,
+    [`${P}/league/data/browser-profile/Default/Cookies`]: /browser profile|config protects/
+  };
+  for (const [p, re] of Object.entries(deny)) {
+    assert.ok(has(wr(p), re), `Write ${p}: ${wr(p).join('; ')}`);
+    assert.ok(has(ed(p), re), `Edit ${p}`);
+    assert.ok(!has(wr(p), /outside the folders/), `${p} is inside a write folder: only the second layer stops it`);
+  }
+  // What stays writable: the notes, docs and content these folders are listed for.
+  for (const p of [`${P}/league/docs/plan.md`, `${P}/league/README.md`, `${P}/league/data/notes.csv`, `${P}/post-agent/topics.md`, `${P}/post-agent/docs/voice.md`, `${P}/site/content/posts/a.md`,
+    `${P}/site/src/pages/index.astro`, `${P}/content/a.md`, `${P}/league-data/README.md`, `${P}/contact/README.md`, `${REPO}/docs/design/a.md`, `${P}/league/opsnotes.md`, `${P}/post-agent/scripts.md`]) {
+    assert.deepEqual(wr(p), [], p);
+    assert.deepEqual(ed(p), [], p);
+  }
+  // Config's places are compared lower-cased, and by the real path too.
+  assert.ok(has(wr(`${P}/League/OPS/x.sh`), /config protects/));
+  const alias = { ...finalOpts, realpath: p => (p === `${P}/league/alias` ? `${P}/league/src` : null) };
+  assert.ok(has(wr(`${P}/league/alias/a.py`, alias), /config protects/), 'a folder that is a link into a protected place');
+  const moved = { ...finalOpts, writeFolders: [...FINAL_WRITE, '/vol/work'], realpath: p => (p === `${P}/league/src` ? '/vol/work/src' : null) };
+  assert.ok(has(wr('/vol/work/src/a.py', moved), /config protects/), 'a protected place that is itself a link: its real path is protected too');
+  // Without the config entries only the generic rules hold: the runbook's values matter.
+  const generic = { ...finalOpts, writeProtected: [] };
+  assert.deepEqual(wr(`${P}/league/src/sffl/cli.py`, generic), []);
+  assert.ok(has(wr(`${P}/league/.venv/x.pth`, generic), /\.venv folder/));
+  // Reads are not held to the write layer.
+  assert.deepEqual(rd(`${P}/league/src/sffl/cli.py`), []);
+  assert.deepEqual(rd(`${P}/league/CLAUDE.md`), []);
+  // A bad entry in a call is ignored there; config's reader fails closed (below).
+  assert.deepEqual(wr(`${P}/league/docs/a.md`, { ...finalOpts, writeProtected: ['league/docs', 7, '~/a/../b'] }), []);
+  assert.deepEqual(wr(`${P}/league/docs/a.md`, { ...finalOpts, writeProtected: 'not a list' }), []);
+});
+
+test('the second layer, generic: folders and file names that tools load or run without being asked, in any write folder', () => {
+  const A = `${P}/content`;
+  for (const seg of ['.venv', 'node_modules', '.husky', '.github']) {
+    assert.ok(has(wr(`${A}/${seg}/x`), new RegExp(`a \\${seg.startsWith('.') ? seg : seg} folder`.replace('\\n', 'n'))), seg);
+    assert.ok(has(wr(`${A}/deep/${seg}/y/z.js`), /folder/), seg);
+    assert.equal(protectedWhy(`${A}/${seg}`.toLowerCase(), HOME, REPO), `a ${seg} folder`);
+  }
+  const names = ['CLAUDE.md', 'AGENTS.md', 'skill.md', 'SKILL.md', '.gitignore', '.gitattributes', '.gitmodules', 'package.json', 'package-lock.json', 'pyproject.toml',
+    'requirements.txt', 'requirements-dev.txt', 'requirements_test.txt', 'setup.py', 'setup.cfg', 'conftest.py', 'sitecustomize.py', 'usercustomize.py', 'evil.pth', 'Makefile', 'GNUmakefile',
+    'wrangler.jsonc', 'wrangler.json', 'wrangler.toml', 'com.example.job.plist', '.envrc', '_headers', '_redirects'];
+  for (const n of names) {
+    assert.ok(has(wr(`${A}/${n}`), /by its name|\.env/), `${n}: ${wr(`${A}/${n}`).join('; ')}`);
+    assert.ok(has(wr(`${A}/sub/dir/${n}`), /by its name|\.env/), `nested ${n}`);
+  }
+  // Near names stay writable.
+  for (const n of ['claude.md.txt', 'notes-claude.md', 'skills.md', 'mypackage.json', 'package.json5', 'requirements.md', 'requirements.txt.bak', 'setup.py.md', 'a.pth.md', 'makefile.md', 'plist.md', 'headers', 'redirects.md', 'venv/a.md', 'github/a.md']) {
+    assert.deepEqual(wr(`${A}/${n}`), [], n);
+  }
+  // The browser profile and the Wrangler state are private for reads as well.
+  assert.ok(has(rd(`${P}/league/data/browser-profile/Default/Cookies`), /reads a browser profile/));
+  assert.ok(has(rd(`${P}/site/.wrangler/state/v3/d1/x.sqlite`), /Wrangler/));
+  assert.ok(has(wr(`${P}/site/.wrangler/tmp/x`), /Wrangler/));
+});
+
+test('the second layer: an existing file that can be run is Deny-only for a write (the disk decides), on a real folder', async () => {
+  const dir = realpathSync.native(await mkdtemp(join(tmpdir(), 'appr-run-')));
+  try {
+    await mkdir(join(dir, 'w'));
+    await writeFile(join(dir, 'w', 'run.sh'), '#!/bin/sh\n');
+    await chmod(join(dir, 'w', 'run.sh'), 0o755);
+    await writeFile(join(dir, 'w', 'notes.md'), 'x');
+    await chmod(join(dir, 'w', 'notes.md'), 0o644);
+    await symlink(join(dir, 'w', 'notes.md'), join(dir, 'w', 'link.md'));
+    await symlink(join(dir, 'w'), join(dir, 'w', 'dirlink'));
+    const opts = { home: dir, writeFolders: [join(dir, 'w')], repoRoot: REPO };
+    assert.ok(has(wr(join(dir, 'w', 'run.sh'), opts), /changes a file that can be run/));
+    assert.ok(has(ed(join(dir, 'w', 'run.sh'), opts), /changes a file that can be run/));
+    assert.deepEqual(wr(join(dir, 'w', 'notes.md'), opts), []);
+    // Any execute bit counts, the owner's alone too.
+    await writeFile(join(dir, 'w', 'mine.py'), 'x');
+    await chmod(join(dir, 'w', 'mine.py'), 0o744);
+    assert.ok(has(wr(join(dir, 'w', 'mine.py'), opts), /changes a file that can be run/));
+    assert.deepEqual(wr(join(dir, 'w', 'new.md'), opts), [], 'a file that does not exist yet');
+    assert.deepEqual(wr(join(dir, 'w', 'new-folder', 'a.md'), opts), []);
+    // lstat on the last part: a link is Deny-only, for a write and for a read.
+    assert.ok(has(wr(join(dir, 'w', 'link.md'), opts), /last part is a link/));
+    assert.ok(has(rd(join(dir, 'w', 'link.md'), opts), /last part is a link/));
+    assert.ok(has(rd(join(dir, 'w', 'dirlink'), opts), /last part is a link/));
+    assert.ok(has(rd(join(dir, 'w', 'dirlink') + '/', opts), /last part is a link/), 'a trailing slash does not hide it');
+    assert.deepEqual(rd(join(dir, 'w', 'notes.md'), opts), []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+  // The checks can be told what the disk says; one that throws counts as yes.
+  assert.ok(has(wr(`${P}/content/a.md`, { ...finalOpts, isExecutable: () => true }), /can be run/));
+  assert.ok(has(wr(`${P}/content/a.md`, { ...finalOpts, isExecutable: () => { throw new Error('x'); } }), /can be run/));
+  assert.ok(has(wr(`${P}/content/a.md`, { ...finalOpts, isLink: () => { throw new Error('x'); } }), /link/));
+  const seen = [];
+  wr('~/Projects/content/a.md', { ...finalOpts, isLink: p => { seen.push(p); return false; }, isExecutable: p => { seen.push(p); return false; } });
+  assert.deepEqual(seen, [`${P}/content/a.md`, `${P}/content/a.md`], '~ is resolved before the disk is asked');
+  assert.deepEqual(rd(`${P}/content/run.sh`, { ...finalOpts, isExecutable: () => true }), [], 'reading a script is not running it');
+});
+
+test('a channel reply may attach only files inside the outbox, by the path as written and by its real path; both reply tools (board bf222809)', () => {
+  const OUT = '/home/owner/.local/state/jarvis/outbox';
+  for (const tool of ['mcp__plugin_discord_discord__reply', 'mcp__plugin_jarvis-channel_jarvis__reply']) {
+    const f = (files, opts = finalOpts) => denyOnlyReasons({ tool, inputPreview: JSON.stringify({ chat_id: '1', text: 'here', files }) }, opts);
+    assert.deepEqual(f([`${OUT}/chart.png`]), [], tool);
+    assert.deepEqual(f(['~/.local/state/jarvis/outbox/sub/report.pdf', `${OUT}/b.txt`]), []);
+    assert.deepEqual(f([]), []);
+    for (const p of ['/home/owner/.zsh_history', `${P}/league/README.md`, `${P}/content/a.png`, '/tmp/a.png', OUT, `${OUT}/`, `${OUT}2/a.png`, '/home/owner/.local/state/jarvis/a.png',
+      '/home/owner/.local/state/jarvis/outbox.bak/a', `${OUT}/../state.json`, '/home/owner/.local/state/jarvis-os/outbox/a']) {
+      assert.ok(has(f([p]), /outside the outbox/), `${tool} ${p}: ${f([p]).join('; ')}`);
+      assert.ok(has(f([`${OUT}/ok.png`, p]), /outside the outbox/), 'one bad file among good ones');
+    }
+    assert.ok(has(f(['~']), /absolute path/));
+    assert.ok(has(f(['outbox/a.png']), /absolute path/));
+    // A folder in the outbox that is a link out of it; and a file that is itself a link.
+    const out = { ...finalOpts, realpath: p => (p === `${OUT}/exit` ? '/home/owner' : null) };
+    assert.ok(has(f([`${OUT}/exit/.zsh_history`], out), /outside the outbox/));
+    assert.ok(has(f([`${OUT}/exit/.zsh_history`], out), /history file/));
+    assert.ok(has(f([`${OUT}/a.png`], { ...finalOpts, isLink: p => p === `${OUT}/a.png` }), /last part is a link/));
+    // An outbox that lives elsewhere by its real path still counts, both ways round.
+    const vol = { ...finalOpts, realpath: p => (p.startsWith(OUT) ? p.replace(OUT, '/vol/outbox') : null) };
+    assert.deepEqual(f([`${OUT}/a.png`], vol), []);
+    // Private names stay private even inside it.
+    assert.ok(f([`${OUT}/.env`]).length > 0);
+  }
+  // Another channel tool without files is untouched.
+  assert.deepEqual(denyOnlyReasons({ tool: 'mcp__plugin_discord_discord__reply', inputPreview: JSON.stringify({ chat_id: '1', text: 'hi' }) }, finalOpts), []);
+});
+
+test('the lows: more private places for reads, wide search roots, a space in a write path (board 4f52c42f)', () => {
+  const g = (tool, input, opts = finalOpts) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, opts);
+  const priv = {
+    '/home/owner/.zsh_history': /history file/, '/home/owner/.bash_history': /history file/, '/home/owner/.python_history': /history file/, [`${P}/content/.node_repl_history`]: /history file/,
+    [`${P}/league/data/browser-profile/x`]: /browser profile/, [`${P}/site/.wrangler/state/x`]: /Wrangler/, '/home/owner/.gnupg/pubring.kbx': /GnuPG/,
+    '/home/owner/.config/gcloud/credentials.db': /Google Cloud/, '/home/owner/Library/Preferences/com.example.plist': /Library folder/, '/home/owner/Library/Logs/job.log': /Library folder/,
+    '/home/owner/Library': /Library folder/, '/home/owner/.claude/projects/-home-owner/abc.jsonl': /transcripts/, [`${REPO}/server/config.json`]: /Control Room's config or data/,
+    [`${REPO}/server/data/chat/devices.json`]: /Control Room's config or data/, [`${REPO}/server/data`]: /Control Room's config or data/
+  };
+  for (const [p, re] of Object.entries(priv)) {
+    assert.ok(has(rd(p), re), `Read ${p}: ${rd(p).join('; ')}`);
+    assert.ok(has(g('Grep', { pattern: 'x', path: p }), re), `Grep ${p}`);
+    assert.ok(has(wr(p), re), `Write ${p}`);
+  }
+  assert.equal(sensitiveWhy('/home/owner/library/x', HOME, REPO), 'the Library folder');
+  // Near them, still readable.
+  for (const p of [`${REPO}/server/lib/a.mjs`, `${REPO}/README.md`, `${REPO}/server/config.example.json`, `${REPO}/server/database.md`, `${P}/content/history.md`, `${P}/content/Library/a.md`,
+    '/home/owner/.claude/agents/a.md', `${P}/content/shell_history.md`, `${P}/other-repo/server/config.json`]) {
+    assert.deepEqual(rd(p), [], p);
+  }
+  // A search rooted above a private place reaches it; the whole Projects folder is too wide by itself.
+  for (const root of ['/home/owner/Library', '/home/owner/.claude', '/home/owner/.config', REPO, `${REPO}/server`]) {
+    assert.ok(g('Grep', { pattern: 'x', path: root }).length > 0, `Grep ${root}`);
+    assert.ok(g('Glob', { pattern: '**/*.md', path: root }).length > 0, `Glob ${root}`);
+  }
+  for (const root of [P, `${P}/`, '~/Projects', '/home/owner/PROJECTS']) {
+    assert.ok(has(g('Grep', { pattern: 'x', path: root }), /whole Projects folder/), `Grep ${root}`);
+    assert.ok(has(g('Glob', { pattern: '**/*.md', path: root }), /whole Projects folder/), `Glob ${root}`);
+  }
+  const far = { ...finalOpts, repoRoot: '/srv/control-room' };
+  assert.deepEqual(g('Grep', { pattern: 'x', path: P }, far), ['a search of the whole Projects folder'], 'by its own rule, not only because the Control Room sits inside');
+  assert.ok(has(g('Grep', { pattern: 'x', path: '/work' }, { ...far, realpath: p => (p === '/work' ? P : null) }), /whole Projects folder/), 'a link to it');
+  assert.deepEqual(g('Grep', { pattern: 'x', path: `${P}/content` }), []);
+  assert.deepEqual(g('Glob', { pattern: '**/*.md', path: `${REPO}/docs` }), []);
+  assert.deepEqual(g('Read', { file_path: P }, far), [], 'the rule is for searches');
+  // Whitespace in a write path: the relay folds it, so the real path can't be known.
+  for (const p of [`${P}/content/my notes.md`, `${P}/content/a.md `, `${P}/content/sub dir/a.md`]) {
+    assert.ok(has(wr(p), /space in it/), p);
+    assert.ok(has(ed(p), /space in it/), p);
+    assert.ok(has(g('NotebookEdit', { notebook_path: p, new_source: 'x' }), /space in it/), p);
+  }
+  assert.ok(wr(`${P}/content/a\tb.md`).length > 0 && wr(`${P}/content/a\nb.md`).length > 0, 'a tab or a line break was already refused');
+  assert.deepEqual(rd(`${P}/content/my notes.md`), [], 'a read is not held to it');
+});
+
+test('config: a write folder may not be the Projects folder, nor hold or sit inside the lead\'s repo, machine-setup or the Control Room\'s code; the protected list fails closed', () => {
+  const o = { repoRoot: REPO, realpath: noReal };
+  for (const ok of ['~/Projects/app', `${P}/league`, `${REPO}/docs`, `${REPO}/docs/design`, '~/Documents/notes', '/srv/site', '~/Projects/jarvis-notes', '~/Projects/machine-setup2']) {
+    assert.equal(okWriteFolder(ok, HOME, o), true, ok);
+  }
+  for (const bad of ['~/Projects', '~/Projects/', P, '/home/owner/PROJECTS', '~/Projects/jarvis', '~/Projects/jarvis/', '~/Projects/jarvis/docs', '~/Projects/machine-setup', '~/Projects/machine-setup/git-hooks',
+    REPO, `${REPO}/`, `${REPO}/server`, `${REPO}/server/lib`, `${REPO}/web`, `${REPO}/bin`, `${REPO}/mod/src`]) {
+    assert.equal(okWriteFolder(bad, HOME, o), false, bad);
+  }
+  // By the real path too: a link to the Projects folder, or to the lead's repo.
+  assert.equal(okWriteFolder('/work', HOME, { repoRoot: REPO, realpath: p => (p === '/work' ? P : null) }), false);
+  assert.equal(okWriteFolder('/srv/j', HOME, { repoRoot: REPO, realpath: p => (p === '/srv/j' ? `${P}/jarvis` : null) }), false);
+  assert.equal(okWriteFolder('/srv/site', HOME, { repoRoot: null, realpath: noReal }), true, 'no repo root known: the other rules still hold');
+  assert.equal(okWriteFolder('~/Projects/jarvis', HOME, { repoRoot: null, realpath: noReal }), false);
+  const read = chat => readApprovalsConfig({ chat }, { home: HOME, repoRoot: REPO, realpath: noReal });
+  const r = read({ approvalsWriteFolders: ['~/Projects/app', '~/Projects', REPO, `${REPO}/docs`] });
+  assert.deepEqual(r.writeFolders, ['~/Projects/app', `${REPO}/docs`]);
+  assert.equal(r.problems.length, 2);
+  // Through the rules as well: a refused folder allows nothing, even handed in directly.
+  assert.ok(has(wr(`${P}/anything/a.md`, { ...finalOpts, writeFolders: ['~/Projects'] }), /outside the folders/));
+  assert.ok(has(wr(`${REPO}/README.md`, { ...finalOpts, writeFolders: [REPO] }), /outside the folders/));
+  // The protected places.
+  const good = read({ approvalsWriteFolders: ['~/Projects/app'], approvalsWriteProtected: ['~/Projects/app/src', '/home/owner/Projects/app/Makefile.d/'] });
+  assert.deepEqual(good.writeProtected, ['~/Projects/app/src', '/home/owner/Projects/app/Makefile.d/']);
+  assert.deepEqual(good.writeFolders, ['~/Projects/app']);
+  assert.deepEqual(good.problems, []);
+  assert.deepEqual(read({}).writeProtected, []);
+  for (const bad of ['~/Projects/app/src', ['src'], ['~/Projects/app/src', 7], ['~/a/../b'], ['~/a*'], [`~/caf${cp(0xe9)}`], Array.from({ length: 201 }, (_, i) => `~/p/${i}`)]) {
+    const x = read({ approvalsWriteFolders: ['~/Projects/app'], approvalsWriteProtected: bad });
+    assert.deepEqual(x.writeFolders, [], `a protected list that can't be read turns page writes off: ${JSON.stringify(bad).slice(0, 50)}`);
+    assert.deepEqual(x.writeProtected, []);
+    assert.equal(x.problems.length, 1);
+    assert.match(x.problems[0], /the page allows no writes/);
+  }
+});
+
+test('the gate carries config\'s protected places, and the routes the exact command: shown on the card, covered by the hash, dropped when the request closes', async () => {
+  const gateOpts = { bash: 'exact', bashCommands: ['cd /home/owner/Projects/app\nnpm test'], writeFolders: FINAL_WRITE, writeProtected: FINAL_PROTECTED, repoRoot: REPO, isLeadSession: id => id === 'lead' };
+  const env = await setup({ gate: gateOpts });
+  try {
+    await env.mark('phone', true);
+    // A write into a protected place inside a write folder: the card is Deny-only and Allow is refused.
+    await env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'aaaaa', tool: 'Write', description: 'd', inputPreview: JSON.stringify({ file_path: `${P}/league/src/sffl/cli.py`, content: 'x' }), relayedAt: env.clock.t } });
+    assert.ok(has(env.store.permission('aaaaa').denyOnly, /config protects/));
+    assert.equal((await env.tap('aaaaa', env.phone, 'allow')).status, 403);
+    assert.equal((await env.tap('aaaaa', env.phone, 'deny')).status, 200);
+    await env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'aaaab', tool: 'Write', description: 'd', inputPreview: JSON.stringify({ file_path: `${P}/league/docs/a.md`, content: 'x' }), relayedAt: env.clock.t } });
+    assert.equal((await env.tap('aaaab', env.phone, 'allow')).status, 200);
+    clock(env, MIN);
+    // Bash with no report: Deny-only.
+    await env.open('bbbbb', { command: 'pwd' });
+    assert.deepEqual(env.store.permission('bbbbb').denyOnly, [NO_EXACT]);
+    assert.equal(env.store.publicPermission(env.store.permission('bbbbb')).exact, null);
+    assert.equal((await env.tap('bbbbb', env.phone, 'allow')).status, 403);
+    assert.equal((await env.tap('bbbbb', env.phone, 'deny')).status, 200);
+    // The listed two-liner, reported by the hook, relayed folded.
+    const real = 'cd /home/owner/Projects/app\nnpm test';
+    assert.equal(env.approvals.noteExact({ sessionId: 'lead', command: real }), 'kept');
+    await env.open('ccccc', { command: 'cd /home/owner/Projects/app npm test' });
+    const p = env.store.permission('ccccc');
+    assert.equal(p.exact, real);
+    const status = await call({ port: env.port, path: '/api/chat/status', headers: { host: PAGE_HOST, cookie: env.phone } });
+    const open = status.json.openPermission.requestId === 'ccccc' ? status.json.openPermission : null;
+    assert.ok(open, JSON.stringify(status.json.openPermission?.requestId));
+    assert.equal(open.exact, real, 'the page gets the text with its line break');
+    assert.equal(open.canAllow, true);
+    // A tap that hashed only the preview (an old page, or one that never showed the exact text) is refused.
+    const stale = await env.tap('ccccc', env.phone, 'allow', { shown: shownHash(p.tool, p.description, p.inputPreview) });
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(env.store.permission('ccccc').state, 'open');
+    clock(env, MIN);
+    const ok = await env.tap('ccccc', env.phone, 'allow');
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(env.store.permission('ccccc').exact, null, 'dropped once answered');
+    // The verdict line on disk carries the hash, never the text.
+    const lines = (await readFile(join(env.dir, 'chat', (await readdir(join(env.dir, 'chat'))).find(n => n.endsWith('.jsonl'))), 'utf8'));
+    assert.ok(!lines.includes('npm test'), 'the exact text never reaches the disk');
+    assert.ok(lines.includes(shownHash(p.tool, p.description, p.inputPreview, real)));
+    // A second, different report after the card opened: Allow refused, alerted.
+    clock(env, MIN);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('ddddd', { command: 'cd /home/owner/Projects/app npm test' });
+    env.approvals.noteExact({ sessionId: 'lead', command: 'cd /home/owner/Projects/app npm test' });
+    const tied = await env.tap('ddddd', env.phone, 'allow');
+    assert.equal(tied.status, 403, tied.text);
+    assert.match(tied.json.error, /two different exact copies/);
+    assert.equal(env.events.filter(e => e.kind === 'approvals-exact-conflict').length, 1);
+    assert.equal((await env.tap('ddddd', env.phone, 'deny')).status, 200, 'Deny always works');
+    // Expiry drops the text too.
+    clock(env, MIN);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('eeeee', { command: 'cd /home/owner/Projects/app npm test' });
+    assert.equal(env.store.permission('eeeee').exact, real);
+    clock(env, PERMISSION_TTL_MS);
+    assert.equal(env.store.permission('eeeee').state, 'expired');
+    assert.equal(env.store.permission('eeeee').exact, null);
+    // And so does a hello from a new channel process.
+    clock(env, MIN);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('fffff', { command: 'cd /home/owner/Projects/app npm test' });
+    assert.equal(env.store.permission('fffff').exact, real);
+    env.store.newPermissionSession();
+    assert.equal(env.store.permission('fffff').state, 'expired');
+    assert.equal(env.store.permission('fffff').exact, null);
   } finally { await env.close(); }
 });

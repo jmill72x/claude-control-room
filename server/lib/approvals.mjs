@@ -18,13 +18,19 @@
 // Allow is further limited to what passes `denyOnlyReasons`: a short allowlist, not a
 // security boundary. It makes the riskiest requests need the terminal or Discord, so a
 // stolen phone or a careless tap can't grant them. Since Ultron's 11-11 build review:
-// Bash is Deny-only unless config says "strict"; anything outside plain ASCII in a
-// command or a path is Deny-only; writes pass only inside config's write folders.
+// anything outside plain ASCII in a command or a path is Deny-only; writes pass only
+// inside config's write folders. Since his final read the same day (design 0.2): code
+// inside the write folders is protected by generic rules and by config's
+// `chat.approvalsWriteProtected`; a channel reply may attach only what is in the outbox;
+// and Bash is Deny-only unless config says "exact", which needs the exact command from
+// the report-only PermissionRequest hook (lib/exact-commands.mjs) and then allows only a
+// strict one-liner or a command listed in config.
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createExactCommands, exactTextOk, foldWhitespace } from './exact-commands.mjs';
 
 export const APPROVAL_MODES = Object.freeze(['off', 'deny', 'on']);
 // Each relayed field is kept whole up to this many code points (Claude Code sends each
@@ -69,22 +75,40 @@ const WILDCARD = /[*?[\]{}]/;
 const isAbsolute = p => typeof p === 'string' && (p === '~' || p.startsWith('~/') || p.startsWith('/'));
 const stripSlash = p => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p);
 
-export const BASH_MODES = Object.freeze(['deny', 'strict']);
+export const BASH_MODES = Object.freeze(['deny', 'exact']);
 export const WRITE_FOLDERS_MAX = 40;
+export const WRITE_PROTECTED_MAX = 200;
+export const BASH_COMMANDS_MAX = 50;
+export const BASH_COMMAND_MAX_CHARS = 2000;
 
-// A write folder from config: absolute (or ~/), plain ASCII, no `..` or wildcard, and
-// narrower than the home folder. Answers true or false.
-function okWriteFolder(f, home) {
-  if (typeof f !== 'string' || f.length > 300 || !plainAscii(f) || !(f.startsWith('/') || f.startsWith('~/'))) return false;
-  if (f.split('/').includes('..') || WILDCARD.test(f)) return false;
-  const norm = stripSlash(posix.normalize(f.startsWith('~/') ? home + f.slice(1) : f)).toLowerCase();
+// A path from config: absolute (or ~/), plain ASCII, no `..` or wildcard.
+const okConfigPath = f => typeof f === 'string' && f.length <= 300 && plainAscii(f) && (f.startsWith('/') || f.startsWith('~/')) &&
+  !f.split('/').includes('..') && !WILDCARD.test(f);
+// Repos no write folder may be, hold or sit inside: the lead's repo, machine-setup and
+// the Control Room's own code (`root` is its repo).
+const noWriteFolderPlaces = (h, root) => [`${h}/projects/jarvis`, `${h}/projects/machine-setup`, ...(root ? ['server', 'web', 'bin', 'mod'].map(d => `${root}/${d}`) : [])];
+
+// A write folder from config: a config path narrower than the home folder, and neither
+// above nor inside the repos named above (so never the Projects folder itself); judged
+// by the path as written and by its real path. Answers true or false.
+export function okWriteFolder(f, home, { repoRoot = OWN_REPO, realpath = safeRealpath } = {}) {
+  if (!okConfigPath(f)) return false;
   const h = stripSlash(posix.normalize(home)).toLowerCase();
-  return norm !== '/' && !(h === norm || h.startsWith(norm + '/'));
+  const root = stripSlash(String(repoRoot ?? '')).toLowerCase();
+  for (const norm of pathForms(f, { home, realpath }).forms) {
+    if (norm === '/' || h === norm || h.startsWith(norm + '/')) return false;
+    // The Projects folder itself is refused by this rule too: it holds the lead's repo.
+    if (noWriteFolderPlaces(h, root).some(place => under(place, norm) || under(norm, place))) return false;
+  }
+  return true;
 }
 
-// What config says: the mode, the Bash mode, the write folders and anything to log.
-// Unknown values fall to the cautious side: off, Bash Deny-only, no write folders.
-export function readApprovalsConfig(config, { home = homedir() } = {}) {
+// What config says: the mode, the Bash mode and its listed commands, the write folders,
+// the protected places inside them, and anything to log. Unknown values fall to the
+// cautious side: off, Bash Deny-only, no listed commands, no write folders. A protected
+// list that can't be read turns page writes off whole, since dropping one entry would
+// quietly unprotect a place.
+export function readApprovalsConfig(config, { home = homedir(), repoRoot = OWN_REPO, realpath = safeRealpath } = {}) {
   const chat = config?.chat;
   const raw = isObject(chat) ? chat.approvals : undefined;
   const problems = [];
@@ -104,7 +128,15 @@ export function readApprovalsConfig(config, { home = homedir() } = {}) {
   const rawBash = isObject(chat) ? chat.approvalsBash : undefined;
   if (rawBash !== undefined && rawBash !== null) {
     if (BASH_MODES.includes(rawBash)) bash = rawBash;
-    else problems.push('chat.approvalsBash must be "deny" or "strict"; Bash stays Deny-only on the page');
+    else problems.push('chat.approvalsBash must be "deny" or "exact"; Bash stays Deny-only on the page');
+  }
+  const bashCommands = [];
+  const rawCommands = isObject(chat) ? chat.approvalsBashCommands : undefined;
+  if (rawCommands !== undefined && rawCommands !== null) {
+    const ok = c => typeof c === 'string' && c.trim() !== '' && c.length <= BASH_COMMAND_MAX_CHARS && exactTextOk(c);
+    if (!Array.isArray(rawCommands) || rawCommands.length > BASH_COMMANDS_MAX || !rawCommands.every(ok)) {
+      problems.push(`chat.approvalsBashCommands must be a list of at most ${BASH_COMMANDS_MAX} commands in plain ASCII (line breaks and tabs allowed); it is ignored`);
+    } else bashCommands.push(...rawCommands);
   }
   const writeFolders = [];
   const rawFolders = isObject(chat) ? chat.approvalsWriteFolders : undefined;
@@ -113,12 +145,20 @@ export function readApprovalsConfig(config, { home = homedir() } = {}) {
       problems.push(`chat.approvalsWriteFolders must be a list of at most ${WRITE_FOLDERS_MAX} folders; it is ignored, so the page allows no writes`);
     } else {
       for (const f of rawFolders) {
-        if (okWriteFolder(f, home)) writeFolders.push(f);
-        else problems.push('chat.approvalsWriteFolders: an entry is not an absolute plain folder below the home folder; it is ignored');
+        if (okWriteFolder(f, home, { repoRoot, realpath })) writeFolders.push(f);
+        else problems.push('chat.approvalsWriteFolders: an entry is not an absolute plain folder below the home folder, or it is the Projects folder, or it holds or sits inside the lead\'s repo, machine-setup or the Control Room\'s code; it is ignored');
       }
     }
   }
-  return { mode, patterns, bash, writeFolders, problems };
+  const writeProtected = [];
+  const rawProtected = isObject(chat) ? chat.approvalsWriteProtected : undefined;
+  if (rawProtected !== undefined && rawProtected !== null) {
+    if (!Array.isArray(rawProtected) || rawProtected.length > WRITE_PROTECTED_MAX || !rawProtected.every(okConfigPath)) {
+      problems.push(`chat.approvalsWriteProtected must be a list of at most ${WRITE_PROTECTED_MAX} absolute plain paths; until it is fixed the page allows no writes`);
+      writeFolders.length = 0;
+    } else writeProtected.push(...rawProtected);
+  }
+  return { mode, patterns, bash, bashCommands, writeFolders, writeProtected, problems };
 }
 
 // Invisible and direction-changing characters (and C0 controls but tab and newline)
@@ -182,9 +222,10 @@ export function parsePreview(text) {
 }
 
 // sha256 (hex) of what a card showed (L11): the page computes the same over the
-// fields exactly as delivered, and a verdict must carry it.
-export const shownHash = (tool, description, inputPreview) =>
-  createHash('sha256').update(JSON.stringify([tool ?? '', description ?? '', inputPreview ?? ''])).digest('hex');
+// fields exactly as delivered, and a verdict must carry it. When the card also showed
+// the exact command (from the hook's report), the hash covers that text too.
+export const shownHash = (tool, description, inputPreview, exact = null) =>
+  createHash('sha256').update(JSON.stringify([tool ?? '', description ?? '', inputPreview ?? '', ...(typeof exact === 'string' ? [exact] : [])])).digest('hex');
 
 // ---- paths ----
 
@@ -222,9 +263,20 @@ function realOfDeepest(p, realpath) {
   return null;
 }
 function fileCanRun(p) { try { const st = statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } }
+// Whether the last part of a path is itself a symbolic link (lstat, never followed).
+function pathIsLink(p) { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } }
 // The repo this server runs from (lib/ is two levels down).
 const OWN_REPO = fileURLToPath(new URL('../..', import.meta.url));
 
+// Inside a write folder, the folders and file names that hold code or settings some
+// tool loads without being asked (Ultron's final read, 11-11): a scheduled job, the next
+// git command, the next install or deploy, or the next Claude Code session would run or
+// obey what a page Allow wrote there. Names are compared lower-cased.
+const CODE_FOLDERS = ['.venv', 'node_modules', '.husky', '.github'];
+const CODE_NAMES = new Set(['claude.md', 'agents.md', 'skill.md', '.gitignore', '.gitattributes', '.gitmodules', 'package.json', 'package-lock.json',
+  'pyproject.toml', 'setup.py', 'setup.cfg', 'conftest.py', 'sitecustomize.py', 'usercustomize.py', 'makefile', 'gnumakefile',
+  'wrangler.jsonc', 'wrangler.json', 'wrangler.toml', '.envrc', '_headers', '_redirects']);
+const CODE_NAME_PATTERNS = [/^requirements.*\.txt$/, /\.pth$/, /\.plist$/];
 const SHELL_RC = ['.zshenv', '.zshrc', '.zprofile', '.zlogin', '.zlogout', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
 // Rules over a lower-cased absolute (or '/'-rooted relative) path. `H` is the home.
 const under = (p, dir) => p === dir || p.startsWith(dir + '/');
@@ -242,6 +294,8 @@ export function protectedWhy(p, H, repoRoot = OWN_REPO) {
   if (hasSeg(p, '.git')) return 'a .git folder';
   if (hasSeg(p, '.worktrees')) return 'a .worktrees folder';
   if (p.includes('/.github/workflows')) return 'a GitHub workflow';
+  for (const seg of CODE_FOLDERS) if (hasSeg(p, seg)) return `a ${seg} folder`;
+  if (CODE_NAMES.has(b) || CODE_NAME_PATTERNS.some(re => re.test(b))) return `a file that tools load or run by its name (${b.slice(0, 40)})`;
   if (p.includes('/machine-setup/git-hooks')) return 'the git hooks';
   if (hasSeg(p, 'machine-setup')) return 'the machine-setup repo';
   if (p.endsWith('/server/config.json')) return 'the Control Room config';
@@ -254,10 +308,15 @@ export function protectedWhy(p, H, repoRoot = OWN_REPO) {
   if (under(p, h + '/library/launchagents') || under(p, '/library') || under(p, '/system') || under(p, '/etc') || under(p, '/private/etc') || under(p, '/usr') || under(p, '/dev')) return 'a system folder';
   return null;
 }
-// Places the page may never Allow a read of, or a write to.
-export function sensitiveWhy(p, H) {
+// Places the page may never Allow a read of, or a write to. `repoRoot` is the Control
+// Room's own repo: its config and its data folder hold the board and account figures.
+export function sensitiveWhy(p, H, repoRoot = OWN_REPO) {
   const h = H.toLowerCase();
+  const root = stripSlash(String(repoRoot ?? '')).toLowerCase();
   if (under(p, h + '/.claude/channels') || p.includes('/.claude/channels')) return 'the channels folder';
+  if (under(p, h + '/.claude/projects')) return 'Claude Code\'s transcripts';
+  if (under(p, h + '/library')) return 'the Library folder';
+  if (root && (p === `${root}/server/config.json` || under(p, `${root}/server/data`))) return 'the Control Room\'s config or data';
   if (under(p, h + '/.ssh') || hasSeg(p, '.ssh')) return '~/.ssh';
   if (under(p, h + '/.local/state/jarvis-os') || p.includes('/.local/state/jarvis-os')) return 'the Jarvis OS state folder';
   const b = base(p);
@@ -269,6 +328,11 @@ export function sensitiveWhy(p, H) {
   if (hasSeg(p, '.cloudflared')) return 'the Cloudflare tunnel settings';
   if (hasSeg(p, '.aws')) return 'the AWS settings';
   if (hasSeg(p, '.docker')) return 'the Docker settings';
+  if (b.endsWith('_history')) return 'a history file';
+  if (hasSeg(p, 'browser-profile')) return 'a browser profile';
+  if (hasSeg(p, '.wrangler')) return 'the Wrangler state folder';
+  if (hasSeg(p, '.gnupg')) return 'the GnuPG folder';
+  if (hasSeg(p, '.config/gcloud')) return 'the Google Cloud settings';
   if (hasSeg(p, '.local/bin')) return 'a folder of commands (~/.local/bin)';
   if (under(p, '/opt/homebrew')) return 'Homebrew';
   if (b === '.tmux.conf') return 'the tmux settings';
@@ -276,23 +340,29 @@ export function sensitiveWhy(p, H) {
 }
 // Whether a folder holds one of the home's protected places, so a search or a
 // recursive listing rooted there would reach it.
-const coveredPlaces = h => [`${h}/.ssh`, `${h}/.claude/channels`, `${h}/.local/state/jarvis-os`, `${h}/.claude.json`, `${h}/.gitconfig`, `${h}/.config/git`,
-  `${h}/.config/gh`, `${h}/.cloudflared`, `${h}/.aws`, `${h}/.docker`, `${h}/.local/bin`, `${h}/.tmux.conf`, '/opt/homebrew'];
-export const coversProtected = (p, H) => p === '/' || coveredPlaces(H.toLowerCase()).some(place => place !== p && place.startsWith(p + '/'));
+const coveredPlaces = (h, root) => [`${h}/.ssh`, `${h}/.claude/channels`, `${h}/.local/state/jarvis-os`, `${h}/.claude.json`, `${h}/.gitconfig`, `${h}/.config/git`,
+  `${h}/.config/gh`, `${h}/.cloudflared`, `${h}/.aws`, `${h}/.docker`, `${h}/.local/bin`, `${h}/.tmux.conf`, '/opt/homebrew',
+  ...(root ? [`${root}/server/config.json`, `${root}/server/data`] : [])];
+// (The other private places, ~/Library, ~/.claude/projects, ~/.gnupg and ~/.config/gcloud,
+// sit under folders this list already makes Deny-only as a search root.)
+export const coversProtected = (p, H, repoRoot = OWN_REPO) => p === '/' ||
+  coveredPlaces(H.toLowerCase(), stripSlash(String(repoRoot ?? '')).toLowerCase()).some(place => place !== p && place.startsWith(p + '/'));
 
 // ---- Bash ----
 
 // Claude Code folds each run of whitespace in a relayed preview to one space (channels
 // reference), so a two-line command can arrive looking like one: "cat a.txt" then
 // "rm -rf x" reads "cat a.txt rm -rf x" (Ultron H-a). Two answers, the first the default:
-//   deny    Bash is never allowed from the page (config `chat.approvalsBash`, default).
-//   strict  the grammar below: a listed command, only that command's own options,
-//           exactly spelled, and every other word an absolute path that passes the
-//           path rules and is not a file that can be run. No command that takes a free
-//           word is listed (grep, rg, echo, which): "grep rm /x" can't be told from
-//           "grep" then "rm /x". What is left: a second line needs a word that is an
-//           option of the first command, a number, HEAD or a commit id, or an absolute
-//           path to something that can't be run.
+//   deny   Bash is never allowed from the page (config `chat.approvalsBash`, default).
+//   exact  the page may allow a Bash request only when the hook's report gave its exact
+//          text (lib/exact-commands.mjs; no report, or two that differ: Deny-only), and
+//          then only in two tiers. Tier 1: one line that passes the grammar below, which
+//          is sound once the line breaks are known: a listed command, only that
+//          command's own options, exactly spelled, and every other word an absolute path
+//          that passes the path rules and is not a file that can be run; no command that
+//          takes a free word is listed (grep, rg, echo, which). Tier 2: a command that
+//          equals, character for character, one listed in config's
+//          `chat.approvalsBashCommands` (none by default). Everything else is Deny-only.
 // Shell metacharacters (; | & $ ` > < ( ) and line breaks), and what would hide a path
 // from the checks: quotes, backslashes, globs, braces and tabs.
 const SHELL_SYNTAX = /[;|&$`><()\n\r\t\\'"*?[\]{}!]/;
@@ -411,10 +481,15 @@ const STAR_EXT = /^\*(\.[A-Za-z0-9_-]+)+$/;
 // Why the page may only Deny this request, as short phrases; empty means Allow may
 // be offered (mode and window permitting). `req` is the stored request: { tool,
 // description, inputPreview, cut }. `writeFolders` are config's (none: no page Allow
-// for any write); `bash` is "deny" or "strict"; `isExecutable(path)` says whether an
-// absolute path is a file that can be run.
+// for any write) and `writeProtected` the places inside them config protects; `bash`
+// is "deny" or "exact", `exact` the command's exact text from the hook's report (or
+// null, with `exactProblem` saying why) and `bashCommands` config's listed commands;
+// `isExecutable(path)` says whether an absolute path is a file that can be run, and
+// `isLink(path)` whether its last part is a symbolic link.
+export const NO_EXACT = 'no exact copy of this command came from the hook (answer at the terminal or in Discord)';
 export function denyOnlyReasons(req, {
-  home = homedir(), realpath = safeRealpath, patterns = [], writeFolders = [], bash = 'deny', repoRoot = OWN_REPO, isExecutable = fileCanRun
+  home = homedir(), realpath = safeRealpath, patterns = [], writeFolders = [], writeProtected = [], bash = 'deny', exact = null, exactProblem = null,
+  bashCommands = [], repoRoot = OWN_REPO, isExecutable = fileCanRun, isLink = pathIsLink
 } = {}) {
   const reasons = [];
   const add = r => { if (!reasons.includes(r)) reasons.push(r); };
@@ -428,7 +503,12 @@ export function denyOnlyReasons(req, {
   if (parsed.hidden) add(HIDDEN_REASON);
   const v = parsed.raw;
   const opts = { home, realpath };
-  const writeForms = (Array.isArray(writeFolders) ? writeFolders : []).filter(f => okWriteFolder(f, home)).flatMap(f => pathForms(f, opts).forms);
+  const writeForms = (Array.isArray(writeFolders) ? writeFolders : []).filter(f => okWriteFolder(f, home, { repoRoot, realpath })).flatMap(f => pathForms(f, opts).forms);
+  // (Config's reader refuses a list with a bad entry; here an odd one can only protect more.)
+  const protectedForms = (Array.isArray(writeProtected) ? writeProtected : []).flatMap(f => pathForms(f, opts).forms);
+  const outboxForms = pathForms(`${home}/.local/state/jarvis/outbox`, opts).forms;
+  const projectsForms = pathForms(`${home}/Projects`, opts).forms;
+  const onDisk = p => stripSlash(p === '~' || p.startsWith('~/') ? home + p.slice(1) : p);
   const keysOf = allowed => {
     for (const k of Object.keys(v).filter(k => !allowed.includes(k)).slice(0, 3)) add(`the input "${revealHidden(k).slice(0, 40)}" is not one this tool is known to take`);
   };
@@ -441,13 +521,27 @@ export function denyOnlyReasons(req, {
     if (!plainAscii(p)) { add(`a path with ${NOT_PLAIN}`); return; }
     const f = pathForms(p, opts);
     if (f.dotdot) add('a path with ..');
+    // The relay folds whitespace, so a write path with a space may not be the real one.
+    if (write && p.includes(' ')) add('a write path with a space in it (the relay folds spaces)');
+    if (!f.relative) {
+      let link = true;
+      try { link = isLink(onDisk(p)) === true; } catch { link = true; }
+      if (link) add('a path whose last part is a link');
+    }
     if (write && !f.forms.every(form => writeForms.some(dir => under(form, dir)))) add('it writes outside the folders the page may allow writes in');
+    if (write && !f.relative) {
+      // An existing file that can be run: a job, a hook or a person may run it later.
+      let runs = true;
+      try { runs = isExecutable(onDisk(p)) === true; } catch { runs = true; }
+      if (runs) add('it changes a file that can be run');
+    }
     for (const form of f.forms) {
       const w = guard ? protectedWhy(form, home, repoRoot) : null;
-      const r = sensitiveWhy(form, home);
+      const r = sensitiveWhy(form, home, repoRoot);
       if (w) add(`it touches ${w}`);
+      if (write && protectedForms.some(place => under(form, place))) add('it touches a place config protects inside the write folders');
       if (r) add(`it ${write ? 'touches' : 'reads'} ${r}`);
-      if (!write && !f.relative && coversProtected(form, home)) add('its folder holds protected files');
+      if (!write && !f.relative && coversProtected(form, home, repoRoot)) add('its folder holds protected files');
     }
   };
   // A Glob pattern or a Grep glob: relative, plain, no `..`; its folders literal or a
@@ -463,7 +557,7 @@ export function denyOnlyReasons(req, {
     const last = parts[parts.length - 1];
     if (reads && WILDCARD.test(last) && !STAR_EXT.test(last)) add('a wildcard that could pick any file (a search can be allowed for a name or *.ext only)');
     // The key-file rules read the ending, so `*.pem` is caught as it stands.
-    const r = sensitiveWhy('/' + pat.toLowerCase(), home);
+    const r = sensitiveWhy('/' + pat.toLowerCase(), home, repoRoot);
     if (r) add(`it reads ${r}`);
   };
 
@@ -471,19 +565,31 @@ export function denyOnlyReasons(req, {
     keysOf(TOOL_KEYS.Bash);
     const cmd = v.command;
     if (typeof cmd !== 'string' || cmd.trim() === '') { add('no command to show'); return reasons; }
-    if (bash !== 'strict') add('Bash is answered at the terminal or in Discord (a relayed command may have lost its line breaks)');
-    const syntax = SHELL_SYNTAX.test(cmd);
+    // What the rules below read: the preview's command, or in "exact" mode the exact
+    // text, which must be the hook's report of this very command.
+    let text = cmd;
+    if (bash !== 'exact') add('Bash is answered at the terminal or in Discord (a relayed command may have lost its line breaks)');
+    else {
+      if (typeof exact !== 'string') { add(typeof exactProblem === 'string' && exactProblem ? exactProblem : NO_EXACT); return reasons; }
+      if (!exactTextOk(exact)) { add('the exact command has characters outside plain ASCII, line breaks and tabs'); return reasons; }
+      if (foldWhitespace(exact) !== cmd && exact !== cmd) { add('the exact command does not match the preview'); return reasons; }
+      // Tier 2: a command the owner listed, character for character.
+      if ((Array.isArray(bashCommands) ? bashCommands : []).includes(exact)) return reasons;
+      if (/[\n\t]/.test(exact)) { add('it has more than one line, or a tab, and is not a command listed in config'); return reasons; }
+      text = exact;
+    }
+    const syntax = SHELL_SYNTAX.test(text);
     if (syntax) add('it uses shell syntax (only one plain command can be allowed here)');
-    const plain = plainAscii(cmd.replace(/[\n\r\t]/g, ' '));
+    const plain = plainAscii(text.replace(/[\n\r\t]/g, ' '));
     if (!plain) add(`a command with ${NOT_PLAIN}`);
     if (syntax || !plain) return reasons;
-    const g = bashGrammar(cmd);
+    const g = bashGrammar(text);
     for (const p of g.problems) add(p);
     for (const { path, write } of g.paths) {
       checkPath(path, { write, guard: true });
       let runs = true;
-      try { runs = isExecutable(path === '~' || path.startsWith('~/') ? home + path.slice(1) : path); } catch { runs = true; }
-      if (runs) add('it names a file that can be run (a lost line break would run it)');
+      try { runs = isExecutable(onDisk(path)); } catch { runs = true; }
+      if (runs) add('it names a file that can be run');
     }
     return reasons;
   }
@@ -507,6 +613,8 @@ export function denyOnlyReasons(req, {
     else {
       if (WILDCARD.test(v.path)) add('a wildcard in the folder');
       checkPath(v.path);
+      // The whole Projects folder is too wide a search: every repo, private ones too.
+      if (plainAscii(v.path) && pathForms(v.path, opts).forms.some(form => projectsForms.includes(form))) add('a search of the whole Projects folder');
     }
     if (tool === 'Glob') {
       if (typeof v.pattern !== 'string' || v.pattern === '') add('no pattern to show');
@@ -533,7 +641,13 @@ export function denyOnlyReasons(req, {
     keysOf(CHANNEL_KEYS);
     if (v.files !== undefined) {
       if (!Array.isArray(v.files) || !v.files.every(f => typeof f === 'string')) add('its files could not be read');
-      else for (const f of v.files) { if (!isAbsolute(f)) add('no absolute path to show'); else checkPath(f); }
+      else for (const f of v.files) {
+        if (!isAbsolute(f) || f === '~') { add('no absolute path to show'); continue; }
+        checkPath(f);
+        // A reply can attach any file the session can read: only the outbox, the folder
+        // made for sending, by the path as written and by its real path (Ultron, 11-11).
+        if (!plainAscii(f) || !pathForms(f, opts).forms.every(form => outboxForms.some(dir => form !== dir && under(form, dir)))) add('it attaches a file from outside the outbox folder');
+      }
     }
     return reasons;
   }
@@ -570,14 +684,22 @@ export function verdictOriginProblem(headers, allowedHosts) {
 
 // The gate: mode (with the kill file and the channel's relay mode), the classifier-block window, the flood rule,
 // per-device limits and lockout, refusals with no device, and the allow-burst alert.
-// `onEvent` hears { kind } for each thing worth an alert.
+// `onEvent` hears { kind } for each thing worth an alert. `isLead(id)` is the cautious
+// test the block window uses (the lead's session, or one nobody can name);
+// `isLeadSession(id)` is the strict one for exact-command reports: the lead's session
+// by name, and nothing else.
 export function createApprovals({
   mode = 'off', killPath = null, patterns = [], home = homedir(), realpath = safeRealpath,
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
-  bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun
+  bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun,
+  writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink
 } = {}) {
   const configured = APPROVAL_MODES.includes(mode) ? mode : 'off';
   const bashMode = BASH_MODES.includes(bash) ? bash : 'deny';
+  // The hook's reports of exact Bash commands: memory only, two minutes, the lead's.
+  const exactReports = createExactCommands({ now });
+  const previewCommand = p => { const c = parsePreview(p?.inputPreview)?.raw?.command; return typeof c === 'string' ? c : null; };
+  const EXACT_CONFLICT = 'two different exact copies of this command were reported (answer at the terminal or in Discord)';
   // What the channel last said its relay does: null until its first hello, then
   // "off", "deny", "allow" or "unknown" (a channel that didn't say).
   let channelRelay = null;
@@ -611,6 +733,16 @@ export function createApprovals({
   // Why Allow is out now for this request: its own reasons plus the moment's.
   function reasonsNow(p, at = now()) {
     const out = [...(p.denyOnly ?? [])];
+    // A card that shows an exact command: a second, different report for the same
+    // preview since it opened means one of the two is not what will run. Sticky.
+    if (typeof p.exact === 'string' && !p.exactConflict) {
+      const c = exactReports.candidates(previewCommand(p), p.relayedAt ?? p.openedAt ?? at);
+      if (c.unusable || c.texts.some(t => t !== p.exact)) {
+        p.exactConflict = true;
+        onEvent({ kind: 'approvals-exact-conflict' });
+      }
+    }
+    if (p.exactConflict) out.push(EXACT_CONFLICT);
     if (channelRelay !== 'allow') out.push(channelRelay === 'deny' ? 'the channel delivers Deny only' : 'the channel has not said it can deliver Allow');
     if (at < blockUntil) out.push('auto mode blocked something in the last 15 minutes');
     if (at < floodUntil) out.push('too many requests at once');
@@ -634,12 +766,38 @@ export function createApprovals({
     // At open: the request's own reasons and why it is asking, if a block explains it.
     assess(p) {
       const at = now();
-      const denyOnly = denyOnlyReasons(p, { home, realpath, patterns, writeFolders, bash: bashMode, repoRoot, isExecutable });
+      // In "exact" mode a Bash request is matched, by content, to the hook's reports:
+      // exactly one usable text, or it stays Deny-only (two that differ: also an alert).
+      let exact = null;
+      let exactProblem = null;
+      if (bashMode === 'exact' && p?.tool === 'Bash') {
+        const cmd = previewCommand(p);
+        if (markerReasons(p.inputPreview).length > 0) exactProblem = 'part of the command is hidden in the preview, so its exact copy is not used';
+        else if (cmd !== null) {
+          const c = exactReports.candidates(cmd, p.relayedAt ?? at);
+          if (c.conflict) { exactProblem = EXACT_CONFLICT; onEvent({ kind: 'approvals-exact-conflict' }); }
+          else if (c.unusable) exactProblem = 'the exact command has characters outside plain ASCII, line breaks and tabs';
+          else if (c.texts.length === 1) exact = c.texts[0];
+        }
+      }
+      const denyOnly = denyOnlyReasons(p, { home, realpath, patterns, writeFolders, writeProtected, bash: bashMode, exact, exactProblem, bashCommands, repoRoot, isExecutable, isLink });
       const why = lastBlock && at - lastBlock.at <= WHY_WINDOW_MS && lastBlock.tool === p.tool
         ? `Auto mode refused this ${lastBlock.tool} call${lastBlock.why ? ` (${lastBlock.why})` : ''}, so Claude Code is asking you`
         : null;
-      return { denyOnly, why };
+      return { denyOnly, why, exact };
     },
+    // A report from the PermissionRequest hook: { sessionId, command }. Kept only in
+    // "exact" mode with approvals on, and only from the lead's session; answers
+    // "kept", "off" or "other". The text is never logged.
+    noteExact({ sessionId, command } = {}) {
+      if (bashMode !== 'exact' || serverMode() === 'off') return 'off';
+      let lead = false;
+      try { lead = isLeadSession(sessionId) === true; } catch { lead = false; }
+      if (!lead) return 'other';
+      exactReports.note(command);
+      return 'kept';
+    },
+    bashMode,
     // A PermissionDenied hook event: { sessionId, tool, reason, at }. Only blocks in
     // the lead's session (or one that can't be told apart from it) open the window.
     noteBlock({ sessionId, tool, reason }) {

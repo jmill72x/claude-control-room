@@ -281,6 +281,8 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     const at = now();
     for (const [uid, p] of permissions) {
       if (p.state === 'open' && at - p.relayedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; emit({ type: 'permission-closed', request: p }); }
+      // A closed request drops its exact command at the next look (any read prunes).
+      if (p.state !== 'open') p.exact = null;
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
       if (at - p.openedAt >= 7 * DAY) {
         permissions.delete(uid);
@@ -321,9 +323,17 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       cut: Boolean(cut) || t.cut || d.cut || ip.cut,
       openedAt: at, relayedAt: ra, session: permSession,
       state: repeat ? 'repeat' : late ? 'late' : 'open',
-      answeredBy: null, answeredAt: null, messageId: null, denyOnly: [], why: null
+      answeredBy: null, answeredAt: null, messageId: null, denyOnly: [], why: null, exact: null
     };
-    try { const a = assess(p) ?? {}; p.denyOnly = Array.isArray(a.denyOnly) ? a.denyOnly : []; p.why = typeof a.why === 'string' ? a.why : null; } catch { p.denyOnly = ['it could not be checked']; }
+    // `exact` is a Bash command's exact text, when the gate matched the hook's report
+    // to this request: shown on the card, covered by the hash, kept in memory only and
+    // dropped once the request has closed (prunePermissions, on the next read).
+    try {
+      const a = assess(p) ?? {};
+      p.denyOnly = Array.isArray(a.denyOnly) ? a.denyOnly : [];
+      p.why = typeof a.why === 'string' ? a.why : null;
+      p.exact = typeof a.exact === 'string' ? a.exact : null;
+    } catch { p.denyOnly = ['it could not be checked']; p.exact = null; }
     const uid = ++permUid;
     permissions.set(uid, p);
     latest.set(requestId, uid);
@@ -348,7 +358,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     if (p.state === 'repeat' || p.state === 'late') return { ok: false, status: 409, error: 'this one can only be answered at the terminal' };
     if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
-    const hash = shownHash(p.tool, p.description, p.inputPreview);
+    const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact);
     if ((requireShown || shown !== null) && shown !== hash) return { ok: false, status: 409, error: 'the request changed; reload' };
     if (behavior === 'allow') {
       const why = allowProblem(p);
@@ -368,6 +378,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     return {
       requestId: p.requestId, tool: p.tool, description: p.description, inputPreview: p.inputPreview,
       fields: parsed ? parsed.fields : null, cut: Boolean(p.cut), why: p.why ?? null, denyOnly: p.denyOnly ?? [],
+      exact: typeof p.exact === 'string' ? p.exact : null,
       openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS,
       state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId
     };

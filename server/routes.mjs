@@ -8,6 +8,7 @@ import {
   applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine
 } from './lib/acks.mjs';
 import { checkNeedsYou, needsYouLogLine, BLOCK_EVENTS } from './lib/needs-you.mjs';
+import { checkExactReport } from './lib/exact-commands.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -18,6 +19,9 @@ const MAX_BODY = 256 * 1024;
 // growing by a few KB a day. It gets 1 MiB of its own. The `board` panel
 // (server.mjs) reports its size against this, and past 75% an alert says so.
 export const BOARD_MAX_BODY = 1024 * 1024;
+// A hook's report of one Bash command (lib/exact-commands.mjs caps the text at 4,000
+// characters; as JSON with every character escaped that is under 32 KB).
+const EXACT_MAX_BODY = 32 * 1024;
 
 // nosniff on every answer (the 2026-10-21 security review): a browser keeps to the
 // JSON type, so no answer, a board item's text included, is ever read as a page.
@@ -154,8 +158,10 @@ const NO_ACKS = { read: async () => [], add: null, remove: null };
 // The waits (lib/needs-you.mjs) without a store: none, and the ingest says so.
 const NO_NEEDS_YOU = { view: () => [], record: null };
 
-// `onBlock` hears a classifier block from the needs-you ingest (lib/approvals.mjs).
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null }) {
+// `onBlock` hears a classifier block from the needs-you ingest (lib/approvals.mjs), and
+// `onExact` a Bash command's exact text from the exact-command ingest; it answers
+// "kept", "other" (not the lead's session) or "off".
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null }) {
   const panels = now => {
     const payload = {};
     for (const key of PANELS) payload[key] = cache.get(key, now);
@@ -318,6 +324,22 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
         const { open, stale } = needsYou.record(checked.value, Date.now());
         log(needsYouLogLine(checked.value, open, stale));
         return json(res, 200, stale ? { ok: true, open, stale: true } : { ok: true, open });
+      }
+
+      // The report-only PermissionRequest hook (README "Approvals as buttons"): the exact
+      // text of a Bash command the lead's session is about to ask about, for the
+      // approvals gate to match to the relayed request (lib/exact-commands.mjs). From
+      // this machine only. The command is kept in memory for two minutes when the gate
+      // wants it, and is never logged: the log line says only what became of it.
+      if (path === '/api/ingest/exact-command' && req.method === 'POST') {
+        guardLocal(req, path);
+        guardWrite(req);
+        const checked = checkExactReport(await readBody(req, EXACT_MAX_BODY));
+        if (!checked.ok) throw new HttpError(400, checked.error);
+        let took = 'off';
+        try { took = onExact ? onExact(checked.value) : 'off'; } catch { took = 'off'; }
+        log(`exact-command: a Bash report, ${took === 'kept' ? 'from the lead\'s session, kept for 2 minutes' : took === 'other' ? 'not from the lead\'s session, dropped' : 'dropped (approvals for Bash are not in "exact" mode)'}`);
+        return json(res, 200, { ok: true, kept: took === 'kept' });
       }
 
       const ingest = path.match(/^\/api\/ingest\/(crons|projects|credits)$/);

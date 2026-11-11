@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -311,6 +311,26 @@ test('the shown hash is sha256 over JSON.stringify([tool, description, inputPrev
   const { createHash } = await import('node:crypto');
   assert.equal(await sha256Hex(shownInput(p)), createHash('sha256').update(shownInput(p)).digest('hex'));
   await assert.rejects(sha256Hex('x', null), /secure context/);
+});
+
+test('the exact command: the hash covers it, and its rows keep every line break and tab in sight', async () => {
+  const p = { tool: 'Bash', description: 'd', inputPreview: '{"command":"cat a rm b"}' };
+  assert.equal(shownInput({ ...p, exact: 'cat a\nrm b' }), JSON.stringify(['Bash', 'd', '{"command":"cat a rm b"}', 'cat a\nrm b']));
+  assert.equal(shownInput({ ...p, exact: null }), shownInput(p), 'no exact text: the hash as before');
+  assert.equal(shownInput({ ...p, exact: 7 }), shownInput(p));
+  assert.notEqual(shownInput({ ...p, exact: 'cat a rm b' }), shownInput({ ...p, exact: 'cat a\nrm b' }));
+  // The server's rule, computed apart: sha256 over the same four items.
+  const { createHash } = await import('node:crypto');
+  assert.equal(await sha256Hex(shownInput({ ...p, exact: 'cat a\nrm b' })), createHash('sha256').update(JSON.stringify([p.tool, p.description, p.inputPreview, 'cat a\nrm b'])).digest('hex'));
+  assert.deepEqual(exactRows('ls -la'), [{ parts: [{ text: 'ls -la' }], end: false }]);
+  assert.deepEqual(exactRows('cat a\nrm b'), [{ parts: [{ text: 'cat a' }], end: true }, { parts: [{ text: 'rm b' }], end: false }]);
+  assert.deepEqual(exactRows('a\tb'), [{ parts: [{ text: 'a' }, { tab: true }, { text: 'b' }], end: false }]);
+  assert.deepEqual(exactRows('\ta\t'), [{ parts: [{ tab: true }, { text: 'a' }, { tab: true }], end: false }]);
+  assert.deepEqual(exactRows('pwd\n'), [{ parts: [{ text: 'pwd' }], end: true }], 'a final line break is a mark, not an empty row');
+  assert.deepEqual(exactRows('a\n\nb').map(r => [r.parts.length, r.end]), [[1, true], [0, true], [1, false]], 'an empty line in the middle is a row');
+  assert.deepEqual(exactRows('\n'), [{ parts: [], end: true }]);
+  assert.deepEqual(exactRows('<b>x</b>'), [{ parts: [{ text: '<b>x</b>' }], end: false }], 'text stays text');
+  for (const none of [null, undefined, '', 7, ['ls']]) assert.deepEqual(exactRows(none), []);
 });
 
 test('Allow once is armed by the first tap for 4 seconds; the "sent" line never says done', () => {

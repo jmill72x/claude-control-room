@@ -10,7 +10,7 @@ import { holdReload } from './buildWatch.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine,
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho
 } from '../lib/orbit/chat.js';
@@ -310,6 +310,7 @@ function PermissionCard({ p, chat, now }) {
   // Enter never answers a card: only a tap (or Space) does.
   const noEnter = e => { if (e.key === 'Enter') e.preventDefault(); };
   const fields = cardFields(p);
+  const exact = exactRows(p.exact);
   const label = { open: 'Jarvis asks', expired: 'Expired request', terminal: 'Answer at the terminal', closed: 'Answered here' }[p.view] ?? 'Jarvis asks';
   return (
     <section className={`o-chat-card${p.view !== 'open' ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`} onKeyDown={noEnter}>
@@ -319,10 +320,27 @@ function PermissionCard({ p, chat, now }) {
       </div>
       <h3 className="o-chat-card-tool o-mono">{p.tool}</h3>
       {p.why && <p className="o-chat-card-why">{p.why}</p>}
+      {exact.length > 0 && (
+        // The command's exact text, from Claude Code's hook: one row per line, each
+        // line break and tab drawn, so two lines never read as one. Text nodes only.
+        <div className="o-chat-card-field">
+          <span className="o-chat-card-key">Exact command, {exact.length === 1 ? 'one line' : `${exact.length} lines`}</span>
+          <div className="o-mono o-chat-card-input o-chat-card-exact" role="group" tabIndex={0} aria-label={`The exact command, ${exact.length === 1 ? 'one line' : `${exact.length} lines`}`}>
+            {exact.map((row, i) => (
+              <div key={i} className="o-chat-card-line">
+                {row.parts.map((part, j) => (part.tab
+                  ? <span key={j} className="o-chat-card-break" role="img" aria-label="tab">⇥</span>
+                  : <span key={j}>{part.text}</span>))}
+                {row.end && <span className="o-chat-card-break" role="img" aria-label="line break">↵</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {fields.length
         ? fields.map(([k, v]) => (
           <div key={k} className="o-chat-card-field">
-            <span className="o-chat-card-key o-mono">{k}</span>
+            <span className="o-chat-card-key o-mono">{k === 'command' && exact.length > 0 ? 'command, as relayed (line breaks folded)' : k}</span>
             <pre className="o-mono o-chat-card-input" tabIndex={0} aria-label={`The ${k}`}><FieldText text={v} /></pre>
           </div>
         ))
