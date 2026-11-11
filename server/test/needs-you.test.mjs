@@ -30,6 +30,12 @@ test('the hook\'s JSON is read down to the event, the session and the kind of wa
   }
   const value = checkNeedsYou(hook()).value;
   assert.deepEqual(Object.keys(value).sort(), ['event', 'kind', 'sessionId'], 'no message, path, cwd or tool input survives the check');
+  // The README's hook entry sends exactly these three fields, with notification_type
+  // null for an event that has none (jq's `{a,b,c}` on a body without `c`).
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'SessionEnd', session_id: SID, notification_type: null }).value, { event: 'SessionEnd', sessionId: SID, kind: null });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'idle_prompt' }).value, { event: 'Notification', sessionId: SID, kind: 'idle' });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, notification_type: null }).value, { event: 'Stop', sessionId: SID, kind: null });
+  assert.deepEqual(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: null }).value, { event: 'Notification', sessionId: SID, kind: null }, 'a Notification with no type is accepted and opens nothing');
 });
 
 test('a bad hook body says what is wrong', () => {

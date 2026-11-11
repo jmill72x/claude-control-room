@@ -551,7 +551,9 @@ wait; `PostToolUse`, `UserPromptSubmit`, `Stop` and `SessionEnd` end it; anythin
 400), `session_id` (kept, in memory only, to match the clear), and for a Notification its
 `notification_type` (`permission_prompt`, `idle_prompt` and `elicitation_dialog` open a
 wait; any other type, such as `auth_success`, ends one). The message text, the tool's
-input, the transcript path and the working directory are never read. At most 20 waits
+input, the transcript path and the working directory are never read, and the hook entry
+below filters them out before sending (a body of exactly those three fields, with
+`notification_type` null for events that have none, is the normal case). At most 20 waits
 are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
 
 `/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
@@ -570,20 +572,29 @@ host's own loopback address:
 ```json
 {
   "hooks": {
-    "Notification": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }]
+    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type}' | curl -s -m 1 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null" }] }]
   }
 }
 ```
 
-The hook posts the whole stdin JSON; the server drops everything but the three fields.
-The `PermissionRequest` hook exists in the installed CLI's strings (2.1.321) but its
-payload is unconfirmed against the docs for that version; the `Notification` hook with
-`permission_prompt` is the documented path and is enough on its own. A hook that can't
-reach the server (3 s) exits 0 and the session goes on.
+Each hook filters before it sends: `jq` keeps the three fields the server reads, so the
+message text, the tool's input and the transcript path never leave the session (the
+server drops anything else anyway). The path is spelled out because a hook runs with a
+short PATH: macOS ships `/usr/bin/jq` (checked on the Serve host); a Homebrew jq would be
+`/opt/homebrew/bin/jq`, and there isn't one on that machine. `"async": true` runs the hook
+in the background so the session never waits on the post (the installed CLI, 2.1.321,
+supports it: its hook schema has `async`, "runs in background without blocking", and the
+hooks reference documents it); `SessionEnd` stays synchronous with a 1 s limit, since that
+hook runs as the process leaves and shares a 1.5 s budget. The `Notification` matcher
+names the three types that open a wait, so a sign-in or a plugin notice posts nothing. The
+`PermissionRequest` event is not hooked: its payload is unconfirmed against the docs for
+2.1.321, and the `Notification` hook with `permission_prompt` is the documented path; the
+server still accepts a `PermissionRequest` post as an opening event. A hook that can't
+reach the server exits 0 (curl's `-s`, output dropped) and the session goes on.
 
 ### Acknowledging a known miss
 

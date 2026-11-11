@@ -452,8 +452,13 @@ leadModel`; the band shows the Now chip with the lead's model; Needs you has fou
 Today's routines lists today's jobs; on the iPhone the lower panels fold under More and
 "Add to Home Screen" offers the navy icon named Control Room; after the hook entry, a
 permission prompt in Jarvis's session shows a Waiting card within a poll (30 s) and clears
-when it is answered. **Follow-up:** the design's §5.2 `PermissionRequest` payload is
-unconfirmed; the `Notification` hook alone is enough.
+when it is answered. **Ultron's 11-11 re-review (go with conditions)** is answered on the branch: the README's hook
+entry now filters with `/usr/bin/jq -c '{hook_event_name,session_id,notification_type}'` before
+curl (macOS ships `/usr/bin/jq`; there is no Homebrew jq on the mini), runs `"async": true` on the
+four in-session events (the CLI 2.1.321 schema has `async`), adds `SessionEnd` (synchronous, 1 s),
+hooks `Notification` with a matcher for the three opening types and drops `PermissionRequest`
+(payload unconfirmed; the server still accepts it). **Follow-up:** the design's §5.2
+`PermissionRequest` payload is unconfirmed; the `Notification` hook alone is enough.
 
 **Phase 1a, the acknowledge mechanism, is built and committed (96cd2b6, 2026-11-10), not live.** README
 "Acknowledging a known miss" describes it: `server/lib/acks.mjs` (pure), `server/acks.mjs`
