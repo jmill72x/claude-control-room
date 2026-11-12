@@ -1,13 +1,15 @@
-// The ingest routes take posts from this machine only (lib/local-caller.mjs): Tailscale
-// Serve puts the whole loopback port on the tailnet, and before this any tailnet device
-// could post a fake cron failure, which showed as an alert and was pushed. Every host
+// The ingest's TCP side (lib/local-caller.mjs): Tailscale Serve puts the whole loopback
+// port on the tailnet, and before 2026-11-11 any tailnet device could post a fake cron
+// failure, which showed as an alert and was pushed. Since the ingest socket
+// (ingest-socket.test.mjs) the port takes only the needs-you route, in the transition,
+// behind this guard. Every host
 // name, login and address here is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { localCaller, PROXY_HEADERS } from '../lib/local-caller.mjs';
 import { createCache } from '../cache.mjs';
-import { createHandler } from '../routes.mjs';
+import { createHandler, readIngestConfig } from '../routes.mjs';
 import { createNeedsYouStore } from '../lib/needs-you.mjs';
 
 const SERVE_HOST = 'mini.example-tailnet.ts.net';
@@ -85,28 +87,73 @@ const deps = () => {
     cache: createCache(),
     todos: { readState: async () => ({ todos: [], revision: null }), save: async l => ({ todos: l, revision: null }) },
     config: { warnThreshold: 85, showAlertBanner: true, present: true },
-    needsYou, log: line => logged.push(line), logged
+    needsYou, log: line => logged.push(line), logged, exact: [], tcpPosts: [], tcpFlags: []
   };
 };
 const POSTS = [
   ['/api/ingest/crons', [{ name: 'cloud-job', ok: false, last: 'Failed · 1' }], 'ingestCrons'],
   ['/api/ingest/projects', [{ name: 'a-project' }], 'ingestProjects'],
   ['/api/ingest/credits', { balance: 12.5, updatedAt: '2026-11-01' }, 'ingestCredits'],
+  ['/api/ingest/exact-command', { hook_event_name: 'PermissionRequest', session_id: 'a1b2c3d4-0000-4000-8000-000000000009', tool_name: 'Bash', command: 'ls' }, 'exact'],
   ['/api/ingest/needs-you', { hook_event_name: 'Notification', session_id: 'a1b2c3d4-0000-4000-8000-000000000009', notification_type: 'permission_prompt' }, null]
 ];
 const VIA_SERVE = { host: SERVE_HOST, 'x-forwarded-for': '100.64.0.9', 'x-forwarded-host': SERVE_HOST, 'x-forwarded-proto': 'https', 'tailscale-user-login': 'owner@example.com' };
+// What a route stored, if anything: a cache key, the gate's reports, or a wait.
+const stored = (d, key) => (key === 'exact' ? d.exact.length > 0 : key ? d.cache.get(key, Date.now()).status !== 'unavailable' : d.needsYou.view(Date.now()).length > 0);
+const tcpHandler = (d, ingest) => createHandler({ ...d, config: { ...d.config, ...(ingest === undefined ? {} : { ingest }) }, onExact: v => { d.exact.push(v); return 'kept'; }, onIngestTcp: (p, flags) => { d.tcpPosts.push(p); d.tcpFlags.push(flags); } });
 
-test('each ingest route takes a post from this machine', async () => {
-  for (const [url, body, key] of POSTS) {
-    const d = deps();
-    const { res } = await call(createHandler(d), url, body);
-    assert.equal(res.statusCode, 200, url);
-    if (key) assert.equal(d.cache.get(key, Date.now()).status, 'ok', url);
-    else assert.equal(d.needsYou.view(Date.now()).length, 1, url);
+// The TCP port since the ingest socket (lib/ingest-socket.mjs): only the needs-you route,
+// and only in the "legacy" transition (the default); every other post is refused unread.
+test('on the TCP port, in the legacy transition, only the needs-you route takes a post from this machine, and each one is reported', async () => {
+  for (const ingest of [undefined, { tcp: 'legacy' }, {}]) {
+    for (const [url, body, key] of POSTS) {
+      const d = deps();
+      const { res, read } = await call(tcpHandler(d, ingest), url, body);
+      if (url === '/api/ingest/needs-you') {
+        assert.equal(res.statusCode, 200, url);
+        assert.equal(stored(d, key), true, url);
+        assert.deepEqual(d.tcpPosts, [url], 'the transition notice hears it');
+        assert.deepEqual(d.tcpFlags, [{ taken: true, proxied: false }]);
+      } else {
+        assert.equal(res.statusCode, 403, url);
+        assert.match(JSON.parse(res.body).error, /Unix socket only/);
+        assert.equal(read, false, 'the body is never read');
+        assert.equal(stored(d, key), false, url);
+        assert.equal(res.headers.Connection, 'close');
+        assert.deepEqual(d.tcpPosts, []);
+      }
+    }
   }
 });
 
-test('each ingest route refuses a post that came through Serve, before reading its body, and stores nothing', async () => {
+test('with ingest.tcp "off", or a setting it cannot read, the TCP port takes no ingest post at all', async () => {
+  for (const ingest of [{ tcp: 'off' }, { tcp: 'on' }, { tcp: true }, 'legacy', ['legacy']]) {
+    for (const [url, body, key] of POSTS) {
+      const d = deps();
+      const { res, read } = await call(tcpHandler(d, ingest), url, body);
+      assert.equal(res.statusCode, 403, `${url} ${JSON.stringify(ingest)}`);
+      assert.match(JSON.parse(res.body).error, /Unix socket only/);
+      assert.equal(read, false);
+      assert.equal(stored(d, key), false);
+      assert.deepEqual(d.tcpPosts, []);
+    }
+  }
+});
+
+test('readIngestConfig: absent is the legacy transition; "off" closes it; anything else closes it and says why', () => {
+  assert.deepEqual(readIngestConfig({}), { tcp: 'legacy', problems: [] });
+  assert.deepEqual(readIngestConfig(null), { tcp: 'legacy', problems: [] });
+  assert.deepEqual(readIngestConfig({ ingest: {} }), { tcp: 'legacy', problems: [] });
+  assert.deepEqual(readIngestConfig({ ingest: { tcp: 'legacy' } }), { tcp: 'legacy', problems: [] });
+  assert.deepEqual(readIngestConfig({ ingest: { tcp: 'off' } }), { tcp: 'off', problems: [] });
+  for (const ingest of [{ tcp: 'on' }, { tcp: null }, { tcp: 'LEGACY' }, 'off', ['off'], 7]) {
+    const r = readIngestConfig({ ingest });
+    assert.equal(r.tcp, 'off', JSON.stringify(ingest));
+    assert.equal(r.problems.length, 1);
+  }
+});
+
+test('the legacy route refuses a post that came through Serve, before reading its body, and stores nothing', async () => {
   const cases = [
     VIA_SERVE,
     { 'x-forwarded-for': '100.64.0.9' }, // a proxy that kept the loopback Host
@@ -116,28 +163,38 @@ test('each ingest route refuses a post that came through Serve, before reading i
   for (const [url, body, key] of POSTS) {
     for (const headers of cases) {
       const d = deps();
-      const { res, read } = await call(createHandler(d), url, body, headers);
+      const { res, read } = await call(tcpHandler(d), url, body, headers);
       assert.equal(res.statusCode, 403, `${url} ${JSON.stringify(headers)}`);
-      assert.match(JSON.parse(res.body).error, /this machine only/);
+      assert.match(JSON.parse(res.body).error, url === '/api/ingest/needs-you' ? /this machine only/ : /Unix socket only/);
       assert.equal(read, false, 'the body is never read');
-      if (key) assert.equal(d.cache.get(key, Date.now()).status, 'unavailable', url);
-      else assert.equal(d.needsYou.view(Date.now()).length, 0, url);
+      assert.equal(stored(d, key), false, url);
+      if (url === '/api/ingest/needs-you') {
+        // Reported as refused, with whether a proxy header came with it, so the
+        // hour's log line counts it (Ultron's 4-M2); never as taken, so no alert.
+        assert.deepEqual(d.tcpPosts, [url]);
+        assert.deepEqual(d.tcpFlags, [{ taken: false, proxied: headers !== cases[3] }], JSON.stringify(headers));
+      } else {
+        assert.deepEqual(d.tcpPosts, [], 'another route on TCP is no transition use');
+      }
       assert.equal(res.headers['X-Content-Type-Options'], 'nosniff');
       assert.equal(res.headers.Connection, 'close', 'the unread body is never drained');
     }
     const d = deps();
-    assert.equal((await call(createHandler(d), url, body, {}, '100.64.0.9')).res.statusCode, 403, `${url} from a tailnet address`);
+    assert.equal((await call(tcpHandler(d), url, body, {}, '100.64.0.9')).res.statusCode, 403, `${url} from a tailnet address`);
+    if (url === '/api/ingest/needs-you') assert.deepEqual(d.tcpFlags, [{ taken: false, proxied: false }]);
   }
 });
 
 test('a refusal is logged once per route and reason, naming no header value', async () => {
   const d = deps();
-  const h = createHandler(d);
+  const h = tcpHandler(d);
+  for (let k = 0; k < 5; k++) await call(h, '/api/ingest/needs-you', POSTS[4][1], VIA_SERVE);
   for (let k = 0; k < 5; k++) await call(h, '/api/ingest/crons', [{ name: 'x' }], VIA_SERVE);
-  await call(h, '/api/ingest/credits', { balance: 1 }, VIA_SERVE);
+  await call(h, '/api/ingest/credits', { balance: 1 });
   const lines = d.logged.filter(l => l.startsWith('ingest:'));
-  assert.equal(lines.length, 2, lines.join('\n'));
-  assert.match(lines[0], /^ingest: refused a post to \/api\/ingest\/crons that did not come from this machine \(/);
+  assert.equal(lines.length, 3, lines.join('\n'));
+  assert.match(lines[0], /^ingest: refused a post to \/api\/ingest\/needs-you that did not come from this machine \(/);
+  assert.equal(lines[1], 'ingest: refused a post to /api/ingest/crons on the TCP port (the ingest takes posts on its Unix socket only)');
   for (const l of lines) {
     assert.ok(!l.includes('owner@example.com') && !l.includes('100.64.0.9') && !l.includes(SERVE_HOST), l);
   }
@@ -158,14 +215,14 @@ test('the other writes are untouched: the board and acks still take the tailnet'
 });
 
 // Over a real socket: the address is the kernel's, not a mock's.
-test('over a real loopback socket, a plain post is taken and a forwarded one refused', async () => {
+test('over a real loopback socket: a plain needs-you post is taken in the transition, a forwarded one and every other ingest post refused', async () => {
   const d = deps();
-  const server = createServer(createHandler(d));
+  const server = createServer(tcpHandler(d));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const { port } = server.address();
-  const post = headers => new Promise((resolve, reject) => {
-    const body = JSON.stringify([{ name: 'cloud-job', ok: true }]);
-    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/api/ingest/crons', agent: false,
+  const post = (path, payload, headers) => new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path, agent: false,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...headers } }, res => {
       let text = '';
       res.on('data', c => { text += c; });
@@ -174,14 +231,17 @@ test('over a real loopback socket, a plain post is taken and a forwarded one ref
     req.on('error', reject);
     req.end(body);
   });
+  const wait = POSTS[4][1];
   try {
-    assert.equal((await post({ 'x-forwarded-for': '100.64.0.9', 'x-forwarded-host': SERVE_HOST })).status, 403);
-    assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
-    assert.equal((await post({ host: `${SERVE_HOST}` })).status, 403);
-    const spoofed = await post({ host: '127.0.0.1:8322', 'x-forwarded-for': '100.64.0.9' });
+    assert.equal((await post('/api/ingest/needs-you', wait, { 'x-forwarded-for': '100.64.0.9', 'x-forwarded-host': SERVE_HOST })).status, 403);
+    assert.equal(d.needsYou.view(Date.now()).length, 0);
+    assert.equal((await post('/api/ingest/needs-you', wait, { host: `${SERVE_HOST}` })).status, 403);
+    const spoofed = await post('/api/ingest/needs-you', wait, { host: '127.0.0.1:8322', 'x-forwarded-for': '100.64.0.9' });
     assert.equal(spoofed.status, 403, 'a loopback Host does not get a forwarded post in');
-    assert.equal((await post({})).status, 200);
-    assert.equal(d.cache.get('ingestCrons', Date.now()).data[0].name, 'cloud-job');
+    assert.equal((await post('/api/ingest/crons', [{ name: 'cloud-job', ok: true }], {})).status, 403, 'crons: socket only, even from this machine');
+    assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
+    assert.equal((await post('/api/ingest/needs-you', wait, {})).status, 200);
+    assert.equal(d.needsYou.view(Date.now()).length, 1);
   } finally {
     await new Promise(r => server.close(r));
   }

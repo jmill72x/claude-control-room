@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import {
   revealHidden, readApprovalsConfig, capField, markerReasons, parsePreview, shownHash, pathForms, denyOnlyReasons, blockReasonWords,
   verdictOriginProblem, createApprovals, cutMarker, NO_EXACT, okWriteFolder, protectedWhy, sensitiveWhy, FIELD_MAX, BLOCK_WINDOW_MS, LATE_AFTER_MS, VERDICTS_PER_MINUTE,
-  VERDICTS_PER_HOUR, REFUSALS_FOR_LOCKOUT, LOCKOUT_MS, ALLOW_BURST, FLOOD_OPEN
+  VERDICTS_PER_HOUR, REFUSALS_FOR_LOCKOUT, LOCKOUT_MS, ALLOW_BURST, FLOOD_OPEN, INGEST_OFF
 } from '../lib/approvals.mjs';
 import { createChatStore, PERMISSION_TTL_MS } from '../lib/chat-store.mjs';
 import { createDeviceStore, COOKIE_NAME, PAIR_COOKIE_NAME } from '../lib/chat-devices.mjs';
@@ -1402,4 +1402,29 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     assert.equal(env.store.permission('fffff').state, 'expired');
     assert.equal(env.store.permission('fffff').exact, null);
   } finally { await env.close(); }
+});
+
+test('with the ingest socket off and no TCP route for needs-you, every request is Deny-only, on the card and at the verdict (Ultron\'s 4-M1)', () => {
+  let up = false;
+  const g = createApprovals({ mode: 'on', home: HOME, realpath: noReal, ingestOk: () => up });
+  const p = { tool: 'Read', description: 'd', inputPreview: '{"file_path":"/home/owner/Projects/app/a"}', state: 'open', denyOnly: [] };
+  g.noteChannelRelay('allow');
+  assert.deepEqual(g.view(p), { mode: 'on', denyOnly: [INGEST_OFF], canAllow: false });
+  assert.deepEqual(g.reasonsNow(p), [INGEST_OFF], 'the verdict route refuses Allow with this');
+  up = true;
+  assert.deepEqual(g.view(p), { mode: 'on', denyOnly: [], canAllow: true }, 'back on: Allow returns with nothing else to do');
+  // Anything but a plain true, or a check that throws, is off.
+  for (const v of [1, 'true', undefined, null, {}]) {
+    const h = createApprovals({ mode: 'on', home: HOME, realpath: noReal, ingestOk: () => v });
+    h.noteChannelRelay('allow');
+    assert.equal(h.view(p).canAllow, false, String(v));
+  }
+  const throwing = createApprovals({ mode: 'on', home: HOME, realpath: noReal, ingestOk: () => { throw new Error('boom'); } });
+  throwing.noteChannelRelay('allow');
+  assert.deepEqual(throwing.reasonsNow(p), [INGEST_OFF]);
+  // Left out (a test or a harness), it is on.
+  const plain = createApprovals({ mode: 'on', home: HOME, realpath: noReal });
+  plain.noteChannelRelay('allow');
+  assert.equal(plain.view(p).canAllow, true);
+  assert.match(INGEST_OFF, /answer at the terminal or in Discord/);
 });

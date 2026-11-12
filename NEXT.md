@@ -546,7 +546,7 @@ on the one before; the server always goes before the channel (Ultron H2).
     and goes back to Pepper.
 11. The exact-command hook (Jarvis with Jeff, after Ultron re-vets the entry): add README
     "The exact-command hook"'s `PermissionRequest` entry to `~/.claude/settings.json`,
-    unchanged. It reports to the loopback ingest and decides nothing; while the server's
+    unchanged. It reports to the ingest socket and decides nothing; while the server's
     Bash mode is `"deny"` the server drops every report unread (log:
     `exact-command: a Bash report, dropped (approvals for Bash are not in "exact" mode)`).
 12. Config (Jarvis, with Jeff's OK): in the `chat` block add `"approvalsBash": "exact"` and
@@ -909,6 +909,82 @@ holds it and it reloads within 5 s of leaving). **Unverified:** the composer and
 holds in a browser (their logic is unit-tested, the wiring not), and anything on real iOS:
 whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
 use of the 192/512 icons (it uses the apple-touch-icon).
+
+**The ingest on its own Unix socket, staged on `jos/ingest-socket` (board ba1b8446, from main
+1e1da2d, 2026-11-12), not committed, not live.** Ultron's M1 on the loopback guard: it holds only
+while Serve proxies at the HTTP layer. Every `/api/ingest/*` route is now served on
+`~/.local/state/jarvis-os/ingest.sock` (0600 in the 0700 folder, bound under umask 077, checked
+before and after it listens, started whether or not the chat is on; `server/lib/ingest-socket.mjs`),
+and the TCP port refuses every ingest post, except `needs-you` while config's `ingest.tcp` is
+`"legacy"` (the default): that route keeps the loopback guard, logs every post to it (first, then
+hourly with taken / proxy-header / other counts, the trailing ones at the hour's end) and alerts
+once a day for a taken one. Socket over a per-install token: nothing to leak or rotate, and the
+ingest leaves the port Serve shares (README "What the ingest endpoints require"). Callers found:
+the six hook entries in `~/.claude/settings.json` (Notification, PostToolUse, UserPromptSubmit,
+Stop, SessionEnd, PermissionDenied), all `needs-you` on TCP; the exact-command hook (not installed
+yet); no poster of crons, projects or credits; the lead's channel e2e harness keeps its own TCP
+copy of the exact-command ingest (a test double, the lead's repo).
+
+**Ultron's 11-12 review: GO; his mediums and lows fixed the same night (Pepper, overnight).**
+4-M1: a socket that fails is tried four times over 30 s, then stays off with one alert, and while
+it is off with `ingest.tcp` not `"legacy"` the page's approvals are Deny-only (`ingestOk` in
+server.mjs, `INGEST_OFF` in lib/approvals.mjs). 4-M2: trailing posts are logged when the hour
+ends, and each line counts the posts that carried a proxy header. 4-L2: the alert's new words
+(something here or a forwarder; set `ingest.tcp` "off"). 4-L1: the umask. The settings swap is
+now `deploy/swap-needs-you-hooks.py` (Ultron asked for a script he can re-read in place of a
+sed). Tests: server 915 in local time and Tokyo (5 for the script, on fixture copies and a scratch
+socket); 27 of 28 mutations caught. The survivor is a backstop: two checks in the script (the
+after-count and the whole-structure compare) sit behind the text count and no input reaches them.
+Gap left as specified: with `ingest.tcp` still `"legacy"` after the swap, a dead socket is not
+capped (the alert still fires); set `"off"` promptly after the swap (step 5 below).
+
+**Ultron's 11-12 re-read: GO, with three lows, fixed 2026-11-12 overnight (Pepper).** (1) The
+socket file's device and inode are kept after listen (as BigInts), and `ingestOk` now calls
+`ingestSocket.check()`, a synchronous lstat on each approval: a file that is gone, not a socket,
+or another device or inode turns the socket off for the rest of the run. (2) The server's
+`close` or `error` does the same. Either way: one `ingest: … the ingest socket is off until a
+restart` line and one alert per run, in run-time words (`INGEST_LOST_ALERT`; the start's
+`INGEST_OFF_ALERT` is unchanged), and approvals are Deny-only unless `ingest.tcp` is `"legacy"`.
+`check()` runs first in `ingestOk`, so a lost socket is noticed and alerted under `"legacy"`
+too. A mismatched file is never closed or removed by the server (closing a Unix socket server
+unlinks whatever is at the path). (3) The swap script's match now starts with `(?<![\w/])`, so
+`/opt/homebrew/bin/curl …` or `xcurl …` can't half-match into `/opt/homebrew/bin//usr/bin/curl`;
+such a command reads as an unknown form or as one of five, and the script refuses. Tests: server
+921 in local time and Tokyo; 17 of 17 new mutations caught (a second once-flag the mutations
+showed was dead is gone: `lose` runs only while the socket is on).
+
+**Go-live, in this order:**
+
+1. C&P (Ultron's 11-12 re-read was GO; his three lows are in).
+2. The service restart (Vision or Jeff). The log then says `ingest: socket at …; the TCP port
+   still takes needs-you posts from this machine (ingest.tcp "legacy")`.
+3. **Post-restart checks:** `ls -l ~/.local/state/jarvis-os/ingest.sock` shows `srw-------`;
+   from the mini, `curl -s -o /dev/null -w '%{http_code}' -X POST
+   http://127.0.0.1:8322/api/ingest/crons -H 'Content-Type: application/json' -d '[]'` answers
+   403 (`Unix socket only`), and the same over `--unix-socket
+   ~/.local/state/jarvis-os/ingest.sock http://localhost/api/ingest/crons` with `-d '{}'`
+   answers 400. No `ingest: … stays off after 4 tries` line.
+4. Jeff swaps the six hook commands, on the mini, after step 3 and never before (until the
+   socket exists their posts fail silently, and the PermissionDenied post is what makes page
+   approvals Deny-only after a block):
+   `/usr/bin/python3 -I ~/Projects/claude-control-room/deploy/swap-needs-you-hooks.py --dry-run`
+   (prints the diff: six `-` lines with `127.0.0.1:8322`, six `+` lines with `--unix-socket`;
+   exit 0), then the same without `--dry-run`. It prints the backup's path
+   (`~/.claude/settings.json.bak-YYYYMMDD-HHMMSS`); to undo, copy that back. It refuses, with
+   nothing changed, unless it finds exactly six old commands and the socket is a 0600 socket
+   of Jeff's.
+5. An `ingest: … over TCP, the old route` line or the daily alert means something still posts
+   to the port. Once a day passes with none, Jarvis adds `"ingest": { "tcp": "off" }` to
+   config.json and restarts.
+
+**Tests:** `server/test/ingest-socket.test.mjs` (the socket, its tries, the notice, a source
+test that guards server.mjs's wiring), `ingest-local.test.mjs` (the TCP side),
+`swap-needs-you-hooks.test.mjs` (the script), `approvals.test.mjs` (the Deny-only cap), and the
+README hook entries run for real over a scratch socket under a scratch `$HOME`. Follow-up, once
+`"off"` has held: delete the legacy route and `lib/local-caller.mjs`. **Merge:** after
+`jos/ack-notice` (see its merge note): both edit server.mjs's createHandler call; keep this
+branch's `onBlock`, `onExact`, `onIngestTcp` and that branch's `onAckNotice`, then run the server
+suite (each branch's source test guards its own wiring).
 
 **Chat Markdown and loopback-only ingest, staged on `jos/md-ingest` (from main a82420a,
 2026-11-11), not committed, not live.** Two board items (883b96d0, 1881027f). (1) **Markdown in

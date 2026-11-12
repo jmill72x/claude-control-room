@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCache } from '../cache.mjs';
-import { createHandler } from '../routes.mjs';
+import { createHandler, createIngestHandler } from '../routes.mjs';
 
 const mockRes = () => {
   const res = { statusCode: 200, headers: {}, body: '' };
@@ -80,7 +80,7 @@ test('PUT /api/todos persists through the store', async () => {
 
 test('POST /api/ingest/crons writes into the cache', async () => {
   const d = deps();
-  const res = await call(createHandler(d), 'POST', '/api/ingest/crons', [{ name: 'cloud-job', ok: true }]);
+  const res = await call(createIngestHandler(d), 'POST', '/api/ingest/crons', [{ name: 'cloud-job', ok: true }]);
   assert.equal(res.statusCode, 200);
   assert.equal(d.cache.get('ingestCrons', Date.now()).data[0].name, 'cloud-job');
 });
@@ -93,7 +93,7 @@ test('an unknown route is a 404', async () => {
 test('a body over the size cap is refused rather than buffered', async () => {
   const d = deps();
   const huge = 'x'.repeat(300 * 1024);
-  const res = await call(createHandler(d), 'POST', '/api/ingest/crons', `[{"name":"${huge}"}]`);
+  const res = await call(createIngestHandler(d), 'POST', '/api/ingest/crons', `[{"name":"${huge}"}]`);
   assert.equal(res.statusCode, 413);
   assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
 });
@@ -101,7 +101,7 @@ test('a body over the size cap is refused rather than buffered', async () => {
 test('an ingest POST without a JSON content type is refused (the CORS simple-request path)', async () => {
   const d = deps();
   const res = await call(
-    createHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { 'content-type': 'text/plain' }
+    createIngestHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { 'content-type': 'text/plain' }
   );
   assert.equal(res.statusCode, 415);
   assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
@@ -110,7 +110,7 @@ test('an ingest POST without a JSON content type is refused (the CORS simple-req
 test('an ingest POST from another origin is refused', async () => {
   const d = deps();
   const res = await call(
-    createHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'https://evil.example' }
+    createIngestHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'https://evil.example' }
   );
   assert.equal(res.statusCode, 403);
   assert.equal(d.cache.get('ingestCrons', Date.now()).status, 'unavailable');
@@ -119,14 +119,14 @@ test('an ingest POST from another origin is refused', async () => {
 test('an ingest POST from this server\'s own origin is accepted', async () => {
   const d = deps();
   const res = await call(
-    createHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'http://127.0.0.1:8322' }
+    createIngestHandler(d), 'POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'http://127.0.0.1:8322' }
   );
   assert.equal(res.statusCode, 200);
 });
 
 test('a malformed ingest body is rejected and never cached', async () => {
   const d = deps();
-  const handler = createHandler(d);
+  const handler = createIngestHandler(d);
   for (const body of [{}, 'a string', [{ ok: true }], [{ name: 'x', ok: 'yes' }]]) {
     const res = await call(handler, 'POST', '/api/ingest/crons', body);
     assert.equal(res.statusCode, 400, `expected 400 for ${JSON.stringify(body)}`);
@@ -135,12 +135,12 @@ test('a malformed ingest body is rejected and never cached', async () => {
 });
 
 test('invalid JSON is a 400 with fixed words: nothing of the body comes back', async () => {
-  const res = await call(createHandler(deps()), 'POST', '/api/ingest/crons', '{not json');
+  const res = await call(createIngestHandler(deps()), 'POST', '/api/ingest/crons', '{not json');
   assert.equal(res.statusCode, 400);
   // Node 26's parser quotes the body around the fault in its message; a malformed
   // body may hold a credential, so the marker must not come back in any form.
   const marker = 'MARKER-' + 'q7'.repeat(8);
-  const leaky = await call(createHandler(deps()), 'POST', '/api/ingest/crons', `{"token": "${marker}" trailing`);
+  const leaky = await call(createIngestHandler(deps()), 'POST', '/api/ingest/crons', `{"token": "${marker}" trailing`);
   assert.equal(leaky.statusCode, 400);
   assert.ok(!leaky.body.includes('MARKER'), leaky.body);
   assert.ok(!leaky.body.includes('q7q7'), leaky.body);
@@ -178,7 +178,7 @@ test('with no config.json the config envelope is unavailable, not a hardcoded ok
 
 test('ingested credits are cached under their own key for the page to prefer', async () => {
   const d = deps();
-  const res = await call(createHandler(d), 'POST', '/api/ingest/credits', { balance: 12.5, updatedAt: '2026-08-01' });
+  const res = await call(createIngestHandler(d), 'POST', '/api/ingest/credits', { balance: 12.5, updatedAt: '2026-08-01' });
   assert.equal(res.statusCode, 200);
   assert.equal(d.cache.get('ingestCredits', Date.now()).data.balance, 12.5);
 });
@@ -220,7 +220,7 @@ test('a board PUT over 1 MiB is refused, and nothing is written', async () => {
 
 test('an ingest POST keeps the 256 KB cap', async () => {
   const d = deps();
-  const res = await call(createHandler(d), 'POST', '/api/ingest/projects', `[{"name":"${'x'.repeat(260 * 1024)}"}]`);
+  const res = await call(createIngestHandler(d), 'POST', '/api/ingest/projects', `[{"name":"${'x'.repeat(260 * 1024)}"}]`);
   assert.equal(res.statusCode, 413);
 });
 
@@ -269,7 +269,7 @@ test('/api/dashboard carries the toPush panel, but never the toPush config', asy
 // nosniff on every API answer (the 2026-10-21 security review): a browser must never
 // read a JSON answer, a board item's text included, as a page or a script.
 test('every API answer carries nosniff, the refusals and errors included', async () => {
-  const sent = async (method, url, body, headers, d = deps()) => (await call(createHandler(d), method, url, body, headers));
+  const sent = async (method, url, body, headers, d = deps()) => (await call((url.startsWith('/api/ingest/') ? createIngestHandler : createHandler)(d), method, url, body, headers));
   const broken = deps();
   broken.todos.read = async () => { throw new Error('todos.json is corrupt'); };
   const cases = [
@@ -279,6 +279,7 @@ test('every API answer carries nosniff, the refusals and errors included', async
     [200, await sent('PUT', '/api/todos', [{ id: 1, text: 'a', lane: 'idea' }])],
     [404, await sent('GET', '/api/nope')],
     [400, await sent('POST', '/api/ingest/crons', '{not json')],
+    [403, await call(createHandler(deps()), 'POST', '/api/ingest/crons', [{ name: 'x' }])], // the TCP port: socket only
     [403, await sent('POST', '/api/ingest/crons', [{ name: 'x' }], { origin: 'https://evil.example' })],
     [413, await sent('POST', '/api/ingest/crons', `[{"name":"${'x'.repeat(300 * 1024)}"}]`)],
     [415, await sent('POST', '/api/ingest/crons', [{ name: 'x' }], { 'content-type': 'text/plain' })],

@@ -500,7 +500,7 @@ claude-control-room/
     collectors/     one module per source, each on its own timer, cache-only reads at request time
     cache.mjs        in-memory: { data, fetchedAt, status, error } per panel
     history.mjs      append-only /usage snapshot store — see "Pace, history, and the usage-drivers panel"
-    routes.mjs        /api/dashboard · /api/todos · /api/ingest/* · /api/acks (and server.mjs serves /avatars/<key>.png)
+    routes.mjs        /api/dashboard · /api/todos · /api/acks, and /api/ingest/* for the ingest socket (and server.mjs serves /avatars/<key>.png)
     acks.mjs           the acknowledgement file — see "Acknowledging a known miss"
     config.json        user-set values with no API source (gitignored — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
@@ -522,7 +522,7 @@ not being reachable) leaves every other panel intact.
 | `sessions` | Claude Code and Cowork transcript roots (`~/.claude/projects` and the Cowork session directory), each file streamed a line at a time and read again only when its size, mtime or inode changes | 60 s |
 | `crons` | `~/Library/LaunchAgents/*.plist` + `launchctl list` | 60 s |
 | `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 24 h |
-| `ingest` | inbound `POST` to `/api/ingest/{crons,projects,credits}`, no timer | — |
+| `ingest` | inbound `POST` to `/api/ingest/{crons,projects,credits}` on the ingest socket, no timer | — |
 
 The server holds no API key — there is nothing to hold. It shells out to the `claude`
 CLI the user is already logged into, and reads local files. It binds to
@@ -537,48 +537,98 @@ of them in the week to 2026-10-20.
 
 ### What the ingest endpoints require
 
-They take posts from this machine only (`server/lib/local-caller.mjs`, since 2026-11-11;
-tested by `server/test/ingest-local.test.mjs`).
-The server binds `127.0.0.1`, but Tailscale Serve, on this same machine, passes the
-tailnet's requests to that port, so before this any device on the tailnet could post a
-fake cron failure that showed as an alert and was pushed. Every request through Serve
-arrives from `127.0.0.1` too, so the socket's address alone proves nothing; what Serve adds
-does. A post to any `/api/ingest/*` route (`needs-you` included) is refused with a 403
-("the ingest takes posts from this machine only"), before its body is read, unless:
+Since 2026-11-12 they are served on a Unix socket of their own,
+`~/.local/state/jarvis-os/ingest.sock` (or `JARVIS_OS_INGEST_SOCKET`), not on the TCP
+port (`server/lib/ingest-socket.mjs`; tested by `server/test/ingest-socket.test.mjs`).
+What an ingest accepts becomes alerts, pushes and the approvals gate's inputs, and the
+TCP port is on the tailnet through Tailscale Serve. The loopback guard that came first
+(below) tells a local program from the tailnet by the headers Serve adds, which holds
+only while Serve proxies at the HTTP layer: a TCP forward, or any other forwarder on this
+machine, would make a tailnet request look local (the 2026-11-11 security review, M1). The
+socket file needs no such inference. The server starts it whether or not the chat is on:
+
+- the folder must be this user's and mode 0700 (the server makes the default folder so at
+  every start); a socket file there is removed only when nothing answers on it;
+- it is bound under umask 077 (put back as soon as the listen settles), so it is never
+  open to others, even for the moment before the chmod;
+- after it listens, the socket is set to 0600 and checked: a socket, this user's, no group
+  or world bits. A socket that failed its check is closed and removed. The file's device
+  and inode are kept;
+- while the server runs, the socket is watched: its server closing or failing, or the path
+  no longer holding that same socket file (removed, or replaced by another file), turns it
+  off until a restart, with one `ingest: … the ingest socket is off until a restart` line
+  and one alert. The path is checked with a synchronous lstat each time the page's
+  approvals are judged, since a socket file removed under a running server still listens
+  but no hook can reach it. A file that isn't the bound one is left alone: closing a Unix
+  socket server removes whatever is at its path.
+
+A start that fails is tried again: four tries, 10 s apart, without holding the dashboard's
+start. Each failed try logs why (`ingest: the ingest socket … is mode 666, not 0600; trying
+again in 10 s (try 1 of 4)`); after the last, `…; the ingest socket stays off after 4
+tries`, and one alert goes out (#pepper the details, ntfy generic words, no path). **While
+the socket is off (never started, or lost at run time) and `ingest.tcp` is not `"legacy"`,
+every request on the page's
+approvals is Deny-only** ("the ingest socket is off, so a block by auto mode would go
+unseen"): the PermissionDenied hook is what opens the classifier-block window, and with no
+way in, Allow would be offered blind. It is the same fail-closed path as a missing exact
+report. A restart tries again.
+
+So only a process running as the owner can post, the same trust as the files the
+collectors read. A per-install token was the other option and was not taken: it is a
+secret to mint, keep in a 0600 file, compare in constant time, keep out of logs and
+rotate after a leak, and the hook would still send it to the TCP port. The socket has
+nothing to leak and takes the ingest off the port Serve shares.
+
+**The TCP port** refuses every ingest post with a 403 (`the ingest takes posts on its
+Unix socket only`), before reading the body and with `Connection: close`, logged once per
+route, except one route in a transition. While config's `ingest.tcp` is `"legacy"` (the
+default, so a restart doesn't cut off hooks still posting to the port), `POST
+/api/ingest/needs-you` is still taken on the port from this machine, behind the loopback
+guard. Each post to that route is reported, taken or refused: an `ingest:` line on the
+first one and at most one an hour after, with the counts (`ingest: 37 posts to
+/api/ingest/needs-you over TCP, the old route, since the last such line (35 taken, 2 with a
+proxy header, refused, 0 refused otherwise); move the hooks to the ingest socket …`). Posts
+held inside the hour are written when the hour ends, so the last one is never left
+unreported. A post the route took also raises an alert, at most once a day ("Something on
+this machine, or a forwarder, posted to the old TCP ingest (needs-you). If it is a Claude
+Code hook, move it to the ingest socket; if nothing here should post there, set ingest.tcp
+to "off" in config …"). **To move the six hooks**, `deploy/swap-needs-you-hooks.py` (run
+with `/usr/bin/python3 -I`, `--dry-run` first) rewrites them in `~/.claude/settings.json`
+in place: it needs exactly six old commands (curl from `PATH` or `/usr/bin` only; another
+curl's path, like Homebrew's, reads as a form it doesn't know) and a 0600 socket of this user's, keeps each
+hook's `-m`, event, matcher and `async`, keeps the file's layout, writes a 0600
+timestamped backup first and goes through a temp file and a rename; anything else and it
+stops with nothing changed (tested on fixture copies by
+`server/test/swap-needs-you-hooks.test.mjs`). Once the hooks post to the
+socket, `"ingest": { "tcp": "off" }` closes the route; a value the server can't read
+closes it too, with a `config:` line. The other four routes had no caller on the port
+(the exact-command hook was not installed yet), so they moved at once.
+
+The loopback guard (`server/lib/local-caller.mjs`, `server/test/ingest-local.test.mjs`)
+now covers only that transition route. A post to it is refused with a 403 ("the ingest
+takes posts from this machine only"), before its body is read, unless:
 
 - it arrived on a loopback socket (`127.0.0.1` or `::1`);
 - it carries none of the headers a proxy adds, not even empty: `Forwarded`, `Via`,
   `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
   `Tailscale-User-Login`, `-Name` and `-Profile-Pic`, `Tailscale-Funnel-Request` and
-  `Tailscale-Headers-Info`. This is the layer that holds against Serve: Serve sets
-  `X-Forwarded-For` and `X-Forwarded-Host` on every request it passes on (and drops any
-  `Tailscale-User-*` a client sent before adding its own), but it passes on whatever
-  `Host` the client sent, so a tailnet client can send `Host: 127.0.0.1:8322`; and
-- its `Host` is loopback (`127.0.0.1`, `localhost` or `[::1]`, any port). This one
-  guards against DNS rebinding (a page on another domain re-pointed at `127.0.0.1` names
-  its own host), not against Serve.
+  `Tailscale-Headers-Info`. Serve sets `X-Forwarded-For` and `X-Forwarded-Host` on every
+  request it passes on (and drops any `Tailscale-User-*` a client sent before adding its
+  own), but it passes on whatever `Host` the client sent; and
+- its `Host` is loopback (`127.0.0.1`, `localhost` or `[::1]`, any port), against DNS
+  rebinding.
 
-The refusal is a 403 with `Connection: close`, like a 413, so the unread body is never
-drained.
+Every poster found on 2026-11-11 posted on loopback: the README's own `curl` example and
+the `needs-you` and `PermissionDenied` hooks below. No script, launchd job or other repo
+under `~/Projects` posted to `crons`, `projects` or `credits` (no Claude cloud routine can
+reach this machine, so one that wanted to report in would need a poster here). The board
+(`/api/todos`) and the acks keep the tailnet: the page writes them through Serve.
 
-So post to `http://127.0.0.1:8322/…` from this machine, never to the tailnet name, even
-from the machine itself. Each refused route and reason is logged once (the first 20), naming
-the header but never its value: `ingest: refused a post to /api/ingest/crons that did not
-come from this machine (it came through a proxy (x-forwarded-for))`. A program on this
-machine can still post, the same trust as the files the collectors read. Every poster
-found on 2026-11-11 posts on loopback: the README's own `curl` example and the `needs-you`
-hook below. No script, launchd job or other repo under `~/Projects` posted to `crons`,
-`projects` or `credits`, and those three panels had never been fed since the last restart
-(no Claude cloud routine can reach the machine's loopback, so one that wanted to report in
-would need a poster on this machine). The board (`/api/todos`) and the acks keep the
-tailnet: the page writes them through Serve.
+They are narrow too, on the socket as on the port:
 
-They are narrow too:
-
-- `Content-Type: application/json` — required. This also stops them being CORS
-  *simple* requests, which is what made them reachable from any page the browser
-  happened to have open.
-- an `Origin` header, if present, must match this server's own host; anything else
+- `Content-Type: application/json` — required (it also keeps them from being CORS
+  *simple* requests).
+- an `Origin` header, if present, must match the request's own host; anything else
   is refused with a 403.
 - bodies over 256 KB are refused with a 413 rather than buffered.
 - each payload is validated before it is cached — `crons` and `projects` must be
@@ -588,7 +638,7 @@ They are narrow too:
   is never filled in as a pass.
 
 ```bash
-curl -X POST http://127.0.0.1:8322/api/ingest/crons \
+curl --unix-socket ~/.local/state/jarvis-os/ingest.sock -X POST http://localhost/api/ingest/crons \
   -H 'Content-Type: application/json' \
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
@@ -624,17 +674,18 @@ service log gets one line per event (`needs-you: Notification (permission), 1 op
 
 The hook is global in `~/.claude/settings.json`, so every Claude Code session on the
 machine posts, which is why the server matches the session rather than trusting a name.
-Only the owner adds it (the dashboard never writes that file). The entry, for the Serve
-host's own loopback address:
+Only the owner adds it (the dashboard never writes that file). The entry posts to the
+ingest socket (see "What the ingest endpoints require"); `$HOME` is expanded by the shell
+that runs the hook:
 
 ```json
 {
   "hooks": {
-    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 1 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
+    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 1 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
   }
 }
 ```
@@ -643,7 +694,9 @@ Each hook filters before it sends: `jq` keeps the three fields the server reads 
 `at` (jq's `now` is in seconds, hence `now*1000|floor`), so the message text, the tool's input and the transcript path never leave the session (the
 server drops anything else anyway). The path is spelled out because a hook runs with a
 short PATH: macOS ships `/usr/bin/jq` (checked on the Serve host); a Homebrew jq would be
-`/opt/homebrew/bin/jq`, and there isn't one on that machine. `"async": true` runs the hook
+`/opt/homebrew/bin/jq`, and there isn't one on that machine. curl is `/usr/bin/curl` for
+the same reason, with `-q` first (no `~/.curlrc` is read) and `--noproxy '*'` (no proxy
+setting in the environment applies). `"async": true` runs the hook
 in the background so the session never waits on the post (the installed CLI, 2.1.321,
 supports it: its hook schema has `async`, "runs in background without blocking", and the
 hooks reference documents it); `SessionEnd` stays synchronous with a 1 s limit, since that
@@ -1172,7 +1225,7 @@ are the classifier's fallbacks, so any surface can approve what auto mode refuse
 owner accepted that risk (2026-11-11), and the Deny-only window below narrows it.
 
 **The classifier-block hook.** A `PermissionDenied` hook (auto mode's refusals only) posts
-to the needs-you ingest, which is loopback only. It decides nothing: it runs `async`, its
+to the needs-you ingest on the ingest socket. It decides nothing: it runs `async`, its
 output is ignored, and the server only logs it and, for the lead's session (or one the
 sessions panel can't name; another agent's own `--agent` run doesn't count), makes page
 cards Deny-only for 15 minutes. Only the tool's name and the classifier's reason are read
@@ -1182,7 +1235,7 @@ never leaves the session. The entry, for `~/.claude/settings.json` (the owner ad
 ```json
 {
   "hooks": {
-    "PermissionDenied": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,reason,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
+    "PermissionDenied": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,reason,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
   }
 }
 ```
@@ -1203,11 +1256,11 @@ never does:
 - its matcher is `Bash` only, it is not `async` (the report must land before the prompt
   is relayed), and it is limited to 3 seconds (curl to 2), after which Claude Code goes
   on without it;
-- it sends four fields to this machine's loopback address: the event, the session id,
-  the tool name and the command. The description, the working folder, the transcript
+- it sends four fields to the ingest socket: the event, the session id, the tool name
+  and the command. The description, the working folder, the transcript
   path and the permission suggestions stay in the session.
 
-`POST /api/ingest/exact-command` (this machine only, like every ingest) takes a report
+`POST /api/ingest/exact-command` (on the ingest socket only, like every ingest) takes a report
 only when `hook_event_name` is `PermissionRequest`, `tool_name` is `Bash` (a `Bash`
 matcher also fires for Monitor commands; those are refused) and the command is at most
 4,000 characters. The server keeps it only in `"exact"` mode with approvals on, only when
@@ -1224,7 +1277,7 @@ preview's command character for character (or equals it outright, for a relay th
 not fold). Exactly one distinct text is the match: the card shows it and the `shown` hash
 covers it. Two that differ are Deny-only with an alert (`approvals-exact-conflict`), also
 when the second arrives after the card opened; so a forged report (any local process can
-post to the loopback ingest) can only tie with the real one, never replace it. None is
+post to the ingest socket) can only tie with the real one, never replace it. None is
 Deny-only. A text with anything but printable ASCII, line breaks and tabs is never shown
 as exact (a carriage return included), and a preview with an elision or a `[REDACTED]`
 mask gets none. What the design leans on, and section 9.2 of the design tests in a scratch
@@ -1239,7 +1292,7 @@ has re-read it; the dashboard never writes that file):
 ```json
 {
   "hooks": {
-    "PermissionRequest": [{ "matcher": "Bash", "hooks": [{ "type": "command", "timeout": 3, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,command:.tool_input.command}' 2>/dev/null | /usr/bin/curl -s -m 2 -X POST http://127.0.0.1:8322/api/ingest/exact-command -H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1 || true" }] }]
+    "PermissionRequest": [{ "matcher": "Bash", "hooks": [{ "type": "command", "timeout": 3, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,command:.tool_input.command}' 2>/dev/null | /usr/bin/curl -q -s -m 2 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/exact-command -H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1 || true" }] }]
   }
 }
 ```
@@ -1249,7 +1302,8 @@ that rewrites the command after the card was shown would make the exact text a l
 security sweep checks that, and that this entry is present and unchanged. The test suite
 runs this very command against a scratch server: the body is the command character for
 character (line breaks, tabs, CRLF, leading and trailing spaces), nothing is printed, and
-it exits 0 with the server down.
+it exits 0 with the server down. The needs-you and PermissionDenied entries are run the
+same way over a scratch socket (`server/test/ingest-socket.test.mjs`).
 
 The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
 `server/test/approvals.test.mjs`, `server/test/exact-commands.test.mjs`, plus the
@@ -1851,6 +1905,7 @@ and that must not reach every device on the tailnet.
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
 | `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
+| `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
 | `plan.renews` | ISO date string, optional | An **anchor** renewal date, not necessarily the next one — the server rolls it forward to the next occurrence on or after today (see note below) and that resolved date drives both the RENEWS cell and the "Billing cycle · N days left" note. Hand-entered. |
@@ -1944,7 +1999,7 @@ included, stays on the server.
 
 Nothing in `config.json` is fetched automatically — every credits field, and every
 remaining plan field, is either typed in by hand or pushed in via
-`POST /api/ingest/credits`. There is no browser automation or scraping step that keeps
+`POST /api/ingest/credits` on the ingest socket. There is no browser automation or scraping step that keeps
 it current; that's a deliberate scope cut (see spec §12), not an oversight.
 
 **The plan tier is no longer a config field — it's read from `claude auth status
@@ -2046,7 +2101,8 @@ in the ntfy app (iOS/Android) or at `https://ntfy.sh/<your-topic>` to receive pu
 ## Security
 
 The server binds `127.0.0.1`, and the tailnet reaches it only through Tailscale Serve.
-Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB, an
+The ingest is not on that port: it has a Unix socket of its own, 0600 in the owner's 0700
+folder (see "What the ingest endpoints require"). Writes take JSON only, from the same origin, at most 256 KB (the board 1 MiB, an
 acknowledgement 4 KB; its DELETE has no body and keeps the origin rule). What
 reaches the page is an allowlist: `pageConfig()` for `config.json`, and the panels built
 field by field (the health strip's and To push's above).

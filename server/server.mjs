@@ -27,7 +27,8 @@ import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
-import { createHandler, BOARD_MAX_BODY } from './routes.mjs';
+import { createHandler, createIngestHandler, readIngestConfig, BOARD_MAX_BODY } from './routes.mjs';
+import { startIngestSocket, createLegacyNotice } from './lib/ingest-socket.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
@@ -217,23 +218,32 @@ registry.register('notifier', async () => {
 // kill file beside the sockets, and the classifier-block window fed by the needs-you
 // ingest. Made once the chat is on; until then a block is only logged.
 let approvals = null;
+const onBlock = value => approvals?.noteBlock(value) ?? false;
+// A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
+const onExact = value => approvals?.noteExact(value) ?? 'off';
+// The ingest is served on its own socket (below); the TCP port keeps only the
+// needs-you route while config's `ingest.tcp` is "legacy" (routes.mjs), each post
+// there logged and, once a day, alerted (lib/ingest-socket.mjs).
+const ingestSettings = readIngestConfig(config);
+for (const problem of ingestSettings.problems) console.error(`config: ${problem}`);
+const ingestTcpNotice = createLegacyNotice({
+  alert: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message }),
+  onError: err => console.error('ingest: alert failed', err?.message ?? err)
+});
 const ackNotices = createAckNotices({
   sendPepper: notice => sendAckPepper(notice),
   sendNtfy: push => sendAckNtfy(push),
   onError: err => console.error('ack: the notice failed', err?.code ?? err?.name ?? 'error')
 });
 const api = createHandler({
-  cache, todos, config, acks: ackStore, needsYou,
+  cache, todos, config, acks: ackStore, needsYou, onBlock, onExact, onIngestTcp: ingestTcpNotice,
   // Each ack and renewal (lib/acks.mjs, ackNotice; notify.mjs, sendAckPepper and
   // sendAckNtfy): #pepper gets the details, limited per alert key (the first at once,
   // later ones for the key in 10 minutes counted and sent with the next or at the
   // window's end); ntfy gets generic words at low priority, at most one an hour across
   // every key and 12 a local day (lib/ack-notice-limit.mjs). Guarded by a source test
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
-  onAckNotice: (notice, key) => ackNotices.notice(key, notice),
-  onBlock: value => approvals?.noteBlock(value) ?? false,
-  // A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
-  onExact: value => approvals?.noteExact(value) ?? 'off'
+  onAckNotice: (notice, key) => ackNotices.notice(key, notice)
 });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
@@ -260,6 +270,30 @@ const eventsOffPath = join(stateDir, 'events-off');
 const channelServer = readChannelServer(config);
 if (chatSettings.on) for (const problem of channelServer.problems) console.error(`config: ${problem}`);
 const launchPath = join(stateDir, 'launch.json');
+// The ingest's socket (lib/ingest-socket.mjs): every /api/ingest/* route, 0600 in the
+// 0700 state folder, whether or not the chat is on. A problem keeps it off and says why.
+const ingestSocketPath = process.env.JARVIS_OS_INGEST_SOCKET || join(stateDir, 'ingest.sock');
+await mkdir(stateDir, { recursive: true, mode: 0o700 });
+await chmod(stateDir, 0o700);
+// Tried at once and then every 10 s, four tries in all (startIngestSocket); not
+// awaited, so a slow socket never holds the dashboard's start. Off after the last
+// try: one alert to #pepper (fixed words; ntfy generic), and while it stays off with
+// the TCP route closed, the page's approvals are Deny-only (`ingestOk`, below). Once
+// on, a close, an error or a removed or replaced socket file turns it off the same way,
+// with its own alert words (INGEST_LOST_ALERT), once per run.
+const ingestSocket = startIngestSocket({
+  path: ingestSocketPath,
+  handler: createIngestHandler({ cache, needsYou, onBlock, onExact }),
+  onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyMessage: 'The Control Room ingest socket is off: details in #pepper' })
+});
+ingestSocket.done.then(s => {
+  if (s.on) console.log(`ingest: socket at ${ingestSocketPath}; the TCP port ${ingestSettings.tcp === 'legacy' ? 'still takes needs-you posts from this machine (ingest.tcp "legacy")' : 'takes no ingest posts'}`);
+});
+// Whether the hooks' posts reach the server: Ultron's 4-M1, guarded by a source test
+// (test/ingest-socket.test.mjs). `check()` lstats the socket file on each approval
+// (its device and inode against the ones bound), first, so a lost socket is noticed
+// and alerted even while the TCP route is "legacy".
+const ingestOk = () => ingestSocket.check() || ingestSettings.tcp === 'legacy';
 let socketsReady = false;
 if (chatSettings.on) {
   // The channel refuses a socket looser than 0600 in a folder looser than 0700; the
@@ -307,7 +341,9 @@ if (chatSettings.on && socketsReady) {
     writeFolders: approvalSettings.writeFolders, writeProtected: approvalSettings.writeProtected,
     isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; },
     // Exact-command reports count from the lead's session by name only.
-    isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName
+    isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName,
+    // Deny-only while the ingest socket is off and the TCP route closed (4-M1).
+    ingestOk
   });
   approvals.killed();
   // `serverMode` is config and the kill file; `mode` also needs the channel's word, which comes with its hello.
