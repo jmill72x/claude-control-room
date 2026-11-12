@@ -17,21 +17,19 @@
 // the real character in this repo before).
 
 import { createAlertLimiter } from './chat-alert-limit.mjs';
+import { isHiddenCodePoint } from './hidden-chars.mjs';
 
 export const LINE_MAX = 600;
 export const NTFY_WORDS = 'A chat security event on the Control Room: details in #pepper';
 
-// C0 and C1 controls (tab aside), DEL, the line and paragraph separators, and the
-// direction and invisible characters approvals.mjs reveals in a card.
-const isUnsafe = c => (c < 0x20 && c !== 0x09) || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 ||
-  c === 0x061c || (c >= 0x200b && c <= 0x200f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
-
+// The one-line set from lib/hidden-chars.mjs (no `card`): controls, separators and the
+// invisible and direction characters. Tab becomes a space before the check.
 export function oneLine(s, max = LINE_MAX) {
   const out = [];
   for (const ch of String(s ?? '')) {
     const c = ch.codePointAt(0);
     if (c === 0x09) out.push(' ');
-    else if (isUnsafe(c)) out.push(`⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧`);
+    else if (isHiddenCodePoint(c)) out.push(`⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧`);
     else out.push(ch);
   }
   if (out.length <= max) return out.join('');

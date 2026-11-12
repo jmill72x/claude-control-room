@@ -10,6 +10,7 @@
 // test/acks.test.mjs.
 import { UNSAFE_CHARS, UNSAFE_SAYS } from './text.mjs';
 import { jobDisplayName } from './health.mjs';
+import { oneLine } from './chat-events.mjs';
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
@@ -259,23 +260,7 @@ export const unackLogLine = key => oneLine(`un-ack: ${key}`);
 // separator, or a direction or invisible character becomes a visible ⟦U+XXXX⟧, a
 // tab a space. The keys and notes the route accepts already hold no control
 // character (text.mjs), but U+2028 and U+2029 pass that rule, and acks.json can be
-// edited by hand. A copy of `oneLine` in lib/chat-events.mjs (branch
-// jos/verdict-alerts-csp, not on main when this was written): once both are
-// merged, import that one and delete this.
-const LINE_MAX = 600;
-const isUnsafe = c => (c < 0x20 && c !== 0x09) || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 ||
-  c === 0x061c || (c >= 0x200b && c <= 0x200f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
-function oneLine(s, max = LINE_MAX) {
-  const out = [];
-  for (const ch of String(s ?? '')) {
-    const c = ch.codePointAt(0);
-    if (c === 0x09) out.push(' ');
-    else if (isUnsafe(c)) out.push(`⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧`);
-    else out.push(ch);
-  }
-  if (out.length <= max) return out.join('');
-  return out.slice(0, max).join('') + ` ⋯ ${out.length - max} more cut`;
-}
+// edited by hand. `oneLine` is lib/chat-events.mjs's.
 
 export const NTFY_ACK_WORDS = 'An alert on the Control Room was acknowledged: details in #pepper';
 export const NTFY_RENEW_WORDS = 'An acknowledgement on the Control Room was renewed: details in #pepper';
