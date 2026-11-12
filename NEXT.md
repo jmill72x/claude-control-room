@@ -417,6 +417,10 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Jarvis OS 6, self-healing loops (board b384cd92), designed 2026-11-12, not built:**
+`docs/design/2026-11-12-self-healing-loops.md` (tiers T0-T3, guardrails, the heal catalog and
+runner, the Loops panel, a first slice of three loops, and six questions for Jeff).
+
 **Approvals as buttons (board 2422f9d1): live since 2026-11-11 20:40 ET, Deny and Allow
 once** (main edfb349, which holds the final build e61708e and the go-live patch; the lead's
 repo build/v1 57f0a9e, channel 0.4.5; Jarvis reports all six live checks passed). **Channel
