@@ -937,7 +937,14 @@ most once per kind per 10 minutes (`server/lib/chat-alert-limit.mjs`), since a c
 stuck in a restart loop would otherwise push on every try: the rest are held back and
 counted, the count riding on the kind's next push ("… (and 3 more held back in the last 10
 minutes)") or, if none comes, going out alone when the window ends; the log still gets
-every event, plus a `chat: alert held back` line. At start the chat folder and its files
+every event, plus a `chat: alert held back` line. The words, the list of pushed kinds and
+the handler live in `server/lib/chat-events.mjs` (tested in `chat-events.test.mjs`, end
+to end over the real routes). A verdict reads "a permission was denied|allowed from
+<device> (<tool>)". Each event is exactly one line: the whole line, and every log line of
+the chat's page routes, goes through `oneLine`, which shows a line break, a control or a
+direction character as `⟦U+XXXX⟧`. That matters for names pairing never cleaned (one read
+back from `devices.json`) and for the channel's tool name, which keeps its line breaks.
+At start the chat folder and its files
 folder are set to 0700 whether or not they existed, and each socket path is checked
 (`server/lib/chat-listen.mjs`): its folder must be this user's and 0700 (the default folder
 is made so; an override from `JARVIS_OS_SOCKET` or `JARVIS_OS_ADMIN_SOCKET` is checked as
@@ -2009,9 +2016,16 @@ fixed `invalid JSON`, never the parser's message, which quotes the body around t
 
 Everything the static handler sends (both pages, their scripts, styles and fonts, the
 single-page fallback and its refusals) carries `Content-Security-Policy: default-src
-'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`
-and `X-Content-Type-Options: nosniff`, and every API answer carries nosniff too, so a
-browser never reads JSON, a board item's text included, as a page or a script. The build
+'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none';
+form-action 'none'` (`script-src` spelled out since 2026-11-11, so widening `default-src`
+later never lets an inline or outside script in) and `X-Content-Type-Options: nosniff`.
+Every other answer (API JSON, streams, avatars, the Host check's and the server's own
+refusals) gets `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action
+'none'` and nosniff, set first on every request (`setBaseHeaders` in
+`server/lib/static.mjs`; a page's or an attachment's own policy wins), so a browser never
+reads JSON, a board item's text included, as a page or a script, and nothing opened from
+the API can run anything. Tests: `server/test/static.test.mjs` (the policies parsed, the
+headers over a real socket, the wiring in `server.mjs`). The build
 needs nothing looser: it has no inline `<script>`, `<style>` or `style=""` (React's style
 props are set through the CSSOM, which the policy doesn't govern), no `data:` or `blob:`
 URL, no `eval`, it fetches only `/api/`, and its one form (the Board's New item) is

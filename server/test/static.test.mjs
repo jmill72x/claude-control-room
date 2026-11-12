@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { resolveStaticPath, createStaticHandler, CONTENT_SECURITY_POLICY, PAGE_HEADERS } from '../lib/static.mjs';
+import { createServer, get as httpGet } from 'node:http';
+import { resolveStaticPath, createStaticHandler, CONTENT_SECURITY_POLICY, PAGE_HEADERS, API_POLICY, setBaseHeaders } from '../lib/static.mjs';
 
 // A web root with a sibling directory holding a secret, mirroring the real
 // layout (web/dist next to server/config.json).
@@ -153,9 +154,53 @@ test('resolved paths never leave the web root', () => {
 
 // The pages' policy and nosniff (the 2026-10-21 security review, before Orbit Phase 5).
 test("the pages' policy is the review's, plus no form submits, with nothing looser added", () => {
-  assert.equal(CONTENT_SECURITY_POLICY, "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+  assert.equal(CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
   assert.deepEqual(PAGE_HEADERS, { 'Content-Security-Policy': CONTENT_SECURITY_POLICY, 'X-Content-Type-Options': 'nosniff' });
   assert.doesNotMatch(CONTENT_SECURITY_POLICY, /unsafe|data:|blob:|\*/);
+});
+
+// Board e8d3ef26 (Ultron 11-10): no inline script on any page. Parsed, so a later
+// edit that widens default-src or adds a script source fails here by name.
+const directives = policy => new Map(policy.split(';').map(d => d.trim().split(/\s+/)).filter(d => d[0]).map(([name, ...values]) => [name, values]));
+test("scripts: only this origin's files, spelled out; no 'unsafe-inline', 'unsafe-eval', hash, nonce or outside source", () => {
+  const page = directives(CONTENT_SECURITY_POLICY);
+  assert.deepEqual(page.get('script-src'), ["'self'"]);
+  assert.deepEqual(page.get('default-src'), ["'self'"]);
+  assert.deepEqual(page.get('object-src'), ["'none'"]);
+  for (const name of ['script-src-elem', 'script-src-attr', 'worker-src']) assert.equal(page.has(name), false, `${name} would override script-src`);
+  const api = directives(API_POLICY);
+  assert.deepEqual(api.get('default-src'), ["'none'"]);
+  assert.deepEqual(api.get('frame-ancestors'), ["'none'"]);
+  assert.equal(api.has('script-src'), false, 'falls back to none');
+  assert.doesNotMatch(API_POLICY, /unsafe|self|data:|blob:|\*/);
+});
+
+// The base headers on a real server: an API answer gets the policy that runs nothing,
+// a page keeps its own (writeHead's headers win over setHeader's), and an answer that
+// sets its own policy (the chat's attachments) keeps that one. One header each, never two.
+test('every answer carries a policy: the API none, the pages their own, an attachment its own', async () => {
+  const { dist } = fixture();
+  const serveStatic = createStaticHandler(dist);
+  const server = createServer(async (req, res) => {
+    setBaseHeaders(res);
+    if (req.url === '/api/x') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{}'); }
+    if (req.url === '/api/attachment') { res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Security-Policy': "default-src 'none'; sandbox" }); return res.end(''); }
+    return serveStatic(req, res);
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const fetchHead = path => new Promise((resolve, reject) => {
+    httpGet({ host: '127.0.0.1', port, path }, res => { res.resume(); res.on('end', () => resolve(res)); }).on('error', reject);
+  });
+  try {
+    const cases = { '/api/x': API_POLICY, '/': CONTENT_SECURITY_POLICY, '/assets/app.js': CONTENT_SECURITY_POLICY, '/api/attachment': "default-src 'none'; sandbox" };
+    for (const [path, policy] of Object.entries(cases)) {
+      const res = await fetchHead(path);
+      assert.equal(res.headers['content-security-policy'], policy, path);
+      assert.equal(res.rawHeaders.filter(h => h.toLowerCase() === 'content-security-policy').length, 1, `${path}: one policy header`);
+      assert.equal(res.headers['x-content-type-options'], 'nosniff', path);
+    }
+  } finally { await new Promise(r => server.close(r)); }
 });
 
 test('every answer carries the policy and nosniff: both pages, their assets, the fallback and the refusals', async () => {
@@ -182,4 +227,15 @@ test('every answer carries the policy and nosniff: both pages, their assets, the
   assert.equal(none.body, 'not built');
   assert.equal(none.headers['Content-Security-Policy'], CONTENT_SECURITY_POLICY);
   assert.equal(none.headers['X-Content-Type-Options'], 'nosniff');
+});
+
+// server.mjs isn't run by the suite, so its one line of wiring is checked in its source:
+// the base headers go on before any route, the Host check's refusals included.
+test('server.mjs sets the base headers first on every request, before the routes', () => {
+  const src = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('const server = createServer(async (req, res) => {');
+  assert.ok(start > 0, 'the listener was not found');
+  const body = src.slice(start, src.indexOf('\n});', start));
+  const set = body.indexOf('setBaseHeaders(res);');
+  assert.ok(set > 0 && set < body.indexOf('await routes(req, res);'), 'setBaseHeaders comes before the routes');
 });

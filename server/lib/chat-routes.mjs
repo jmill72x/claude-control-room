@@ -18,6 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { checkSubscription } from './webpush.mjs';
 import { readAllowedHosts } from './host-guard.mjs';
 import { verdictOriginProblem } from './approvals.mjs';
+import { oneLine } from './chat-events.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -112,7 +113,10 @@ export function notificationOrigin(raw, allowedHosts) {
 // `push` is the push service (lib/chat-push.mjs), or null while notifications are
 // off: its key, and the loopback hosts a scratch push service may use (tests only).
 // `approvals` is the gate (lib/approvals.mjs); without one, every verdict is refused.
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log = console.log, pingMs = SSE_PING_MS, push = null, approvals = null }) {
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null }) {
+  // Every log line here names a device, and a name read back from devices.json was
+  // never cleaned, so each line is made one line (lib/chat-events.mjs).
+  const log = line => logLine(oneLine(line));
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const notifyHosts = new Set(readAllowedHosts(config).names);
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }

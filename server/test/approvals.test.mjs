@@ -19,6 +19,7 @@ import { createChatStore, PERMISSION_TTL_MS } from '../lib/chat-store.mjs';
 import { createDeviceStore, COOKIE_NAME, PAIR_COOKIE_NAME } from '../lib/chat-devices.mjs';
 import { createSocketRouter, toInbound, SESSION_HEADER, HEARTBEAT_FRESH_MS } from '../lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter } from '../lib/chat-routes.mjs';
+import { chatEventLine, ALERTED_KINDS } from '../lib/chat-events.mjs';
 
 const MIN = 60e3;
 const HOME = '/home/owner';
@@ -586,12 +587,10 @@ test('a channel under its test switch is offered Deny only, and each such hello 
   const sources = [new URL('server.mjs', serverDir), new URL('routes.mjs', serverDir), ...readdirSync(new URL('lib/', serverDir)).filter(f => f.endsWith('.mjs') && f !== 'approvals.mjs').map(f => new URL(`lib/${f}`, serverDir))];
   assert.ok(sources.length > 40);
   for (const file of sources) assert.ok(!readFileSync(file, 'utf8').includes('testChannelOk'), `${file.pathname} names the harness option`);
-  // server.mjs gives the event its words and sends it as an alert (its list of alerted kinds).
-  const main = readFileSync(new URL('server.mjs', serverDir), 'utf8');
-  assert.match(main, /'approvals-test-channel': 'a chat channel said hello in test mode: page approvals are Deny only/);
-  const alerted = /if \(\[([^\]]+)\]\.includes\(event\.kind\)\) \{\s+try \{\s+const \{ sent, held \} = await chatAlerts\.alert/.exec(main);
-  assert.ok(alerted, 'the list of alerted kinds was not found');
-  assert.ok(alerted[1].includes("'approvals-test-channel'") && alerted[1].includes("'approvals-relay'"));
+  // The event has its words and is sent as an alert (lib/chat-events.mjs, which server.mjs uses).
+  assert.match(chatEventLine({ kind: 'approvals-test-channel' }), /^a chat channel said hello in test mode: page approvals are Deny only/);
+  assert.ok(ALERTED_KINDS.includes('approvals-test-channel') && ALERTED_KINDS.includes('approvals-relay'));
+  assert.match(readFileSync(new URL('server.mjs', serverDir), 'utf8'), /const chatEvents = createChatEventHandler\(\{/);
 });
 
 // ---- the store ----

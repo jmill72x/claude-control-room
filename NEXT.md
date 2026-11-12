@@ -857,6 +857,23 @@ cookie answers the key; after Jeff turns it on, `devices.json` shows `push` on h
 and a message from Jarvis while the app is closed arrives as "New message". The 192 and
 512 px manifest icons came with `jos/polish` (below).
 
+**Ultron's three prerequisites (board e8d3ef26), checked and closed on `jos/verdict-alerts-csp`
+(from main 1e1da2d, 2026-11-11 overnight), staged, not committed.** All three were already on
+main: every page verdict was logged and pushed (#pepper the device and tool, ntfy generic
+words), the pages had the strict policy, and every socket route but hello and status takes
+the hello's session token. The gaps the branch closes: (1) the event words lived untested in
+`server.mjs`, and the channel's tool name keeps its line breaks (capField), as does a device
+name read back from `devices.json`, so either could forge a second log or #pepper line. The
+words, the pushed kinds and the handler are now `server/lib/chat-events.mjs`, every event line
+and every chat page-route log line goes through `oneLine` (breaks, controls and direction
+characters shown as `⟦U+XXXX⟧`), and `chat-events.test.mjs` covers Deny, Allow, the device
+name and hostile device and tool names end to end. (2) `script-src 'self'` is spelled out on
+the pages, and every non-page answer now gets `default-src 'none'` (`setBaseHeaders`). Also
+fixed: a flake in chat.test's status test (the random epoch could hold "300"). Live only
+after a service restart; no web build needed (the page code is unchanged). Left as it is: a
+verdict given at the terminal or in Discord never reaches this server, so only page
+verdicts alert; ntfy names no device by design (L10).
+
 **The polish batch is committed on main (66607bb, 2026-11-11), after the chat went live on
 Jeff's iPhone that morning.** Three fixes for what he hit: (1) the pairing
 screen's name box starts filled from the user agent (`defaultDeviceName` in
