@@ -287,6 +287,7 @@ if (chatSettings.on && socketsReady) {
       'approver-changed': `${event.device?.name ?? 'a device'} ${event.on ? 'may now allow' : 'may no longer allow'} permissions (by ${event.by})`,
       'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}`,
       'approvals-relay': `the channel now says its permission relay is ${event.relay === 'allow' ? 'allow (Deny and Allow)' : event.relay === 'deny' ? 'Deny only' : event.relay === 'off' ? 'off' : 'not stated (the page offers Deny only)'}; it was ${event.previous ?? 'unknown'}`,
+      'approvals-test-channel': 'a chat channel said hello in test mode: page approvals are Deny only while it holds the socket (the lead\'s own channel never runs that way; look for JARVIS_CHANNEL_TEST in a settings env block)',
       'approvals-kill': `the approvals kill file was ${event.on ? 'created: page approvals are off' : 'removed: page approvals follow config again'}`,
       'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
       'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
@@ -297,7 +298,7 @@ if (chatSettings.on && socketsReady) {
     const line = words[event.kind] ?? `chat event ${event.kind}`;
     console.log(`chat: ${line}`);
     if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
-      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict'].includes(event.kind)) {
+      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict'].includes(event.kind)) {
       try {
         const { sent, held } = await chatAlerts.alert(event.kind, line);
         if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);

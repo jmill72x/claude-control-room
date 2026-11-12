@@ -976,6 +976,17 @@ send Deny or Allow once. Everything here is off until three switches agree:
   `/api/chat/status` reports `approvals: { mode: "deny", relay: "deny" }`. A channel
   that names no mode (0.4.3 and older) counts as `unknown`, so Allow needs the 0.4.4
   channel. A change in what the channel reports is alerted.
+- **Never a channel in test mode.** The channel has a test switch for its own suites and
+  for scratch sessions, and under it the approvals flags may sit in a folder the test
+  names. From 0.4.6 the channel ignores the switch while its socket is the account's own
+  `channel.sock`, and says `test: true` or `test: false` in `POST /v1/hello`. To a channel
+  whose hello says anything but `false` there, the server offers Deny only, whatever relay
+  mode it reports: `"on"` counts as `"deny"`, the card says "the channel runs in test
+  mode", an Allow is refused with 403, and each such hello is alerted
+  (`approvals-test-channel`). A hello with no `test` at all is a channel older than 0.4.6
+  and is treated as before. The one exception is in code, not config: a scratch harness
+  that builds the gate itself may pass `testChannelOk: true` to `createApprovals`, because
+  every channel it serves runs under the switch. `server/server.mjs` never passes it.
 
 Four more config keys narrow what Allow can cover, all cautious by default (see Deny-only
 below): `chat.approvalsWriteFolders` (a list of folders; none unless set),

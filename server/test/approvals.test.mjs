@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, chmod, symlink } from 'node:fs/promises';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -532,6 +532,68 @@ test('the channel\'s relay mode: unless it says allow, "on" counts as deny here;
   assert.equal(off.mode(), 'off');
 });
 
+test('a channel under its test switch is offered Deny only, and each such hello is an event (channel 0.4.6, board 1bede46d)', () => {
+  const events = [];
+  const said = () => events.filter(e => e.kind === 'approvals-test-channel').length;
+  const g = createApprovals({ mode: 'on', onEvent: e => events.push(e), home: HOME, realpath: noReal });
+  const p = { tool: 'Read', description: 'd', inputPreview: '{"file_path":"/home/owner/Projects/app/a"}', state: 'open', denyOnly: [] };
+  g.noteChannelRelay('allow');
+  assert.equal(g.view(p).canAllow, true, 'a hello with no `test` (a channel before 0.4.6) is not test mode');
+  assert.equal(g.noteChannelTest(false), false);
+  assert.equal(g.noteChannelTest(undefined), false);
+  assert.deepEqual(g.view(p), { mode: 'on', denyOnly: [], canAllow: true });
+  assert.equal(said(), 0);
+  // true, and anything else that is not plainly false: Deny only, with the reason on the card.
+  let n = 0;
+  for (const v of [true, 'false', 0, null, 1, 'yes', {}]) {
+    assert.equal(g.noteChannelTest(v), true, String(v));
+    assert.equal(g.mode(), 'deny', String(v));
+    assert.deepEqual(g.view(p), { mode: 'deny', denyOnly: ['the channel runs in test mode'], canAllow: false }, String(v));
+    assert.deepEqual(g.reasonsNow(p), ['the channel runs in test mode'], 'the verdict route refuses Allow with this');
+    assert.equal(said(), ++n, 'each such hello is reported');
+  }
+  assert.deepEqual(g.status(), { mode: 'deny', relay: 'allow', denyOnlyUntil: null }, 'the relay it reports is kept as said');
+  // The next channel is not in test mode: Allow is back, with nothing more to report.
+  g.noteChannelTest(false);
+  assert.deepEqual(g.view(p), { mode: 'on', denyOnly: [], canAllow: true });
+  assert.equal(said(), n);
+  // It never raises the server's own mode, and is reported whatever that mode is.
+  for (const mode of ['deny', 'off']) {
+    const seen = [];
+    const other = createApprovals({ mode, onEvent: e => seen.push(e) });
+    other.noteChannelRelay('allow');
+    other.noteChannelTest(true);
+    assert.equal(other.mode(), mode);
+    assert.deepEqual(seen, [{ kind: 'approvals-test-channel' }]);
+  }
+  // Only a scratch harness, in code, may take a test channel's Allow; config has no key for it.
+  const seen = [];
+  const harness = createApprovals({ mode: 'on', onEvent: e => seen.push(e), home: HOME, realpath: noReal, testChannelOk: true });
+  harness.noteChannelRelay('allow');
+  assert.equal(harness.noteChannelTest(true), true);
+  assert.deepEqual(harness.view(p), { mode: 'on', denyOnly: [], canAllow: true });
+  assert.deepEqual(seen, []);
+  // Only `true` itself turns the cap off.
+  for (const ok of ['true', 1, 'yes', {}]) {
+    const almost = createApprovals({ mode: 'on', home: HOME, realpath: noReal, testChannelOk: ok });
+    almost.noteChannelRelay('allow');
+    almost.noteChannelTest(true);
+    assert.equal(almost.view(p).canAllow, false, String(ok));
+  }
+  assert.ok(!('testChannelOk' in readApprovalsConfig({ chat: { approvals: 'on', testChannelOk: true, approvalsTestChannelOk: true } })));
+  // And nothing in the server but the gate itself knows the option's name.
+  const serverDir = new URL('..', import.meta.url);
+  const sources = [new URL('server.mjs', serverDir), new URL('routes.mjs', serverDir), ...readdirSync(new URL('lib/', serverDir)).filter(f => f.endsWith('.mjs') && f !== 'approvals.mjs').map(f => new URL(`lib/${f}`, serverDir))];
+  assert.ok(sources.length > 40);
+  for (const file of sources) assert.ok(!readFileSync(file, 'utf8').includes('testChannelOk'), `${file.pathname} names the harness option`);
+  // server.mjs gives the event its words and sends it as an alert (its list of alerted kinds).
+  const main = readFileSync(new URL('server.mjs', serverDir), 'utf8');
+  assert.match(main, /'approvals-test-channel': 'a chat channel said hello in test mode: page approvals are Deny only/);
+  const alerted = /if \(\[([^\]]+)\]\.includes\(event\.kind\)\) \{\s+try \{\s+const \{ sent, held \} = await chatAlerts\.alert/.exec(main);
+  assert.ok(alerted, 'the list of alerted kinds was not found');
+  assert.ok(alerted[1].includes("'approvals-test-channel'") && alerted[1].includes("'approvals-relay'"));
+});
+
 // ---- the store ----
 
 test('store: a new channel session expires open requests; a repeated id in one session opens an unanswerable `repeat`; relayedAt drives expiry; a late one is the terminal\'s (L7, L9, G5)', async () => {
@@ -658,7 +720,8 @@ async function setup(opts = {}) {
   env.phone = await pair('phone');
   env.ipad = await pair('ipad');
   env.mark = (device, on) => call({ socketPath: env.adminPath, method: 'POST', path: '/admin/approver', body: { device, on } });
-  const h = await call({ socketPath: env.sockPath, method: 'POST', path: '/v1/hello', body: { pid: 1, relay } });
+  // `test` goes in the hello only when the test names it (a channel before 0.4.6 sends none).
+  const h = await call({ socketPath: env.sockPath, method: 'POST', path: '/v1/hello', body: { pid: 1, relay, ...('test' in opts ? { test: opts.test } : {}) } });
   env.token = h.json.token;
   env.unix = opts => call({ socketPath: env.sockPath, ...opts, headers: { [SESSION_HEADER]: env.token, ...(opts.headers ?? {}) } });
   // A request the page may allow by default: a Read inside a plain project folder.
@@ -812,6 +875,46 @@ test('the channel in deny (or silent about its mode): the card is Deny-only and 
       await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1, relay: 'deny' } });
       assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 403);
       assert.equal((await env.tap('abcde', env.phone, 'deny')).status, 200, 'Deny still works');
+    } finally { await env.close(); }
+  }
+});
+
+test('a hello that says test mode: the card is Deny-only and Allow is refused, even from an approver; a hello that says false gets Allow back (channel 0.4.6)', async () => {
+  for (const test of [true, 'yes', null]) {
+    const env = await setup({ test });
+    try {
+      await env.mark('phone', true);
+      assert.deepEqual(env.events.filter(e => e.kind === 'approvals-test-channel'), [{ kind: 'approvals-test-channel' }], String(test));
+      await env.open('abcde');
+      const st = await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } });
+      assert.deepEqual(st.json.approvals, { mode: 'deny', relay: 'allow', denyOnlyUntil: null }, 'it said allow, and is capped all the same');
+      assert.equal(st.json.openPermission.canAllow, false);
+      assert.deepEqual(st.json.openPermission.denyOnly, ['the channel runs in test mode']);
+      const refused = await env.tap('abcde', env.phone, 'allow');
+      assert.equal(refused.status, 403, String(test));
+      assert.match(refused.json.error, /Deny only/);
+      assert.equal(env.store.permission('abcde').state, 'open');
+      // A heartbeat that says allow lifts nothing: test mode is the hello's word.
+      await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1, relay: 'allow', test: false } });
+      assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 403);
+      assert.equal((await env.tap('abcde', env.phone, 'deny')).status, 200, 'Deny still works');
+      // The same channel says hello again, not in test mode: Allow is offered.
+      const again = await env.unix({ method: 'POST', path: '/v1/hello', body: { pid: 1, relay: 'allow', test: false } });
+      env.token = again.json.token;
+      await env.open('fghij');
+      assert.equal((await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } })).json.openPermission.canAllow, true);
+      assert.equal((await env.tap('fghij', env.phone, 'allow')).status, 200);
+      assert.equal(env.events.filter(e => e.kind === 'approvals-test-channel').length, 1);
+    } finally { await env.close(); }
+  }
+  // A hello with no `test`, and one that says false, are offered Allow as before.
+  for (const opts of [{}, { test: false }]) {
+    const env = await setup(opts);
+    try {
+      await env.mark('phone', true);
+      await env.open('abcde');
+      assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 200);
+      assert.equal(env.events.filter(e => e.kind === 'approvals-test-channel').length, 0);
     } finally { await env.close(); }
   }
 });

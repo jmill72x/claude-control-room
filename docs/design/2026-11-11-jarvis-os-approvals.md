@@ -170,6 +170,30 @@ file inside it; tier 1 leaves a file made runnable between the check and the run
 reading a repo's own config; trailing spaces in the exact text are not drawn; a hard link
 is not followed.
 
+### 0.3 The channel's test switch (channel 0.4.6, after Ultron's 0.4.5 re-vet)
+
+Ultron's re-vet of channel 0.4.5 (2026-11-11, board 1bede46d, medium; not exposed on the
+mini that day): `JARVIS_CHANNEL_TEST=1` with `JARVIS_CHANNEL_FLAGS_DIR` moved the folder the
+approvals flags are read from, on a channel that could still be talking to the real
+Control Room. A settings `env` block could so supply both flags itself. Closed in four
+places, staged 2026-11-11 on `jos/channel-046` in both repos:
+
+| Where | What changed |
+|---|---|
+| The channel, 0.4.6 (the lead's repo) | The test switch counts only when the socket is not the account's own: not `channel.sock` in the account's `~/.local/state/jarvis-os`, nor any other name in that folder, by the path and by what is on disk (a symlink, a hard link, another spelling of the folder, another letter case). Pointed at the real socket the switch is ignored and logged, and the flags, the socket and the timings are production's. Under the switch the same question is asked again before every hello. `POST /v1/hello` carries `test: true` or `test: false`. |
+| The launcher (the lead's repo) | `jarvis-start` unsets `JARVIS_CHANNEL_TEST`, `JARVIS_CHANNEL_FLAGS_DIR` and `JARVIS_OS_SOCKET` on claude's exec, as it already unset the relay variable, so nothing left in tmux's or launchd's environment reaches the channel. |
+| This server | A hello whose `test` is anything but `false` caps the page at Deny only, whatever relay mode it reports: mode `"on"` counts as `"deny"`, the card says "the channel runs in test mode", an Allow is refused with 403, and each such hello is alerted (`approvals-test-channel`). A hello with no `test` is a channel before 0.4.6 and is treated as before, so the server and the channel can be released in either order. |
+| The sweep (the lead's repo) | Its check of settings `env` blocks and launchd jobs adds `JARVIS_OS_SOCKET`, and it hands Jarvis one command for tmux's global environment, which the unattended run can't read. |
+
+The scratch harness is the one place a test channel may still be allowed from: it builds the
+gate itself with `testChannelOk: true`, in code, because every channel it serves runs under
+the switch (section 9.2's sessions among them). No config key reaches that option, and
+`CCR_REFUSE_TEST_CHANNEL=1` makes the harness behave as the real server does.
+
+Left over from the related low (board 182771a1): the sweep reading hooks in agent and skill
+frontmatter, and `env` set in shell startup files. Both are sweep-prompt work that needs a
+way to list those files inside an unattended run.
+
 ## 1. In short
 
 1. **Most of it is already built and switched off.** The Jarvis OS chat has permission cards

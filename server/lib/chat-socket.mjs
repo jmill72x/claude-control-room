@@ -257,6 +257,9 @@ export function createSocketRouter({
         // that doesn't say counts as unknown, and the page then offers Deny only.
         const relay = approvals?.noteChannelRelay?.(body.relay) ?? null;
         if (relay !== null && approvals.serverMode?.() !== 'off') log(`chat: the channel's permission relay is ${relay}`);
+        // Whether it runs under its test switch (channel 0.4.6 says; an older one
+        // sends nothing): one that does is offered Deny only, and reported.
+        approvals?.noteChannelTest?.(body.test);
         if (silenceTimer !== null) { clearTimer(silenceTimer); silenceTimer = null; }
         if (byeAt !== null) {
           // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.

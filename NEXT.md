@@ -417,12 +417,12 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Approvals as buttons (board 2422f9d1): the final build is merged, switched off (main
-e61708e; the lead's repo build/v1 57f0a9e, channel 0.4.5 source; release worktree unmoved),
-and a short go-live patch is staged, not committed, on `jos/approvals-h1`** (this repo only,
-worktree `~/Projects/.worktrees/ccr-approvals-h1`; Jeff's option A, 2026-11-11 23:33Z: one
-short round for Ultron's high and medium, he reads only that delta, then the one-step
-go-live). The patch (`server/lib/approvals.mjs`, tests): a write of any `*.py`, `*.pyc`,
+**Approvals as buttons (board 2422f9d1): live since 2026-11-11 20:40 ET, Deny and Allow
+once** (main edfb349, which holds the final build e61708e and the go-live patch; the lead's
+repo build/v1 57f0a9e, channel 0.4.5; Jarvis reports all six live checks passed). **Channel
+0.4.6 is staged, not committed, on `jos/channel-046` in both repos:** see "Channel 0.4.6"
+below the runbook. The go-live patch (`server/lib/approvals.mjs`, tests; Jeff's option A,
+2026-11-11 23:33Z): a write of any `*.py`, `*.pyc`,
 `*.pyw` or `*.so`, of `CLAUDE.local.md`, `pytest.ini`, `tox.ini` or `.python-version`, or
 under `.vscode/` is Deny-only in every write folder (board 97332dd5); any path through
 `/System`, `/Volumes`, `/.vol`, `/.file`, `/.nofollow` or `/.resolve` is Deny-only for reads,
@@ -468,9 +468,10 @@ offered only for a one-liner or a listed command, no sideways scroll, no CSP vio
 The recommended config values were run read-only against the real folders: all 18 paths
 exist, each write Ultron showed is Deny-only and the docs and content files still pass.
 
-Nothing is on: no `chat.approvals` in config, no flags, no hooks installed, no restart, no
-live web build (this build changes page code, so step 4 below builds), release worktree
-and reviewed hash unmoved.
+The go-live below (steps 1 to 9) ran on 2026-11-11: the relay came up "deny and allow" at
+20:40 ET on channel 0.4.5 (the launcher's log, the two flags and the Control Room's relay
+lines were seen on 11-11; the six live checks are Jarvis's report). Exact Bash (steps 10 to
+13) is not on.
 
 *Go-live runbook: one step for approvals with Allow (Jeff, 2026-11-11 20:37Z: "just wait
 and do it all at once"); exact Bash is a second, later step (12 and 13).* Each step waits
@@ -567,6 +568,36 @@ restart); `rm` both flags and `jarvis-start --restart` (the relay off); `chat.ap
 back to `"off"` and restart. Exact Bash alone: set `"approvalsBash": "deny"` (or remove
 the key) and restart, or remove the hook entry (either one is enough: no report, or no
 mode, means Deny-only).
+
+*Channel 0.4.6: the test switch (board 1bede46d, Ultron's 0.4.5 re-vet, medium; staged
+2026-11-11 on `jos/channel-046` in both repos, not committed; worktrees
+`~/Projects/.worktrees/ccr-channel-046` and `jarvis-channel-046`).* The finding: the
+channel's test switch with its flag-folder variable moved the folder the approvals flags are
+read from, so a settings `env` block could bring flags of its own. Design doc §0.3 has the
+table. In this repo (`server/lib/approvals.mjs`, `chat-socket.mjs`, `server.mjs`): a hello
+whose `test` is anything but `false` is offered Deny only whatever relay mode it reports
+(mode `"on"` counts as `"deny"`, the card says "the channel runs in test mode", Allow is
+403), and each such hello is alerted as `approvals-test-channel`; a hello with no `test` (a
+channel before 0.4.6) is treated as before, so either side can be released first. In the
+lead's repo: channel 0.4.6 ignores the switch on the account's own socket (by path and by
+what is on disk), asks again before every hello and says `test` in hello; `jarvis-start`
+unsets the switch, the flag folder and the socket variable on claude's exec; the sweep
+names the socket variable and hands Jarvis a command for tmux's global environment.
+- *Tests:* server 891 (889 before), in two timezones; the channel's own suites 91 (87
+  before); the end-to-end suite 23 against this branch's server (scenario 20 is new, and
+  fails against main's server, as it should); the launcher's suite 90 (89 before). Each part
+  of the fix was broken in turn and a test failed for each.
+- *Release, after Ultron's read and Jeff's C&P for both repos:* the exact steps, checks
+  and rollback are in the lead's repo, `docs/jarvis-os-channel-golive.md` §6. In short:
+  restart this service (step 3's command; no web build, no config change), then in one
+  sitting move the release worktree, update the plugin, record the new reviewed hash and
+  restart Jarvis. Nothing was run.
+- *Left over (board 182771a1, low):* the sweep reading hooks in agent and skill frontmatter
+  and `env` in shell startup files. It needs a way to list those files inside an
+  unattended run, so it is not a small change.
+- *Unverified:* everything live (no restart, no release); the plugin update's effect on the
+  cache going to 0.4.6 and back; the channel's refusal against the real `channel.sock`
+  (tested with a scratch account home standing in, never the real socket).
 
 *Unverified:* WebKit (headless checks were Chromium only, at 390 and 1440 px); whether a
 subagent's prompt relays and whether both channels get each request (design A0-3, first
