@@ -1394,7 +1394,7 @@ The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
 `server/test/approvals.test.mjs`, `server/test/exact-commands.test.mjs`, plus the
 PermissionDenied ingest in `server/test/needs-you.test.mjs`.
 
-### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; built, switched off)
+### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; off by default)
 
 Three iPhone Shortcuts reach the chat without the page: one shares a link or text from
 the share sheet, one takes a dictated question through Siri, and a location automation
@@ -1411,7 +1411,27 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   Bearer` and never as a cookie. Exactly two routes take it, `send` and `event` below. It
   can't read the thread, open the stream, list or revoke devices, pair, or answer a
   permission: those take the device cookie, and the tests try each with a key sent as a
-  header and as a cookie. At most 4 active keys; a revoked one keeps its row.
+  header and as a cookie. At most 4 active keys; a revoked or expired one keeps its row
+  and holds no place.
+- **A key not used for 30 days stops working** (`KEY_IDLE_DAYS` in
+  `server/lib/shortcut-keys.mjs`, a constant, not a config key). A use is a message the
+  key made or a presence report the server took (also one the events kill switch kept
+  from the lead); `send` and `event` call `keys.used(id)` then and at no other time. A
+  refused request (a bad body, over a limit, switched off), a repeat answered as the
+  first, and the key merely being read are not uses, so nothing keeps a key alive without
+  a message, an event or a counted report. Each use starts the 30 days again (`lastUsedAt`, written at most
+  once a minute; a write that fails is logged). A key with no last use on file (never
+  used, or made before the rule) counts from `createdAt`; a row with neither time has
+  expired. Nothing is stored for the expiry itself: `keyExpired` works it out from those
+  two times on every request and listing, by this machine's clock. An expired key can't
+  send and holds no place, and only a new code and a new key bring the Shortcut back.
+  **It can still be revoked, and should be when the phone is gone:** expiry is worked out,
+  a revoke is on file, so only a revoke holds if the clock is set back or an older build
+  runs. A revoke by id takes the row whether it works or has expired; a revoke by name
+  takes the working key of that name when there is one (a phone paired again keeps its
+  name) and an expired one only when no working key has it; revoking a device takes
+  every unrevoked key it made, expired ones too. An expired key's request gets a 401
+  with a `say` of its own (below), given only to a request that carries the real key.
 - **Pairing never shows the key.** A paired device makes a one-time code on the page (Chat
   settings › Shortcut keys › New key: `POST /api/shortcut/keys {name}`, the device cookie
   and the write guards), or `bin/chat-pair shortcut-code <name>` does on the machine: 6
@@ -1428,8 +1448,9 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   brackets or commas, so a name can't imitate it. A name read back from a file edited by
   hand that is not plain is sent as `unnamed key`.
 - **A key remembers the device whose code made it** (`madeBy`, shown on the page; the
-  device's id stays on the server). Revoking that device revokes every active key it made
-  and drops a code of its that is still waiting, each reported like any key revoke.
+  device's id stays on the server). Revoking that device revokes every key it made that
+  is not revoked yet (expired ones too) and drops a code of its that is still waiting,
+  each reported like any key revoke.
 - **The Shortcut's side refuses a browser.** `pair`, `send` and `event` answer 403 to any
   request with an `Origin` or `Sec-Fetch-Site` header (a Shortcut sends neither, a page
   always sends one), want JSON, and want the owner's tailnet login from the proxy like every
@@ -1467,8 +1488,10 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   all pass the check first (150 sends at once pass 20; 40 reports at once make one event);
   a send or report that then fails gives its count, its retry mark and its file back.
 - **Every answer has a `say` line** the Shortcut shows or speaks as it is ("Sent to
-  Jarvis. His answer comes to Jarvis OS.", "This Shortcut is not paired…"). It says whether
-  the lead is online, and nothing from the chat. No log line or error body carries a
+  Jarvis. His answer comes to Jarvis OS.", "This Shortcut is not paired…", and for an
+  expired key "This Shortcut is not paired with Jarvis OS any more: its key expired after
+  30 days without use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut.").
+  It says whether the lead is online, and nothing from the chat. No log line or error body carries a
   message's text, a code or a key.
 - **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
   ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
@@ -1479,7 +1502,9 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   put in `X-Forwarded-For`, when that is one IP); the address itself goes to the service
   log only. It is a tripwire, not a lock: a phone reaches the proxy over either of its
   tailnet addresses, so pinning one would break it. The last four kinds push at most once
-  per 10 minutes.
+  per 10 minutes. An expired key that is tried is reported too (`shortcut-expired`), once
+  per key per day however often it is tried, and is not counted with the wrong keys: an
+  automation shows nothing on the phone, so the report is how its owner hears.
 - **The keys file is never written over when it can't be read.** One that is not a list
   of keys (cut short, or not JSON) is renamed `shortcut-keys.json.corrupt-<time>` and
   logged, and no key is known; one with some unreadable entries is copied aside under that
@@ -1493,8 +1518,11 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
 - **The page** (`ShortcutKeys` in `web/src/orbit/Chat.jsx`, logic in
   `web/src/lib/orbit/chat.js`): the section shows only when `/api/chat/status` says
   `shortcutKeys: true`. It lists the keys (name, made and from which device, last used,
-  uses), makes a code and shows it until the list gains that key (it looks every 3 s
-  meanwhile), and revokes.
+  uses, and "expires … if unused" from the list's `expiresAt`), makes a code and shows it
+  until the list gains that key (it looks every 3 s meanwhile), and revokes. An expired
+  key (`expired: true` in the list) is greyed like a revoked one, with the words "expired
+  … after 30 days without use · make a new key and run Jarvis Setup again", and keeps its
+  Revoke. `bin/chat-pair shortcuts` prints `(expired)` or `expires <time> if unused`.
 
 ### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
 

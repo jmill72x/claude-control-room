@@ -326,19 +326,29 @@ export function viaWords(m) {
 }
 
 // One key's line in the settings sheet: when it was made and from which device's
-// code (revoking that device revokes the key), then its use.
+// code (revoking that device revokes the key), its use, and when it expires unless it
+// is used first (the server stops a key 30 days after its last use, and says when in
+// `expiresAt`; an older server says nothing, and neither does the line).
+// The server's KEY_IDLE_DAYS (server/lib/shortcut-keys.mjs), for the page's words only.
+export const KEY_IDLE_DAYS = 30;
+const isTime = v => typeof v === 'number' && Number.isFinite(v) && v > 0;
 export function keyLine(k, when = at => String(at)) {
   if (!k) return '';
   if (k.revokedAt) return `revoked ${when(k.revokedAt)}`;
+  if (k.expired === true) return `expired${isTime(k.expiresAt) ? ` ${when(k.expiresAt)}` : ''} after ${KEY_IDLE_DAYS} days without use · make a new key and run Jarvis Setup again`;
   const uses = Number.isInteger(k.uses) ? k.uses : 0;
   const by = typeof k.madeBy === 'string' && k.madeBy ? ` from ${k.madeBy}` : '';
-  return `made ${when(k.createdAt)}${by} · ${uses === 0 ? 'never used' : `last used ${when(k.lastUsedAt)} · ${uses} use${uses === 1 ? '' : 's'}`}`;
+  const until = isTime(k.expiresAt) ? ` · expires ${when(k.expiresAt)} if unused` : '';
+  return `made ${when(k.createdAt)}${by} · ${uses === 0 ? 'never used' : `last used ${when(k.lastUsedAt)} · ${uses} use${uses === 1 ? '' : 's'}`}${until}`;
 }
-// After a code was made: the key it became, once the list holds an active key of that
+// A key that no longer works: revoked, or expired. Its row is greyed. An expired key
+// keeps its Revoke: only a revoke is on file (expiry is worked out from the clock).
+export const keyGone = k => Boolean(k?.revokedAt) || k?.expired === true;
+// After a code was made: the key it became, once the list holds a working key of that
 // name that was not there before (`before`: the ids listed when the code was made).
 export function pairedSince(before, keys, name) {
   const had = new Set(Array.isArray(before) ? before : []);
-  return (Array.isArray(keys) ? keys : []).find(k => k && !k.revokedAt && k.name === name && !had.has(k.id)) ?? null;
+  return (Array.isArray(keys) ? keys : []).find(k => k && !keyGone(k) && k.name === name && !had.has(k.id)) ?? null;
 }
 // What the sheet says under a code it made: still waiting (show it), paired, or gone
 // (used up by wrong tries, replaced or timed out).
@@ -347,11 +357,13 @@ export function codeState(made, data) {
   if (pairedSince(made.before, data?.keys, made.name)) return 'paired';
   return data?.waiting && data.waiting.name === made.name ? 'waiting' : 'gone';
 }
-// The keys to list: the active ones, then the three most recently revoked.
+// The keys to list: the ones that work, then the three that most recently stopped
+// (revoked or expired), newest first.
+const goneAt = k => (k.revokedAt ? k.revokedAt : isTime(k.expiresAt) ? k.expiresAt : 0);
 export function keyRows(keys) {
   const list = Array.isArray(keys) ? keys.filter(k => k && typeof k.id === 'string') : [];
-  const gone = list.filter(k => k.revokedAt).sort((a, b) => b.revokedAt - a.revokedAt).slice(0, 3);
-  return [...list.filter(k => !k.revokedAt), ...gone];
+  const gone = list.filter(keyGone).sort((a, b) => goneAt(b) - goneAt(a)).slice(0, 3);
+  return [...list.filter(k => !keyGone(k)), ...gone];
 }
 
 // What a file goes up as: a `photo` (resized to a JPEG first), a `pdf` (sent as

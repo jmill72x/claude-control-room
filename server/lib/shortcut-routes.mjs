@@ -31,7 +31,11 @@
 // in the same step as its check, before anything awaits, so requests in flight
 // together can't all pass; a send that then fails gives its count back. A key over a
 // limit, and a run of refused pairing tries, are reported (rate-limited), not logged
-// line by line. Every answer has
+// line by line. A key that made no message and no report for 30 days has expired
+// (lib/shortcut-keys.mjs): it is refused like one that is not paired, in words that say
+// so, and reported once a day while it keeps being tried. Only a message or a report
+// that was made counts as a use (`keys.used`): a refused request, or a repeat answered
+// as the first, never keeps a key alive. Every answer has
 // a `say` line the Shortcut can show or speak as it is. Nothing here logs or echoes a
 // message's text. A kill file (`~/.local/state/jarvis-os/shortcuts-off`) refuses every
 // Shortcut-side route and new codes at once; listing and revoking still work.
@@ -39,7 +43,7 @@ import { createHash } from 'node:crypto';
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
 import { isClientId, MAX_PAGE_TEXT } from './chat-store.mjs';
 import { PRESENCE_EVENTS } from './events.mjs';
-import { proxyAddress } from './shortcut-keys.mjs';
+import { proxyAddress, KEY_IDLE_DAYS } from './shortcut-keys.mjs';
 import { oneLine } from './chat-events.mjs';
 
 const MIN = 60e3, DAY = 24 * 3600e3;
@@ -153,6 +157,7 @@ export function createShortcutRoutes({
   const lastSend = new Map();  // key id -> { hash, at, done: resolves to { id, seq } or null }
   const lastReport = new Map(); // `${key id}:${event}` -> when
   const overAt = new Map();    // `${key id}:${limit}` -> when it was last reported
+  const expiredAt = new Map(); // key id -> when its use after expiry was last reported
   let refusals = { start: 0, n: 0 };
   let pairRefusals = { start: 0, n: 0 };
 
@@ -175,11 +180,21 @@ export function createShortcutRoutes({
     if (killed()) throw new Refusal(503, 'Shortcut keys are switched off on the server', 'Shortcuts are switched off in Jarvis OS for now.');
   }
   // The key behind a request, or a 401. Wrong keys are counted, and the fifth in 10
-  // minutes is reported once.
+  // minutes is reported once. An expired key is a 401 of its own: the answer says to
+  // pair again, and it is reported once a day per key however often it is tried (an
+  // automation shows nothing on the phone, so the report is how its owner hears).
   function requireKey(req) {
-    const key = keys.authenticate(req.headers?.authorization, { addr: proxyAddress(req.headers) });
+    const { key, expired } = keys.check(req.headers?.authorization, { addr: proxyAddress(req.headers) });
     if (key) return key;
     const at = now();
+    if (expired) {
+      const last = expiredAt.get(expired.id);
+      if (last === undefined || at - last >= DAY) {
+        expiredAt.set(expired.id, at);
+        onEvent({ kind: 'shortcut-expired', key: { id: expired.id, name: expired.name }, days: KEY_IDLE_DAYS });
+      }
+      throw new Refusal(401, `this Shortcut key expired after ${KEY_IDLE_DAYS} days without use`, `This Shortcut is not paired with Jarvis OS any more: its key expired after ${KEY_IDLE_DAYS} days without use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut.`);
+    }
     if (at - refusals.start >= SEND_WINDOW_MS) refusals = { start: at, n: 0 };
     refusals.n++;
     if (refusals.n === REFUSALS_REPORTED_AT) onEvent({ kind: 'shortcut-refused', count: refusals.n });
@@ -285,6 +300,8 @@ export function createShortcutRoutes({
       for (const a of attachments) await store.removeAttachment(a.id);
       return duplicate(m);
     }
+    // A message was made: that is a use, and the key's idle clock starts again.
+    keys.used(key.id);
     log(`shortcut: ${label} sent a message (${what})`);
     const up = online();
     return json(res, 200, { ok: true, id: m.id, seq: m.seq, online: up, say: up ? 'Sent to Jarvis. His answer comes to Jarvis OS.' : 'Sent. Jarvis is offline now; he gets it when he is back.' }, NO_STORE);
@@ -323,6 +340,8 @@ export function createShortcutRoutes({
       if (lastReport.get(mark) === at) lastReport.delete(mark);
       throw err;
     }
+    // The report was taken: a use, like a message.
+    keys.used(key.id);
     log(`shortcut: ${key.name} reported ${body.event} (${r.status})`);
     return json(res, 200, { ok: true, status: r.status, say: `Noted: ${words}.` }, NO_STORE);
   }

@@ -50,6 +50,10 @@ Run it:
 
 The key is never shown. If it says "Wrong code", make a new code and run it again.
 
+A key lasts as long as it is used: every message and every arrive-home report starts
+its 30 days again. One that sends nothing for 30 days stops working, and you run
+Jarvis Setup again with a new code.
+
 ## 2. Ask Jarvis (Siri)
 
 1. Shortcuts › **+** › name it `Ask Jarvis`. The name is what you say to Siri.
@@ -87,6 +91,9 @@ Jarvis`, then change four things:
    - Add new field › Text. Key `shared`. Value: the **Shortcut Input** variable.
 4. Replace **Show Result** with **Show Notification** (same variable).
 
+Check **Allow Running When Locked** under the **ⓘ** of the copy too: it must be off
+here as on Ask Jarvis.
+
 Try it: in Safari tap Share › **Send to Jarvis**, type "worth a read?", Done.
 
 What Jarvis gets: your note is your message. A link goes in the message under the
@@ -114,9 +121,16 @@ It is not an instruction, and it sends at most once every 10 minutes.
 
 - **"could not connect"**: Tailscale is off on the phone.
 - **"not paired"**: run Jarvis Setup again with a new code.
+- **"not paired … its key expired after 30 days without use"**: a key stops working
+  when it has sent nothing for 30 days. Make a new code (Jarvis OS › Chat › ⋮ ›
+  Shortcut keys › **New key**) and run Jarvis Setup again; it saves the new key over
+  the old one, so the other Shortcuts need no change. The Shortcut keys list shows
+  when each key expires if unused. Arrive home fails without a word on the phone, so
+  an expired key that is tried is also reported in #pepper, once a day.
 - **"Too many messages"**: 20 in 10 minutes, 100 a day. Use the app.
 - **Lost phone, or you want it off**: Jarvis OS on another device › Chat › ⋮ ›
   Shortcut keys › **Revoke**. Or on the mini: `bin/chat-pair shortcut-revoke iPhone`.
-  Revoking the phone itself under Paired devices also revokes the keys it made.
+  Revoking the phone itself under Paired devices also revokes the keys it made. An
+  expired key can be revoked the same way; do that for a phone you no longer have.
 - **Everything off at once** (mini): `touch ~/.local/state/jarvis-os/shortcuts-off`.
   Remove the file to turn them back on.

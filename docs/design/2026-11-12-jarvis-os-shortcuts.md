@@ -1,7 +1,7 @@
 # iPhone Shortcuts into Jarvis OS
 
 Written 2026-11-12 by Pepper for Ultron (the auth, before anything goes live) and then Jeff
-(three decisions, section 8). Board item 0ea79dde; Jeff, 11-12: "i def want the iphone
+(four decisions, section 8, all answered on 2026-11-12). Board item 0ea79dde; Jeff, 11-12: "i def want the iphone
 shortcuts". It is the first slice of pillar 5 (ambient input) and came from Shuri's 11-11
 agent-OS survey, pick 7.
 
@@ -9,6 +9,8 @@ agent-OS survey, pick 7.
 The phone steps are in `docs/jarvis-os-shortcuts-setup.md`. **Ultron read it on 2026-11-12:
 go to commit, go to switch on once his two mediums were fixed.** Section 9 lists his
 findings and what changed; the sections above it describe the code as it now is.
+Merged as fc845fc and switched on 2026-11-12. **The 30-day idle expiry (decision 4, Jeff's
+yes on 11-12) is built on `jos/shortcut-idle-expiry`:** section 10.
 
 ## 1. What Jeff gets
 
@@ -60,15 +62,17 @@ key.
 rule reads that mark, so no name may push it out of the 40 characters the store keeps or
 imitate it.
 
-**Limits.** 4 active keys. Per key: 20 messages in 10 minutes and 100 a day; 6 presence
+**Limits.** 4 active keys (a revoked or expired key holds no place). A key that made no
+message and no presence report for 30 days stops working (section 10). Per key: 20 messages in 10 minutes and 100 a day; 6 presence
 reports a day, the same one at most every 10 minutes. The same message again within 15 s is
 answered as the first, so a retry never doubles it. Each is counted in the same step as
 its check, so requests sent at the same moment can't all slip through.
 
 **What is reported to #pepper** (ntfy gets the generic line): a code made, a key made, a
 key revoked, three wrong codes, five wrong keys or five refused pairing tries in 10
-minutes, a key over a limit, and a key used from a tailnet address it has not used before
-(the address itself only in the service log).
+minutes, a key over a limit, a key used from a tailnet address it has not used before
+(the address itself only in the service log), and an expired key that is tried (once a
+day per key).
 
 **Off switches.** Revoke a key on the page (two taps) or `bin/chat-pair shortcut-revoke
 <name>`: dead on the next request. Revoking a paired device revokes the keys whose codes it
@@ -107,10 +111,10 @@ each Shortcut install is named, counted and revocable by itself.
 | F. No credential: open the page with a draft, Jeff taps Send | iOS opens the link in Safari, not the home-screen app, so it lands unpaired; and Siri and the automation can't tap Send |
 | G. Pin the key to the phone's tailnet address | A phone reaches Serve over either of two tailnet addresses (IPv4, IPv6), so a pin breaks at random; and what Serve puts in `X-Forwarded-For` is Vision's to confirm. Built as a tripwire instead: first use from a new address is alerted |
 
-**No expiry** is built: a key lasts until revoked. A fixed life would mean re-running
-Setup on a schedule, and an arrive-home automation that fails silently the day it lapses.
-Ultron suggests an idle expiry instead (a key unused for 30 days dies), which a key in
-daily use never meets. Not built until Jeff decides (section 8).
+**No fixed life**: that would mean re-running Setup on a schedule, and an arrive-home
+automation that fails silently the day it lapses. **An idle expiry instead** (Ultron's
+suggestion, Jeff's yes on 2026-11-12): a key unused for 30 days stops working, which a key
+in daily use never meets. Section 10 has the rule as built.
 
 ## 4. A message from a Shortcut
 
@@ -154,9 +158,10 @@ plain name, and the line is stored `from: system`, `kind: event`, through the ev
 switch applied. It is never held for quiet hours: an arrival told the next morning is
 wrong. The same report within 10 minutes is dropped (a geofence flaps).
 
-**What Jarvis does with it is not decided here** (section 8). The server only delivers
-data. Until Jeff picks, the channel's standing rule holds: an event alone justifies no
-write or outbound message, and Jarvis speaks only when Jeff needs to act.
+**What Jarvis does with it is his instruction file's, not the server's.** The server only
+delivers data. Jeff's answer (section 8): one short brief only if something is waiting on
+him, at most once an evening, never between 22:00 and 07:00. The channel's standing rule
+holds beside it: an event alone justifies no write.
 
 One channel follow-up (Jarvis's repo): the released channel's list of event names has no
 `arrived-home`, so its tag reads `event="unknown"` with `source="presence"`; the text is
@@ -195,18 +200,21 @@ whole either way.
 - **`server.mjs` wiring** beyond its source test (it can't run in a test).
 - **Safari/WebKit** for the new section: checked in headless Chromium only.
 
-## 8. Decisions for Jeff
+## 8. Decisions for Jeff (all decided 2026-11-12)
 
 1. **The auth**: A as built (my pick), or B if the file step is too fiddly on the phone.
+   **Decided: A, the pairing code.**
 2. **What Jarvis does when you arrive home**: (a) note it and say nothing; (b) send one
    short brief only if something is waiting on you, at most once an evening, never
-   between 22:00 and 07:00 (my pick); (c) always send a brief.
+   between 22:00 and 07:00 (my pick); (c) always send a brief. **Decided: (b).**
 3. **Ask Jarvis from the lock screen**: Siri can run a Shortcut on a locked phone, so
    anyone holding it could speak a message as you. My pick: turn off "Allow Running When
-   Locked" for Ask Jarvis (Face ID first). The setup steps say where.
-4. **Key expiry**: none (as built), or Ultron's suggestion, a key unused for 30 days
+   Locked" for Ask Jarvis (Face ID first). The setup steps say where. **Decided: off, on
+   both Ask Jarvis and Send to Jarvis.**
+4. **Key expiry**: none (as first built), or Ultron's suggestion, a key unused for 30 days
    stops working and Setup is run again. My pick: the 30-day idle expiry; a key in use
-   never meets it, and a forgotten one cleans itself up.
+   never meets it, and a forgotten one cleans itself up. **Decided 2026-11-12: Jeff said
+   yes to the 30-day idle expiry. Built: section 10.**
 
 ## 9. Ultron's review (2026-11-12) and what changed
 
@@ -223,4 +231,79 @@ Verdict: go to commit; go to switch on with conditions. Fixed the same day on th
 | **L9**. A corrupt keys file was read as empty and written over | It is renamed aside and logged; a file with some bad entries is copied aside; one that can't be read keeps Shortcut keys off |
 | **L10**. `bin/chat-pair shortcut-code` ignored the kill file | It is refused while the kill file exists |
 
-Not built: key expiry (Jeff's decision 4).
+Key expiry was Jeff's decision 4 and was not part of that pass: section 10.
+
+## 10. Idle expiry (2026-11-12, board 2fb1fea8)
+
+Built on `jos/shortcut-idle-expiry` after Jeff's yes. **Ultron read it on 2026-11-12: GO,
+0 medium, 4 low.** His L1 (an expired key could not be revoked) and L4 (a wording) are in,
+as described below; L2 and L3 are on the board for later.
+
+**The rule.** A key stops working 30 days after its last use, or 30 days after it was
+made when it has never been used. Pairing again (a new code, Jarvis Setup) is the only
+way back; Setup writes the new key over the old file, so the other Shortcuts need no
+change.
+
+**What a use is.** A message the key made, or a presence report the server took
+(arrive-home included, also when the events kill switch kept it from Jarvis). Nothing
+else: not a request that was refused (a bad body, over a limit, switched off), not a
+repeat answered as the first (the same words within 15 s, a `clientId` sent again, a
+flapping geofence), and not the key merely being read. So a phone in daily use never
+meets the limit, and nobody can keep a key alive without a message, an event or a
+counted report. Before this change every request that carried the key counted as a use; `uses`
+and "last used" on the page now mean messages and reports made.
+
+**How it is kept.** Nothing new is stored. Each key already had `lastUsedAt` (written at
+most once a minute) and `createdAt`; whether it has expired is worked out from those on
+every request and every listing (`keyExpiresAt`, `keyExpired` in
+`server/lib/shortcut-keys.mjs`). A key from before this change, or one never used, has no
+last use and counts from when it was made. A row with no readable time at all has
+expired. 30 days is a constant (`KEY_IDLE_DAYS`), not a config key: every other limit
+here is a constant, and config only switches the feature on or off.
+
+**An expired key can't send or report, holds none of the 4 places, and keeps its row.**
+The page and `bin/chat-pair shortcuts` show it as expired; a key that works shows when it
+expires if unused.
+
+**An expired key can still be revoked** (Ultron's L1; as first staged it could not, and a
+device revoke skipped it). Expiry is worked out from the clock and a revoke is written
+down, so only a revoke holds if the clock is set back, the commit is reverted or an older
+build runs. A revoke by id takes the row whether it works or has expired. A revoke by
+name takes the working key of that name when there is one, so a phone paired again as
+"iPhone" still resolves to its new key, and an expired one only when no working key has
+the name (two expired keys of one name need the id). Revoking a device takes every
+unrevoked key it made, expired ones too. The page keeps Revoke on an expired row.
+
+**What the phone hears.** A 401 like an unpaired Shortcut's, with its own `say`: "This
+Shortcut is not paired with Jarvis OS any more: its key expired after 30 days without
+use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut." Only a request
+carrying the real key gets that answer; any other key gets the plain "not paired".
+
+**What Jeff hears.** The arrive-home automation shows nothing on the phone, so an
+expired key that is tried is reported to #pepper (ntfy gets the generic line): once per
+key per day, however often it is tried. It is not counted with the wrong keys.
+
+**Choices to defend.**
+
+1. **Worked out, not stored.** There is no `expiredAt` to forget to check and no write
+   on a read. The cost: the rule trusts this machine's clock and this build. A clock set
+   back by weeks, a revert or an older build would let an expired key that was not
+   revoked work again, and a clock set forward kills keys only until it is put right.
+   Anyone who can set the mini's clock already holds more than a key; for a lost phone,
+   revoke the key, which is on file.
+2. **Only a made message or report is a use.** Stricter than "any request with the
+   key", so a refused request never extends a key's life. A Shortcut that is broken in a
+   way the server refuses for 30 days expires and needs Setup again.
+3. **A last use dated in the future** (the clock was set back after it) counts as fresh,
+   and the next use writes over it.
+4. **The 30 days are not in the file or the config.** Changing them is a code change
+   and a restart, and it applies to every key at once.
+5. **Telling a key's holder that it expired** is not a leak: the answer needs the key.
+6. **The daily report is kept in memory**, so a restart allows one more that day.
+
+**Verified.** Tests for: expired, fresh to the last millisecond, refreshed by a message
+and by an arrive-home report, what does not refresh, keys with no last use on file, a use
+kept across a restart, a place freed by expiry, and an expired key revoked by id, by
+name and with its device (and staying dead with the clock set back). NEXT.md §10 has the counts and the
+mutation run. **Not verified:** anything on a real iPhone (how Siri speaks the longer
+line); `server.mjs` is unchanged.

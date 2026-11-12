@@ -1,7 +1,7 @@
 // Shortcut keys and their routes (lib/shortcut-keys.mjs, lib/shortcut-routes.mjs,
 // the presence source in lib/events.mjs): the one-time pairing, what a key may and
-// may not do, the message it makes, shared content as data, presence events and the
-// limits. Real stores in a temp folder and a real server on a loopback port; every
+// may not do, the message it makes, shared content as data, presence events, the
+// limits and the 30-day idle expiry. Real stores in a temp folder and a real server on a loopback port; every
 // name, address and id is invented; nothing touches :8322 or data/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,13 +19,13 @@ import { createChatRoutes } from '../lib/chat-routes.mjs';
 import { createSocketRouter, toInbound, SESSION_HEADER } from '../lib/chat-socket.mjs';
 import { createEvents, eventText, readEventsConfig, PRESENCE_EVENTS, PRESENCE_SOURCE, PER_SOURCE_HOURLY } from '../lib/events.mjs';
 import { chatEventLine, ALERTED_KINDS } from '../lib/chat-events.mjs';
-import { createShortcutKeys, readBearer, proxyAddress, cleanKeyName, isKeyName, KEYS_MAX, KEY_NAME_MAX, KEY_NAME_WORDS, UNNAMED, KEY_PREFIX, ADDRS_MAX } from '../lib/shortcut-keys.mjs';
+import { createShortcutKeys, readBearer, proxyAddress, cleanKeyName, isKeyName, keyExpiresAt, keyExpired, KEYS_MAX, KEY_NAME_MAX, KEY_NAME_WORDS, UNNAMED, KEY_PREFIX, ADDRS_MAX, KEY_IDLE_DAYS, KEY_IDLE_MS } from '../lib/shortcut-keys.mjs';
 import {
   createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, sharedLink, publicHostName, checkSend,
   SHARED_MAX, SHARED_WORDS, SHARED_LINK_WORDS, LINK_INLINE_MAX, SENDS_PER_WINDOW, SEND_WINDOW_MS, SENDS_PER_DAY, DUPLICATE_MS, EVENT_DEBOUNCE_MS, EVENTS_PER_DAY, REFUSALS_REPORTED_AT, CLIENT_ID_MAX, VIAS
 } from '../lib/shortcut-routes.mjs';
 
-const MIN = 60e3, HOUR = 60 * MIN;
+const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const LOGIN = 'owner@example.com';
 const AS_OWNER = { 'tailscale-user-login': LOGIN };
 const ADDR = '100.64.0.7';
@@ -333,25 +333,43 @@ test('the last place can\'t be taken twice: the claim checks the limit again', a
   assert.equal(env.keys.list().length, KEYS_MAX);
 });
 
-test('authenticate: the Bearer header only; each use counts; the file moves at most once a minute', async t => {
+test('authenticate: the Bearer header only, and a look is not a use; a use counts, and the file moves at most once a minute', async t => {
   const env = await setup(t);
   const key = await env.pairKey();
   const id = env.keys.list()[0].id;
+  const row = () => env.keys.list()[0];
   assert.equal(env.keys.authenticate(key), null, 'the bare key is not a header');
   assert.equal(env.keys.authenticate(`Bearer ${key}x`), null);
   assert.equal(env.keys.authenticate(`Bearer ${KEY_PREFIX}${'A'.repeat(43)}`), null, 'the right shape, the wrong key');
   assert.equal(env.keys.authenticate(undefined), null);
   assert.deepEqual(env.keys.authenticate(`Bearer ${key}`), { id, name: 'Phone' });
-  assert.equal(env.keys.list()[0].lastUsedAt, env.clock.t);
+  // `check` is the same look, and says which of the two refusals it is.
+  assert.deepEqual(env.keys.check(`Bearer ${key}`), { key: { id, name: 'Phone' }, expired: null });
+  assert.deepEqual(env.keys.check(`Bearer ${key}x`), { key: null, expired: null });
+  assert.deepEqual(env.keys.check(undefined), { key: null, expired: null });
+  assert.deepEqual([row().lastUsedAt, row().uses], [null, 0], 'looking a key up is not a use');
+  env.clock.t += 5e3;
   const first = env.clock.t;
-  env.clock.t += 59e3;
-  env.keys.authenticate(`Bearer ${key}`);
-  assert.equal(env.keys.list()[0].lastUsedAt, first, 'not moved within a minute');
-  assert.equal(env.keys.list()[0].uses, 2);
-  env.clock.t += 2e3;
-  env.keys.authenticate(`Bearer ${key}`);
-  assert.equal(env.keys.list()[0].lastUsedAt, first + 61e3);
-  assert.equal(env.keys.list()[0].uses, 3);
+  assert.equal(env.keys.used(id), true);
+  assert.deepEqual([row().lastUsedAt, row().uses], [first, 1]);
+  env.clock.t += 60e3;
+  env.keys.used(id);
+  assert.deepEqual([row().lastUsedAt, row().uses], [first, 2], 'not moved within a minute');
+  env.clock.t += 1;
+  env.keys.used(id);
+  assert.deepEqual([row().lastUsedAt, row().uses], [first + 60e3 + 1, 3]);
+  // The last use reaches the file (a queued call waits for the write before it).
+  await env.keys.revokeMadeBy('nobody', 'test');
+  assert.equal(JSON.parse(await readFile(env.keysPath, 'utf8'))[0].lastUsedAt, first + 60e3 + 1);
+  // A last use that reads as later than now (the clock was set back) is written over.
+  env.clock.t -= HOUR;
+  env.keys.used(id);
+  assert.equal(row().lastUsedAt, env.clock.t);
+  // No such key, and a revoked one: nothing to count.
+  assert.equal(env.keys.used('nobody'), false);
+  await env.keys.revoke('Phone', 'test');
+  assert.equal(env.keys.used(id), false);
+  assert.equal(row().uses, 4);
 });
 
 test('a key used from an address it has not used is reported, with the address in the log line only', async t => {
@@ -383,7 +401,7 @@ test('a key used from an address it has not used is reported, with the address i
   const onFile = JSON.parse(await readFile(env.keysPath, 'utf8'));
   assert.deepEqual(onFile[0].addrs, [ADDR, '100.64.0.99', '100.64.0.3', '100.64.0.4']);
   // What the page and the machine see of a key: no hash, no address.
-  assert.deepEqual(Object.keys(env.keys.list()[0]).sort(), ['createdAt', 'id', 'lastUsedAt', 'madeBy', 'name', 'revokedAt', 'uses']);
+  assert.deepEqual(Object.keys(env.keys.list()[0]).sort(), ['createdAt', 'expired', 'expiresAt', 'id', 'lastUsedAt', 'madeBy', 'name', 'revokedAt', 'uses']);
 });
 
 test('every Shortcut event kind is alerted and has words of its own', () => {
@@ -394,6 +412,8 @@ test('every Shortcut event kind is alerted and has words of its own', () => {
   assert.equal(chatEventLine({ kind: 'shortcut-revoked', key: { name: 'Phone' }, by: 'the pad' }), 'a Shortcut key was revoked: Phone (by the pad)');
   assert.equal(chatEventLine({ kind: 'shortcut-pairing-failed', by: 'the pad' }), 'a Shortcut pairing failed on three wrong codes (the code came from the pad)');
   assert.equal(chatEventLine({ kind: 'shortcut-refused', count: 5 }), '5 requests with a wrong or missing Shortcut key were refused in 10 minutes');
+  assert.ok(ALERTED_KINDS.includes('shortcut-expired'));
+  assert.equal(chatEventLine({ kind: 'shortcut-expired', key: { name: 'Phone' }, days: 30 }), 'the Shortcut key Phone was tried and refused: it expired after 30 days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)');
 });
 
 // ---- the Shortcut's side of the routes ----
@@ -788,7 +808,7 @@ test('the page lists the keys and revokes one: a device cookie, never a hash or 
   const list = await call({ port: env.port, path: '/api/shortcut/keys', headers: asPad });
   assert.equal(list.status, 200);
   const id = env.keys.list()[0].id;
-  assert.deepEqual(list.json, { keys: [{ id, name: 'Phone', createdAt: AFTERNOON, lastUsedAt: AFTERNOON, uses: 1, revokedAt: null, madeBy: 'the test' }], waiting: null, off: false });
+  assert.deepEqual(list.json, { keys: [{ id, name: 'Phone', createdAt: AFTERNOON, lastUsedAt: AFTERNOON, uses: 1, revokedAt: null, madeBy: 'the test', expiresAt: AFTERNOON + KEY_IDLE_MS, expired: false }], waiting: null, off: false });
   assert.ok(!list.text.includes(ADDR) && !/sha256|[a-f0-9]{64}/i.test(list.text));
   assert.equal(list.headers['cache-control'], 'no-store');
   const code = (await env.keys.mint('Waiting')).code;
@@ -836,7 +856,7 @@ test('the admin socket: make a code on the machine, list the keys, revoke by nam
   assert.equal(env.seen.at(-1).by, 'chat-pair on this machine');
   const out = await run(['shortcuts']);
   assert.equal(out.code, 0, out.stderr);
-  assert.match(out.stdout, /^[a-f0-9]{16} {2}Phone {2}made .* {2}used never {2}0 uses\n$/);
+  assert.equal(out.stdout.replace(/^[a-f0-9]{16}/, 'ID'), `ID  Phone  made ${new Date(AFTERNOON).toISOString()}  used never  0 uses  expires ${new Date(AFTERNOON + KEY_IDLE_MS).toISOString()} if unused\n`);
   const refused = await run(['shortcut-revoke', 'Nobody']);
   assert.deepEqual([refused.code, refused.stderr.trim()], [1, 'no such active Shortcut key']);
   const gone = await run(['shortcut-revoke', 'Phone']);
@@ -854,6 +874,16 @@ test('the admin socket: make a code on the machine, list the keys, revoke by nam
   assert.equal((await run(['shortcut-revoke', 'Spare'])).code, 0);
   assert.equal(env.keys.authenticate(`Bearer ${again.json.key}`), null);
   assert.equal((await call({ socketPath: sockPath, path: '/admin/nothing' })).status, 404);
+  // A key idle for 30 days is listed as expired, with no "expires"; it can still be revoked by name.
+  env.state.killed = false;
+  assert.equal((await env.post('/api/shortcut/pair', { code: (await env.keys.mint('Idle')).code })).status, 200);
+  env.clock.t += KEY_IDLE_MS;
+  const idle = (await run(['shortcuts'])).stdout.split('\n').find(l => l.includes('Idle')) ?? '';
+  assert.equal(idle.replace(/^[a-f0-9]{16}/, 'ID'), `ID  Idle  (expired)  made ${new Date(AFTERNOON).toISOString()}  used never  0 uses`);
+  const dead = await run(['shortcut-revoke', 'Idle']);
+  assert.deepEqual([dead.code, dead.stdout.trim()], [0, 'revoked: the Shortcut key Idle']);
+  assert.match((await run(['shortcuts'])).stdout, /Idle {2}\(revoked\)/);
+  assert.deepEqual([(await run(['shortcut-revoke', 'Idle'])).code, env.keys.list().filter(k => k.name === 'Idle').length], [1, 1], 'once');
 });
 
 // ---- the review's fixes (Ultron, 2026-11-12) ----
@@ -1112,6 +1142,8 @@ test('event: the key is named; a flapping geofence is one event; 6 a day, and go
   assert.equal(env.chatMessages().filter(m => m.meta?.event?.type === 'arrived-home').length, EVENTS_PER_DAY);
   assert.equal((await report()).status, 429);
   assert.deepEqual(env.seen.filter(e => e.kind === 'shortcut-over-limit'), [{ kind: 'shortcut-over-limit', key: { id: env.keys.list()[0].id, name: "Owner's phone" }, what: 'presence' }], 'said once in 10 minutes, not per refusal');
+  // Six reports made, six uses: the flap and the two refused ones are none.
+  assert.equal(env.keys.list()[0].uses, EVENTS_PER_DAY);
   // Its message limit is another limit: going over that in the same 10 minutes is said too.
   for (let i = 0; i <= SENDS_PER_WINDOW; i++) await env.post('/api/shortcut/send', { text: `m${i}` }, env.withKey(odd));
   assert.deepEqual(env.seen.filter(e => e.kind === 'shortcut-over-limit').map(e => e.what), ['presence', 'message']);
@@ -1191,6 +1223,281 @@ test('the presence source: its words, its type, the coalesce window, the hourly 
 });
 
 // ---- server.mjs, read as source (it can't run in a test) ----
+
+// ---- idle expiry: a key that made nothing for 30 days stops working ----
+
+test('keyExpiresAt and keyExpired: 30 days from the last use, or from when the key was made; a row with no time has expired', () => {
+  assert.equal(KEY_IDLE_DAYS, 30);
+  assert.equal(KEY_IDLE_MS, 30 * DAY);
+  const T = AFTERNOON;
+  assert.equal(keyExpiresAt({ createdAt: T, lastUsedAt: T + HOUR }), T + HOUR + KEY_IDLE_MS);
+  // No last use on file (never used, or a key from before the rule), or one that is not a time.
+  assert.equal(keyExpiresAt({ createdAt: T }), T + KEY_IDLE_MS);
+  for (const lastUsedAt of [null, undefined, 0, -5, NaN, Infinity, String(T + HOUR), {}, true]) assert.equal(keyExpiresAt({ createdAt: T, lastUsedAt }), T + KEY_IDLE_MS, String(lastUsedAt));
+  // Nothing to count from: expired, whatever the time.
+  for (const row of [{}, null, undefined, { createdAt: 'yesterday' }, { createdAt: null, lastUsedAt: null }, { createdAt: Infinity }]) {
+    assert.equal(keyExpiresAt(row), null);
+    assert.equal(keyExpired(row, T), true);
+    assert.equal(keyExpired(row, 0), true);
+  }
+  const row = { createdAt: T, lastUsedAt: T + HOUR };
+  assert.equal(keyExpired(row, T + HOUR + KEY_IDLE_MS - 1), false);
+  assert.equal(keyExpired(row, T + HOUR + KEY_IDLE_MS), true, 'at 30 days to the millisecond it is over');
+  assert.equal(keyExpired(row, T + HOUR + KEY_IDLE_MS + DAY), true);
+  assert.equal(keyExpired(row, T - DAY), false, 'a clock behind the last use: not expired');
+  assert.equal(keyExpired(row, NaN), true, 'a time that can\'t be read is never "still fresh"');
+  assert.equal(keyExpired(row, undefined), true);
+});
+
+test('a key not used for 30 days stops working: a 401 on send and on event that says to pair again, reported once a day', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const id = env.keys.list()[0].id;
+  const row = () => env.keys.list().find(k => k.id === id);
+  const made = env.clock.t;
+  env.seen.length = 0;
+  // Never used: it counts from when it was made, and works to the last millisecond.
+  assert.deepEqual([row().expiresAt, row().expired], [made + KEY_IDLE_MS, false]);
+  env.clock.t = made + KEY_IDLE_MS - 1;
+  assert.deepEqual(env.keys.authenticate(`Bearer ${key}`), { id, name: 'Phone' });
+  assert.equal(row().expired, false);
+  env.clock.t = made + KEY_IDLE_MS;
+  assert.equal(env.keys.authenticate(`Bearer ${key}`), null);
+  assert.deepEqual(env.keys.check(`Bearer ${key}`), { key: null, expired: { id, name: 'Phone' } });
+  assert.deepEqual([row().expiresAt, row().expired], [made + KEY_IDLE_MS, true]);
+  const SAY = 'This Shortcut is not paired with Jarvis OS any more: its key expired after 30 days without use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut.';
+  const sent = await env.post('/api/shortcut/send', { text: 'too late' }, env.withKey(key));
+  assert.deepEqual([sent.status, sent.json], [401, { error: 'this Shortcut key expired after 30 days without use', say: SAY }]);
+  const noted = await env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key));
+  assert.deepEqual([noted.status, noted.json.say], [401, SAY]);
+  assert.equal(env.chatMessages().length, 0, 'no message and no event line');
+  assert.deepEqual(env.seen, [{ kind: 'shortcut-expired', key: { id, name: 'Phone' }, days: 30 }], 'reported once for the two');
+  // Tried again and again: no second report that day, and never counted as a wrong key.
+  for (let i = 0; i < REFUSALS_REPORTED_AT + 2; i++) assert.equal((await env.post('/api/shortcut/send', { text: 'again' }, env.withKey(key))).status, 401);
+  // From an address it never used: refused the same, and nothing learned about the address.
+  assert.equal((await env.post('/api/shortcut/send', { text: 'again' }, { ...env.withKey(key), 'x-forwarded-for': '100.64.0.99' })).status, 401);
+  env.clock.t += DAY - 1;
+  await env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key));
+  assert.equal(env.seen.length, 1);
+  env.clock.t += 1;
+  await env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key));
+  await env.post('/api/shortcut/send', { text: 'again' }, env.withKey(key));
+  assert.deepEqual(env.seen.map(e => e.kind), ['shortcut-expired', 'shortcut-expired'], 'once more a day later');
+  // Nothing a refused key did moved its clock, and nothing brings it back.
+  assert.deepEqual([row().lastUsedAt, row().uses, row().expired], [null, 0, true]);
+  assert.equal(env.keys.used(id), false);
+  assert.equal(row().lastUsedAt, null);
+  await env.keys.revokeMadeBy('nobody', 'test');
+  assert.deepEqual(JSON.parse(await readFile(env.keysPath, 'utf8')).map(k => [k.lastUsedAt, k.addrs]), [[null, [ADDR]]]);
+  const pad = await env.pairDevice('the pad');
+  const listed = await call({ port: env.port, path: '/api/shortcut/keys', headers: { ...AS_OWNER, cookie: pad } });
+  assert.deepEqual(listed.json.keys.map(k => [k.name, k.expired, k.expiresAt, k.revokedAt]), [['Phone', true, made + KEY_IDLE_MS, null]]);
+  // Pairing again is the way back: a new key of the same name works, the old one stays dead.
+  const again = await env.pairKey('Phone');
+  assert.equal((await env.post('/api/shortcut/send', { text: 'back' }, env.withKey(again))).status, 200);
+  assert.equal((await env.post('/api/shortcut/send', { text: 'still dead' }, env.withKey(key))).status, 401);
+  assert.deepEqual(env.chatMessages().map(m => m.text), ['back']);
+  assert.deepEqual(env.keys.list().map(k => [k.expired, Boolean(k.revokedAt)]), [[true, false], [false, false]]);
+});
+
+test('an expired key can still be revoked: by id, by its name when no working key has that name, and with the device that made it', async t => {
+  const env = await setup(t);
+  const pad = await env.pairDevice('the pad');
+  const phone = await env.pairDevice('the phone');
+  const padId = env.devices.list().find(d => d.name === 'the pad').id;
+  const asPhone = { ...AS_OWNER, cookie: phone };
+  const mintOn = async (cookie, name) => (await call({ port: env.port, method: 'POST', path: '/api/shortcut/keys', body: { name }, headers: { ...AS_OWNER, cookie } })).json.code;
+  const claim = async code => (await env.post('/api/shortcut/pair', { code })).json.key;
+  const state = () => env.keys.list().map(k => `${k.name}:${k.revokedAt ? 'revoked' : k.expired ? 'expired' : 'works'}`);
+  const revoked = () => env.seen.filter(e => e.kind === 'shortcut-revoked').map(e => [e.key.name, e.key.id, e.by]);
+  // Three keys from the pad and one from the machine, all left unused for 30 days.
+  const oldPhone = await claim(await mintOn(pad, 'Phone'));
+  await claim(await mintOn(pad, 'Watch'));
+  await claim(await mintOn(pad, 'Car'));
+  await claim((await env.keys.mint('Desk', { by: 'chat-pair on this machine' })).code);
+  const [phoneId, watchId, carId, deskId] = env.keys.list().map(k => k.id);
+  env.clock.t += KEY_IDLE_MS;
+  assert.deepEqual(state(), ['Phone:expired', 'Watch:expired', 'Car:expired', 'Desk:expired']);
+  env.seen.length = 0;
+  // By id, on the page's route: the expired row is revoked for good.
+  const del = await call({ port: env.port, method: 'DELETE', path: `/api/shortcut/keys/${watchId}`, headers: asPhone });
+  assert.equal(del.status, 200, del.text);
+  assert.deepEqual(revoked(), [['Watch', watchId, 'the phone']]);
+  assert.equal((await call({ port: env.port, method: 'DELETE', path: `/api/shortcut/keys/${watchId}`, headers: asPhone })).status, 404, 'once');
+  // The phone is paired again under the same name. The name now means the working key:
+  // a revoke by name takes that one, never "more than one key has that name", and
+  // leaves the expired row alone.
+  const newPhone = await claim(await mintOn(phone, 'Phone'));
+  const newId = env.keys.list().at(-1).id;
+  assert.deepEqual(state(), ['Phone:expired', 'Watch:revoked', 'Car:expired', 'Desk:expired', 'Phone:works']);
+  assert.deepEqual(await env.keys.revoke('Phone', 'test'), { ok: true, key: { id: newId, name: 'Phone' } });
+  assert.deepEqual(state(), ['Phone:expired', 'Watch:revoked', 'Car:expired', 'Desk:expired', 'Phone:revoked']);
+  assert.equal((await env.post('/api/shortcut/send', { text: 'no' }, env.withKey(newPhone))).status, 401);
+  // No working key has the name now, so the name reaches the expired one.
+  assert.deepEqual(await env.keys.revoke('Phone', 'test'), { ok: true, key: { id: phoneId, name: 'Phone' } });
+  assert.deepEqual(await env.keys.revoke('Phone', 'test'), { ok: false, status: 404, error: 'no such active Shortcut key' });
+  // Two expired keys of one name and no working one: the name is not enough, the id is.
+  await env.keys.claim((await env.keys.mint('Car')).code);
+  env.clock.t += KEY_IDLE_MS;
+  assert.deepEqual(state().filter(l => l.startsWith('Car')), ['Car:expired', 'Car:expired']);
+  assert.deepEqual(await env.keys.revoke('Car', 'test'), { ok: false, status: 409, error: 'more than one active Shortcut key has that name; use its id' });
+  const secondCar = env.keys.list().at(-1).id;
+  assert.equal((await env.keys.revoke(secondCar, 'test')).ok, true);
+  assert.deepEqual(state(), ['Phone:revoked', 'Watch:revoked', 'Car:expired', 'Desk:expired', 'Phone:revoked', 'Car:revoked']);
+  // The pad is revoked: the one expired key it made that is not revoked yet goes with
+  // it, on file, so no clock and no older build can bring it back. The machine's stays.
+  env.seen.length = 0;
+  assert.equal((await call({ port: env.port, method: 'DELETE', path: `/api/devices/${padId}`, headers: asPhone })).status, 200);
+  assert.deepEqual(await env.revoking, [{ id: carId, name: 'Car' }]);
+  assert.deepEqual(revoked(), [['Car', carId, 'the revoke of the device the pad']]);
+  assert.deepEqual(state(), ['Phone:revoked', 'Watch:revoked', 'Car:revoked', 'Desk:expired', 'Phone:revoked', 'Car:revoked']);
+  const onFile = JSON.parse(await readFile(env.keysPath, 'utf8'));
+  assert.deepEqual(onFile.map(k => Boolean(k.revokedAt)), [true, true, true, false, true, true]);
+  // A revoked key is revoked, not expired, however long it has been idle: the list
+  // gives it no expiry time.
+  assert.deepEqual(env.keys.list().filter(k => k.revokedAt).map(k => [k.expired, k.expiresAt]), Array(5).fill([false, null]));
+  assert.deepEqual(env.keys.list().filter(k => !k.revokedAt).map(k => [k.name, k.expired, k.expiresAt]), [['Desk', true, AFTERNOON + KEY_IDLE_MS]]);
+  // Set the clock back to when they all worked: the revoked ones stay dead. Only the
+  // key nobody revoked answers again, which is why a revoke is offered on an expired row.
+  env.clock.t = AFTERNOON + 1;
+  assert.equal(env.keys.authenticate(`Bearer ${oldPhone}`), null);
+  assert.deepEqual(state().filter(l => l.endsWith(':works')), ['Desk:works']);
+  assert.deepEqual([watchId, deskId].map(id => env.keys.list().find(k => k.id === id).revokedAt === null), [false, true]);
+});
+
+test('a last use that can\'t be written is logged, and the key still works for this run', async t => {
+  const env = await setup(t);
+  const sub = join(env.dir, 'keys');
+  await mkdir(sub);
+  const keys = createShortcutKeys({ path: join(sub, 'shortcut-keys.json'), now: () => env.clock.t, log: l => env.lines.push(l) });
+  await keys.load();
+  const claimed = await keys.claim((await keys.mint('Phone')).code);
+  await rm(sub, { recursive: true });
+  assert.equal(keys.used(claimed.id), true);
+  await keys.revokeMadeBy('nobody', 'test');
+  assert.deepEqual(env.lines.filter(l => l.startsWith('shortcut: the keys file')), ['shortcut: the keys file could not be written (ENOENT); a key\'s last use may be lost at the next restart']);
+  assert.equal(keys.list()[0].lastUsedAt, env.clock.t);
+  assert.deepEqual(keys.authenticate(`Bearer ${claimed.key}`), { id: claimed.id, name: 'Phone' });
+});
+
+test('use starts the 30 days again: a message or an arrive-home report that was made, and nothing else', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const row = () => env.keys.list()[0];
+  const made = env.clock.t;
+  const send = body => env.post('/api/shortcut/send', body, env.withKey(key));
+  const report = () => env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key));
+  // Day 29: a message. The key now lasts to day 59.
+  env.clock.t = made + 29 * DAY;
+  assert.equal((await send({ text: 'still here' })).status, 200);
+  assert.deepEqual([row().lastUsedAt, row().uses, row().expiresAt], [made + 29 * DAY, 1, made + 59 * DAY]);
+  // Day 58: past the first limit and alive by that use. An arrive-home report counts as much.
+  env.clock.t = made + 58 * DAY;
+  assert.deepEqual((await report()).json.status, 'made');
+  assert.deepEqual([row().lastUsedAt, row().uses, row().expiresAt, row().expired], [made + 58 * DAY, 2, made + 88 * DAY, false]);
+  // Day 60: a repeat answered as the first is not a second use, by clientId, by the same
+  // words within 15 s, or by a flapping geofence.
+  env.clock.t = made + 60 * DAY;
+  assert.equal((await send({ text: 'once', clientId: 'c1' })).status, 200);
+  assert.deepEqual([row().lastUsedAt, row().uses], [made + 60 * DAY, 3]);
+  env.clock.t += 2 * MIN;
+  assert.equal((await send({ text: 'once', clientId: 'c1' })).json.duplicate, true);
+  assert.deepEqual([row().lastUsedAt, row().uses], [made + 60 * DAY, 3]);
+  assert.equal((await report()).json.status, 'made');
+  assert.deepEqual([row().lastUsedAt, row().uses], [made + 60 * DAY + 2 * MIN, 4]);
+  env.clock.t += 2 * MIN;
+  assert.equal((await report()).json.status, 'duplicate');
+  assert.equal((await send({ text: 'twice' })).status, 200);
+  env.clock.t += 5e3;
+  assert.equal((await send({ text: 'twice' })).json.duplicate, true);
+  const last = made + 60 * DAY + 4 * MIN;
+  assert.deepEqual([row().lastUsedAt, row().uses], [last, 5]);
+  // The day before it would expire, everything the server refuses, and every repeat:
+  // none of it is a use, so none of it keeps the key alive.
+  env.clock.t = last + KEY_IDLE_MS - HOUR;
+  assert.equal((await send({ text: 'x', extra: 1 })).status, 400);
+  assert.equal((await send({})).status, 400);
+  assert.equal((await env.post('/api/shortcut/event', { event: 'left-the-moon' }, env.withKey(key))).status, 400);
+  assert.equal((await env.post('/api/shortcut/send', { text: 'x' }, { ...env.withKey(key), origin: 'https://elsewhere.example' })).status, 403);
+  env.state.killed = true;
+  assert.equal((await send({ text: 'x' })).status, 503);
+  env.state.killed = false;
+  assert.equal((await send({ text: 'once', clientId: 'c1' })).json.duplicate, true, 'an old clientId, replayed');
+  assert.deepEqual(env.keys.authenticate(`Bearer ${key}`), { id: row().id, name: 'Phone' });
+  assert.deepEqual([row().lastUsedAt, row().uses, row().expiresAt], [last, 5, last + KEY_IDLE_MS]);
+  env.clock.t = last + KEY_IDLE_MS;
+  assert.equal((await send({ text: 'too late' })).status, 401);
+  assert.equal((await report()).status, 401);
+  assert.deepEqual(env.chatMessages().filter(m => m.from === 'jeff').map(m => m.text), ['still here', 'once', 'twice']);
+});
+
+test('a key over its limit is refused without a use, and a send or report that fails is none either', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const row = () => env.keys.list()[0];
+  const send = text => env.post('/api/shortcut/send', { text }, env.withKey(key));
+  for (let i = 0; i < SENDS_PER_WINDOW; i++) assert.equal((await send(`n${i}`)).status, 200);
+  const first = env.clock.t;
+  env.clock.t += 2 * MIN;
+  assert.equal((await send('one too many')).status, 429);
+  assert.deepEqual([row().lastUsedAt, row().uses], [first, SENDS_PER_WINDOW], 'the refused one moved nothing');
+  // A message the store could not keep, and a report the events module could not take.
+  env.clock.t += DAY;
+  const append = env.store.append;
+  env.store.append = async () => { throw new Error('disk full'); };
+  assert.equal((await send('lost')).status, 500);
+  env.store.append = append;
+  const presence = env.events.presence;
+  env.events.presence = async () => { throw new Error('ledger gone'); };
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key))).status, 500);
+  env.events.presence = presence;
+  assert.deepEqual([row().lastUsedAt, row().uses], [first, SENDS_PER_WINDOW]);
+  // The events kill switch: the report is taken (and kept from the lead), so it is a use.
+  env.state.eventsKilled = true;
+  assert.deepEqual((await env.post('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key))).json.status, 'off');
+  assert.deepEqual([row().lastUsedAt, row().uses], [first + 2 * MIN + DAY, SENDS_PER_WINDOW + 1]);
+});
+
+test('keys made before the rule have no last use: they count from when they were made; a use is kept across a restart; an expired key holds no place', async t => {
+  const env = await setup(t);
+  const T = env.clock.t;
+  const secret = n => `${KEY_PREFIX}${String(n).repeat(43)}`;
+  const header = n => `Bearer ${secret(n)}`;
+  const old = (n, times) => ({ id: String(n).repeat(16), name: `Old${n}`, keySha256: createHash('sha256').update(secret(n)).digest('hex'), revokedAt: null, addrs: [], ...times });
+  await writeFile(env.keysPath, JSON.stringify([
+    old(1, { createdAt: T - 29 * DAY }),                                  // no last use at all: 29 days old
+    old(2, { createdAt: T - 30 * DAY, lastUsedAt: null }),                // never used: 30 days old
+    old(3, { createdAt: T - 100 * DAY, lastUsedAt: T - DAY, uses: 7 }),   // old, used yesterday
+    old(4, { createdAt: T - 100 * DAY, lastUsedAt: T - 30 * DAY }),       // last used 30 days ago
+    old(5, {}),                                                           // no time at all
+    old(6, { createdAt: T - DAY, lastUsedAt: 'soon' })                    // a last use that is not a time
+  ]), { mode: 0o600 });
+  const open = async () => { const k = createShortcutKeys({ path: env.keysPath, now: () => env.clock.t, onEvent: e => env.seen.push(e), log: l => env.lines.push(l) }); await k.load(); return k; };
+  let keys = await open();
+  const works = k => [1, 2, 3, 4, 5, 6].filter(n => k.authenticate(header(n)) !== null);
+  assert.deepEqual(works(keys), [1, 3, 6]);
+  for (const n of [2, 4, 5]) assert.deepEqual(keys.check(header(n)), { key: null, expired: { id: String(n).repeat(16), name: `Old${n}` } }, `Old${n}`);
+  assert.deepEqual(keys.list().map(k => [k.expired, k.expiresAt]), [[false, T + DAY], [true, T], [false, T + 29 * DAY], [true, T], [true, null], [false, T + 29 * DAY]]);
+  // The three expired rows hold none of the 4 places: one more key can be made, and no more.
+  const claimed = await keys.claim((await keys.mint('New')).code);
+  assert.equal(claimed.ok, true, claimed.error);
+  assert.equal((await keys.mint('Fifth')).status, 409);
+  // A day on, Old1's 30 days are up unless it is used first. It is used (the route's call), and the server restarts.
+  env.clock.t = T + DAY - 1;
+  assert.equal(keys.used('1'.repeat(16)), true);
+  await keys.revokeMadeBy('nobody', 'test');
+  keys = await open();
+  env.clock.t = T + DAY;
+  assert.deepEqual(works(keys), [1, 3, 6], 'the use reached the file, so Old1 lives on after the restart');
+  assert.deepEqual(keys.list().slice(0, 2).map(k => [k.lastUsedAt, k.uses, k.expiresAt, k.expired]), [[T + DAY - 1, 1, T + 31 * DAY - 1, false], [null, 0, T, true]]);
+  // Left alone, each dies 30 days after its own last use: Old3 and Old6 at T+29d, Old1 two days later.
+  env.clock.t = T + 29 * DAY;
+  assert.deepEqual(works(keys), [1]);
+  env.clock.t = T + 31 * DAY - 1;
+  assert.deepEqual(works(keys), []);
+  // A place freed by expiry can be taken again.
+  assert.equal((await keys.mint('Fifth')).ok, true);
+});
 
 test('server.mjs: the Shortcut routes exist only when config says so, share the chat\'s store, devices, events and login, and sit before the chat\'s router', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');

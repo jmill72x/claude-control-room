@@ -62,7 +62,10 @@ try {
   } else if (arg === 'shortcuts') {
     const { status, body } = await call('GET', '/admin/shortcuts');
     if (status !== 200) { console.error(status === 404 ? 'Shortcut keys are off on this server (config chat.shortcuts)' : body.error ?? `HTTP ${status}`); process.exit(1); }
-    for (const k of body.keys) console.log(`${k.id}  ${k.name}${k.revokedAt ? '  (revoked)' : ''}  made ${new Date(k.createdAt).toISOString()}  used ${k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never'}  ${k.uses} use${k.uses === 1 ? '' : 's'}`);
+    // A key unused for 30 days expires (server/lib/shortcut-keys.mjs): a live key's line ends
+    // with when. A revoked key comes with no `expiresAt`.
+    const iso = at => (Number.isFinite(at) ? new Date(at).toISOString() : 'unknown');
+    for (const k of body.keys) console.log(`${k.id}  ${k.name}${k.revokedAt ? '  (revoked)' : k.expired ? '  (expired)' : ''}  made ${iso(k.createdAt)}  used ${k.lastUsedAt ? iso(k.lastUsedAt) : 'never'}  ${k.uses} use${k.uses === 1 ? '' : 's'}${k.expired || !Number.isFinite(k.expiresAt) ? '' : `  expires ${iso(k.expiresAt)} if unused`}`);
     if (body.keys.length === 0) console.log('no Shortcut keys');
     if (body.waiting) console.log(`a code is waiting for its Shortcut (${body.waiting.name}) until ${new Date(body.waiting.expiresAt).toISOString()}`);
   } else if (arg === 'shortcut-code') {

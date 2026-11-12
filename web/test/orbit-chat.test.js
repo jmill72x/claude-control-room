@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
   fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
-  isPhotoType, fileWord, viaWords, keyLine, keyRows, pairedSince, codeState
+  isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, pairedSince, codeState, KEY_IDLE_DAYS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -378,6 +378,30 @@ test('keyLine and keyRows: a key\'s line in the sheet, active keys first, three 
   ];
   assert.deepEqual(keyRows(keys).map(k => k.id), ['b', 'f', 'c', 'd', 'e']);
   assert.deepEqual(keyRows(null), []);
+});
+
+test('a key\'s 30 days: a live key says when it expires if unused, an expired one says so and how to get back, and counts as gone', () => {
+  const when = at => `t${at}`;
+  assert.equal(KEY_IDLE_DAYS, 30);
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: null, uses: 0, expiresAt: 31, expired: false }, when), 'made t1 · never used · expires t31 if unused');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 12, madeBy: 'the pad', expiresAt: 39, expired: false }, when), 'made t1 from the pad · last used t9 · 12 uses · expires t39 if unused');
+  // An older server sends neither field, and one may send no time: the line says nothing of it.
+  for (const expiresAt of [undefined, null, 0, -1, NaN, '39']) assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 2, expiresAt }, when), 'made t1 · last used t9 · 2 uses', String(expiresAt));
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 12, expiresAt: 39, expired: true }, when), 'expired t39 after 30 days without use · make a new key and run Jarvis Setup again');
+  assert.equal(keyLine({ createdAt: 1, expiresAt: null, expired: true }, when), 'expired after 30 days without use · make a new key and run Jarvis Setup again');
+  assert.equal(keyLine({ createdAt: 1, revokedAt: 20, expiresAt: null, expired: false }, when), 'revoked t20');
+  assert.equal(keyLine({ createdAt: 1, revokedAt: 20, expiresAt: 39, expired: true }, when), 'revoked t20', 'revoked is said first');
+  // Only the server's own `true` makes a key expired.
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: null, uses: 0, expired: 'yes' }, when), 'made t1 · never used');
+  assert.deepEqual([{ revokedAt: 5 }, { expired: true }, { revokedAt: null, expired: false }, { expired: 1 }, {}, null].map(keyGone), [true, true, false, false, false, false]);
+  // The rows: the keys that work, then the three that most recently stopped, revoked or expired.
+  const keys = [
+    { id: 'a', revokedAt: 10, expiresAt: 999 }, { id: 'b', expired: false, expiresAt: 99 }, { id: 'c', expired: true, expiresAt: 40 }, { id: 'd', revokedAt: 30 },
+    { id: 'e', expired: true, expiresAt: 20 }, { id: 'f', expired: true, expiresAt: null }, { id: 'g', revokedAt: null }
+  ];
+  assert.deepEqual(keyRows(keys).map(k => k.id), ['b', 'g', 'c', 'd', 'e'], 'a revoked key is placed by when it was revoked');
+  // An expired key is no pairing for a code made after it.
+  assert.equal(codeState({ name: 'iPhone', before: [] }, { keys: [{ id: 'x', name: 'iPhone', revokedAt: null, expired: true }], waiting: null }), 'gone');
 });
 
 test('codeState: a code the sheet made is waiting, then paired (a new active key of its name), or gone', () => {

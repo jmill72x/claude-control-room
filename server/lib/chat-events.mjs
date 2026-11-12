@@ -40,7 +40,7 @@ export function oneLine(s, max = LINE_MAX) {
 export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
   'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict',
   // Shortcut keys (lib/shortcut-keys.mjs, lib/shortcut-routes.mjs): a key can send as the owner, so its whole life is reported.
-  'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused']);
+  'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused', 'shortcut-expired']);
 
 // The words for one event, made safe for one line.
 export function chatEventLine(event) {
@@ -76,7 +76,9 @@ export function chatEventLine(event) {
     'shortcut-new-address': `the Shortcut key ${event.key?.name ?? '?'} was used from an address it had not used before`,
     'shortcut-refused': `${event.count ?? 'several'} requests with a wrong or missing Shortcut key were refused in 10 minutes`,
     'shortcut-over-limit': `the Shortcut key ${event.key?.name ?? '?'} went over its ${event.what === 'presence' ? 'presence' : 'message'} limit and is being refused`,
-    'shortcut-pair-refused': `${event.count ?? 'several'} Shortcut pairing tries were refused in 10 minutes (a wrong code, or no code waiting)`
+    'shortcut-pair-refused': `${event.count ?? 'several'} Shortcut pairing tries were refused in 10 minutes (a wrong code, or no code waiting)`,
+    // At most once a day per key (lib/shortcut-routes.mjs), however often the key is tried.
+    'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;
   return oneLine(line);

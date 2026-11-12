@@ -417,9 +417,75 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**iPhone Shortcuts (board 0ea79dde): staged 2026-11-12 on `jos/shortcuts` (from main
-c091760, worktree `~/Projects/.worktrees/ccr-shortcuts`), not committed, not live, and
-switched off by config.** Jeff, 2026-11-12: "i def want the iphone shortcuts". Three
+**Shortcut keys expire after 30 days without use (board 2fb1fea8): staged 2026-11-12 on
+`jos/shortcut-idle-expiry` (from main fc845fc, worktree
+`~/Projects/.worktrees/ccr-shortcut-idle-expiry`), not committed, not live.** Ultron
+proposed it on 11-12 and Jeff said yes. **Ultron read the staged change on 11-12: GO, 0
+medium, 4 low. L1 (an expired key could not be revoked) and L4 (a wording) are folded
+into the same staged change; L2 and L3 are on the board for later, not built.** The rule, the choices and what Ultron should look
+at are in `docs/design/2026-11-12-jarvis-os-shortcuts.md` §10; README "Shortcut keys" has
+the server side; the setup doc's troubleshooting has the line for Jeff.
+
+- *What is built.* A key stops working 30 days after its last use, or after it was made
+  when it has never been used (`KEY_IDLE_DAYS`, a constant in
+  `server/lib/shortcut-keys.mjs`; no config key, like every other limit there). Nothing
+  new is stored: `keyExpired` works it out from `lastUsedAt` and `createdAt` on every
+  request and listing, so a key from before the change counts from when it was made. **A
+  use is now a message or a presence report that was made** (`keys.used`, called by
+  `send` and `event` after the store or the events module took it): a refused request, a
+  repeat answered as the first, and the key merely being read no longer count, so
+  `uses` and "last used" changed meaning with it. An expired key can't send, holds none
+  of the 4 places and keeps its row. **It can still be revoked (Ultron's L1):** by id
+  whether it works or has expired; by name the working key of that name is taken when
+  there is one (a phone paired again as "iPhone" resolves to its new key) and an expired
+  one only when no working key has the name; a device revoke takes every unrevoked key
+  the device made, expired ones too. Its request gets a 401 with
+  its own `say` ("…not paired with Jarvis OS any more: its key expired after 30 days
+  without use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut."), and a
+  new event kind, `shortcut-expired`, goes to #pepper once per key per day while it is
+  tried (the arrive-home automation shows nothing on the phone). The page's list shows
+  "expires … if unused" per key and an expired row greyed, with its Revoke kept;
+  `bin/chat-pair shortcuts` prints the same. `server.mjs` and config are untouched.
+- *Verified (with L1 and L4 in).* Server 1044 tests (1037 before), local time and
+  `TZ=Asia/Tokyo`; web 210 (209 before). The new tests cover: expired (send and event,
+  to the millisecond), fresh, refreshed by a message and by an arrive-home report, what
+  does not refresh (400, 403, 429, 503, the three kinds of repeat, a failed store or
+  events call), keys with no last use on file, a use kept across a restart, a place freed
+  by expiry, a failed write logged, and an expired key revoked by id, by name and with
+  its device, staying dead with the clock set back while the one nobody revoked answers
+  again. 88 of 88 mutations caught in a scratch copy (three survived a pass along the
+  way and each got a test). Lint clean but for the old Lanes warning. A scratch build
+  on a scratch server (port 8397, real routes and stores, the server's clock moved by a
+  control route, a Node client as the Shortcut) passed 33 checks in headless Chromium:
+  the live row's words, the refresh by an arrive-home report at 29 days 23 hours, the 401
+  and its words at 31 idle days, the one report, the expired row with its Revoke, pairing
+  again from the page, the expired row revoked in two taps, layout at 360 to 820 px. The
+  page bundle from before the change passed 5 against the new server: it ignores the new
+  fields, shows an expired key as a live one, and its Revoke on that row works. The live
+  `web/dist` was not touched.
+- *Not verified.* Anything on a real iPhone (how Siri speaks the longer line). Safari.
+- *Go-live order.* (1) Ultron's read is done (GO; L1 and L4 are in, and their delta is
+  small: `revoke` and `revokeMadeBy` in `shortcut-keys.mjs`, one condition in
+  `Chat.jsx`, one test). (2) C&P. (3) The service restart (Jeff, at the mini). (4) `npm run build` in `web/`
+  right after. Between 3 and 4 nothing breaks; the other order would show "A key not
+  used for 30 days stops working" before the server enforces it. No config change.
+- *Checks after the restart.* `bin/chat-pair shortcuts` ends each live key's line with
+  `expires <time> if unused`, 30 days after its last use (or after it was made). Chat ›
+  ⋮ › Shortcut keys shows the same per key after the build. A send from the phone moves
+  both by the next look. Nothing can expire before 30 days after the first key was made,
+  so the refusal itself has only the tests and the scratch run behind it until then.
+- *Rollback.* Revert the commit and restart: `lastUsedAt` and `uses` are the same fields
+  as before, so the keys file needs nothing. **A revert, an older build or a clock set
+  back revives expired keys that were not revoked:** expiry is worked out, never
+  written down. Before rolling back, revoke any expired key that should stay dead (the
+  page's Revoke, or `bin/chat-pair shortcut-revoke <name or id>`).
+- *Follow-ups.* Ultron's L2 and L3 are on the board for later (Jarvis has them; not
+  built). Offered, not built: a #pepper line a few days before a key expires (today the
+  first word is the refusal).
+
+**iPhone Shortcuts (board 0ea79dde): merged as fc845fc and switched on 2026-11-12 (the
+service log says `shortcuts: on, 0 keys on file` at 18:56Z; built on `jos/shortcuts` from
+main c091760).** Jeff, 2026-11-12: "i def want the iphone shortcuts". Three
 Shortcuts: Send to Jarvis (share sheet), Ask Jarvis (Siri), and an arrive-home automation.
 README "Shortcut keys" describes the server side; the design, the auth options and what
 Ultron should look at are in `docs/design/2026-11-12-jarvis-os-shortcuts.md`; **Jeff's
@@ -427,8 +493,12 @@ steps on the phone are `docs/jarvis-os-shortcuts-setup.md`** (about 15 minutes, 
 without a phone to try them on). **Ultron read it on 2026-11-12: go to commit, go to
 switch on with conditions. His two mediums (the limits raced; a shared link went inline
 unmarked) and his lows L4 to L7, L9 and L10 were fixed the same day and staged; the design
-doc's §9 has the table. His re-read of that delta is pending. Key expiry is not built:
-Jeff hasn't decided (Ultron suggests a key unused for 30 days stops working).**
+doc's §9 has the table. Ultron re-read that delta at 18:10 on 11-12: GO to switch on,
+with his conditions C1 and C2. Jeff's four answers (design §8) are settled: auth A (the
+pairing code); on arrive-home, (b), a brief only when something waits on him, at most
+once an evening, never 22:00 to 07:00; "Allow Running When Locked" off on both Ask
+Jarvis and Send to Jarvis; and the 30-day idle expiry, staged as the entry above. The
+go-live steps below are kept as the record of what was planned.**
 
 - *What is built.* `server/lib/shortcut-keys.mjs` (the keys and the one-time code),
   `server/lib/shortcut-routes.mjs` (`/api/shortcut/pair`, `send`, `event` for the
@@ -483,7 +553,7 @@ Jeff hasn't decided (Ultron suggests a key unused for 30 days stops working).**
   `PRESENCE_EVENTS` plus the Shortcut). Ready-made, signed `.shortcut` files so Jeff
   installs with a tap instead of building by hand (needs research and Ultron: signing goes
   through Apple). "Ask Jarvis" speaking the answer (needs a read scope on the key; not
-  built on purpose). Key expiry, once Jeff decides (Ultron: 30 days idle).
+  built on purpose). Key expiry is the entry above (board 2fb1fea8).
 
 **Approvals parity and cards answered elsewhere: merged as c091760 and live since
 2026-11-12 16:47 ET (per Jarvis's 11-12 brief; built on `jos/approvals-consistency` from

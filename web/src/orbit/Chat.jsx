@@ -13,7 +13,7 @@ import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
-  isPhotoType, fileWord, viaWords, keyLine, keyRows, codeState
+  isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -633,10 +633,10 @@ function ShortcutKeys({ chat, when }) {
   return (
     <div className="o-chat-keys" role="region" aria-label="Shortcut keys">
       <h3 className="o-chat-label">Shortcut keys</h3>
-      <p className="o-chat-sub">A key lets an iPhone Shortcut send Jarvis a message from you, or say you arrived home. It can&apos;t read the chat or answer an approval. Revoking a device revokes the keys made from it.{data.off ? ' They are switched off on the server now.' : ''}</p>
+      <p className="o-chat-sub">A key lets an iPhone Shortcut send Jarvis a message from you, or say you arrived home. It can&apos;t read the chat or answer an approval. Revoking a device revokes the keys made from it. A key not used for {KEY_IDLE_DAYS} days stops working.{data.off ? ' They are switched off on the server now.' : ''}</p>
       <ul className="o-chat-devices">
         {rows.map(k => (
-          <li key={k.id} className={`o-chat-device${k.revokedAt ? ' o-chat-device-revoked' : ''}`}>
+          <li key={k.id} className={`o-chat-device${keyGone(k) ? ' o-chat-device-revoked' : ''}`}>
             <div className="o-chat-device-main">
               <span className="o-chat-device-name">{k.name}</span>
               <span className="o-chat-sub">{keyLine(k, when)}</span>
