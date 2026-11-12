@@ -812,7 +812,8 @@ three pieces, each with its own router:
   photos and PDFs; `GET /api/chat/attachments/<id>` served with nosniff, a sandboxing
   policy and `Cache-Control: private, no-store`, like the rest of the chat: a photo
   `inline`, a PDF always as `attachment` with its name, so no PDF is ever rendered at the
-  page's origin; an upload not yet on a message can be attached, and read back,
+  page's origin (a text file, the lead's or one shared through a Shortcut, downloads the
+  same way); an upload not yet on a message can be attached, and read back,
   only by the device that sent it), the stream (`GET /api/chat/stream`, SSE: a `status`
   event first, then a replay after `Last-Event-ID` or `?after=` with the seq as each
   event's id, then live `message`, `edit`, `state`, `permission` and `permission-closed`
@@ -1393,6 +1394,108 @@ The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
 `server/test/approvals.test.mjs`, `server/test/exact-commands.test.mjs`, plus the
 PermissionDenied ingest in `server/test/needs-you.test.mjs`.
 
+### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; built, switched off)
+
+Three iPhone Shortcuts reach the chat without the page: one shares a link or text from
+the share sheet, one takes a dictated question through Siri, and a location automation
+says the owner arrived home. Design, the auth options that were weighed, the review's
+findings and what is not verified: `docs/design/2026-11-12-jarvis-os-shortcuts.md`. The
+steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
+`server/lib/shortcut-keys.mjs`, `server/lib/shortcut-routes.mjs`, the `presence` source in
+`server/lib/events.mjs`; tests in `server/test/shortcuts.test.mjs`. **Off unless
+`config.json` has `chat.shortcuts: true`** (and the chat itself is on); off, every
+`/api/shortcut/*` path is a 404 and the page shows nothing of it.
+
+- **A Shortcut key is not a paired device.** It is 32 random bytes (`jsk_…`), kept as a
+  sha256 only in `server/data/chat/shortcut-keys.json` (0600), sent as `Authorization:
+  Bearer` and never as a cookie. Exactly two routes take it, `send` and `event` below. It
+  can't read the thread, open the stream, list or revoke devices, pair, or answer a
+  permission: those take the device cookie, and the tests try each with a key sent as a
+  header and as a cookie. At most 4 active keys; a revoked one keeps its row.
+- **Pairing never shows the key.** A paired device makes a one-time code on the page (Chat
+  settings › Shortcut keys › New key: `POST /api/shortcut/keys {name}`, the device cookie
+  and the write guards), or `bin/chat-pair shortcut-code <name>` does on the machine: 6
+  letters, 10 minutes, one at a time (a new one replaces the last), dead after three wrong
+  tries. The Shortcut sends it once (`POST /api/shortcut/pair {code}`) and the answer
+  carries the key, which the Shortcut saves to a file on the phone; the other Shortcuts
+  read that file. iOS gives a Shortcut no Keychain field, so the choice was between plain
+  text inside each Shortcut and a file outside them: the file is never on screen or the
+  clipboard and doesn't travel with a shared Shortcut.
+- **A key's name is plain ASCII**: letters, digits, spaces and `. _ ' -`, 22 at most,
+  refused otherwise and never cut to fit (a phone keyboard's curly apostrophe is made a
+  plain one first). A message's `device` is the name plus the mark below, and the store
+  cuts `device` at 40 UTF-16 units, so a 22-unit name can never push the mark out; no
+  brackets or commas, so a name can't imitate it. A name read back from a file edited by
+  hand that is not plain is sent as `unnamed key`.
+- **A key remembers the device whose code made it** (`madeBy`, shown on the page; the
+  device's id stays on the server). Revoking that device revokes every active key it made
+  and drops a code of its that is still waiting, each reported like any key revoke.
+- **The Shortcut's side refuses a browser.** `pair`, `send` and `event` answer 403 to any
+  request with an `Origin` or `Sec-Fetch-Site` header (a Shortcut sends neither, a page
+  always sends one), want JSON, and want the owner's tailnet login from the proxy like every
+  chat route. So a key is useless off the tailnet, and to a web page.
+- **`POST /api/shortcut/send`** takes `{text?, shared?, via?, clientId?}` and nothing else
+  (no reply target, no uploads; any other field is a 400). It appends with the same store
+  call as the page's route (`from: jeff`, `kind: chat`, `state: queued`), so the channel's
+  line for it has the page's fields. Its `device` is the key's name and how it came,
+  `<name> (Shortcut, Siri)`, `(Shortcut, share)` or `(Shortcut)` (`via`: `siri`, `share` or
+  absent); the thread shows "via Siri Shortcut" or "via share sheet" under the bubble.
+  **`text` is the owner's words; `shared` is outside content.** When `shared` is exactly
+  one `http(s)` link of at most 300 characters to a public host name (a DNS name with a
+  dot and a lettered last label: no IP literal in any spelling, no `localhost`, no bare or
+  private-network name; no white space, no credentials), it goes into the text as `URL`
+  rebuilt it, under the fixed line `Shared link, outside content:`. Any other shared text
+  (a longer link included, up to 100,000 characters) becomes a `text/plain` attachment,
+  `shared-text.txt`, which the channel already marks as data; the text is then the note or
+  the fixed line "Shared from the share sheet: the text is attached." That attachment's
+  bytes are not sniffed (`putAttachment`'s `textOnly`), so words that begin like a PDF or
+  a picture are still stored and served as text. The page shows a PDF or a text file as a
+  chip that downloads (`Content-Disposition: attachment`), and only image types as
+  pictures.
+- **`POST /api/shortcut/event`** takes `{"event": "arrived-home"}` and nothing else. No
+  text travels: the line is the events module's template, `Presence: arrived home at HH:MM
+  (from the Shortcut key <name>)`, stored `from: system`, `kind: event`, source
+  `presence`. The event caps, the 2-hour staleness rule and the events kill switch apply;
+  quiet hours do not hold it (an arrival told the next morning is wrong); `presence` can't
+  be claimed as an event-socket source.
+- **Limits, per key, in memory:** 20 messages in 10 minutes and 100 a day; the same
+  message again within 15 s is answered as the first (a retry never doubles it, also while
+  the first is still being written), and a `clientId` dedupes for good inside the key's
+  own namespace; the same presence report within 10 minutes is a duplicate; 6 reports a
+  day, so presence can't use up the 30 a day all events share. **Each is counted in the
+  same step as its check, before anything awaits**, so requests in flight together can't
+  all pass the check first (150 sends at once pass 20; 40 reports at once make one event);
+  a send or report that then fails gives its count, its retry mark and its file back.
+- **Every answer has a `say` line** the Shortcut shows or speaks as it is ("Sent to
+  Jarvis. His answer comes to Jarvis OS.", "This Shortcut is not paired…"). It says whether
+  the lead is online, and nothing from the chat. No log line or error body carries a
+  message's text, a code or a key.
+- **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
+  ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
+  wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no
+  code waiting; the first is logged, the rest only counted), a key over a limit (once per
+  key and limit in 10 minutes, however often it is refused), and a key used from an
+  address it had not used before. Each key remembers up to 4 addresses (what the proxy
+  put in `X-Forwarded-For`, when that is one IP); the address itself goes to the service
+  log only. It is a tripwire, not a lock: a phone reaches the proxy over either of its
+  tailnet addresses, so pinning one would break it. The last four kinds push at most once
+  per 10 minutes.
+- **The keys file is never written over when it can't be read.** One that is not a list
+  of keys (cut short, or not JSON) is renamed `shortcut-keys.json.corrupt-<time>` and
+  logged, and no key is known; one with some unreadable entries is copied aside under that
+  name and the good entries live on; one that can't be read or set aside keeps Shortcut
+  keys off for the run, with a `shortcuts:` line saying so.
+- **Off switches.** Revoke a key on the page (two taps) or with `bin/chat-pair
+  shortcut-revoke <name or id>`; `bin/chat-pair shortcuts` lists them. The kill file
+  `~/.local/state/jarvis-os/shortcuts-off` refuses every Shortcut request and every new
+  code, from the page and from `bin/chat-pair` alike, at once and with no restart; listing
+  and revoking still work.
+- **The page** (`ShortcutKeys` in `web/src/orbit/Chat.jsx`, logic in
+  `web/src/lib/orbit/chat.js`): the section shows only when `/api/chat/status` says
+  `shortcutKeys: true`. It lists the keys (name, made and from which device, last used,
+  uses), makes a code and shows it until the list gains that key (it looks every 3 s
+  meanwhile), and revokes.
+
 ### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
 
 An event is a short line from `system` (kind `event`) in the chat store, handed to the lead's
@@ -1403,6 +1506,9 @@ is `server/lib/events.mjs`, `server/lib/event-socket.mjs`, the event case in
 `server/lib/chat-socket.mjs` and the notifier's hook; tests in `server/test/events.test.mjs`
 and `web/test/orbit-events.test.js`. Events run only while the chat is on.
 
+- **Presence is a second kind** (2026-11-12): a paired Shortcut's `arrived-home` report
+  (see "Shortcut keys") is an event of source `presence`, made at once at any hour, with
+  the same caps, staleness rule and kill switch.
 - **What makes one.** The notifier, every 5 minutes, from its alerts *after acks*: only kind
   `cron` with a `cron:launchd:*` key and kind `service`, never `service:session:*` (the
   lead's own session) and never a key in config's `events.excludeKeys`. Ingested crons,
@@ -1682,8 +1788,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 887 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 199 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 1037 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 209 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (both pages), which the server serves
 ```
 
@@ -1988,6 +2094,7 @@ and that must not reach every device on the tailnet.
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
 | `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. The approvals keys (`approvals`, `approvalsRules` `"guarded"` or `"parity"`, `approvalsHidden` `"deny"` or `"allow"`, `approvalsBash`, `approvalsBashCommands`, `approvalsWriteFolders`, `approvalsWriteProtected`, `approvalsDenyOnly`) are in "Approvals as buttons". |
+| `chat.shortcuts` | bool, default `false` | Turns on Shortcut keys (see "Shortcut keys"): the `/api/shortcut/*` routes and the section in the Chat tab's settings. Only with the chat on. Anything but `true` or `false` is a `config:` line, and off. |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |

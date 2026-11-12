@@ -10,7 +10,10 @@ export const SEEN_KEY = 'jos.chat.seen';
 
 // The lead's messages (chat and approval requests) and event lines are news; the
 // owner's own messages (from any device), verdicts and system notices are not.
-export const countsAsUnseen = m => Boolean(m) && Number.isInteger(m.seq) && (m.from === 'jarvis' || m.kind === 'event');
+// A presence event (the owner's own Shortcut said he arrived home) is his own doing,
+// like his own message, and is no news to him.
+const ownReport = m => m.kind === 'event' && m.meta?.event?.source === 'presence';
+export const countsAsUnseen = m => Boolean(m) && Number.isInteger(m.seq) && (m.from === 'jarvis' || m.kind === 'event') && !ownReport(m);
 
 export const unseenAfter = (messages, seq) => (Array.isArray(messages) ? messages.filter(m => countsAsUnseen(m) && m.seq > seq).length : 0);
 

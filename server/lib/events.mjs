@@ -57,6 +57,10 @@ export const SUPPRESSED_EVERY_MS = HOUR;
 // A source name on the socket's allowlist, and the in-process ones.
 export const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage' });
+// Presence (lib/shortcut-routes.mjs): what a paired Shortcut may report, each a fixed
+// word. The Shortcut sends the name alone; no text of its own ever reaches an event.
+export const PRESENCE_SOURCE = 'presence';
+export const PRESENCE_EVENTS = Object.freeze({ 'arrived-home': 'arrived home' });
 // A name that may appear in an event's words: plain ASCII, one short line.
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,59}$/;
 const SAFE_REF = /^[A-Za-z0-9_-]{1,64}$/;
@@ -85,6 +89,7 @@ export function jobName(label, { jobNames = {} } = {}) {
 
 const jobPart = c => `${c.subject ?? 'a launchd job'}${Number.isInteger(c.exit) ? ` (exit ${c.exit})` : ''} at ${clockTime(c.since)}`;
 const servicePart = c => `${c.subject ?? 'a service'} since ${clockTime(c.since)}`;
+const presencePart = c => `${PRESENCE_EVENTS[c.what] ?? 'a report'} at ${clockTime(c.since)} (from ${c.subject ? `the Shortcut key ${c.subject}` : 'a Shortcut key'})`;
 
 const listed = (items, part) => {
   const shown = items.slice(0, LIST_MAX).map(part);
@@ -105,6 +110,10 @@ export function eventText(source, items, { title = null } = {}) {
   if (source === 'service') {
     if (n === 1) return `Service ${items[0].subject ?? 'a service'} is down since ${clockTime(items[0].since)}`;
     return `${n} services are down: ${listed(items, servicePart)}`;
+  }
+  if (source === PRESENCE_SOURCE) {
+    if (n === 1) return `Presence: ${presencePart(items[0])}`;
+    return `${n} presence reports: ${listed(items, presencePart)}`;
   }
   // A counted source from the socket: the count is all it carries.
   const total = items.reduce((sum, c) => sum + (Number.isInteger(c.count) ? c.count : 0), 0);
@@ -149,7 +158,7 @@ export function readEventsConfig(config) {
   if (!isObject(raw)) { problems.push('events is not an object'); return out; }
   if (raw.sources !== undefined && !isObject(raw.sources)) problems.push('events.sources is not an object');
   for (const [name, s] of Object.entries(isObject(raw.sources) ? raw.sources : {})) {
-    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name)) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd or service)`); continue; }
+    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service or presence)`); continue; }
     const title = safeName(s?.title);
     if (!title) { problems.push(`events.sources.${name}: title must be a plain name of at most 60 characters`); continue; }
     out.sources.set(name, { title, failure: s.failure === true });
@@ -270,7 +279,14 @@ export function createEvents({
     return m;
   }
 
-  const typeFor = source => (source === 'launchd' ? 'job-failed' : source === 'service' ? 'service-down' : 'count');
+  // A presence event is named by what it reports, when every item says the same.
+  const typeFor = (source, items = []) => {
+    if (source === 'launchd') return 'job-failed';
+    if (source === 'service') return 'service-down';
+    if (source !== PRESENCE_SOURCE) return 'count';
+    const whats = new Set(items.map(c => c.what));
+    return whats.size === 1 && Object.hasOwn(PRESENCE_EVENTS, items[0].what) ? items[0].what : 'presence';
+  };
 
   // The kill switch is on: nothing is made, only counted (and deduped, so a condition
   // that lives on doesn't count again each pass). `flushSuppressed` writes the line.
@@ -299,9 +315,11 @@ export function createEvents({
   async function admit(source, items) {
     const at = clock();
     if (items.length === 0) return { made: 0, held: 0, waiting: 0 };
-    // Not a failure, in quiet hours: kept until 07:00 (flush releases it).
-    const loud = items.filter(c => c.failure || !isQuiet(at));
-    const hushed = items.filter(c => !c.failure && isQuiet(at));
+    // Not a failure, in quiet hours: kept until 07:00 (flush releases it). A presence
+    // report is never kept: an arrival told the next morning says nothing true.
+    const atOnce = c => c.failure || c.immediate === true || !isQuiet(at);
+    const loud = items.filter(atOnce);
+    const hushed = items.filter(c => !atOnce(c));
     for (const c of hushed) {
       if (ledger.quiet.length < QUIET_MAX) { ledger.quiet.push(c); continue; }
       // Bounded: one past the limit is only counted, and at 07:00 the count joins the
@@ -333,7 +351,7 @@ export function createEvents({
       log(`events: a ${source} event held back by the caps (${h.n} held)`);
       return { made: 0, held: 1, waiting: 0 };
     }
-    await append({ source, type: typeFor(source), text: eventText(source, items, { title: titleOf(source) }), items });
+    await append({ source, type: typeFor(source, items), text: eventText(source, items, { title: titleOf(source) }), items });
     return { made: 1, held: 0, waiting: 0 };
   }
 
@@ -447,6 +465,29 @@ export function createEvents({
     });
   }
 
+  // A presence report from a paired Shortcut (lib/shortcut-routes.mjs, which has
+  // already checked `what` and debounced it). Typed fields only: the fixed word and
+  // the key's name when it is a plain one. The caps, the coalesce window and the kill
+  // switch apply; quiet hours do not.
+  function presence({ what, subject = null }) {
+    return serial(async () => {
+      if (!Object.hasOwn(PRESENCE_EVENTS, what)) return { status: 'refused' };
+      const item = { source: PRESENCE_SOURCE, failure: false, immediate: true, what, subject: safeName(subject), since: clock() };
+      let status;
+      if (killed()) {
+        suppress([item]);
+        await flushSuppressed();
+        status = 'off';
+      } else {
+        const r = await admit(PRESENCE_SOURCE, [item]);
+        status = r.made ? 'made' : r.held ? 'held' : 'coalescing';
+        await release();
+      }
+      await save();
+      return { status };
+    });
+  }
+
   // Whether a stored event may go to the channel now (chat-socket's toInbound).
   function deliverable(m, at = clock()) {
     if (m?.kind !== 'event' || m.from !== 'system') return false;
@@ -474,7 +515,7 @@ export function createEvents({
   }
 
   return {
-    load, fromAlerts, post, deliverable, takeTriage, killed,
+    load, fromAlerts, post, presence, deliverable, takeTriage, killed,
     flushNow: source => flushSource(source),
     release: () => serial(async () => { const n = await release(); await save(); return n; }),
     get ledger() { return ledger; }

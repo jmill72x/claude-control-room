@@ -26,17 +26,21 @@ export const SLOW_AFTER_MS = 10 * 60e3;
 // from the page's side on purpose). Each is sniffed by its first bytes.
 export const PAGE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'application/pdf']);
 
-// How a file is served to the page. A photo shows inline in the thread; a PDF is
-// always a download, never rendered at this origin: a PDF can carry script and
+// How a file is served to the page. A photo shows inline in the thread; a PDF or a
+// text file is always a download, never rendered at this origin: a PDF can carry script and
 // forms, and a PDF viewer is a large parser, so `attachment` keeps it out of the
 // page's origin altogether (a sandboxing policy alone would also stop Chromium's
 // own viewer, so inline-and-sandboxed buys nothing over it). The name is ASCII in
 // `filename` and whole in `filename*`.
+const DOWNLOAD_TYPES = new Set(['application/pdf', 'text/plain', 'text/markdown']);
 export function dispositionFor(a) {
-  if (a?.type !== 'application/pdf') return 'inline';
+  // A text file (the lead's, or text shared through a Shortcut) downloads too: what
+  // someone else wrote is never shown as a page at this origin.
+  if (!DOWNLOAD_TYPES.has(a?.type)) return 'inline';
+  const fallback = a.type === 'application/pdf' ? 'file.pdf' : 'file.txt';
   // Well formed first: a lone surrogate makes encodeURIComponent throw (a 500).
-  const name = String(a.name ?? 'file.pdf').toWellFormed();
-  const ascii = name.replace(/[^A-Za-z0-9 ._()-]/g, '_').slice(0, 120) || 'file.pdf';
+  const name = String(a.name ?? fallback).toWellFormed();
+  const ascii = name.replace(/[^A-Za-z0-9 ._()-]/g, '_').slice(0, 120) || fallback;
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
 }
 const PENDING_UPLOAD_MS = 3600e3;
@@ -113,7 +117,9 @@ export function notificationOrigin(raw, allowedHosts) {
 // `push` is the push service (lib/chat-push.mjs), or null while notifications are
 // off: its key, and the loopback hosts a scratch push service may use (tests only).
 // `approvals` is the gate (lib/approvals.mjs); without one, every verdict is refused.
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null }) {
+// `shortcutKeys` says whether the Shortcut routes are on (lib/shortcut-routes.mjs): the
+// status answer carries it, so the page asks for the keys only when there are any.
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false }) {
   // Every log line here names a device, and a name read back from devices.json was
   // never cleaned, so each line is made one line (lib/chat-events.mjs).
   const log = line => logLine(oneLine(line));
@@ -377,7 +383,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const device = requireDevice(req);
         // `device` is the asking device's own id and name (the Chat tab's settings
         // sheet marks "this device" with it); never another device's.
-        return json(res, 200, { ...state(), seq: store.seq, epoch: store.epoch, streams: streams.size, device: { id: device.id, name: device.name, approver: device.approver === true } }, { 'Cache-Control': 'no-store' });
+        return json(res, 200, { ...state(), seq: store.seq, epoch: store.epoch, streams: streams.size, device: { id: device.id, name: device.name, approver: device.approver === true }, shortcutKeys: shortcutKeys === true }, { 'Cache-Control': 'no-store' });
       }
       return json(res, 404, { error: 'not found' });
     } catch (err) {

@@ -45,6 +45,9 @@ import { createPushService, loadVapid } from './lib/chat-push.mjs';
 import { parityStartLine, createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
+import { createShortcutKeys } from './lib/shortcut-keys.mjs';
+import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig } from './lib/shortcut-routes.mjs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { get } from 'node:http';
@@ -263,6 +266,9 @@ const api = createHandler({
 // verdicts, a refused second channel and a takeover are logged and pushed like an alert;
 // the last two at most once per kind per 10 minutes, with a count of those held back.
 let chat = null;
+// The Shortcut routes (lib/shortcut-routes.mjs): made with the chat, and only when
+// config's `chat.shortcuts` is true. Null otherwise, and /api/shortcut/* is a 404.
+let shortcuts = null;
 let chatDevicesForFeed = null; // the Feed's reads take the chat's device cookie
 const chatSettings = readChatConfig(config, hosts.mode);
 for (const problem of chatSettings.problems) console.error(`config: ${problem}`);
@@ -331,7 +337,17 @@ if (chatSettings.on && socketsReady) {
   // hour they go (lib/chat-store.mjs, pruneOrphans).
   const orphans = await chatStore.pruneOrphans();
   if (orphans) console.log(`chat: removed ${orphans} unsent upload${orphans === 1 ? '' : 's'} left from before the start`);
-  const chatDevices = createDeviceStore({ path: join(chatDir, 'devices.json'), onEvent: chatEvents });
+  // A revoked device takes the Shortcut keys it made with it (set below, once the
+  // keys exist; lib/shortcut-keys.mjs, revokeMadeBy).
+  let onDeviceRevoked = null;
+  const chatDevices = createDeviceStore({
+    path: join(chatDir, 'devices.json'),
+    onEvent: event => {
+      const logged = chatEvents(event);
+      if (event?.kind === 'revoked') onDeviceRevoked?.(event.device);
+      return logged;
+    }
+  });
   await chatDevices.load();
   chatDevicesForFeed = chatDevices;
   events = createEvents({ store: chatStore, ledgerPath: join(HERE, 'data', 'events.json'), killSwitchPath: eventsOffPath, sources: eventsSettings.sources, triagePerDay: eventsSettings.triagePerDay });
@@ -378,7 +394,9 @@ if (chatSettings.on && socketsReady) {
   for (const problem of pushProblems) console.error(`push: ${problem}`);
   if (vapid) console.log('push: notifications on');
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals });
+  const shortcutSettings = readShortcutsConfig(config);
+  for (const problem of shortcutSettings.problems) console.error(`config: ${problem}`);
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, shortcutKeys: shortcutSettings.on });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
@@ -388,8 +406,35 @@ if (chatSettings.on && socketsReady) {
     console.log(`chat: ${name} socket at ${path}`);
     return s;
   };
+  // Shortcut keys (docs/design/2026-11-12-jarvis-os-shortcuts.md): off unless config's
+  // `chat.shortcuts` is true. A key sends one message as the owner, appended by the same
+  // store call as the page's, or one presence event; it reads and approves nothing. The
+  // kill file beside the sockets refuses every send at once, with no restart. Guarded
+  // by a source test (test/shortcuts.test.mjs): the routes get the chat's own store,
+  // devices, events and login.
+  const adminRouter = createAdminRouter({ devices: chatDevices, onEvent: chatEvents });
+  let adminHandler = adminRouter;
+  if (shortcutSettings.on) {
+    const shortcutsOffPath = join(stateDir, 'shortcuts-off');
+    const shortcutsOff = () => existsSync(shortcutsOffPath);
+    const shortcutKeys = createShortcutKeys({ path: join(chatDir, 'shortcut-keys.json'), onEvent: chatEvents });
+    // A keys file that can't be read, or can't be set aside when it is not a list of
+    // keys, is never written over: Shortcut keys stay off for this run, and say why.
+    let keyCount = null;
+    try { keyCount = await shortcutKeys.load(); } catch (err) { console.error(`shortcuts: the keys file could not be read (${err?.code ?? err?.name ?? 'error'}); Shortcut keys stay off`); }
+    if (keyCount !== null) {
+      shortcuts = createShortcutRoutes({ keys: shortcutKeys, devices: chatDevices, store: chatStore, events, socket: socketRouter, login: chatSettings.login, onEvent: chatEvents, killed: shortcutsOff });
+      const shortcutAdmin = createShortcutAdminRouter({ keys: shortcutKeys, killed: shortcutsOff });
+      adminHandler = (req, res) => (shortcutAdmin.owns(new URL(req.url, 'http://unix').pathname) ? shortcutAdmin.handler(req, res) : adminRouter(req, res));
+      onDeviceRevoked = device => {
+        shortcutKeys.revokeMadeBy(device?.id, `the revoke of the device ${device?.name ?? '?'}`)
+          .catch(err => console.error(`shortcuts: the keys a revoked device made could not be revoked (${err?.code ?? err?.name ?? 'error'})`));
+      };
+      console.log(`shortcuts: on, ${keyCount} key${keyCount === 1 ? '' : 's'} on file${shortcutsOff() ? ' (the kill file is there: every send is refused)' : ''}`);
+    }
+  }
   await listenUnix(channelSocketPath, socketRouter.handler, 'channel');
-  await listenUnix(adminSocketPath, createAdminRouter({ devices: chatDevices, onEvent: chatEvents }), 'admin');
+  await listenUnix(adminSocketPath, adminHandler, 'admin');
   // The event socket is apart from the other two; a problem with its path keeps it
   // off and leaves the chat (and the notifier's events) running.
   const eventPrep = await prepareSocketPath(eventSocketPath);
@@ -422,6 +467,7 @@ process.on('unhandledRejection', err => {
 
 // The Host check comes first, before any route, API or page alike.
 const routes = withHostGuard(async (req, res) => {
+  if (shortcuts && shortcuts.owns(new URL(req.url, 'http://localhost').pathname)) return shortcuts.handler(req, res);
   if (chat && chat.owns(new URL(req.url, 'http://localhost').pathname)) return chat.handler(req, res);
   if (feedRoutes.owns(new URL(req.url, 'http://localhost').pathname)) return feedRoutes.handler(req, res);
   if (req.url.startsWith('/api/')) return api(req, res);

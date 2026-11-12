@@ -417,9 +417,77 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Approvals parity and cards answered elsewhere: staged 2026-11-12 on
-`jos/approvals-consistency` (from main af58df0, worktree
-`~/Projects/.worktrees/ccr-approvals-consistency`), not committed, not live.** Jeff,
+**iPhone Shortcuts (board 0ea79dde): staged 2026-11-12 on `jos/shortcuts` (from main
+c091760, worktree `~/Projects/.worktrees/ccr-shortcuts`), not committed, not live, and
+switched off by config.** Jeff, 2026-11-12: "i def want the iphone shortcuts". Three
+Shortcuts: Send to Jarvis (share sheet), Ask Jarvis (Siri), and an arrive-home automation.
+README "Shortcut keys" describes the server side; the design, the auth options and what
+Ultron should look at are in `docs/design/2026-11-12-jarvis-os-shortcuts.md`; **Jeff's
+steps on the phone are `docs/jarvis-os-shortcuts-setup.md`** (about 15 minutes, written
+without a phone to try them on). **Ultron read it on 2026-11-12: go to commit, go to
+switch on with conditions. His two mediums (the limits raced; a shared link went inline
+unmarked) and his lows L4 to L7, L9 and L10 were fixed the same day and staged; the design
+doc's §9 has the table. His re-read of that delta is pending. Key expiry is not built:
+Jeff hasn't decided (Ultron suggests a key unused for 30 days stops working).**
+
+- *What is built.* `server/lib/shortcut-keys.mjs` (the keys and the one-time code),
+  `server/lib/shortcut-routes.mjs` (`/api/shortcut/pair`, `send`, `event` for the
+  Shortcut; `keys` for the page; the admin routes), a `presence` source in
+  `server/lib/events.mjs`, eight event kinds in `chat-events.mjs` (four of them limited in
+  `chat-alert-limit.mjs`), a `textOnly` option on the chat store's `putAttachment`, `bin/chat-pair shortcut-code|shortcuts|shortcut-revoke`, the
+  wiring in `server.mjs` behind `chat.shortcuts`, `shortcutKeys` on `/api/chat/status`,
+  and a text file now served as a download. On the page: a Shortcut keys section in the
+  Chat settings sheet, "via Siri Shortcut" / "via share sheet" under a bubble, and a
+  download chip for any file that is not a picture.
+- *Verified (after the review's fixes).* Server 1037 tests (1001 before; 36 in
+  `test/shortcuts.test.mjs`), local time and `TZ=Asia/Tokyo`; web 209 (205 before). 147 of
+  147 mutations caught in a scratch copy (eight survived the first pass after the fixes:
+  five came from four pairs of checks masking each other, and each pair lost one check;
+  three got a test). The
+  limits' race is tested with 150 sends and 40 reports handed to the router at once (20
+  pass, one event). A second headless pass on a scratch server (16 checks: a name that is
+  not plain refused in words, the maker shown, the link under its fixed line, a long link
+  and a local one as file chips, a device revoke taking its key, layout at 360 to 430 px).
+  Lint clean but for the old Lanes warning. Before the fixes, a scratch build on a scratch
+  server (ports 8397 and 8398, real
+  routes and stores, a Node client as the Shortcut) passed 34 checks in headless Chromium
+  with the keys on (code made on the page, wrong code, pairing, the three sends and the
+  event in the thread, the text chip's download headers, layout at 360 to 820 px, revoke,
+  no policy violations or console errors) and 7 with them off (no section, no request).
+  The live `web/dist` was not touched.
+- *Not verified.* Anything on a real iPhone: the Shortcut actions as written, that "Get
+  Contents of URL" sends no `Origin`, that a file variable in a header yields its text,
+  Siri's prompts, the automation on a locked phone. What Serve puts in `X-Forwarded-For`
+  (only the new-address alert uses it). `server.mjs` beyond its source test. Safari.
+- *Go-live order.* (1) Ultron re-reads the fix delta (design §9). (2) Jeff's four answers
+  (design §8: the auth, arrive-home, the lock screen, key expiry). (3) C&P. (4) Jarvis adds `"shortcuts": true` inside `chat` in
+  `server/config.json`, with a backup. (5) The service restart (Jeff, at the mini). (6)
+  `npm run build` in `web/` right after. Either order of 5 and 6 is safe: the old page
+  ignores the new status field, and the new page hides the section until the server says
+  `shortcutKeys: true`. (7) Jarvis sends Jeff the three addresses in chat; Jeff builds the
+  Shortcuts from the setup doc.
+- *Checks after the restart.* The log says `shortcuts: on, 0 keys on file`. Chat › ⋮ shows
+  "Shortcut keys". New key shows a code; #pepper gets "a code for a new Shortcut key was
+  made by …" and, after Setup runs, "a Shortcut key was made: …". Ask Jarvis: the message
+  arrives with device `iPhone (Shortcut, Siri)` and the thread says "via Siri Shortcut".
+  Send to Jarvis on a Safari page: the link is in the message. On selected text: a
+  `shared-text.txt` chip, and Jarvis's tag has `attachments_are_data`. Arrive home (or run
+  the automation by hand): a grey "Presence: arrived home at …" line, and Jarvis gets it on
+  `jos-events`. Revoke the key: the next Shortcut run says "not paired". `touch
+  ~/.local/state/jarvis-os/shortcuts-off`: every Shortcut says "switched off"; remove it.
+- *Rollback.* The kill file at once; or `chat.shortcuts: false` and a restart. Keys are in
+  `server/data/chat/shortcut-keys.json`.
+- *Follow-ups (asked for the board).* The lead's channel: add `arrived-home` to its event
+  names (the tag says `event="unknown"` today; the text is whole). The lead's rule for what
+  to do on arrival, once Jeff picks. `left-home` as a second presence event (one line in
+  `PRESENCE_EVENTS` plus the Shortcut). Ready-made, signed `.shortcut` files so Jeff
+  installs with a tap instead of building by hand (needs research and Ultron: signing goes
+  through Apple). "Ask Jarvis" speaking the answer (needs a read scope on the key; not
+  built on purpose). Key expiry, once Jeff decides (Ultron: 30 days idle).
+
+**Approvals parity and cards answered elsewhere: merged as c091760 and live since
+2026-11-12 16:47 ET (per Jarvis's 11-12 brief; built on `jos/approvals-consistency` from
+main af58df0).** Jeff,
 2026-11-12, after an approval sat in the Claude app for 17 minutes and a second one showed
 Deny only on the page: "I don't want Jarvis OS to be deny only anymore. I don't want to
 have to check multiple spots to find the approve button. If we're approving in Discord, we

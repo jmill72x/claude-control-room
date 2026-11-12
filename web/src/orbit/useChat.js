@@ -23,6 +23,8 @@ const PAIR_POLL_MS = 2000;
 export function useChat({ active }) {
   const [phase, setPhase] = useState('checking'); // checking | unpaired | paired | off | forbidden | error
   const [device, setDevice] = useState(null);
+  // Whether the server has Shortcut keys on (the status answer says so).
+  const [shortcutsOn, setShortcutsOn] = useState(false);
   const [status, setStatus] = useState(null);
   const [messages, setMessages] = useState([]);
   const [permissions, setPermissions] = useState(() => new Map());
@@ -139,6 +141,7 @@ export function useChat({ active }) {
       if (!aliveRef.current) return;
       applyStatus(s);
       setDevice(s.device ?? null);
+      setShortcutsOn(s.shortcutKeys === true);
       const page = await api.latestMessages(PAGE);
       if (!aliveRef.current) return;
       setMessages(list => mergeMessages(list, page.messages));
@@ -318,10 +321,15 @@ export function useChat({ active }) {
     if (device && id === device.id) unpaired();
   }, [device, unpaired]);
   const approve = useCallback(code => api.pairApprove(code), []);
+  // Shortcut keys: null when the server has them off (404), so the sheet shows nothing.
+  const shortcutKeys = useCallback(() => api.listShortcutKeys().catch(err => { if (err?.status === 404) return null; throw err; }), []);
+  const newShortcutCode = useCallback(name => api.newShortcutCode(name), []);
+  const revokeShortcutKey = useCallback(id => api.revokeShortcutKey(id), []);
 
   return {
     phase, problem, device, status, messages, permissions, hasOlder, loadingOlder, stream,
     reload: load, loadOlder, send, retry, discard, verdict, dismissPermission,
-    pairing, startPairing, cancelPairing, pollPairing, devices, revoke, approve
+    pairing, startPairing, cancelPairing, pollPairing, devices, revoke, approve,
+    shortcutsOn, shortcutKeys, newShortcutCode, revokeShortcutKey
   };
 }

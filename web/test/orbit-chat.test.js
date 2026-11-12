@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
+  isPhotoType, fileWord, viaWords, keyLine, keyRows, pairedSince, codeState
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
 
@@ -341,4 +342,55 @@ test('Allow once is armed by the first tap for 4 seconds; the "sent" line never 
   assert.equal(allowArmed(T0 + 10, T0), false, 'a clock that went back');
   assert.equal(sentLine({ state: 'allowed', answeredBy: 'iPhone', answeredAt: T0 }), 'Allow sent from iPhone at 09:05. Claude Code uses it if the prompt was still open.');
   assert.equal(sentLine({ state: 'denied' }), 'Deny sent. Claude Code uses it if the prompt was still open.');
+});
+
+// ---- Shortcut keys and what a Shortcut sent ----
+
+test('a sent file is a picture or a chip: only image types are shown, and each chip has its word', () => {
+  for (const type of ['image/png', 'image/jpeg', 'IMAGE/HEIC']) assert.equal(isPhotoType(type), true, type);
+  for (const type of ['application/pdf', 'text/plain', 'text/markdown', '', null, undefined, 7]) assert.equal(isPhotoType(type), false, String(type));
+  assert.equal(fileWord('application/pdf'), 'PDF');
+  assert.equal(fileWord('text/plain'), 'text file');
+  assert.equal(fileWord('text/markdown'), 'text file');
+  assert.equal(fileWord('application/zip'), 'file');
+});
+
+test('viaWords: the mark on a message a Shortcut sent, from the server\'s meta only', () => {
+  assert.equal(viaWords({ meta: { shortcut: { key: 'k1', via: 'siri' } } }), 'Siri Shortcut');
+  assert.equal(viaWords({ meta: { shortcut: { key: 'k1', via: 'share' } } }), 'share sheet');
+  assert.equal(viaWords({ meta: { shortcut: { key: 'k1', via: 'shortcut' } } }), 'Shortcut');
+  assert.equal(viaWords({ meta: { shortcut: { via: 'constructor' } } }), 'Shortcut', 'an unknown way is only "Shortcut"');
+  for (const m of [null, {}, { meta: null }, { meta: {} }, { meta: { shortcut: null } }, { meta: { shortcut: 'siri' } }, { text: 'via Siri' }]) assert.equal(viaWords(m), null);
+});
+
+test('keyLine and keyRows: a key\'s line in the sheet, active keys first, three revoked at most', () => {
+  const when = at => `t${at}`;
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: null, uses: 0 }, when), 'made t1 · never used');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 5, uses: 1 }, when), 'made t1 · last used t5 · 1 use');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 12 }, when), 'made t1 · last used t9 · 12 uses');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: null, uses: 0, madeBy: 'the pad' }, when), 'made t1 from the pad · never used');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 2, madeBy: '' }, when), 'made t1 · last used t9 · 2 uses');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 2, madeBy: 7 }, when), 'made t1 · last used t9 · 2 uses');
+  assert.equal(keyLine({ createdAt: 1, lastUsedAt: 9, uses: 12, revokedAt: 20 }, when), 'revoked t20');
+  assert.equal(keyLine(null, when), '');
+  const keys = [
+    { id: 'a', revokedAt: 10 }, { id: 'b', revokedAt: null }, { id: 'c', revokedAt: 40 }, { id: 'd', revokedAt: 30 }, { id: 'e', revokedAt: 20 }, { id: 'f', revokedAt: null }, null, { name: 'no id' }
+  ];
+  assert.deepEqual(keyRows(keys).map(k => k.id), ['b', 'f', 'c', 'd', 'e']);
+  assert.deepEqual(keyRows(null), []);
+});
+
+test('codeState: a code the sheet made is waiting, then paired (a new active key of its name), or gone', () => {
+  const made = { code: 'ABCDEF', name: 'iPhone', expiresAt: 600, before: ['old'] };
+  const old = { id: 'old', name: 'iPhone', revokedAt: null };
+  assert.equal(codeState(null, { keys: [], waiting: null }), null);
+  assert.equal(codeState(made, { keys: [old], waiting: { name: 'iPhone', expiresAt: 600 } }), 'waiting');
+  assert.equal(codeState(made, { keys: [old], waiting: null }), 'gone', 'the key that was there before is not the new one');
+  assert.equal(codeState(made, { keys: [old], waiting: { name: 'Pad', expiresAt: 900 } }), 'gone', 'another code replaced it');
+  assert.equal(codeState(made, { keys: [old, { id: 'new', name: 'iPhone', revokedAt: null }], waiting: null }), 'paired');
+  assert.equal(codeState(made, { keys: [old, { id: 'new', name: 'iPhone', revokedAt: 5 }], waiting: null }), 'gone', 'a revoked key is not a pairing');
+  assert.equal(codeState(made, { keys: [old, { id: 'new', name: 'Pad', revokedAt: null }], waiting: null }), 'gone');
+  assert.equal(codeState(made, null), 'gone');
+  assert.deepEqual(pairedSince(null, [{ id: 'a', name: 'iPhone' }], 'iPhone'), { id: 'a', name: 'iPhone' });
+  assert.equal(pairedSince(['a'], null, 'iPhone'), null);
 });

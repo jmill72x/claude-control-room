@@ -11,6 +11,9 @@ test('only the lead\'s messages and event lines count as unseen', () => {
   assert.equal(countsAsUnseen(msg(1, 'jarvis')), true);
   assert.equal(countsAsUnseen(msg(2, 'jarvis', 'permission')), true, 'an approval request is the lead\'s');
   assert.equal(countsAsUnseen(msg(3, 'system', 'event')), true);
+  assert.equal(countsAsUnseen({ ...msg(3, 'system', 'event'), meta: { event: { source: 'launchd' } } }), true);
+  assert.equal(countsAsUnseen({ ...msg(3, 'system', 'event'), meta: { event: { source: 'presence' } } }), false, 'his own Shortcut\'s arrival is no news to him');
+  assert.equal(countsAsUnseen({ ...msg(3, 'jarvis'), meta: { event: { source: 'presence' } } }), true, 'only an event can be his own report');
   assert.equal(countsAsUnseen(msg(4, 'jeff')), false, 'the owner\'s own message, even from another device');
   assert.equal(countsAsUnseen(msg(5, 'jeff', 'verdict')), false);
   assert.equal(countsAsUnseen(msg(6, 'system', 'notice')), false, 'a restart notice is not news');

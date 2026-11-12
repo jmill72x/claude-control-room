@@ -38,7 +38,9 @@ export function oneLine(s, max = LINE_MAX) {
 
 // The kinds that push as well as log.
 export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
-  'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict']);
+  'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict',
+  // Shortcut keys (lib/shortcut-keys.mjs, lib/shortcut-routes.mjs): a key can send as the owner, so its whole life is reported.
+  'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused']);
 
 // The words for one event, made safe for one line.
 export function chatEventLine(event) {
@@ -65,7 +67,16 @@ export function chatEventLine(event) {
     'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
     'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
     'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: ${event.parity === true ? 'the cards keep Allow (parity with the relay), so look before tapping' : 'page approvals are Deny only for 10 minutes'}`,
-    'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)'
+    'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)',
+    'shortcut-code-made': `a code for a new Shortcut key was made by ${event.by ?? '?'} (${event.name || 'unnamed'}); whoever enters it in the next 10 minutes gets the key`,
+    'shortcut-paired': `a Shortcut key was made: ${event.key?.name ?? '?'} (its code came from ${event.by ?? '?'}); it can send messages as the owner, and nothing else`,
+    'shortcut-revoked': `a Shortcut key was revoked: ${event.key?.name ?? '?'} (by ${event.by ?? '?'})`,
+    'shortcut-pairing-failed': `a Shortcut pairing failed on three wrong codes (the code came from ${event.by ?? '?'})`,
+    // The address itself is in the service log (lib/shortcut-keys.mjs writes that line): never in a push.
+    'shortcut-new-address': `the Shortcut key ${event.key?.name ?? '?'} was used from an address it had not used before`,
+    'shortcut-refused': `${event.count ?? 'several'} requests with a wrong or missing Shortcut key were refused in 10 minutes`,
+    'shortcut-over-limit': `the Shortcut key ${event.key?.name ?? '?'} went over its ${event.what === 'presence' ? 'presence' : 'message'} limit and is being refused`,
+    'shortcut-pair-refused': `${event.count ?? 'several'} Shortcut pairing tries were refused in 10 minutes (a wrong code, or no code waiting)`
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;
   return oneLine(line);

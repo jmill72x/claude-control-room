@@ -310,6 +310,49 @@ export const MAX_FILES = 4;                    // per message, photos and PDFs t
 export const FILE_MAX_BYTES = 10 * 1024 * 1024; // the server's cap
 export const PDF_TYPE = 'application/pdf';
 export const ACCEPT = 'image/*,application/pdf';
+// A sent file is a picture to show, or a chip that downloads (a PDF, a text file).
+export const isPhotoType = type => typeof type === 'string' && type.toLowerCase().startsWith('image/');
+export const fileWord = type => (type === PDF_TYPE ? 'PDF' : type === 'text/plain' || type === 'text/markdown' ? 'text file' : 'file');
+
+// ---- Shortcut keys (server/lib/shortcut-routes.mjs) ----
+
+// How a message came, when a Shortcut sent it: the words for its small mark, or null.
+// The server writes `meta.shortcut.via`; anything it doesn't name is just "Shortcut".
+const VIA_WORDS = { siri: 'Siri Shortcut', share: 'share sheet' };
+export function viaWords(m) {
+  const sc = m?.meta?.shortcut;
+  if (!sc || typeof sc !== 'object') return null;
+  return Object.hasOwn(VIA_WORDS, sc.via) ? VIA_WORDS[sc.via] : 'Shortcut';
+}
+
+// One key's line in the settings sheet: when it was made and from which device's
+// code (revoking that device revokes the key), then its use.
+export function keyLine(k, when = at => String(at)) {
+  if (!k) return '';
+  if (k.revokedAt) return `revoked ${when(k.revokedAt)}`;
+  const uses = Number.isInteger(k.uses) ? k.uses : 0;
+  const by = typeof k.madeBy === 'string' && k.madeBy ? ` from ${k.madeBy}` : '';
+  return `made ${when(k.createdAt)}${by} · ${uses === 0 ? 'never used' : `last used ${when(k.lastUsedAt)} · ${uses} use${uses === 1 ? '' : 's'}`}`;
+}
+// After a code was made: the key it became, once the list holds an active key of that
+// name that was not there before (`before`: the ids listed when the code was made).
+export function pairedSince(before, keys, name) {
+  const had = new Set(Array.isArray(before) ? before : []);
+  return (Array.isArray(keys) ? keys : []).find(k => k && !k.revokedAt && k.name === name && !had.has(k.id)) ?? null;
+}
+// What the sheet says under a code it made: still waiting (show it), paired, or gone
+// (used up by wrong tries, replaced or timed out).
+export function codeState(made, data) {
+  if (!made) return null;
+  if (pairedSince(made.before, data?.keys, made.name)) return 'paired';
+  return data?.waiting && data.waiting.name === made.name ? 'waiting' : 'gone';
+}
+// The keys to list: the active ones, then the three most recently revoked.
+export function keyRows(keys) {
+  const list = Array.isArray(keys) ? keys.filter(k => k && typeof k.id === 'string') : [];
+  const gone = list.filter(k => k.revokedAt).sort((a, b) => b.revokedAt - a.revokedAt).slice(0, 3);
+  return [...list.filter(k => !k.revokedAt), ...gone];
+}
 
 // What a file goes up as: a `photo` (resized to a JPEG first), a `pdf` (sent as
 // is), or null (refused here: no text or other files from the page). A file from

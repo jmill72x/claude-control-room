@@ -422,10 +422,13 @@ export function createChatStore({ dir, now = () => Date.now() }) {
 
   // ---- attachments ----
 
-  async function putAttachment({ name, type, data }) {
+  // `textOnly`: the caller holds text and nothing else (text shared through a Shortcut),
+  // so the bytes are not sniffed: words that begin like a PDF or a picture are still a
+  // text file, and are never stored or served as anything else.
+  async function putAttachment({ name, type, data, textOnly = false }) {
     if (!Buffer.isBuffer(data) || data.length === 0) throw Object.assign(new Error('the file is empty'), { status: 400 });
     if (data.length > ATTACHMENT_MAX_BYTES) throw Object.assign(new Error('the file is over 10 MB'), { status: 413 });
-    const sniffed = sniffType(data);
+    const sniffed = textOnly ? null : sniffType(data);
     const declared = typeof type === 'string' ? type.split(';')[0].trim().toLowerCase() : '';
     const kind = sniffed ?? (declared === 'text/plain' || declared === 'text/markdown' ? declared : null);
     if (!kind || !ATTACHMENT_TYPES.has(kind)) throw Object.assign(new Error('the file is not a png, jpeg, webp, heic, pdf, txt or md'), { status: 415 });

@@ -26,6 +26,13 @@ export const pairApprove = code => post('/api/pair/approve', { code });
 export const listDevices = () => get('/api/devices');
 export const revokeDevice = id => fetch(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(answer);
 
+// ---- Shortcut keys (server/lib/shortcut-routes.mjs): the page makes the one-time
+// code for a new key, lists the keys and revokes; the key itself goes only to the
+// Shortcut that enters the code. A 404 means they are off. ----
+export const listShortcutKeys = () => get('/api/shortcut/keys');
+export const newShortcutCode = name => post('/api/shortcut/keys', { name });
+export const revokeShortcutKey = id => fetch(`/api/shortcut/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(answer);
+
 // ---- the thread (§2.3) ----
 export const chatStatus = () => get('/api/chat/status');
 export const latestMessages = limit => get(`/api/chat/messages?limit=${limit}`);

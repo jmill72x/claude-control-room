@@ -4,7 +4,8 @@
 // takeover each time (`client-replaced`). Those two kinds push at most once per kind
 // per 10 minutes; the rest are held back and counted, and the count goes out either
 // on the kind's next push after the window or, if none comes, when the window ends.
-// Every other kind (pairings, revokes, verdicts) pushes each time. The service log
+// Four Shortcut-key kinds are limited the same way (a key used from a new address, a
+// burst of wrong keys, a key over a limit, a burst of refused pairing tries). Every other kind (pairings, revokes, verdicts) pushes each time. The service log
 // keeps a line per event either way (server.mjs). Checked by
 // test/chat-alert-limit.test.mjs.
 
@@ -12,7 +13,13 @@ export const CHAT_ALERT_WINDOW_MS = 10 * 60e3;
 // The limited kinds, with the words for a count of them.
 export const LIMITED_KINDS = Object.freeze({
   'client-refused': 'refused second chat channels',
-  'client-replaced': 'chat channel takeovers'
+  'client-replaced': 'chat channel takeovers',
+  // A key in use from a fifth address is reported on each use, and wrong keys in every
+  // window they come in: both could loop.
+  'shortcut-new-address': 'Shortcut key uses from a new address',
+  'shortcut-refused': 'bursts of wrong Shortcut keys',
+  'shortcut-over-limit': 'Shortcut keys over a limit',
+  'shortcut-pair-refused': 'bursts of refused Shortcut pairing tries'
 });
 
 const minutes = ms => `${Math.round(ms / 60e3)} minutes`;

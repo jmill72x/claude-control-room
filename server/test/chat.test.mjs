@@ -687,6 +687,10 @@ test('dispositionFor: inline for a photo, a download with a safe ASCII name and 
   assert.equal(dispositionFor(null), 'inline');
   assert.equal(dispositionFor({ type: 'application/pdf', name: "a\r\nb;c\\d'e*.pdf" }), `attachment; filename="a__b_c_d_e_.pdf"; filename*=UTF-8''a%0D%0Ab%3Bc%5Cd%27e%2A.pdf`);
   assert.equal(dispositionFor({ type: 'application/pdf', name: '' }), `attachment; filename="file.pdf"; filename*=UTF-8''`);
+  // A text file downloads too (the lead's, or text shared through a Shortcut).
+  assert.equal(dispositionFor({ type: 'text/plain', name: 'shared-text.txt' }), `attachment; filename="shared-text.txt"; filename*=UTF-8''shared-text.txt`);
+  assert.equal(dispositionFor({ type: 'text/markdown', name: '' }), `attachment; filename="file.txt"; filename*=UTF-8''`);
+  for (const type of ['image/png', 'image/webp', 'image/heic']) assert.equal(dispositionFor({ type, name: 'x' }), 'inline');
 });
 
 test('SSE: a status event first, replay after Last-Event-ID with ids, live messages, edits and pings', async () => {

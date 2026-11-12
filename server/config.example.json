@@ -3,7 +3,7 @@
   "showAlertBanner": true,
   "allowedHosts": ["example-host.example-tailnet.ts.net"],
   "hostCheck": "log",
-  "chat": { "login": "owner@example.com", "channelServer": "/absolute/path/to/jarvis-local/plugins/jarvis-channel/server.mjs" },
+  "chat": { "login": "owner@example.com", "channelServer": "/absolute/path/to/jarvis-local/plugins/jarvis-channel/server.mjs", "shortcuts": false },
   "push": { "subject": "mailto:owner@example.com" },
   "events": { "sources": {}, "excludeKeys": [], "triagePerDay": 10 },
   "plan": {

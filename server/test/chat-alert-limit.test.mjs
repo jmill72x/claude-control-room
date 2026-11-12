@@ -28,7 +28,7 @@ const harness = () => {
 
 test('the window, the kinds and the words', () => {
   assert.equal(CHAT_ALERT_WINDOW_MS, 10 * MIN);
-  assert.deepEqual(Object.keys(LIMITED_KINDS).sort(), ['client-refused', 'client-replaced']);
+  assert.deepEqual(Object.keys(LIMITED_KINDS).sort(), ['client-refused', 'client-replaced', 'shortcut-new-address', 'shortcut-over-limit', 'shortcut-pair-refused', 'shortcut-refused']);
   assert.equal(heldSuffix(3), ' (and 3 more held back in the last 10 minutes)');
   assert.equal(heldSummary('client-refused', 2), '2 more refused second chat channels held back in the last 10 minutes');
   assert.equal(heldSummary('client-replaced', 1), '1 more chat channel takeovers held back in the last 10 minutes');

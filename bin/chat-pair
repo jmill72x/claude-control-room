@@ -7,6 +7,15 @@
 //   bin/chat-pair approver <device> on|off    mark a device as one that may Allow
 //                                             a permission (by its name or id); every
 //                                             change is alerted, and a revoke clears it
+//   bin/chat-pair shortcut-code <name>        make the one-time code for a new Shortcut
+//                                             key of that name (the Setup Shortcut asks
+//                                             for it; the key sends messages, and reads
+//                                             or approves nothing). The name is plain
+//                                             letters and digits, 22 at most. Refused
+//                                             while the kill file exists
+//                                             (~/.local/state/jarvis-os/shortcuts-off)
+//   bin/chat-pair shortcuts                   list the Shortcut keys
+//   bin/chat-pair shortcut-revoke <key>       revoke a Shortcut key, by its name or id
 //
 // Talks to the Control Room over its admin socket (JARVIS_OS_ADMIN_SOCKET, default
 // ~/.local/state/jarvis-os/admin.sock, 0600). Exit 0 on success, 1 on a refusal, 2
@@ -18,7 +27,11 @@ import { join } from 'node:path';
 const socketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(homedir(), '.local', 'state', 'jarvis-os', 'admin.sock');
 const arg = process.argv[2];
 if (!arg || arg === '-h' || arg === '--help') {
-  console.error('usage: chat-pair <CODE> | --devices | approver <device> on|off');
+  console.error('usage: chat-pair <CODE> | --devices | approver <device> on|off | shortcut-code <name> | shortcuts | shortcut-revoke <key>');
+  process.exit(2);
+}
+if ((arg === 'shortcut-code' || arg === 'shortcut-revoke') && process.argv.length !== 4) {
+  console.error(arg === 'shortcut-code' ? 'usage: chat-pair shortcut-code <name for the key>' : 'usage: chat-pair shortcut-revoke <key name or id>');
   process.exit(2);
 }
 if (arg === 'approver' && (process.argv.length !== 5 || !['on', 'off'].includes(process.argv[4]))) {
@@ -46,6 +59,20 @@ try {
     for (const d of body.devices) console.log(`${d.id}  ${d.name}${d.revokedAt ? '  (revoked)' : ''}${d.approver ? '  (approver)' : ''}  paired ${new Date(d.createdAt).toISOString()}  seen ${d.lastSeenAt ? new Date(d.lastSeenAt).toISOString() : 'never'}`);
     if (body.devices.length === 0) console.log('no devices');
     if (body.pending) console.log('a pairing is pending: chat-pair <CODE> approves it');
+  } else if (arg === 'shortcuts') {
+    const { status, body } = await call('GET', '/admin/shortcuts');
+    if (status !== 200) { console.error(status === 404 ? 'Shortcut keys are off on this server (config chat.shortcuts)' : body.error ?? `HTTP ${status}`); process.exit(1); }
+    for (const k of body.keys) console.log(`${k.id}  ${k.name}${k.revokedAt ? '  (revoked)' : ''}  made ${new Date(k.createdAt).toISOString()}  used ${k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never'}  ${k.uses} use${k.uses === 1 ? '' : 's'}`);
+    if (body.keys.length === 0) console.log('no Shortcut keys');
+    if (body.waiting) console.log(`a code is waiting for its Shortcut (${body.waiting.name}) until ${new Date(body.waiting.expiresAt).toISOString()}`);
+  } else if (arg === 'shortcut-code') {
+    const { status, body } = await call('POST', '/admin/shortcut/code', { name: process.argv[3] });
+    if (status !== 200) { console.error(status === 404 && body.error === 'not found' ? 'Shortcut keys are off on this server (config chat.shortcuts)' : body.error ?? `HTTP ${status}`); process.exit(1); }
+    console.log(`${body.code}  the code for the Shortcut key ${body.name}: enter it in the Setup Shortcut within 10 minutes`);
+  } else if (arg === 'shortcut-revoke') {
+    const { status, body } = await call('POST', '/admin/shortcut/revoke', { key: process.argv[3] });
+    if (status !== 200) { console.error(status === 404 && body.error === 'not found' ? 'Shortcut keys are off on this server (config chat.shortcuts)' : body.error ?? `HTTP ${status}`); process.exit(1); }
+    console.log(`revoked: the Shortcut key ${body.key.name}`);
   } else if (arg === 'approver') {
     const on = process.argv[4] === 'on';
     const { status, body } = await call('POST', '/admin/approver', { device: process.argv[3], on });

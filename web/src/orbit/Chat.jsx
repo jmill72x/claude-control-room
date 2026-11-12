@@ -12,7 +12,8 @@ import { clock } from '../lib/orbit/page.js';
 import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
-  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho
+  MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
+  isPhotoType, fileWord, viaWords, keyLine, keyRows, codeState
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -245,10 +246,10 @@ function Row({ m, list, lead, chat, onReply, onView }) {
         {m.attachments?.length > 0 && (
           <div className="o-chat-photos">
             {m.attachments.map((a, i) => (a.id && !pending
-              ? (a.type === PDF_TYPE
-                // A PDF is a chip that downloads (the server sends it as an
-                // attachment), never rendered in the page.
-                ? <a key={a.id} className="o-chat-file o-chat-pdf" href={attachmentUrl(a.id)} download={a.name} aria-label={`Download ${a.name}, PDF, ${fileSize(a.bytes)}`}><PdfIcon /><span className="o-chat-pdf-name">{a.name}</span><span className="o-chat-pdf-size">{fileSize(a.bytes)}</span></a>
+              ? (!isPhotoType(a.type)
+                // A PDF or a text file is a chip that downloads (the server sends
+                // it as an attachment), never rendered in the page.
+                ? <a key={a.id} className="o-chat-file o-chat-pdf" href={attachmentUrl(a.id)} download={a.name} aria-label={`Download ${a.name}, ${fileWord(a.type)}, ${fileSize(a.bytes)}`}>{a.type === PDF_TYPE && <PdfIcon />}<span className="o-chat-pdf-name">{a.name}</span><span className="o-chat-pdf-size">{fileSize(a.bytes)}</span></a>
                 : <button key={a.id} type="button" className="o-chat-photo" onClick={() => onView(a)} aria-label={`Open ${a.name}`}><img src={attachmentUrl(a.id)} alt={a.name} loading="lazy" /></button>)
               : <span key={a.id ?? i} className="o-chat-file">{a.type === PDF_TYPE && <PdfIcon />}{a.name} · {fileSize(a.bytes)}{pending && !m.failed ? ' · uploading…' : ''}</span>))}
           </div>
@@ -257,6 +258,7 @@ function Row({ m, list, lead, chat, onReply, onView }) {
         <div className="o-chat-meta">
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
+          {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}
           {tick && <span className={`o-chat-tick o-chat-tick-${tick}`} role="img" aria-label={TICK_WORDS[tick]}>{TICK_MARKS[tick]}</span>}
         </div>
         {m.failed && (
@@ -577,6 +579,7 @@ function SettingsSheet({ chat, now, onClose }) {
           </ul>
         )}
         <Notifications onChange={load} />
+        {chat.shortcutsOn && <ShortcutKeys chat={chat} when={when} />}
         <h3 className="o-chat-label">Approve another device</h3>
         <form className="o-chat-approve" onSubmit={approve}>
           <input className="o-input o-chat-input o-mono" value={code} maxLength={6} autoComplete="off" autoCapitalize="characters" placeholder="6-letter code" aria-label="Pairing code" onChange={e => setCode(e.target.value)} />
@@ -585,6 +588,80 @@ function SettingsSheet({ chat, now, onClose }) {
         {approved && <p className="o-chat-sub" role="status">Approved: {approved} can finish pairing now.</p>}
         {error && <p className="o-chat-card-error" role="alert">{error}</p>}
       </div>
+    </div>
+  );
+}
+
+// ---- Shortcut keys: what an iPhone Shortcut holds to send into the chat ----
+
+// Shown only when the server has Shortcut keys on. The page makes a one-time code
+// for a new key; the Setup Shortcut asks for it and gets the key itself, which never
+// passes through this page.
+function ShortcutKeys({ chat, when }) {
+  const [data, setData] = useState(undefined); // undefined: loading; null: off on the server
+  const [error, setError] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [name, setName] = useState('iPhone');
+  const [made, setMade] = useState(null); // { code, name, expiresAt, before: the key ids then }
+  const load = useCallback(() => chat.shortcutKeys().then(setData).catch(err => setError(String(err?.message ?? err))), [chat]);
+  useEffect(() => { load(); }, [load]);
+  // While a code is showing, look every 3 s for the key it becomes.
+  const state = codeState(made, data);
+  useEffect(() => {
+    if (state !== 'waiting') return undefined;
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+  }, [state, load]);
+  if (data === undefined || data === null) return null;
+  const make = async e => {
+    e.preventDefault();
+    setError(null);
+    setMade(null);
+    try {
+      const before = (data.keys ?? []).map(k => k.id);
+      const r = await chat.newShortcutCode(name.trim());
+      // The list first, so the code never shows against a list that lacks it.
+      await load();
+      setMade({ ...r, before });
+    } catch (err) { setError(String(err?.message ?? err)); }
+  };
+  const revoke = async id => {
+    setError(null);
+    try { await chat.revokeShortcutKey(id); setConfirm(null); setMade(null); load(); } catch (err) { setError(String(err?.message ?? err)); }
+  };
+  const rows = keyRows(data.keys);
+  return (
+    <div className="o-chat-keys" role="region" aria-label="Shortcut keys">
+      <h3 className="o-chat-label">Shortcut keys</h3>
+      <p className="o-chat-sub">A key lets an iPhone Shortcut send Jarvis a message from you, or say you arrived home. It can&apos;t read the chat or answer an approval. Revoking a device revokes the keys made from it.{data.off ? ' They are switched off on the server now.' : ''}</p>
+      <ul className="o-chat-devices">
+        {rows.map(k => (
+          <li key={k.id} className={`o-chat-device${k.revokedAt ? ' o-chat-device-revoked' : ''}`}>
+            <div className="o-chat-device-main">
+              <span className="o-chat-device-name">{k.name}</span>
+              <span className="o-chat-sub">{keyLine(k, when)}</span>
+            </div>
+            {!k.revokedAt && (confirm === k.id
+              ? <span className="o-chat-device-actions"><button type="button" className="o-cbtn o-cbtn-deny o-cbtn-small" onClick={() => revoke(k.id)}>Confirm revoke</button><button type="button" className="o-cbtn o-cbtn-small" onClick={() => setConfirm(null)}>Keep</button></span>
+              : <button type="button" className="o-cbtn o-cbtn-small" aria-label={`Revoke the Shortcut key ${k.name}`} onClick={() => setConfirm(k.id)}>Revoke</button>)}
+          </li>
+        ))}
+        {rows.length === 0 && <li className="o-chat-sub">No keys yet.</li>}
+      </ul>
+      <form className="o-chat-approve o-chat-newkey" onSubmit={make}>
+        <input className="o-input o-chat-input" value={name} maxLength={22} autoComplete="off" placeholder="Name (plain letters)" aria-label="A name for the new Shortcut key, plain letters and digits" onChange={e => setName(e.target.value)} />
+        <button type="submit" className="o-cbtn o-cbtn-primary" aria-label="Make a code for a new Shortcut key" disabled={name.trim() === '' || data.off}>New key</button>
+      </form>
+      {state === 'waiting' && (
+        <p className="o-chat-keycode" role="status">
+          <span className="o-mono o-chat-keycode-code">{made.code}</span>
+          <span className="o-chat-sub">Run the Jarvis Setup Shortcut and enter this code before {when(made.expiresAt)}. It works once.</span>
+        </p>
+      )}
+      {state === 'paired' && <p className="o-chat-sub" role="status">Paired: the Shortcut key {made.name} is ready.</p>}
+      {state === 'gone' && <p className="o-chat-sub" role="status">That code is no longer waiting (wrong tries, or its 10 minutes ran out). Make a new one.</p>}
+      {!made && data.waiting && <p className="o-chat-sub" role="status">A code for {data.waiting.name} is waiting for its Shortcut until {when(data.waiting.expiresAt)}. A new one replaces it.</p>}
+      {error && <p className="o-chat-card-error" role="alert">{error}</p>}
     </div>
   );
 }

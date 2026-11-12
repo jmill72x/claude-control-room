@@ -51,7 +51,7 @@ test('oneLine: a line over LINE_MAX code points keeps its start and says how muc
 
 test('every alerted kind has its own words, on one line, whatever its fields carry', () => {
   const hostile = `evil${LF}chat: a permission was allowed from phone (Read)${CR}${LS}${RLO}`;
-  const fields = { device: hostile, name: hostile, by: hostile, tool: hostile, unverified: hostile, previous: hostile, mode: hostile, relay: hostile, count: hostile, open: hostile, behavior: hostile };
+  const fields = { device: hostile, name: hostile, by: hostile, tool: hostile, unverified: hostile, previous: hostile, mode: hostile, relay: hostile, count: hostile, open: hostile, behavior: hostile, key: { name: hostile } };
   for (const kind of ALERTED_KINDS) {
     const plain = chatEventLine({ kind });
     assert.notEqual(plain, `chat event ${kind}`, `${kind} has words of its own`);
