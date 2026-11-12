@@ -693,7 +693,7 @@ async function setup(opts = {}) {
   const { mode = 'on' } = opts;
   // An explicit `relay: undefined` is a hello that names no mode.
   const relay = 'relay' in opts ? opts.relay : 'allow';
-  const env = { clock: { t: 1794380000000 }, events: [], files: new Set() };
+  const env = { clock: { t: 1794380000000 }, events: [], files: new Set(), logs: [] };
   env.dir = await mkdtemp(join(tmpdir(), 'appr-'));
   const now = () => env.clock.t;
   const onEvent = e => env.events.push(e);
@@ -702,7 +702,7 @@ async function setup(opts = {}) {
   env.devices = createDeviceStore({ path: join(env.dir, 'devices.json'), now, onEvent });
   await env.devices.load();
   env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, ...(opts.gate ?? {}) });
-  env.socket = createSocketRouter({ store: env.store, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
+  env.socket = createSocketRouter({ store: env.store, now, onEvent, log: l => env.logs.push(l), pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
   env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals });
   env.sockPath = join(env.dir, 'c.sock');
   env.adminPath = join(env.dir, 'a.sock');
@@ -916,6 +916,64 @@ test('a hello that says test mode: the card is Deny-only and Allow is refused, e
       assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 200);
       assert.equal(env.events.filter(e => e.kind === 'approvals-test-channel').length, 0);
     } finally { await env.close(); }
+  }
+});
+
+test('a hello with no `test` (a channel before 0.4.6) is logged each time and still gets Allow; one that says false logs nothing (board 762bb28d)', async () => {
+  const NO_TEST = /^chat: the channel's hello has no test field \(a channel older than 0\.4\.6, /;
+  const noTest = env => env.logs.filter(l => NO_TEST.test(l));
+  // No `test` at all: one line, and Allow still goes through.
+  {
+    const env = await setup({});
+    try {
+      assert.deepEqual(noTest(env), ["chat: the channel's hello has no test field (a channel older than 0.4.6, version not given or not plain, pid 1): treated as not in test mode, so Allow is not capped for it"]);
+      await env.mark('phone', true);
+      await env.open('abcde');
+      const st = await call({ port: env.port, path: '/api/chat/status', headers: { cookie: env.phone } });
+      assert.equal(st.json.openPermission.canAllow, true);
+      assert.deepEqual(st.json.openPermission.denyOnly, []);
+      assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 200);
+      assert.equal(env.events.filter(e => e.kind === 'approvals-test-channel').length, 0, 'a log line, not an alert');
+      // Each such hello is a line of its own; the version it names is shown when plain.
+      const again = await env.unix({ method: 'POST', path: '/v1/hello', body: { pid: 1, relay: 'allow', version: '0.4.5' } });
+      env.token = again.json.token;
+      assert.equal(noTest(env).length, 2);
+      assert.match(noTest(env)[1], /older than 0\.4\.6, version 0\.4\.5, pid 1\)/);
+      // A version that is not plain stays out of the log (the channel writes it).
+      for (const version of ['0.4.5\nchat: forged line', 'a'.repeat(41), ' 0.4.5', 5]) {
+        const r = await env.unix({ method: 'POST', path: '/v1/hello', body: { pid: 1, relay: 'allow', version } });
+        env.token = r.json.token;
+        assert.match(noTest(env).at(-1), /older than 0\.4\.6, version not given or not plain, pid 1\)/, JSON.stringify(version));
+      }
+      assert.equal(noTest(env).length, 6);
+      assert.ok(env.logs.every(l => !l.includes('forged')));
+      // Heartbeats carry no word on the switch and log nothing.
+      await env.unix({ method: 'POST', path: '/v1/heartbeat', body: { pid: 1, relay: 'allow' } });
+      assert.equal(noTest(env).length, 6);
+    } finally { await env.close(); }
+  }
+  // `test: false` (channel 0.4.6): no new line, and Allow as before.
+  {
+    const env = await setup({ test: false });
+    try {
+      assert.deepEqual(noTest(env), []);
+      await env.mark('phone', true);
+      await env.open('abcde');
+      assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 200);
+      const again = await env.unix({ method: 'POST', path: '/v1/hello', body: { pid: 1, relay: 'allow', test: false, version: '0.4.6' } });
+      assert.equal(again.status, 200);
+      assert.deepEqual(noTest(env), [], 'logs nothing new');
+    } finally { await env.close(); }
+  }
+  // A test-mode hello is alerted (above), not logged as an older channel.
+  {
+    const env = await setup({ test: true });
+    try { assert.deepEqual(noTest(env), []); } finally { await env.close(); }
+  }
+  // The line is logged whatever the server's mode, so an older channel shows up even with approvals off.
+  {
+    const env = await setup({ mode: 'off' });
+    try { assert.equal(noTest(env).length, 1); } finally { await env.close(); }
   }
 });
 

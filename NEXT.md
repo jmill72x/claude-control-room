@@ -420,8 +420,8 @@ half (the classic page's deletion, about 11-17) is still open.
 **Approvals as buttons (board 2422f9d1): live since 2026-11-11 20:40 ET, Deny and Allow
 once** (main edfb349, which holds the final build e61708e and the go-live patch; the lead's
 repo build/v1 57f0a9e, channel 0.4.5; Jarvis reports all six live checks passed). **Channel
-0.4.6 is staged, not committed, on `jos/channel-046` in both repos:** see "Channel 0.4.6"
-below the runbook. The go-live patch (`server/lib/approvals.mjs`, tests; Jeff's option A,
+0.4.6 is live since 2026-11-11 21:47 ET** (main 1e1da2d): see "Channel 0.4.6" below the
+runbook, and its open follow-up there (the no-`test` hello log, then option (b) on 11-19). The go-live patch (`server/lib/approvals.mjs`, tests; Jeff's option A,
 2026-11-11 23:33Z): a write of any `*.py`, `*.pyc`,
 `*.pyw` or `*.so`, of `CLAUDE.local.md`, `pytest.ini`, `tox.ini` or `.python-version`, or
 under `.vscode/` is Deny-only in every write folder (board 97332dd5); any path through
@@ -569,9 +569,8 @@ back to `"off"` and restart. Exact Bash alone: set `"approvalsBash": "deny"` (or
 the key) and restart, or remove the hook entry (either one is enough: no report, or no
 mode, means Deny-only).
 
-*Channel 0.4.6: the test switch (board 1bede46d, Ultron's 0.4.5 re-vet, medium; staged
-2026-11-11 on `jos/channel-046` in both repos, not committed; worktrees
-`~/Projects/.worktrees/ccr-channel-046` and `jarvis-channel-046`).* The finding: the
+*Channel 0.4.6: the test switch (board 1bede46d, Ultron's 0.4.5 re-vet, medium; live since
+2026-11-11 21:47 ET, this repo's main 1e1da2d).* The finding: the
 channel's test switch with its flag-folder variable moved the folder the approvals flags are
 read from, so a settings `env` block could bring flags of its own. Design doc §0.3 has the
 table. In this repo (`server/lib/approvals.mjs`, `chat-socket.mjs`, `server.mjs`): a hello
@@ -592,6 +591,21 @@ names the socket variable and hands Jarvis a command for tmux's global environme
   restart this service (step 3's command; no web build, no config change), then in one
   sitting move the release worktree, update the plugin, record the new reviewed hash and
   restart Jarvis. Nothing was run.
+- *Open: a hello with no `test` (board 762bb28d, Ultron's L2, P3, due 2026-11-19).* Under
+  option (a), which Jeff chose on 11-11, such a hello (channel 0.4.5 or older) is still
+  treated as not in test mode, so Allow stays possible for it. Staged 2026-11-11 on
+  `jos/hello-no-test` (worktree `~/Projects/.worktrees/ccr-hello-no-test`, not committed):
+  each such hello now writes one line to the service log, `chat: the channel's hello has no
+  test field (a channel older than 0.4.6, version …, pid …): treated as not in test mode, so
+  Allow is not capped for it` (the version only when it is a plain version string; logged
+  whatever the approvals mode; never an alert). It takes effect at the service's next
+  restart. **Next, on or after 11-19:** read the log since the restart that carried it
+  (`grep -c "hello has no test field"` on `~/Library/Logs/control-room.log`); with no such line since the
+  0.4.6 release, flip `noteChannelTest` in `server/lib/approvals.mjs` to option (b),
+  `channelTest = value !== false` (no word = Deny only, like `relay`), drop the log line or
+  turn it into the Deny-only reason, update the test above and the README's "Never a
+  channel in test mode", and send it to Ultron for a re-read. A 0.4.5 rollback after the
+  flip would then get Deny only on the page, which is the intent.
 - *Left over (board 182771a1, low):* the sweep reading hooks in agent and skill frontmatter
   and `env` in shell startup files. It needs a way to list those files inside an
   unattended run, so it is not a small change.

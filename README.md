@@ -984,7 +984,12 @@ send Deny or Allow once. Everything here is off until three switches agree:
   mode it reports: `"on"` counts as `"deny"`, the card says "the channel runs in test
   mode", an Allow is refused with 403, and each such hello is alerted
   (`approvals-test-channel`). A hello with no `test` at all is a channel older than 0.4.6
-  and is treated as before. The one exception is in code, not config: a scratch harness
+  and is treated as before (Allow stays possible for it), and each such hello writes one
+  log line, `chat: the channel's hello has no test field (a channel older than 0.4.6,
+  version …, pid …): treated as not in test mode, so Allow is not capped for it`, whatever
+  the approvals mode; it is not alerted. The version shows only when it is a plain version
+  string. The line tells whether an older channel still says hello before a hello with no
+  `test` is offered Deny only too. The one exception is in code, not config: a scratch harness
   that builds the gate itself may pass `testChannelOk: true` to `createApprovals`, because
   every channel it serves runs under the switch. `server/server.mjs` never passes it.
 

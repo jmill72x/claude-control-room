@@ -76,6 +76,9 @@ const pad2 = n => String(n).padStart(2, '0');
 export const clockTime = at => { const d = new Date(at); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 export const restartNotice = at => `Jarvis's channel restarted ${clockTime(at)}`;
 const newToken = () => randomBytes(32).toString('base64url');
+// The version a hello names, for a log line: the channel writes it, so anything but a
+// plain version string (digits, letters, dots, plus and dash, 40 at most) is left out.
+export const logVersion = v => (typeof v === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$/.test(v) ? `version ${v}` : 'version not given or not plain');
 const same = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && timingSafeEqual(x, y);
@@ -260,6 +263,11 @@ export function createSocketRouter({
         // Whether it runs under its test switch (channel 0.4.6 says; an older one
         // sends nothing): one that does is offered Deny only, and reported.
         approvals?.noteChannelTest?.(body.test);
+        // A hello with no word on its test switch is a channel older than 0.4.6. It is
+        // still treated as not in test mode (Allow stays possible), so each one is
+        // logged: the log shows whether any older channel still says hello before
+        // the server stops trusting the silence (board 762bb28d).
+        if (approvals && body.test === undefined) log(`chat: the channel's hello has no test field (a channel older than 0.4.6, ${logVersion(body.version)}, pid ${pid ?? 'not given'}): treated as not in test mode, so Allow is not capped for it`);
         if (silenceTimer !== null) { clearTimer(silenceTimer); silenceTimer = null; }
         if (byeAt !== null) {
           // A bye, then a fresh hello: a restart. Logged and noted in the chat, never pushed.
