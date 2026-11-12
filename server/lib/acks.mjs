@@ -71,8 +71,13 @@ export function activeAcks(list, now) {
     isObject(a) && isAckKey(a.key) && typeof a.by === 'string' && BY.test(a.by) &&
     (a.since === null || Number.isFinite(a.since)) && Number.isFinite(a.at) && Number.isFinite(a.until) &&
     (a.note === null || (typeof a.note === 'string' && a.note.length <= MAX_NOTE)) &&
+    (a.renewals === undefined || (Number.isSafeInteger(a.renewals) && a.renewals >= 0)) &&
     a.until > now);
 }
+
+// How many times an ack has been renewed: 0 for a first ack and for an entry written
+// before the count existed.
+export const renewalsOf = a => (Number.isSafeInteger(a?.renewals) && a.renewals >= 0 ? a.renewals : 0);
 
 // The active ack covering an alert, if any: same key, same instance.
 export function matchingAck(alert, acks, now) {
@@ -95,7 +100,7 @@ export function applyAcks(alerts, acks, now) {
 }
 
 // What the page sees of an ack: everything it holds, in a fixed order.
-export const publicAck = a => ({ key: a.key, kind: a.kind ?? null, since: a.since ?? null, by: a.by, note: a.note ?? null, at: a.at, until: a.until });
+export const publicAck = a => ({ key: a.key, kind: a.kind ?? null, since: a.since ?? null, by: a.by, note: a.note ?? null, at: a.at, until: a.until, renewals: renewalsOf(a) });
 
 // `POST /api/acks` body: { key, note?, until?, by? }. `fromPage` is whether the
 // request carried an Origin header.
@@ -149,10 +154,16 @@ export function makeAck(alert, request, now) {
 }
 
 // The list with `ack` in it: one ack per key (the new one wins), expired ones
-// gone, the oldest dropped past the cap.
+// gone, the oldest dropped past the cap. An ack that replaces a live one for the
+// same instance (same key, same `since`) is a renewal and carries the count on
+// (`renewals`), so the notice can say how often this failure has been put off; one
+// for a new instance starts at 0. Counted here, inside the store's one-at-a-time
+// write, so two renewals at once can't both read the same count.
 export function addAck(list, ack, now) {
-  const kept = activeAcks(list, now).filter(a => a.key !== ack.key);
-  kept.push(ack);
+  const active = activeAcks(list, now);
+  const prev = active.find(a => a.key === ack.key && sameSince(a.since, ack.since));
+  const kept = active.filter(a => a.key !== ack.key);
+  kept.push({ ...ack, renewals: prev ? renewalsOf(prev) + 1 : 0 });
   kept.sort((a, b) => a.at - b.at);
   return kept.slice(Math.max(0, kept.length - ACK_MAX));
 }
@@ -226,7 +237,73 @@ export function ambiguousNames(crons, jobList, jobNames = {}) {
   return out;
 }
 
-// The service log's line for an ack or an un-ack: kind, who, until when, the key.
-// Local only, and the log already holds every job verdict.
-export const ackLogLine = ack => `ack: ${ack.kind} by ${ack.by} until ${new Date(ack.until).toISOString()} (${ack.key})`;
-export const unackLogLine = key => `un-ack: ${key}`;
+// The service log's line for an ack or an un-ack: kind, who, until when, the key,
+// and for a renewal its count. Local only, and the log already holds every job
+// verdict. Never the note. Made one line by `oneLine` (below), like the notice.
+export const ackLogLine = ack => oneLine(`ack: ${ack.kind} by ${ack.by} until ${new Date(ack.until).toISOString()}${renewalsOf(ack) ? ` (renewal ${renewalsOf(ack)})` : ''} (${ack.key})`);
+export const unackLogLine = key => oneLine(`un-ack: ${key}`);
+
+// ---- the notice (board a37d853e, Ultron's 11-10 medium) ----
+//
+// Every ack and every renewal is pushed, at low priority, so an ack nobody meant
+// can't hide an outage quietly: #pepper gets who, what kind of alert, how long it
+// has been failing, until when it is set aside, and for a renewal how many times
+// this failure has been renewed; ntfy, which shows on a lock screen, gets only
+// generic words (like the chat's verdicts). Neither gets the key, the job's or
+// service's name or the note: a cron or service alert is counted, never quoted,
+// on both channels (push-alerts.mjs, README "Push notifications"), and the note is
+// free text. The dashboard and the service log name the alert.
+
+// A line that can hold text from outside (a key from launchd or an ingest, a `by`)
+// stays one line: a line break or any other control character, a line or paragraph
+// separator, or a direction or invisible character becomes a visible ⟦U+XXXX⟧, a
+// tab a space. The keys and notes the route accepts already hold no control
+// character (text.mjs), but U+2028 and U+2029 pass that rule, and acks.json can be
+// edited by hand. A copy of `oneLine` in lib/chat-events.mjs (branch
+// jos/verdict-alerts-csp, not on main when this was written): once both are
+// merged, import that one and delete this.
+const LINE_MAX = 600;
+const isUnsafe = c => (c < 0x20 && c !== 0x09) || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 ||
+  c === 0x061c || (c >= 0x200b && c <= 0x200f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
+function oneLine(s, max = LINE_MAX) {
+  const out = [];
+  for (const ch of String(s ?? '')) {
+    const c = ch.codePointAt(0);
+    if (c === 0x09) out.push(' ');
+    else if (isUnsafe(c)) out.push(`⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧`);
+    else out.push(ch);
+  }
+  if (out.length <= max) return out.join('');
+  return out.slice(0, max).join('') + ` ⋯ ${out.length - max} more cut`;
+}
+
+export const NTFY_ACK_WORDS = 'An alert on the Control Room was acknowledged: details in #pepper';
+export const NTFY_RENEW_WORDS = 'An acknowledgement on the Control Room was renewed: details in #pepper';
+export const ACK_NOTICE_PRIORITY = 'low';
+
+// A time as the server's own zone writes it ("Fri, Nov 13, 6:45 PM EST").
+export const noticeTime = ms => new Date(ms).toLocaleString('en-US', {
+  weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+});
+const age = ms => (ms >= 2 * DAY ? `${Math.floor(ms / DAY)} days` : `${Math.max(0, Math.floor(ms / HOUR))} h`);
+const KIND_WORDS = {
+  cron: { what: 'a failed job', since: 'failing since', which: 'Which job' },
+  service: { what: 'a down service', since: 'down since', which: 'Which service' }
+};
+
+// The notice for an ack as stored (addAck's entry, with `renewals`), at `now`:
+// `{ message, ntfyMessage, priority }`, the message one line.
+export function ackNotice(ack, now) {
+  const words = KIND_WORDS[ack.kind] ?? { what: 'an alert', since: 'raised since', which: 'Which one' };
+  const n = renewalsOf(ack);
+  const since = Number.isFinite(ack.since)
+    ? `${words.since} ${noticeTime(ack.since)}, ${age(now - ack.since)} ago`
+    : 'when it began is unknown';
+  const did = n ? `renewed the acknowledgement of ${words.what}` : `acknowledged ${words.what}`;
+  const count = n ? `, renewed ${n} time${n === 1 ? '' : 's'} for this failure` : '';
+  return {
+    message: oneLine(`${ack.by} ${did} (${since})${count}: it is off the alerts until ${noticeTime(ack.until)}. ${words.which}, and any note, are on the dashboard.`),
+    ntfyMessage: n ? NTFY_RENEW_WORDS : NTFY_ACK_WORDS,
+    priority: ACK_NOTICE_PRIORITY
+  };
+}

@@ -24,14 +24,18 @@ export async function getTopic({ run } = {}) {
   }
 }
 
-export async function publish({ topic, title, message, fetchImpl = fetch }) {
+// `priority` is ntfy's word for how loudly the phone says it: 'default' for an alert,
+// 'low' (no sound or vibration) for an ack's notice (lib/acks.mjs).
+const NTFY_PRIORITIES = new Set(['min', 'low', 'default', 'high', 'urgent']);
+
+export async function publish({ topic, title, message, priority = 'default', fetchImpl = fetch }) {
   if (!topic) return { sent: false, reason: 'no topic configured' };
   try {
     // Encoded: an unencoded topic containing `/` or whitespace rewrites the
     // request target entirely.
     const res = await fetchImpl(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: 'POST',
-      headers: { Title: title, Priority: 'default' },
+      headers: { Title: title, Priority: NTFY_PRIORITIES.has(priority) ? priority : 'default' },
       body: message
     });
     return { sent: res.ok, reason: res.ok ? null : `HTTP ${res.status}` };
@@ -112,4 +116,21 @@ export async function sendAlert({ topic, title, message, ntfyMessage = null, ntf
   const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message });
   const viaDiscord = await discord({ title, message });
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
+}
+
+// An ack's notice (lib/acks.mjs, ackNotice: `{ message, ntfyMessage, priority }`) goes
+// out in two halves, each through its own limit (lib/ack-notice-limit.mjs): the details
+// to #pepper, titled like an alert, and the generic words to ntfy. A post that fails is
+// logged with its reason, which never holds the message or the topic. ntfy with no topic
+// is a normal state (getTopic), so that one is not logged.
+export async function sendAckPepper(notice, { discord = publishDiscord, logError = console.error } = {}) {
+  const result = await discord({ title: 'Control Room', message: notice.message });
+  if (!result.sent) logError(`ack: the #pepper notice was not sent (${result.reason ?? 'unknown'})`);
+  return result;
+}
+
+export async function sendAckNtfy({ message, priority }, { topic = getTopic, ntfy = publish, logError = console.error } = {}) {
+  const result = await ntfy({ topic: await topic(), title: 'Control Room', message, priority });
+  if (!result.sent && result.reason !== 'no topic configured') logError(`ack: the ntfy notice was not sent (${result.reason ?? 'unknown'})`);
+  return result;
 }

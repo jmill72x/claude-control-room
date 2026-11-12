@@ -1446,15 +1446,61 @@ alerts can be acked; a limit, a projection or a credit expiry moves on its own.
 - `GET /api/acks`: the active list, also in `/api/dashboard` as `acks`.
 - `/api/dashboard`: `alerts` leaves out a covered alert, which goes in `acked` with its
   ack; the covered `crons[]`, `health.jobs.list[]` and `health.services[]` entries gain
-  `ack: { key, kind, since, by, note, at, until }`. The health list carries no launchd
+  `ack: { key, kind, since, by, note, at, until, renewals }`. The health list carries no launchd
   labels, so its row is found by the display name; when two jobs share one (two labels
   with the same last part and no names for them in `jobs`, or two failed rows with one
   name) no health row is marked, since marking both would show an ack on a job nobody
   acked. The crons panel, keyed by label, still carries it, and the alert is in `acked`
   either way; distinct names in `jobs` lift the ambiguity. The notifier pushes nothing for a
   covered alert and forgets its key, so an ack that lapses with the condition still live
-  pushes it again. Nothing is pushed for an ack itself; the service log gets one line
-  (`ack: cron by jeff until <time> (<key>)`), without the note.
+  pushes it again. The service log gets one line per ack
+  (`ack: cron by jeff until <time> (<key>)`, with `(renewal N)` before the key for a
+  renewal), without the note.
+
+**Every ack and renewal is pushed, at low priority** (board a37d853e), so an ack nobody
+meant can't hide an outage quietly. An ack for a failure that already has a live ack
+(same key, same `since`) is a **renewal**, and `renewals` counts them; a new failure, an
+un-ack or a lapse starts again at 0. #pepper gets who, the kind, how long it has been
+failing and until when, e.g. `jarvis renewed the acknowledgement of a down service (down
+since Mon, Nov 9, 8:00 AM EST, 2 days ago), renewed 1 time for this failure: it is off the
+alerts until …`. ntfy, which shows on a lock screen, gets only "An alert on the Control
+Room was acknowledged: details in #pepper" (for a renewal, "An acknowledgement on the
+Control Room was renewed: details in #pepper"), at ntfy's `low` priority. Neither gets the key, the job's or service's name or the note: those alerts are
+counted, never quoted (see "Push notifications"), and the note is free text. The notice
+and the log line go through a one-line guard: a line break or separator, another control
+character or a direction or invisible character shows as `⟦U+XXXX⟧`. There is no cap on
+renewals: the push is the guard, since a cap counted from the first ack resets on an
+un-ack, and one counted from the failure's start would cut short the case acks exist for
+(a weekly job that missed a run). An un-ack is not pushed: it only makes an alert
+visible again.
+
+**The notices are limited, each channel its own way** (`server/lib/ack-notice-limit.mjs`,
+Ultron's 11-12 mediums). ntfy.sh allows 250 messages a day per home IP, shared with the Pi,
+so renewal loops on even two alerts could otherwise spend the day's budget and silence real
+outage alerts, and each #pepper notice starts a `discord-post` against #pepper's webhook
+limit.
+
+- **#pepper, per alert, never dropped.** The first notice for a key goes out at once and
+  opens a 10-minute window; later ones for that key in the window are held and counted.
+  The count rides on the key's next notice after the window (`… (and 3 more for this
+  alert held back in the last 10 minutes)`) or, if none comes, goes out when the window
+  ends on the latest held notice (`… (the latest of 3 …)`), so who and until when are
+  current. Either push opens a new window, so one alert posts at most once per 10
+  minutes. The key groups the notices and is never sent.
+- **ntfy, one budget for every alert.** Its words are generic, so grouping alerts loses
+  nothing: at most one push an hour (the first at once, later ones counted into the next
+  push or the hour's end: `… (the latest of 4 in the last 60 minutes)`), and at most 12 a
+  day. The day's 12th carries a second line, `Ack notices are Discord-only until
+  tomorrow.`; after it, ack notices go to #pepper only until the day ends, and the ones
+  in between are not held over. **A day is the server's local calendar day**, ending at
+  local midnight in the mini's time zone (so a daylight-saving day is 23 or 25 hours).
+  With no ntfy topic set, the budget is still counted and nothing is logged.
+
+**Acks are limited too:** more than 10 `POST /api/acks` in any minute, refused ones
+included, answer 429 with `Retry-After` and the words the page shows ("Couldn't save: too
+many acknowledgements this minute …"); the log notes it at most once a minute. An un-ack
+(`DELETE /api/acks/<key>`) is never limited or counted: it only makes an alert visible
+again, and a loop on this machine must never stop the page from un-acking.
 
 The writes take the board's write guards (JSON only, same origin or no `Origin`),
 a 4 KB body, and the file `server/data/acks.json` holds at most 50 entries, expired ones
