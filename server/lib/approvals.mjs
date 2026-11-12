@@ -25,6 +25,7 @@
 // and Bash is Deny-only unless config says "exact", which needs the exact command from
 // the report-only PermissionRequest hook (lib/exact-commands.mjs) and then allows only a
 // strict one-liner or a command listed in config.
+import { revealHiddenChars, hasHiddenChars } from './hidden-chars.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -161,21 +162,18 @@ export function readApprovalsConfig(config, { home = homedir(), repoRoot = OWN_R
   return { mode, patterns, bash, bashCommands, writeFolders, writeProtected, problems };
 }
 
-// Invisible and direction-changing characters (and C0 controls but tab and newline)
-// become a visible ⟦U+XXXX⟧, so a preview can't reorder or hide what the card shows.
-// Claude Code neutralises these before it relays; this is the second line, and a
-// request that carries one is Deny-only.
-const isHiddenChar = c => (c < 0x20 && c !== 0x09 && c !== 0x0a) || c === 0x7f || c === 0x061c || (c >= 0x200b && c <= 0x200f) ||
-  (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
-export function revealHidden(s) {
-  let out = '';
-  for (const ch of String(s ?? '')) {
-    const c = ch.codePointAt(0);
-    out += isHiddenChar(c) ? `⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧` : ch;
-  }
-  return out;
-}
-const hasHidden = s => { for (const ch of String(s ?? '')) if (isHiddenChar(ch.codePointAt(0))) return true; return false; };
+// Invisible, direction-changing and control characters (lib/hidden-chars.mjs: Unicode's
+// Cc, Cf, Zl, Zp, lone surrogates and the default-ignorables, so the tag characters,
+// variation selectors, C1 controls and line separators too; Ultron's A3) become a
+// visible ⟦U+XXXX⟧, so a preview can't reorder or hide what the card shows. Tab and
+// newline stay: a command may hold them, and the exact-command rules judge them.
+// Claude Code neutralises some of these before it relays; this is the second line,
+// and a request that carries one is Deny-only (the marker, MARKERS below).
+// The cards take the wider set (`card: true`): the non-ASCII spaces, the braille blank,
+// private-use and unassigned code points too (Ultron's 11-12 low).
+const CARD_KEEPS = new Set([0x09, 0x0a]);
+export const revealHidden = s => revealHiddenChars(s, { keep: CARD_KEEPS, card: true });
+const hasHidden = s => hasHiddenChars(s, { keep: CARD_KEEPS, card: true });
 // Whether any text inside a parsed value, keys included, carries a hidden character.
 function anyHidden(v, depth = 0) {
   if (typeof v === 'string') return hasHidden(v);

@@ -1040,3 +1040,41 @@ job-status rounds a log's age to 0.01 h; a launchd job without the job-status ov
 `lastRunAt`, so its ack's `since` is null and a re-run can't be told apart until it expires;
 two jobs whose display names collide would both show one ack (the health panel carries no
 labels). **Follow-ups:** the mod's one-line "acked" suffix (`crons[].ack`), and Phase 1b.
+
+**One set of hidden characters (Ultron's A3), staged on `jos/hidden-chars` (from main 1e1da2d,
+2026-11-12, worktree `~/Projects/.worktrees/ccr-hidden-chars`), not committed, not live.** The
+cards' `isHiddenChar` listed ranges by hand and missed the tag characters (U+E0000-E007F), the
+variation selectors, the C1 controls (U+0085) and U+2028/U+2029, so a request carrying one could
+be offered Allow. `server/lib/hidden-chars.mjs` builds one set from Unicode's categories (Cc, Cf,
+Zl, Zp, lone surrogates, Default_Ignorable_Code_Point) with `isHiddenCodePoint`, `hiddenMarker`,
+`revealHiddenChars` and `hasHiddenChars` (a `keep` set for what a caller lets through);
+`lib/approvals.mjs` uses it, keeping tab and newline, so any request carrying another is marked
+`⟦U+XXXX⟧` and Deny-only by the existing marker rule. Tests: `server/test/hidden-chars.test.mjs`
+(every named class raw and as a JSON escape, end to end through the chat store); server 896 in
+local time and Tokyo; both card tests fail on main's set, and 7 mutations (each category, the
+keep set) are caught. **To go live:** C&P and a service restart; no web build (the page's
+marker pattern already takes 4 to 6 hex digits). **Merge plan:** independent of the others
+(only `lib/approvals.mjs` and the new module), any order. `oneLine` is on
+`jos/verdict-alerts-csp` (`lib/chat-events.mjs`, its own `isUnsafe` list) and copied on
+`jos/ack-notice` (`lib/acks.mjs`); after all three are merged, one small commit: in
+chat-events.mjs replace `isUnsafe` with `isHiddenCodePoint` from `./hidden-chars.mjs`, called
+without `card` (the one-line set; tab is already turned into a space before the check), then in acks.mjs delete the copied `oneLine` and
+import chat-events.mjs's, and run the server suite (`chat-events.test.mjs` and the ack-notice
+tests cover both). Trial-run 2026-11-12 in a scratch clone, and again ~01:00 ET with the re-read
+fixes on this branch, `jos/ack-notice` and `jos/ingest-socket`: this branch merged on top of the
+other four with no code conflict (NEXT.md only), and with that dedupe step the merged tree
+passed 978 server tests in local time and Tokyo. **Ultron's 11-12 re-read: GO; his low added 2026-11-12 overnight (Pepper):** the
+cards take a wider set (`card: true` in `hidden-chars.mjs`; the one-line set is unchanged): every
+space in Zs but U+0020 (U+00A0, U+2007, U+202F, U+3000 and the rest), the braille blank U+2800,
+private-use characters (Co) and unassigned code points (Cn, noncharacters included), each making a
+card Deny-only and shown as its marker. Built with a `v`-flag set difference
+(`[\p{Zs}--[\x20]]`), no listed characters. Tests: server 899 in local time and Tokyo (a sweep
+of every code point checks all of Zs but the space is in the card set and the card set holds the
+whole one-line set); 15 of 15 new mutations caught (one survivor, `Noncharacter_Code_Point` beside
+`Cn`, was redundant and is gone). **Known cost:** a Write or Edit whose text holds a no-break or
+ideographic space, a private-use glyph (some icon fonts) or a character newer than Node's Unicode
+tables is Deny-only on the page. **Follow-ups, not built:** the page's link-label filter
+(`web/src/lib/orbit/markdown.js`, `INVISIBLE`, 13 code points) and the board's text rule
+(`server/lib/text.mjs`, which lets U+2028/U+2029 through) could use the same set; the first
+needs a web build, the second a look at what the board's fields must allow (U+200D sits inside
+combined emoji, and the set marks it).
