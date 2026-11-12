@@ -1117,7 +1117,18 @@ can Deny anything. Allow may be offered only when none of these holds:
   `(value unserializable)` or a cut; the preview isn't a JSON object; a parsed field (its
   name, or any text nested in it) carries an invisible or direction character, also when
   the preview's text held it only as a JSON escape; config's `chat.approvalsDenyOnly`
-  patterns match.
+  patterns match. "Invisible or direction" is one set for the whole server
+  (`server/lib/hidden-chars.mjs`, Ultron's A3, 2026-11-12): Unicode's controls (Cc, C1
+  included), format characters (Cf: direction marks and overrides, zero-width
+  characters, tag characters), the line and paragraph separators (Zl, Zp), lone
+  surrogates and the default-ignorables (variation selectors, Hangul fillers, the
+  combining grapheme joiner), from the engine's own tables. The cards add more (Ultron,
+  11-12): every space but the ASCII one (no-break, figure, narrow no-break, ideographic
+  and the rest of Zs), the braille blank U+2800, private-use characters and unassigned
+  code points (noncharacters included), which look like a space, like nothing or like
+  whatever a font draws; the log and alert guard leaves those alone. A card keeps tab and
+  newline and shows every other one as `⟦U+XXXX⟧`, which is what makes it Deny-only, so
+  a Write whose text holds a no-break space is Deny-only too.
 - **An input the tool isn't known to take.** Each tool has a short list (`TOOL_KEYS`:
   Bash takes `command`, `description`, `timeout`; Write takes `file_path`, `content`; and
   so on); any other key is Deny-only.
