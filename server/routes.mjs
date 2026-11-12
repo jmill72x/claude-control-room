@@ -5,7 +5,7 @@ import { nextRenewalDate } from './lib/renewal.mjs';
 import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
 import { readRoster } from './lib/roster.mjs';
 import {
-  applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine
+  applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine, ackNotice
 } from './lib/acks.mjs';
 import { checkNeedsYou, needsYouLogLine, BLOCK_EVENTS } from './lib/needs-you.mjs';
 import { checkExactReport } from './lib/exact-commands.mjs';
@@ -152,6 +152,10 @@ export function pageConfig(config, planData) {
   };
 }
 
+// Acks (POST /api/acks) allowed in any one minute before a 429 (createHandler); an
+// un-ack is never limited.
+export const ACK_WRITES_PER_MINUTE = 10;
+
 // The acks (lib/acks.mjs) when the server runs without a store: nothing is
 // acknowledged, and a POST says so.
 const NO_ACKS = { read: async () => [], add: null, remove: null };
@@ -160,8 +164,12 @@ const NO_NEEDS_YOU = { view: () => [], record: null };
 
 // `onBlock` hears a classifier block from the needs-you ingest (lib/approvals.mjs), and
 // `onExact` a Bash command's exact text from the exact-command ingest; it answers
-// "kept", "other" (not the lead's session) or "off".
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null }) {
+// "kept", "other" (not the lead's session) or "off". `onAckNotice(notice, key)` hears
+// the notice for each ack and renewal (lib/acks.mjs, ackNotice) with the alert's key,
+// and pushes it through the notice limits (lib/ack-notice-limit.mjs, server.mjs);
+// it is not awaited, so a slow push never holds the answer, and a failure is logged.
+// `clock` is the write limit's time, for the tests.
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onAckNotice = null, clock = () => Date.now() }) {
   const panels = now => {
     const payload = {};
     for (const key of PANELS) payload[key] = cache.get(key, now);
@@ -189,6 +197,35 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
     const refused = new HttpError(403, 'the ingest takes posts from this machine only');
     refused.close = true;
     throw refused;
+  };
+
+  // A plain limit on acks (POST /api/acks), Ultron's 11-12 medium: at most
+  // ACK_WRITES_PER_MINUTE in any minute, then a 429 with Retry-After and words the page
+  // shows ("Couldn't save: …"). Counted after the origin guard and before the body is
+  // read, refused ones included, so a loop of bad requests is held too. An un-ack
+  // (DELETE) is never limited or counted (Ultron's 11-12 low): it only makes an alert
+  // visible again, and a local loop must never stop the page from un-acking. The
+  // notices have their own limits on top.
+  const ackWrites = [];
+  const ackWriteRefusal = () => {
+    const now = clock();
+    while (ackWrites.length && now - ackWrites[0] >= 60e3) ackWrites.shift();
+    if (ackWrites.length >= ACK_WRITES_PER_MINUTE) {
+      return Math.max(1, Math.ceil((ackWrites[0] + 60e3 - now) / 1000));
+    }
+    ackWrites.push(now);
+    return 0;
+  };
+  // Logged at most once a minute, so a flood doesn't fill the log either.
+  let ackRefusalLoggedAt = -Infinity;
+  const tooManyAckWrites = (res, wait) => {
+    const now = clock();
+    if (now - ackRefusalLoggedAt >= 60e3) {
+      ackRefusalLoggedAt = now;
+      log(`ack: refusing acks, more than ${ACK_WRITES_PER_MINUTE} in a minute`);
+    }
+    return json(res, 429, { error: `too many acknowledgements this minute (at most ${ACK_WRITES_PER_MINUTE}); try again in ${wait} s` },
+      { 'Retry-After': String(wait), Connection: 'close' });
   };
 
   return async function handler(req, res) {
@@ -247,6 +284,8 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
         if (req.method === 'POST') {
           guardWrite(req);
           if (!acks.add) throw new HttpError(503, 'acknowledgements are not set up on this server');
+          const wait = ackWriteRefusal();
+          if (wait) return tooManyAckWrites(res, wait);
           // A browser sends Origin on every POST; a script on this machine sends none.
           const checked = checkAckRequest(await readBody(req, ACK_MAX_BODY), { fromPage: Boolean(req.headers?.origin) });
           if (!checked.ok) throw new HttpError(400, checked.error);
@@ -256,7 +295,14 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
           const made = makeAck(alert, checked.value, now);
           if (!made.ok) throw new HttpError(400, made.error);
           const list = await acks.add(made.value, now);
-          log(ackLogLine(made.value));
+          // The entry as stored: addAck counts a renewal of the same failure.
+          const stored = list.find(a => a.key === made.value.key) ?? made.value;
+          log(ackLogLine(stored));
+          if (onAckNotice) {
+            Promise.resolve()
+              .then(() => onAckNotice(ackNotice(stored, now), stored.key))
+              .catch(err => log(`ack: the notice failed (${err?.code ?? err?.name ?? 'error'})`));
+          }
           return json(res, 200, list);
         }
       }

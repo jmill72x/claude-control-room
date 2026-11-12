@@ -21,8 +21,9 @@ import { readToPushConfig } from './lib/to-push.mjs';
 import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
-import { getTopic, sendAlert } from './notify.mjs';
+import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
 import { createAlertLimiter } from './lib/chat-alert-limit.mjs';
+import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
@@ -216,8 +217,20 @@ registry.register('notifier', async () => {
 // kill file beside the sockets, and the classifier-block window fed by the needs-you
 // ingest. Made once the chat is on; until then a block is only logged.
 let approvals = null;
+const ackNotices = createAckNotices({
+  sendPepper: notice => sendAckPepper(notice),
+  sendNtfy: push => sendAckNtfy(push),
+  onError: err => console.error('ack: the notice failed', err?.code ?? err?.name ?? 'error')
+});
 const api = createHandler({
   cache, todos, config, acks: ackStore, needsYou,
+  // Each ack and renewal (lib/acks.mjs, ackNotice; notify.mjs, sendAckPepper and
+  // sendAckNtfy): #pepper gets the details, limited per alert key (the first at once,
+  // later ones for the key in 10 minutes counted and sent with the next or at the
+  // window's end); ntfy gets generic words at low priority, at most one an hour across
+  // every key and 12 a local day (lib/ack-notice-limit.mjs). Guarded by a source test
+  // (test/ack-notice-limit.test.mjs): a merge must keep this line.
+  onAckNotice: (notice, key) => ackNotices.notice(key, notice),
   onBlock: value => approvals?.noteBlock(value) ?? false,
   // A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
   onExact: value => approvals?.noteExact(value) ?? 'off'

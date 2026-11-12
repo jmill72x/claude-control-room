@@ -670,7 +670,7 @@ commits only):** a Host allowlist before every route (`server/lib/host-guard.mjs
 with no `since` capped at 24 hours, with no 7-day choice on the page; `by` defaults to the
 owner only when the request carries an `Origin` header, else `local`; and a display name two
 jobs share marks no health row. README: "The Host check" under Security, the config table, and
-"Acknowledging a known miss". Not built: the ack-notification push (Jeff hasn't decided).
+"Acknowledging a known miss". The ack-notification push is built on `jos/ack-notice` (below).
 Ultron's 11-11 re-review (go with conditions) is answered on the same branch: `readBody` answers
 a fixed `invalid JSON` (Node 26's parser message quoted the body around the fault), and an
 unknown `hostCheck` value enforces and logs a `config:` problem instead of falling back to log.
@@ -1040,3 +1040,45 @@ job-status rounds a log's age to 0.01 h; a launchd job without the job-status ov
 `lastRunAt`, so its ack's `since` is null and a re-run can't be told apart until it expires;
 two jobs whose display names collide would both show one ack (the health panel carries no
 labels). **Follow-ups:** the mod's one-line "acked" suffix (`crons[].ack`), and Phase 1b.
+
+**The ack notice (board a37d853e, Ultron's 11-10 medium) is staged on `jos/ack-notice`
+(2026-11-11, from main 1e1da2d, worktree `~/Projects/.worktrees/ccr-ack-notice`), not
+committed.** Every ack and renewal pushes at low priority: #pepper gets who, the kind, how
+long it has failed, until when and "renewed N times for this failure"; ntfy generic words at
+ntfy `low`; never the key, name or note. `renewals` is counted in `addAck`. No cap on
+renewals: the push is the guard (README "Acknowledging a known miss" says why). Ultron's
+11-12 review: GO, with his medium 3-M1 fixed the same night: the #pepper notices are coalesced
+per key over 10 minutes (`lib/ack-notice-limit.mjs`; first at once, the rest counted and sent
+with the next or at the window's end, never dropped), and acks answer 429 past 10 a minute.
+**Ultron's 11-12 re-read: GO once one medium is in; it and his low are in (2026-11-12
+overnight).** Medium: ntfy has its own budget across every key (`createAckNtfyBudget`; the two
+halves go out through `sendAckPepper` and `sendAckNtfy` in notify.mjs, both from
+`createAckNotices`): at most one push an hour (the rest counted into the next or the hour's
+end) and 12 a day; the 12th carries the line "Ack notices are Discord-only until tomorrow.",
+then ntfy gets nothing until local midnight (the server's calendar day, the mini's zone) and
+the notices in between are not held over. #pepper keeps its per-key windows; a global #pepper
+limit (optional in his spec) is not built. Low: `DELETE /api/acks` is out of the 429 limit and
+never counted. Tests: server 924 in local time and Tokyo (a fake clock, local-time fixtures so
+midnight is the server's in either zone; two alerts renewing every minute for a day give ntfy
+exactly 12); 25 of 26 new mutations caught, the survivor equivalent (#pepper and ntfy started
+one after the other instead of together). **To go live:** Jeff's C&P, then a service restart
+(Vision or Jeff); no web build. **Post-restart check:** the next ack posts one line in #pepper and
+one `ack:` line in the log. **Merge order (trial-merged 2026-11-12 in a scratch clone, with every branch's staged state):**
+`jos/hello-no-test`, `jos/verdict-alerts-csp` (both clean), this branch, then
+`jos/ingest-socket`. This branch's conflict, server.mjs's imports: keep `getTopic, sendAlert,
+sendAckPepper, sendAckNtfy` from `notify.mjs`, the other's `chat-events.mjs` line and this branch's
+`createAckNotices` line; drop `createAlertLimiter`. `jos/ingest-socket` then conflicts in
+routes.mjs (createHandler's signature: take that branch's side and add `onAckNotice = null, clock
+= () => Date.now()`) and server.mjs (take that branch's side, then put `const ackNotices = …` and
+`onAckNotice: (notice, key) => ackNotices.notice(key, notice)` into its createHandler call).
+**Watch that last one:** git leaves `jos/ingest-socket`'s one-line `createHandler({ … onIngestTcp
+})` after the conflict block, so a merge that takes that side loses `onAckNotice` silently.
+`test/ack-notice-limit.test.mjs` fails when that happens (Ultron's grep, as a test), and
+`test/ingest-socket.test.mjs` guards the ingest side the same way: **run the server suite after
+the last merge.** Trial re-run 2026-11-12 ~01:00 ET with the re-read fixes on all three
+branches: the same three conflicts, resolved as above, and after `jos/hidden-chars` and its
+dedupe step (that branch's note) the merged tree passed 978 server tests in local time and Tokyo. `lib/acks.mjs` holds a copy
+of `oneLine` from `lib/chat-events.mjs`; once both are on main, import that one and delete
+the copy. **Not built:** a mark on the page for a renewed ack (`renewals` is in the
+payload; needs a web build); `by` from a script is self-declared, so the notice can say
+"jeff" for a script that claims it.

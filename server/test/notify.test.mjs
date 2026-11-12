@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getTopic, publish, publishDiscord, runPoster, sendAlert, DISCORD_POSTER } from '../notify.mjs';
+import { getTopic, publish, publishDiscord, runPoster, sendAlert, sendAckPepper, sendAckNtfy, DISCORD_POSTER } from '../notify.mjs';
 
 // No test here may touch the real network or the real Keychain — `run` and
 // `fetchImpl` are the injected seams that make that possible. Nor may one run
@@ -213,4 +213,37 @@ test('sendAlert: ntfyMessage, when given, replaces the text ntfy gets; #pepper k
   assert.deepEqual(got, { ntfy: 'A chat security event: details in #pepper', discord: 'a permission was allowed from iPhone (Bash)' });
   await sendAlert({ topic: 't', title: 'x', message: 'same', ntfy: async m => { got.plain = m.message; return { sent: true }; }, discord: async () => ({ sent: true }) });
   assert.equal(got.plain, 'same', 'without it, both get the message');
+});
+
+test('publish sends ntfy priority: default for an alert, low when asked, default for any unknown word', async () => {
+  const seen = [];
+  const fetchImpl = async (url, options) => { seen.push(options.headers.Priority); return { ok: true, status: 200 }; };
+  await publish({ topic: 't', title: 'x', message: 'm', fetchImpl });
+  await publish({ topic: 't', title: 'x', message: 'm', priority: 'low', fetchImpl });
+  await publish({ topic: 't', title: 'x', message: 'm', priority: 'loud\nX-Injected: 1', fetchImpl });
+  assert.deepEqual(seen, ['default', 'low', 'default']);
+});
+
+test('sendAckPepper: the details go to #pepper only, titled like an alert; a failed post is logged without its words', async () => {
+  const notice = { message: 'jeff acknowledged a failed job', ntfyMessage: 'generic', priority: 'low' };
+  const seen = [], errors = [];
+  const r = await sendAckPepper(notice, { discord: async m => { seen.push(m); return { sent: true, reason: null }; }, logError: e => errors.push(e) });
+  assert.equal(r.sent, true);
+  assert.deepEqual(seen, [{ title: 'Control Room', message: 'jeff acknowledged a failed job' }], 'the message, never the ntfy words or a priority');
+  assert.deepEqual(errors, []);
+  await sendAckPepper(notice, { discord: async () => ({ sent: false, reason: 'discord-post exited 3' }), logError: e => errors.push(e) });
+  assert.deepEqual(errors, ['ack: the #pepper notice was not sent (discord-post exited 3)']);
+});
+
+test('sendAckNtfy: the generic words go to ntfy at the notice\'s priority with the topic; no topic is quiet, a failure is logged without the topic', async () => {
+  const seen = [], errors = [];
+  const ntfy = async m => { seen.push(m); return m.topic ? { sent: false, reason: 'request failed' } : { sent: false, reason: 'no topic configured' }; };
+  await sendAckNtfy({ message: 'generic', priority: 'low' }, { topic: async () => null, ntfy, logError: e => errors.push(e) });
+  assert.deepEqual(seen, [{ topic: null, title: 'Control Room', message: 'generic', priority: 'low' }]);
+  assert.deepEqual(errors, [], 'an unset topic is a normal state');
+  await sendAckNtfy({ message: 'generic', priority: 'low' }, { topic: async () => 'secret-topic', ntfy, logError: e => errors.push(e) });
+  assert.deepEqual(errors, ['ack: the ntfy notice was not sent (request failed)']);
+  const ok = await sendAckNtfy({ message: 'generic', priority: 'low' }, { topic: async () => 't', ntfy: async () => ({ sent: true, reason: null }), logError: e => errors.push(e) });
+  assert.equal(ok.sent, true);
+  assert.equal(errors.length, 1);
 });
