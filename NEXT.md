@@ -417,10 +417,16 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Approvals as buttons (board 2422f9d1): merged switched off (main 679c9fb; the lead's repo
-build/v1 7703f35, channel 0.4.4), and the last build before go-live is staged, not committed,
-on `jos/approvals-final` in both repos** (worktrees `~/Projects/.worktrees/ccr-approvals-final`
-and `~/Projects/.worktrees/jarvis-approvals-final`; channel 0.4.5). Design, Jeff's decisions
+**Approvals as buttons (board 2422f9d1): the final build is merged, switched off (main
+e61708e; the lead's repo build/v1 57f0a9e, channel 0.4.5 source; release worktree unmoved),
+and a short go-live patch is staged, not committed, on `jos/approvals-h1`** (this repo only,
+worktree `~/Projects/.worktrees/ccr-approvals-h1`; Jeff's option A, 2026-11-11 23:33Z: one
+short round for Ultron's high and medium, he reads only that delta, then the one-step
+go-live). The patch (`server/lib/approvals.mjs`, tests): a write of any `*.py`, `*.pyc`,
+`*.pyw` or `*.so`, of `CLAUDE.local.md`, `pytest.ini`, `tox.ini` or `.python-version`, or
+under `.vscode/` is Deny-only in every write folder (board 97332dd5); any path through
+`/System`, `/Volumes`, `/.vol`, `/.file`, `/.nofollow` or `/.resolve` is Deny-only for reads,
+searches, writes and reply files (669ea1d2); `.dev.vars*` is private. Design, Jeff's decisions
 and the three fix tables: `docs/design/2026-11-11-jarvis-os-approvals.md` (sections 0, 0.1
 and 0.2); reference: README "Approvals as buttons". This build closes Ultron's final read of
 2026-11-11 (board 97332dd5, bf222809, 4f52c42f) and adds exact Bash commands (board
@@ -470,9 +476,8 @@ and reviewed hash unmoved.
 and do it all at once"); exact Bash is a second, later step (12 and 13).* Each step waits
 on the one before; the server always goes before the channel (Ultron H2).
 
-1. Ultron re-reads `jos/approvals-final` in both repos, the hook entry in README "The
-   exact-command hook" included; Jeff's C&P for each (Jarvis commits and merges: this repo
-   to main, the lead's to build/v1).
+1. Ultron reads the `jos/approvals-h1` delta (this repo only; the final build is already
+   on main and build/v1); Jeff's C&P (Jarvis commits and merges it to main).
 2. Config, before any restart (Jarvis, with Jeff's OK; back up `server/config.json` first).
    Inside the `chat` block add four keys; leave `approvalsBash` and `approvalsBashCommands`
    out (Bash stays Deny-only on the page until step 13):

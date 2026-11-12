@@ -942,7 +942,7 @@ test('the second layer: every write Ultron showed as allowed is now Deny-only, b
   assert.ok(has(wr('/vol/work/src/a.py', moved), /config protects/), 'a protected place that is itself a link: its real path is protected too');
   // Without the config entries only the generic rules hold: the runbook's values matter.
   const generic = { ...finalOpts, writeProtected: [] };
-  assert.deepEqual(wr(`${P}/league/src/sffl/cli.py`, generic), []);
+  assert.deepEqual(wr(`${P}/post-agent/scripts/draft.mjs`, generic), []);
   assert.ok(has(wr(`${P}/league/.venv/x.pth`, generic), /\.venv folder/));
   // Reads are not held to the write layer.
   assert.deepEqual(rd(`${P}/league/src/sffl/cli.py`), []);
@@ -974,6 +974,56 @@ test('the second layer, generic: folders and file names that tools load or run w
   assert.ok(has(rd(`${P}/league/data/browser-profile/Default/Cookies`), /reads a browser profile/));
   assert.ok(has(rd(`${P}/site/.wrangler/state/v3/d1/x.sqlite`), /Wrangler/));
   assert.ok(has(wr(`${P}/site/.wrangler/tmp/x`), /Wrangler/));
+});
+
+// ---- The go-live patch (2026-11-11): Ultron's high (board 97332dd5) and medium (669ea1d2) ----
+
+test('the go-live patch: Python modules, compiled code and CLAUDE.local.md are Deny-only for a write, in any write folder (board 97332dd5)', () => {
+  // A module beside a job's entry point is imported ahead of the standard library's
+  // (json.py), and the next Claude Code session obeys a CLAUDE.local.md it finds.
+  const deny = [`${P}/league/json.py`, `${P}/league/sffl.py`, `${P}/league/CLAUDE.local.md`, `${P}/content/CLAUDE.local.md`, `${P}/league/docs/CLAUDE.local.md`,
+    `${P}/league/docs/claude.local.md`, `${P}/league/docs/tool.py`, `${P}/league/Json.PY`, `${P}/league/__pycache__/json.cpython-312.pyc`, `${P}/league/run.pyw`, `${P}/league/_speedups.so`,
+    `${P}/league/pytest.ini`, `${P}/league/tox.ini`, `${P}/league/.python-version`, `${P}/site/.vscode/tasks.json`, `${P}/site/docs/.vscode/settings.json`];
+  for (const p of deny) {
+    assert.ok(has(wr(p), /by its name|\.vscode folder/), `Write ${p}: ${wr(p).join('; ')}`);
+    assert.ok(has(ed(p), /by its name|\.vscode folder/), `Edit ${p}`);
+    assert.ok(!has(wr(p), /outside the folders/), `${p} is inside a write folder: only the second layer stops it`);
+  }
+  // Notes and docs stay writable, near names too.
+  for (const p of [`${P}/league/docs/plan.md`, `${P}/league/docs/python.md`, `${P}/league/docs/json.py.md`, `${P}/league/docs/claude.local.md.txt`, `${P}/league/docs/local.md`,
+    `${P}/league/stubs.pyi`, `${P}/league/also`, `${P}/league/so.md`, `${P}/league/pytest.ini.md`, `${P}/league/vscode/a.md`, `${P}/league/python-version.md`]) {
+    assert.deepEqual(wr(p), [], p);
+  }
+  // Reads are not held to the write layer.
+  assert.deepEqual(rd(`${P}/league/json.py`), []);
+  assert.deepEqual(rd(`${P}/league/CLAUDE.local.md`), []);
+  // Wrangler's local secrets file is private, for reads and searches as well.
+  for (const n of ['.dev.vars', '.dev.vars.production']) {
+    assert.ok(has(rd(`${P}/contact/${n}`), /reads a \.dev\.vars file/), n);
+    assert.ok(has(wr(`${P}/contact/${n}`), /touches a \.dev\.vars file/), n);
+    assert.ok(has(denyOnlyReasons({ tool: 'Grep', inputPreview: JSON.stringify({ pattern: 'KEY', path: `${P}/contact`, glob: n }) }, finalOpts), /\.dev\.vars/), `Grep glob ${n}`);
+  }
+  assert.deepEqual(rd(`${P}/contact/dev.vars.md`), []);
+});
+
+test('the go-live patch: other names for the same disk (/System, /Volumes, /.vol, /.file, /.nofollow, /.resolve) are Deny-only (board 669ea1d2)', () => {
+  // The real path does not fold these back to /Users/…, so no rule written for the home
+  // folder sees them: each path below is caught by this rule alone.
+  const r = (tool, input) => denyOnlyReasons({ tool, inputPreview: JSON.stringify(input) }, strictOpts);
+  const other = /another name for the disk/;
+  const aliases = ['/System/Volumes/Data/Users/owner/Library/x', '/System/Volumes/Data/Users/owner', '/.nofollow/Users/owner/.claude/projects/x', '/.vol/1/2',
+    '/.file/id=1.2', '/.resolve/1/Users/owner/notes.md', '/Volumes/Data/Users/owner/notes.md', '/System', '/.vol', '/.file', '/.nofollow', '/.resolve', '/Volumes', '/system/volumes/data/x', '/VOLUMES/x'];
+  for (const p of aliases) {
+    assert.ok(has(r('Read', { file_path: p }), other), `Read ${p}: ${r('Read', { file_path: p }).join('; ')}`);
+    assert.ok(has(r('Grep', { pattern: 'KEY', path: p }), other), `Grep ${p}`);
+    assert.ok(has(r('Glob', { pattern: '**/*.md', path: p }), other), `Glob ${p}`);
+    assert.ok(has(strict(`cat ${p}`), other), `cat ${p}`);
+    assert.ok(has(r('mcp__plugin_jarvis-channel_jarvis__reply', { text: 't', files: [p] }), other), `reply file ${p}`);
+  }
+  assert.ok(has(denyOnlyReasons({ tool: 'Write', inputPreview: JSON.stringify({ file_path: '/Volumes/work/a.md', content: 'x' }) }, { ...strictOpts, writeFolders: ['/Volumes/work'] }), other), 'a write folder there is no way round');
+  // Near names are ordinary folders.
+  for (const p of [`${APP}/System/a.md`, `${APP}/Volumes/a.md`, `${APP}/.vol/a.md`, `${APP}/.nofollow/a.md`]) assert.deepEqual(r('Read', { file_path: p }), [], p);
+  for (const p of ['/Systems/a.md', '/Volumes2/a.md', '/.volx/a.md', '/.files/a.md']) assert.ok(!has(r('Read', { file_path: p }), other), p);
 });
 
 test('the second layer: an existing file that can be run is Deny-only for a write (the disk decides), on a real folder', async () => {

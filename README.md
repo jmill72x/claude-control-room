@@ -1089,12 +1089,15 @@ can Deny anything. Allow may be offered only when none of these holds:
 - **Code inside a write folder** (the second layer, continued; a write there would be run
   later by a scheduled job, the next git command, an install, a deploy or the next Claude
   Code session). Generic, in any folder: an existing file with an execute bit; anything
-  under `.venv/`, `node_modules/`, `.husky/` or `.github/`; and the names `CLAUDE.md`,
+  under `.venv/`, `node_modules/`, `.husky/`, `.github/` or `.vscode/`; any Python module
+  or compiled code (`*.py`, `*.pyc`, `*.pyw`, `*.so`: one beside a job's entry point is
+  imported ahead of the standard library's); and the names `CLAUDE.md`, `CLAUDE.local.md`,
   `AGENTS.md`, `skill.md`, `.gitignore`, `.gitattributes`, `.gitmodules`, `package.json`,
   `package-lock.json`, `pyproject.toml`, `requirements*.txt`, `setup.py`, `setup.cfg`,
   `conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`, `Makefile`,
   `GNUmakefile`, `wrangler.jsonc`, `wrangler.json`, `wrangler.toml`, `*.plist`, `.envrc`,
-  `_headers` and `_redirects` (compared without regard to case). Per folder: config's
+  `_headers`, `_redirects`, `pytest.ini`, `tox.ini` and `.python-version` (compared
+  without regard to case). Per folder: config's
   `chat.approvalsWriteProtected`, a list of absolute paths (or `~/…`), each protecting
   that file or everything under that folder, by the path as written and by its real
   path: a repo's `scripts/`, `src/`, `ops/`, a job's `launchd/` folder, a drafts folder
@@ -1102,14 +1105,16 @@ can Deny anything. Allow may be offered only when none of these holds:
   entry that isn't an absolute plain path) the page allows no writes at all until it is
   fixed, with a `config:` line, since dropping one entry would quietly unprotect a place.
 - **A private place, for reads as well as writes:** `~/.claude/channels/`, `~/.ssh`,
-  `~/.local/state/jarvis-os/`, `.env` files, keys and credential files, `~/.claude.json`,
+  `~/.local/state/jarvis-os/`, `.env` and `.dev.vars` files, keys and credential files, `~/.claude.json`,
   `~/.gitconfig`, `~/.config/git`, `~/.config/gh`, `~/.cloudflared`, `~/.aws`, `~/.docker`,
   `~/.local/bin`, `/opt/homebrew`, `~/.tmux.conf`, `~/Library` (all of it),
   `~/.claude/projects` (transcripts), `~/.gnupg`, `~/.config/gcloud`, any `*_history`
   file, any `browser-profile` or `.wrangler` folder, and this repo's `server/config.json`
   and `server/data/`; and any folder that holds one of them
   (`~`, `~/.config`, `~/.claude`, this repo's root, `/`), since a search rooted there
-  would reach it.
+  would reach it. Also any path through another name for the disk (`/System`, `/Volumes`,
+  `/.vol`, `/.file`, `/.nofollow`, `/.resolve`): `/System/Volumes/Data/Users/…` is the
+  home folder again, and the real path does not fold it back.
 - **A path that can't be pinned down:** relative (Read, the write tools and a channel
   tool's `files` need an absolute path), with a `..` part anywhere, whose last part is a
   symbolic link (`lstat`), or, for a write, with a space in it (the relay folds

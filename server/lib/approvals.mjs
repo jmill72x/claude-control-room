@@ -272,11 +272,16 @@ const OWN_REPO = fileURLToPath(new URL('../..', import.meta.url));
 // tool loads without being asked (Ultron's final read, 11-11): a scheduled job, the next
 // git command, the next install or deploy, or the next Claude Code session would run or
 // obey what a page Allow wrote there. Names are compared lower-cased.
-const CODE_FOLDERS = ['.venv', 'node_modules', '.husky', '.github'];
-const CODE_NAMES = new Set(['claude.md', 'agents.md', 'skill.md', '.gitignore', '.gitattributes', '.gitmodules', 'package.json', 'package-lock.json',
+const CODE_FOLDERS = ['.venv', 'node_modules', '.husky', '.github', '.vscode'];
+const CODE_NAMES = new Set(['claude.md', 'claude.local.md', 'agents.md', 'skill.md', '.gitignore', '.gitattributes', '.gitmodules', 'package.json', 'package-lock.json',
   'pyproject.toml', 'setup.py', 'setup.cfg', 'conftest.py', 'sitecustomize.py', 'usercustomize.py', 'makefile', 'gnumakefile',
-  'wrangler.jsonc', 'wrangler.json', 'wrangler.toml', '.envrc', '_headers', '_redirects']);
-const CODE_NAME_PATTERNS = [/^requirements.*\.txt$/, /\.pth$/, /\.plist$/];
+  'wrangler.jsonc', 'wrangler.json', 'wrangler.toml', '.envrc', '_headers', '_redirects', 'pytest.ini', 'tox.ini', '.python-version']);
+// Any Python module counts: one beside a job's entry point (json.py) is imported ahead of
+// the standard library's, and compiled code is loaded without its source being read.
+const CODE_NAME_PATTERNS = [/^requirements.*\.txt$/, /\.pth$/, /\.plist$/, /\.(py|pyc|pyw|so)$/];
+// Other names for the same disk: the real path does not fold them back to /Users/…, so
+// the rules written for the home folder would never see a path that goes through one.
+const DISK_ALIASES = ['/system', '/.vol', '/.file', '/.nofollow', '/.resolve', '/volumes'];
 const SHELL_RC = ['.zshenv', '.zshrc', '.zprofile', '.zlogin', '.zlogout', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
 // Rules over a lower-cased absolute (or '/'-rooted relative) path. `H` is the home.
 const under = (p, dir) => p === dir || p.startsWith(dir + '/');
@@ -313,6 +318,7 @@ export function protectedWhy(p, H, repoRoot = OWN_REPO) {
 export function sensitiveWhy(p, H, repoRoot = OWN_REPO) {
   const h = H.toLowerCase();
   const root = stripSlash(String(repoRoot ?? '')).toLowerCase();
+  if (DISK_ALIASES.some(dir => under(p, dir))) return 'another name for the disk (a path through /System, /Volumes or /.vol and the like)';
   if (under(p, h + '/.claude/channels') || p.includes('/.claude/channels')) return 'the channels folder';
   if (under(p, h + '/.claude/projects')) return 'Claude Code\'s transcripts';
   if (under(p, h + '/library')) return 'the Library folder';
@@ -321,6 +327,7 @@ export function sensitiveWhy(p, H, repoRoot = OWN_REPO) {
   if (under(p, h + '/.local/state/jarvis-os') || p.includes('/.local/state/jarvis-os')) return 'the Jarvis OS state folder';
   const b = base(p);
   if (b === '.env' || b.startsWith('.env.')) return 'an .env file';
+  if (b.startsWith('.dev.vars')) return 'a .dev.vars file';
   if (/^id_(rsa|dsa|ecdsa|ed25519)/.test(b) || /\.(pem|key|p12|pfx|keychain|keychain-db)$/.test(b) || ['.netrc', '.npmrc', '.pypirc', '.credentials.json'].includes(b)) return 'a key or credentials file';
   if (b.startsWith('.claude.json')) return 'Claude Code\'s account file';
   if (b === '.gitconfig' || hasSeg(p, '.config/git')) return 'the git settings';
