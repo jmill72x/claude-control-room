@@ -308,7 +308,7 @@ test('the README\'s hook entry: every command sends `at`, ends in `|| true`, and
   const commands = Object.values(entry.hooks).flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)));
   assert.equal(commands.length, 5);
   for (const c of commands) {
-    assert.match(c, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,notification_type,at:\(now\*1000\|floor\)\}' \| curl -s /, c);
+    assert.match(c, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,notification_type,at:\(now\*1000\|floor\)\}' \| \/usr\/bin\/curl -q -s -m [13] --noproxy '\*' --unix-socket "\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock" -X POST http:\/\/localhost\/api\/ingest\/needs-you /, c);
     assert.match(c, / >\/dev\/null \|\| true$/, c);
   }
   // Where macOS's jq is there, the filter itself: the hook's JSON in, a body the
@@ -347,7 +347,7 @@ test('a PermissionDenied post is read down to the session, the tool name and the
   const none = createHandler(d);
   assert.deepEqual(JSON.parse((await call(none, 'POST', '/api/ingest/needs-you', denied())).body), { ok: true, block: false });
   const remote = await call(h, 'POST', '/api/ingest/needs-you', denied(), { 'x-forwarded-for': '100.64.0.9' });
-  assert.equal(remote.statusCode, 403, 'loopback only, like every ingest');
+  assert.equal(remote.statusCode, 403, 'the TCP transition route is loopback only');
 });
 
 test('the README\'s PermissionDenied hook entry: async, filtered by jq to five fields, ends in `|| true`, and its body passes the check', async () => {
@@ -358,7 +358,7 @@ test('the README\'s PermissionDenied hook entry: async, filtered by jq to five f
   assert.deepEqual(Object.keys(entry.hooks), ['PermissionDenied']);
   const [h] = entry.hooks.PermissionDenied[0].hooks;
   assert.equal(h.async, true, 'it can never decide anything');
-  assert.match(h.command, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,tool_name,reason,at:\(now\*1000\|floor\)\}' \| curl -s -m 3 -X POST http:\/\/127\.0\.0\.1:8322\/api\/ingest\/needs-you /);
+  assert.match(h.command, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,tool_name,reason,at:\(now\*1000\|floor\)\}' \| \/usr\/bin\/curl -q -s -m 3 --noproxy '\*' --unix-socket "\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock" -X POST http:\/\/localhost\/api\/ingest\/needs-you /);
   assert.match(h.command, / >\/dev\/null \|\| true$/);
   const { existsSync } = await import('node:fs');
   if (!existsSync('/usr/bin/jq')) return;

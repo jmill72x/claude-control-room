@@ -493,6 +493,7 @@ const STAR_EXT = /^\*(\.[A-Za-z0-9_-]+)+$/;
 // null, with `exactProblem` saying why) and `bashCommands` config's listed commands;
 // `isExecutable(path)` says whether an absolute path is a file that can be run, and
 // `isLink(path)` whether its last part is a symbolic link.
+export const INGEST_OFF = 'the ingest socket is off, so a block by auto mode would go unseen (answer at the terminal or in Discord)';
 export const NO_EXACT = 'no exact copy of this command came from the hook (answer at the terminal or in Discord)';
 export function denyOnlyReasons(req, {
   home = homedir(), realpath = safeRealpath, patterns = [], writeFolders = [], writeProtected = [], bash = 'deny', exact = null, exactProblem = null,
@@ -694,13 +695,15 @@ export function verdictOriginProblem(headers, allowedHosts) {
 // `onEvent` hears { kind } for each thing worth an alert. `isLead(id)` is the cautious
 // test the block window uses (the lead's session, or one nobody can name);
 // `isLeadSession(id)` is the strict one for exact-command reports: the lead's session
-// by name, and nothing else.
+// by name, and nothing else. `ingestOk()` says whether the hooks' posts can reach the
+// server (server.mjs: the ingest socket is on, or the TCP route is still "legacy");
+// while it says no, every request is Deny-only.
 export function createApprovals({
   mode = 'off', killPath = null, patterns = [], home = homedir(), realpath = safeRealpath,
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
   bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun,
   writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink,
-  testChannelOk = false
+  testChannelOk = false, ingestOk = () => true
 } = {}) {
   const configured = APPROVAL_MODES.includes(mode) ? mode : 'off';
   const bashMode = BASH_MODES.includes(bash) ? bash : 'deny';
@@ -760,6 +763,13 @@ export function createApprovals({
     if (p.exactConflict) out.push(EXACT_CONFLICT);
     if (channelRelay !== 'allow') out.push(channelRelay === 'deny' ? 'the channel delivers Deny only' : 'the channel has not said it can deliver Allow');
     if (testCapped()) out.push('the channel runs in test mode');
+    // The hooks' way in (lib/ingest-socket.mjs; Ultron's 4-M1): with the ingest socket
+    // off and no TCP route for needs-you, a classifier block would never open the
+    // window above, so Allow would be offered blind. Fail closed, like a missing
+    // exact report. Anything but a plain true is off.
+    let ingestUp = false;
+    try { ingestUp = ingestOk() === true; } catch { ingestUp = false; }
+    if (!ingestUp) out.push(INGEST_OFF);
     if (at < blockUntil) out.push('auto mode blocked something in the last 15 minutes');
     if (at < floodUntil) out.push('too many requests at once');
     return out;

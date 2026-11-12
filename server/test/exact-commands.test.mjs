@@ -7,15 +7,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import {
   foldWhitespace, exactTextOk, checkExactReport, createExactCommands,
   EXACT_TTL_MS, EXACT_WINDOW_BEFORE_MS, EXACT_WINDOW_AFTER_MS, EXACT_MAX_CHARS, EXACT_KEEP
 } from '../lib/exact-commands.mjs';
 import { createApprovals, denyOnlyReasons, readApprovalsConfig, shownHash, NO_EXACT } from '../lib/approvals.mjs';
-import { createHandler } from '../routes.mjs';
+import { createHandler, createIngestHandler } from '../routes.mjs';
 import { createCache } from '../cache.mjs';
+
+// A short scratch HOME: macOS caps a Unix socket path at 104 bytes, and the socket sits
+// 35 below it.
+const scratchHome = () => mkdtemp(join(tmpdir().length <= 60 ? tmpdir() : '/tmp', 'ih-'));
 
 const T0 = 1794380000000;
 const HOME = '/home/owner';
@@ -336,10 +342,10 @@ const deps = () => {
 const SECRET_LOOKING = 'cat /home/owner/Projects/app/zz-marker-9471.txt';
 const hookBody = (extra = {}) => ({ hook_event_name: 'PermissionRequest', session_id: LEAD, tool_name: 'Bash', command: SECRET_LOOKING, ...extra });
 
-test('POST /api/ingest/exact-command: loopback only, the report goes to the gate, and the command is never in the log or the answer', async () => {
+test('POST /api/ingest/exact-command: on the ingest socket only, the report goes to the gate, and the command is never in the log or the answer', async () => {
   const d = deps();
   const got = [];
-  const h = createHandler({ ...d, onExact: v => { got.push(v); return v.sessionId === LEAD ? 'kept' : 'other'; } });
+  const h = createIngestHandler({ ...d, onExact: v => { got.push(v); return v.sessionId === LEAD ? 'kept' : 'other'; } });
   const res = await call(h, 'POST', '/api/ingest/exact-command', hookBody());
   assert.equal(res.statusCode, 200, res.body);
   assert.deepEqual(JSON.parse(res.body), { ok: true, kept: true });
@@ -349,13 +355,19 @@ test('POST /api/ingest/exact-command: loopback only, the report goes to the gate
   assert.deepEqual(d.logged, ['exact-command: a Bash report, from the lead\'s session, kept for 2 minutes', 'exact-command: a Bash report, not from the lead\'s session, dropped']);
   assert.ok(!JSON.stringify(d.logged).includes('zz-marker') && !res.body.includes('zz-marker') && !JSON.stringify(d.logged).includes(LEAD), 'neither the command nor the session id is logged');
   // No gate (the chat is off), or one that throws: dropped, answered, the session goes on.
-  const none = createHandler(d);
+  const none = createIngestHandler(d);
   assert.deepEqual(JSON.parse((await call(none, 'POST', '/api/ingest/exact-command', hookBody())).body), { ok: true, kept: false });
   assert.match(d.logged.at(-1), /dropped \(approvals for Bash are not in "exact" mode\)/);
-  const broken = createHandler({ ...d, onExact: () => { throw new Error('boom'); } });
+  const broken = createIngestHandler({ ...d, onExact: () => { throw new Error('boom'); } });
   assert.equal((await call(broken, 'POST', '/api/ingest/exact-command', hookBody())).statusCode, 200);
-  // Refusals: not this machine, not JSON from a page, not a Bash PermissionRequest, too big.
-  assert.equal((await call(h, 'POST', '/api/ingest/exact-command', hookBody(), { 'x-forwarded-for': '100.64.0.9' })).statusCode, 403, 'loopback only, like every ingest');
+  // Refusals: the TCP port (even from this machine, in either ingest.tcp mode), not
+  // JSON from a page, not a Bash PermissionRequest, too big.
+  for (const ingest of [undefined, { tcp: 'legacy' }, { tcp: 'off' }]) {
+    const tcp = createHandler({ ...d, config: { ...d.config, ingest }, onExact: v => { got.push(v); return 'kept'; } });
+    const refused = await call(tcp, 'POST', '/api/ingest/exact-command', hookBody());
+    assert.equal(refused.statusCode, 403, `the TCP port, ingest ${JSON.stringify(ingest)}`);
+    assert.match(JSON.parse(refused.body).error, /Unix socket only/);
+  }
   assert.equal((await call(h, 'POST', '/api/ingest/exact-command', hookBody(), { origin: 'https://evil.example' })).statusCode, 403);
   assert.equal((await call(h, 'POST', '/api/ingest/exact-command', hookBody({ tool_name: 'Monitor' }))).statusCode, 400);
   assert.equal((await call(h, 'POST', '/api/ingest/exact-command', hookBody({ command: 'x'.repeat(EXACT_MAX_CHARS + 1) }))).statusCode, 400);
@@ -363,7 +375,7 @@ test('POST /api/ingest/exact-command: loopback only, the report goes to the gate
   assert.equal(got.length, 2, 'no refused post reached the gate');
   assert.equal((await call(h, 'GET', '/api/ingest/exact-command')).statusCode, 404);
   // It opens no "waiting on you" card: this is not the needs-you ingest.
-  assert.deepEqual(JSON.parse((await call(h, 'GET', '/api/dashboard')).body).needsYou, []);
+  assert.deepEqual(JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body).needsYou, []);
 });
 
 // ---- the README's hook entry ----
@@ -386,7 +398,7 @@ test('the README\'s exact-command hook entry can never decide: Bash only, not as
   assert.deepEqual(Object.keys(h).sort(), ['command', 'timeout', 'type'], 'no async, no if, nothing else');
   assert.equal(h.type, 'command');
   assert.ok(h.timeout >= 2 && h.timeout <= 3, 'seconds');
-  assert.match(h.command, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,tool_name,command:\.tool_input\.command\}' 2>\/dev\/null \| \/usr\/bin\/curl -s -m 2 -X POST http:\/\/127\.0\.0\.1:8322\/api\/ingest\/exact-command -H 'Content-Type: application\/json' --data-binary @- >\/dev\/null 2>&1 \|\| true$/);
+  assert.match(h.command, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,tool_name,command:\.tool_input\.command\}' 2>\/dev\/null \| \/usr\/bin\/curl -q -s -m 2 --noproxy '\*' --unix-socket "\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock" -X POST http:\/\/localhost\/api\/ingest\/exact-command -H 'Content-Type: application\/json' --data-binary @- >\/dev\/null 2>&1 \|\| true$/);
   assert.ok(!/updatedInput|hookSpecificOutput|decision|echo|printf/.test(h.command), 'it prints nothing Claude Code could read as a decision');
 });
 
@@ -399,13 +411,15 @@ test('the README\'s hook command, run for real against a scratch server: the bod
     req.on('data', c => chunks.push(c));
     req.on('end', () => { bodies.push({ url: req.url, type: req.headers['content-type'], text: Buffer.concat(chunks).toString('utf8') }); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true,"kept":true}'); });
   });
-  await new Promise(r => server.listen(0, '127.0.0.1', r));
-  const port = server.address().port;
-  assert.notEqual(port, 8322);
-  const command = entry.hooks.PermissionRequest[0].hooks[0].command.replace('127.0.0.1:8322', `127.0.0.1:${port}`);
-  assert.ok(command.includes(`127.0.0.1:${port}/api/ingest/exact-command`) && !command.includes('8322'));
+  // The command as written, unchanged: it finds the socket under $HOME, so a scratch
+  // HOME holds a scratch socket and the real one is never touched.
+  const home = await scratchHome();
+  const socketPath = join(home, '.local', 'state', 'jarvis-os', 'ingest.sock');
+  await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 });
+  await new Promise(r => server.listen(socketPath, r));
+  const command = entry.hooks.PermissionRequest[0].hooks[0].command;
   const run = (cmd, input) => new Promise(resolve => {
-    const child = spawn('/bin/sh', ['-c', cmd], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' } });
+    const child = spawn('/bin/sh', ['-c', cmd], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', HOME: home } });
     let out = '', err = '';
     child.stdout.on('data', c => { out += c; });
     child.stderr.on('data', c => { err += c; });
@@ -437,7 +451,10 @@ test('the README\'s hook command, run for real against a scratch server: the bod
     assert.equal(checkExactReport(JSON.parse(bodies.at(-1).text)).ok, false);
     // Input that is not JSON at all: jq fails, curl posts nothing useful, exit 0, silence.
     assert.deepEqual(await run(command, 'not json'), { code: 0, out: '', err: '' });
-  } finally { await new Promise(r => server.close(r)); }
+  } finally {
+    await new Promise(r => server.close(r));
+    await rm(home, { recursive: true, force: true });
+  }
   // The server is gone: still exit 0, still silent, and well inside the hook's limit.
   const started = Date.now();
   const down = await run(command, hookInput('ls'));
