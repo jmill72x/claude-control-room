@@ -25,11 +25,25 @@ const MIME = {
 // the browser's own submit. nosniff makes the browser keep to the Content-Type, so
 // nothing runs as a script or applies as a style unless it was sent as one. Both go
 // with every answer below: the pages, their assets, the fallback and the refusals.
-export const CONTENT_SECURITY_POLICY = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+// `script-src 'self'` is spelled out (2026-11-11, board e8d3ef26: an XSS on this
+// origin would be approval power), so widening default-src for something else later
+// can never let an inline or outside script in with it.
+export const CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 export const PAGE_HEADERS = Object.freeze({
   'Content-Security-Policy': CONTENT_SECURITY_POLICY,
   'X-Content-Type-Options': 'nosniff'
 });
+
+// Every other answer (the API's JSON, the streams, the avatars, the Host check's and
+// the server's own refusals) is never a page, so it may load and run nothing: opened
+// in a tab, even a body that looked like HTML or SVG could run no script. server.mjs
+// sets these first on every request (`setBaseHeaders`); a page's own headers given to
+// writeHead take precedence over them, as do an attachment's (chat-routes.mjs).
+export const API_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+export function setBaseHeaders(res) {
+  res.setHeader('Content-Security-Policy', API_POLICY);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+}
 
 // `join(WEB_DIR, req.url.slice(1))` served any file the service user could read:
 // `curl --path-as-is 'http://127.0.0.1:8322/../../server/config.json'` returned it,

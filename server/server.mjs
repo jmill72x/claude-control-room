@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { createStaticHandler } from './lib/static.mjs';
+import { createStaticHandler, setBaseHeaders } from './lib/static.mjs';
 import { createAvatarHandler } from './lib/avatars.mjs';
 import { readRoster } from './lib/roster.mjs';
 import { createHistory, RETENTION_MS } from './history.mjs';
@@ -22,7 +22,7 @@ import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert } from './notify.mjs';
-import { createAlertLimiter } from './lib/chat-alert-limit.mjs';
+import { createChatEventHandler, NTFY_WORDS } from './lib/chat-events.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
 import { loadConfig } from './lib/config.mjs';
@@ -262,49 +262,13 @@ if (chatSettings.on && socketsReady) {
   const chatDir = join(HERE, 'data', 'chat');
   await mkdir(chatDir, { recursive: true, mode: 0o700 });
   await chmod(chatDir, 0o700);
-  // A refused channel or a takeover pushes at most once per kind per 10 minutes,
-  // with a count of the ones held back (lib/chat-alert-limit.mjs).
-  // ntfy shows on a lock screen: it gets generic words, #pepper the details (L10).
-  const chatAlerts = createAlertLimiter({
-    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyMessage: 'A chat security event on the Control Room: details in #pepper' }),
-    onError: err => console.error('chat: alert failed', err?.message ?? err)
+  // Each chat event is one log line, and the alerted kinds push too: #pepper the words,
+  // ntfy generic ones (it shows on a lock screen, L10). The words, the one-line guard
+  // and the alerted kinds are in lib/chat-events.mjs; a refused channel or a takeover
+  // pushes at most once per kind per 10 minutes (lib/chat-alert-limit.mjs).
+  const chatEvents = createChatEventHandler({
+    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyMessage: NTFY_WORDS })
   });
-  const chatEvents = async event => {
-    const words = {
-      'client-refused': 'a second chat channel tried to connect and was refused',
-      'client-replaced': event.unverified
-        ? `a process tried to take the chat channel's place after its bye and was refused (${event.unverified})`
-        : `the chat channel was taken over by another process after its heartbeat went stale (${Math.round((event.staleFor ?? 0) / 1000)} s)`,
-      'channel-silent': `the chat channel said bye and has not come back in ${Math.round((event.after ?? 0) / 60e3)} minutes`,
-      'pairing-started': `a device asked to pair with the chat (${event.name || 'unnamed'})`,
-      'pairing-approved': `a chat pairing was approved by ${event.by}`,
-      paired: `a device was paired with the chat: ${event.device?.name ?? '?'} (by ${event.by})`,
-      revoked: `a chat device was revoked: ${event.device?.name ?? '?'}`,
-      'pairing-failed': 'a chat pairing failed on three wrong codes',
-      'permission-opened': `the lead asked for a permission (${event.tool ?? 'a tool'})`,
-      verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`,
-      'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`,
-      'approver-changed': `${event.device?.name ?? 'a device'} ${event.on ? 'may now allow' : 'may no longer allow'} permissions (by ${event.by})`,
-      'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}`,
-      'approvals-relay': `the channel now says its permission relay is ${event.relay === 'allow' ? 'allow (Deny and Allow)' : event.relay === 'deny' ? 'Deny only' : event.relay === 'off' ? 'off' : 'not stated (the page offers Deny only)'}; it was ${event.previous ?? 'unknown'}`,
-      'approvals-test-channel': 'a chat channel said hello in test mode: page approvals are Deny only while it holds the socket (the lead\'s own channel never runs that way; look for JARVIS_CHANNEL_TEST in a settings env block)',
-      'approvals-kill': `the approvals kill file was ${event.on ? 'created: page approvals are off' : 'removed: page approvals follow config again'}`,
-      'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
-      'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
-      'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
-      'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: page approvals are Deny only for 10 minutes`,
-      'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)'
-    };
-    const line = words[event.kind] ?? `chat event ${event.kind}`;
-    console.log(`chat: ${line}`);
-    if (['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
-      'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict'].includes(event.kind)) {
-      try {
-        const { sent, held } = await chatAlerts.alert(event.kind, line);
-        if (!sent) console.log(`chat: alert held back (${held} ${event.kind} in this window)`);
-      } catch (err) { console.error('chat: alert failed', err?.message ?? err); }
-    }
-  };
   const chatStore = createChatStore({ dir: chatDir });
   const loaded = await chatStore.load();
   console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
@@ -405,6 +369,8 @@ const routes = withHostGuard(async (req, res) => {
 }, allowedHostSet(PORT, hosts.names), { mode: hosts.mode });
 
 const server = createServer(async (req, res) => {
+  // A policy that runs nothing on every answer; the pages send their own (lib/static.mjs).
+  setBaseHeaders(res);
   try {
     await routes(req, res);
   } catch (err) {

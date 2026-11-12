@@ -783,7 +783,8 @@ test('status: online, waiting on you, slow after 10 minutes unanswered, offline 
   assert.equal((await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } })).json.state, 'online');
   const s = await stranger({ path: '/v1/status' });
   assert.ok(!('pid' in s.json), 'the pid is not on the wire');
-  assert.ok(!s.text.includes('300'));
+  // Not a substring check: the random epoch is in this answer and can hold "300" (a flake seen 2026-11-11).
+  assert.ok(!/(^|[^0-9a-z])300([^0-9a-z]|$)/i.test(s.text), 'the pid is nowhere in the answer');
   assert.equal(s.json.channelConnected, true);
   assert.equal(s.json.epoch, env.store.epoch);
   const page = await tcp({ path: '/api/chat/status', headers: { cookie: env.phone } });
