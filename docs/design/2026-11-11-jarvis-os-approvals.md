@@ -194,6 +194,26 @@ Left over from the related low (board 182771a1): the sweep reading hooks in agen
 frontmatter, and `env` set in shell startup files. Both are sweep-prompt work that needs a
 way to list those files inside an unattended run.
 
+### 0.4 Parity with the relay (the owner's decision, 2026-11-12)
+
+The first day of use showed the cost of the allowlist: one request appeared in three
+places (Claude Code's own prompt, Discord's DM buttons, the page), and the page alone
+offered no Allow for most of them, every Bash command included. The owner's decision: "I
+don't want to have to check multiple spots to find the approve button. If we're approving
+in Discord, we can approve in Jarvis OS." Config `chat.approvalsRules: "parity"` (default
+`"guarded"`, the rules of sections 0.1 to 0.3) makes the page offer Allow whenever the
+channel's relay does. It drops, on purpose, the Deny-only allowlist (findings 1 to 4 of
+0.1 and the write layers of 0.2), decision 3's block window, the flood window and the
+ingest check; it keeps the mode, the kill file, the relay-mode and test-channel caps, the
+approver mark, the two-step Allow, the shown hash, the tap limits and config's own
+Deny-only words. Hidden characters are always marked; `chat.approvalsHidden` says whether
+they also keep a card Deny-only (`"deny"`, the default) or not (`"allow"`). The accepted
+risk is Discord's own: a folded preview can make several lines read as one. A card is now
+also closed when the lead's session moves on (`server/lib/answered-elsewhere.mjs`), since
+Claude Code never tells a channel that a request was answered in another place. README
+"Parity with the relay" and "A card answered somewhere else" are the reference; NEXT.md
+section 10 has the go-live.
+
 ## 1. In short
 
 1. **Most of it is already built and switched off.** The Jarvis OS chat has permission cards

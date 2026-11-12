@@ -1017,6 +1017,8 @@ send Deny or Allow once. Everything here is off until three switches agree:
 
 - **The server's mode,** config `chat.approvals`: `"off"` (the default, and any value it
   doesn't understand), `"deny"` (cards with Deny only) or `"on"` (Deny and Allow once).
+  Which requests `"on"` may allow is `chat.approvalsRules`: the page's own rules (the
+  default) or parity with the relay (below).
   While off, `POST /v1/permission-request` and the verdict route both answer 403, which
   the channel reads as final, so the prompt stays in the terminal and Discord. Every start
   with approvals on is alerted, and so is any start whose mode differs from the last one
@@ -1108,6 +1110,77 @@ must match; for Allow, mode `on` (with a channel that reports
 inbound stream sends a verdict only when it is the owner's and names its request, and the
 channel drops one older than 120 s. More than 3 allows in 5 minutes, or more than 5 open
 requests at once (which also makes cards Deny-only for 10 minutes), are alerted.
+
+**Parity with the relay (`chat.approvalsRules`).** One request shows in three places:
+Claude Code's own prompt, Discord's DM buttons and the page. With the page's own rules
+(the default, `"guarded"`: everything under "Deny-only" below) the page offered Deny alone
+for most requests, every Bash command among them, while the other two offered Allow for
+the same request. On 2026-11-12 the owner decided against that: "I don't want to have to
+check multiple spots to find the approve button. If we're approving in Discord, we can
+approve in Jarvis OS." Config `"approvalsRules": "parity"` in the `chat` block makes the
+page offer Allow and Deny whenever the channel's relay does:
+
+- **Not applied in parity:** the whole Deny-only allowlist below (Bash of any shape can be
+  allowed, and a write anywhere: `chat.approvalsBash`, `approvalsBashCommands`,
+  `approvalsWriteFolders` and `approvalsWriteProtected` are read but decide nothing); the
+  15-minute Deny-only window after a classifier block (the block is still logged, as
+  `needs-you: PermissionDenied (Bash), noted; no Deny-only window (approvals follow the
+  relay)`, and the next card still says "Auto mode refused this … call, so Claude Code is
+  asking you"); the 10-minute window after more than 5 requests are open at once (still
+  alerted, with words that say the cards keep Allow); and the ingest-socket check, which
+  guards only the block window.
+- **Still applied:** the mode (`"off"`, `"deny"`, `"on"`) and the kill file; the channel's
+  relay mode and its test switch (the page never offers an Allow the channel would drop);
+  the approver mark on the device; the two-step Allow; the hash of what the card showed;
+  the limits on taps and the lockout; a request that came late or repeats an id; config's
+  own words in `chat.approvalsDenyOnly`; and the 10 minutes a card can be answered.
+- **Hidden characters** are always shown as `⟦U+XXXX⟧` on the card, in parity too. Whether
+  a request that carries one can be allowed from the page is `chat.approvalsHidden`:
+  `"deny"` (the default: such a card stays Deny-only, the one case where the page is
+  stricter than Discord, which draws those characters as nothing at all) or `"allow"`
+  (marked, and Allow offered). The marked set is the cards' wide one, so with `"deny"` an
+  emoji built with a joiner or a variation selector, or a no-break space, in a Write's
+  text also keeps its card Deny-only.
+- **The risk this accepts** is the one Discord's buttons already carry. The relay folds
+  each run of whitespace in the preview to one space, so a command of several lines reads
+  as one line on the card, exactly as in Discord; a field over 3,500 code points arrives
+  elided, and the card (which says so) can still be allowed; and a tap on a paired
+  approver device now grants what only the terminal or Discord could grant before, so a
+  stolen unlocked phone, or a script that ran on this origin, is worth more. The exact
+  command from the hook (`"approvalsBash": "exact"`, below) is still drawn on the card
+  when it is on, line breaks and all, but in parity it no longer decides anything.
+- **Any other value** of either key is a `config:` line and the cautious side
+  (`"guarded"`, `"deny"`). Parity needs `"approvals": "on"`; by itself it turns nothing
+  on. A start in parity logs `chat: approvals follow the channel's relay (parity): …`
+  after the usual line and says so in the start's #pepper alert. Rollback: remove
+  `approvalsRules` (or set `"guarded"`) and restart; the kill file works at once.
+
+**A card answered somewhere else.** Claude Code tells a channel when a request opens and
+never when it closes (CLI 2.1.322 has `permission_request` out and `permission` in, and
+nothing else), so the page can't be told that a prompt was answered in Claude Code or in
+Discord. The server closes the card on the nearest thing it does hear
+(`server/lib/answered-elsewhere.mjs`): a `UserPromptSubmit`, `Stop` or `SessionEnd` from
+the lead's session, through the needs-you hooks, closes every request the channel relayed
+before that hook ran. The card turns into "Answered elsewhere" and goes after a minute; no
+verdict is written and nothing is sent to the channel; a tap on it answers 409; the log
+says `chat: 1 permission card closed, answered somewhere else or no longer asked (the
+lead's session moved on: Stop): <id>`. `PostToolUse` is not used: the session's other
+tool calls and its helpers post it while a prompt still waits. So a card can stay open
+from the moment the prompt is answered elsewhere until the turn ends or the next prompt is
+taken. A tap in that gap is written as a verdict and delivered, and Claude Code drops a
+verdict for a request that is no longer open (seen 2026-11-12: a Deny tapped 21 s after
+the same prompt was allowed in Claude Code changed nothing); the card's own line says
+"Claude Code uses it if the prompt was still open". Discord's buttons can't be closed from
+here at all: they stay live until tapped.
+
+A request the page could no longer answer (10 minutes after the channel relayed it) used
+to vanish from a page that connected later; a page that was hidden, or on another tab, for
+those 10 minutes showed nothing. Now a new stream is also sent the requests that timed out
+in the last hour and were not closed since, as a card that says "Too late to answer here"
+and where to answer; Dismiss keeps it gone. Each request also logs which paired devices
+had the chat open when it opened: `chat: request <id> opened with the chat open on
+<names>`, or `… with no page open on the chat (a push goes to each device that takes
+one)`.
 
 **Deny-only (`server/lib/approvals.mjs`, `denyOnlyReasons`)** is an allowlist, not a
 security boundary: it makes the riskiest requests need the terminal or Discord. The page
@@ -1914,7 +1987,7 @@ and that must not reach every device on the tailnet.
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
-| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. |
+| `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. The approvals keys (`approvals`, `approvalsRules` `"guarded"` or `"parity"`, `approvalsHidden` `"deny"` or `"allow"`, `approvalsBash`, `approvalsBashCommands`, `approvalsWriteFolders`, `approvalsWriteProtected`, `approvalsDenyOnly`) are in "Approvals as buttons". |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |

@@ -10,7 +10,7 @@ import { holdReload } from './buildWatch.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine,
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho
 } from '../lib/orbit/chat.js';
@@ -177,11 +177,11 @@ function Thread({ chat, now, lead, onSettings }) {
   }, [chat, hasOlder, loadingOlder, messages.length]);
 
   const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now);
-  // Every card but a closed one past its 10 minutes: an answered card stays to say
-  // what was sent, until dismissed.
+  // Every card but a closed one past its time (lib/orbit/chat.js, cardGone): an
+  // answered card stays to say what was sent, until dismissed.
   const approvalContext = { approver: chat.device?.approver === true, approvals: chat.status?.approvals ?? null };
   const cards = [...chat.permissions.values()].map(p => permissionView(p, now, approvalContext))
-    .filter(p => p && !(p.view === 'closed' && now - (p.answeredAt ?? p.openedAt) >= 10 * 60e3));
+    .filter(p => p && !cardGone(p, now));
 
   return (
     <div className={`o-chat o-chat-thread-page${dragging > 0 ? ' o-chat-dropping' : ''}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
@@ -311,7 +311,7 @@ function PermissionCard({ p, chat, now }) {
   const noEnter = e => { if (e.key === 'Enter') e.preventDefault(); };
   const fields = cardFields(p);
   const exact = exactRows(p.exact);
-  const label = { open: 'Jarvis asks', expired: 'Expired request', terminal: 'Answer at the terminal', closed: 'Answered here' }[p.view] ?? 'Jarvis asks';
+  const label = p.state === 'elsewhere' ? 'Answered elsewhere' : ({ open: 'Jarvis asks', expired: 'Too late to answer here', terminal: 'Answer at the terminal', closed: 'Answered here' }[p.view] ?? 'Jarvis asks');
   return (
     <section className={`o-chat-card${p.view !== 'open' ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`} onKeyDown={noEnter}>
       <div className="o-chat-card-head">
@@ -345,7 +345,9 @@ function PermissionCard({ p, chat, now }) {
           </div>
         ))
         : <p className="o-chat-sub">No input preview.</p>}
-      {hasMarker(p) && <p className="o-chat-card-hidden">Part of this request is hidden or cut short, so it can only be denied here.</p>}
+      {hasMarker(p) && <p className="o-chat-card-hidden">{p.view === 'open' && p.canAllow
+        ? 'Part of this request is hidden, masked or cut short: this card does not show all of it.'
+        : 'Part of this request is hidden or cut short, so it can only be denied here.'}</p>}
       {p.description && (
         <div className="o-chat-card-summary">
           <span className="o-chat-card-key">Jarvis's own summary</span>
@@ -360,7 +362,7 @@ function PermissionCard({ p, chat, now }) {
       )}
       {p.view === 'expired' && (
         <div className="o-chat-card-expired-note">
-          <span>This request expired here after 10 minutes. Answer it in Discord or at the terminal.</span>
+          <span>This page could answer it for 10 minutes. If Jarvis is still waiting on it, answer in Claude Code or in Discord.</span>
           <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
         </div>
       )}
@@ -374,8 +376,8 @@ function PermissionCard({ p, chat, now }) {
         <>
           {!p.canAllow && (
             <div className="o-chat-card-denyonly">
-              <span>Allow this one at the terminal or in Discord.</span>
-              {p.denyOnly?.length > 0 && <ul>{p.denyOnly.map(r => <li key={r}>{r}</li>)}</ul>}
+              <span>{DENY_ONLY_LEAD}</span>
+              {p.denyOnly?.length > 0 && <><span className="o-chat-card-key">Why</span><ul>{p.denyOnly.map(r => <li key={r}>{r}</li>)}</ul></>}
             </div>
           )}
           <div className="o-chat-card-actions">

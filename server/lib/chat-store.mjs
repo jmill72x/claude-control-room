@@ -26,6 +26,9 @@ export const MAX_TEXT = 32000;
 export const MAX_PAGE_TEXT = 8000;
 export const EDIT_WINDOW_MS = DAY;
 export const PERMISSION_TTL_MS = 10 * 60e3;
+// A request that timed out here is still sent to a page that connects this long after
+// the channel relayed it (as a card that can't be answered here).
+export const CARD_REPLAY_MS = 60 * 60e3;
 export const PREVIEW_TTL_MS = DAY;
 export const UNANSWERED_WINDOW_MS = DAY;
 export const UNANSWERED_MAX = 10;
@@ -280,7 +283,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   function prunePermissions() {
     const at = now();
     for (const [uid, p] of permissions) {
-      if (p.state === 'open' && at - p.relayedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; emit({ type: 'permission-closed', request: p }); }
+      if (p.state === 'open' && at - p.relayedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; p.timedOut = true; emit({ type: 'permission-closed', request: p }); }
       // A closed request drops its exact command at the next look (any read prunes).
       if (p.state !== 'open') p.exact = null;
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
@@ -348,6 +351,28 @@ export function createChatStore({ dir, now = () => Date.now() }) {
 
   const findPermission = id => { const uid = latest.get(id); return uid === undefined ? null : permissions.get(uid) ?? null; };
 
+  // The lead's session moved on (lib/answered-elsewhere.mjs): every request the channel
+  // relayed before `upTo` that is still open here, or timed out here unanswered, was
+  // answered somewhere else (Claude Code's own prompt, Discord) or dropped with its
+  // turn. Claude Code sends a channel no word of that, so this is the page's only
+  // close for them. State `elsewhere`: no verdict is written, nothing goes to the
+  // channel, and a later tap answers 409. Answers the ids it closed.
+  function closePermissionsElsewhere({ upTo = now(), event = null } = {}) {
+    prunePermissions();
+    const closed = [];
+    for (const p of permissions.values()) {
+      if (!(p.state === 'open' || (p.state === 'expired' && p.timedOut === true))) continue;
+      // (An `upTo` that is no number compares false, so it closes nothing.)
+      if (typeof upTo !== 'number' || !(p.relayedAt < upTo)) continue;
+      p.state = 'elsewhere';
+      p.closedAt = now();
+      p.closedBy = typeof event === 'string' ? event.slice(0, 40) : null;
+      closed.push(p.requestId);
+      emit({ type: 'permission-closed', request: p });
+    }
+    return closed;
+  }
+
   // First answer wins; an unknown, closed, late or repeated id answers nothing.
   // `shown` must be the hash of what the card showed; `allowOk(p)` answers null or
   // the reason Allow is out (the gate's), checked here, inside the store's order.
@@ -356,6 +381,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     const p = findPermission(requestId);
     if (!p) return { ok: false, status: 404, error: 'no such request' };
     if (p.state === 'repeat' || p.state === 'late') return { ok: false, status: 409, error: 'this one can only be answered at the terminal' };
+    if (p.state === 'elsewhere') return { ok: false, status: 409, error: 'already answered somewhere else, or no longer asked: Jarvis has moved on' };
     if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
     const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact);
@@ -373,6 +399,15 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   const openPermissions = () => { prunePermissions(); return [...permissions.values()].filter(p => p.state === 'open'); };
+  // What a page gets when its stream opens: the open requests, and those that timed
+  // out here unanswered in the last CARD_REPLAY_MS and may still be waiting in Claude
+  // Code. A page that was away for the request's 10 minutes then shows where to
+  // answer it instead of nothing. One closed any other way is not replayed.
+  const cardPermissions = () => {
+    prunePermissions();
+    const at = now();
+    return [...permissions.values()].filter(p => p.state === 'open' || (p.state === 'expired' && p.timedOut === true && at - p.relayedAt < CARD_REPLAY_MS));
+  };
   const publicPermission = p => {
     const parsed = parsePreview(p.inputPreview);
     return {
@@ -380,7 +415,8 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       fields: parsed ? parsed.fields : null, cut: Boolean(p.cut), why: p.why ?? null, denyOnly: p.denyOnly ?? [],
       exact: typeof p.exact === 'string' ? p.exact : null,
       openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS,
-      state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId
+      state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId,
+      ...(p.state === 'elsewhere' ? { closedAt: p.closedAt ?? null } : {})
     };
   };
 
@@ -465,7 +501,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     // The page's "slow" state: an answer to an event is not an answer to the owner.
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
-    openPermission, answerPermission, openPermissions, publicPermission, newPermissionSession,
+    openPermission, answerPermission, openPermissions, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },
     putAttachment, attachment, pruneAttachments, pruneOrphans, removeAttachment,

@@ -170,6 +170,14 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // reasons it is Deny-only now, whether Allow may be offered).
   const pubPermission = p => (approvals ? { ...store.publicPermission(p), ...approvals.view(p, now()) } : { ...store.publicPermission(p), mode: 'off', canAllow: false });
   const state = () => chatState({ socket: socket.status(), store, now: now(), approvals });
+  // Each request, as it opens: which paired devices had the chat open to draw its card
+  // (board: "this approval never went to Jarvis OS", 2026-11-12, when nothing said
+  // whether a page was there to show it). Names only; the push rule is chat-push.mjs's.
+  store.subscribe?.(event => {
+    if (event.type !== 'permission' || event.request?.state !== 'open') return;
+    const names = [...new Set([...streams].map(s => devices.list?.().find(d => d.id === s.deviceId)?.name ?? 'a device'))];
+    log(`chat: request ${event.request.requestId} opened with ${names.length ? `the chat open on ${names.join(', ')}` : 'no page open on the chat (a push goes to each device that takes one)'}`);
+  });
   const writeEvent = (res, name, id, data) => { try { res.write(`event: ${name}\n${id !== null ? `id: ${id}\n` : ''}data: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } };
   const eventFor = event => {
     if (event.type === 'message') return ['message', event.message.seq, publicMessage(event.message)];
@@ -318,7 +326,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         if (Number.isInteger(lastId)) {
           for (const m of store.list({ after: lastId, limit: 100 })) writeEvent(res, 'message', m.seq, publicMessage(m));
         }
-        for (const p of store.openPermissions()) writeEvent(res, 'permission', null, pubPermission(p));
+        // The open requests, and those that timed out here unanswered in the last hour.
+        for (const p of (store.cardPermissions ?? store.openPermissions)()) writeEvent(res, 'permission', null, pubPermission(p));
         const unsubscribe = store.subscribe(event => { const e = eventFor(event); if (e) writeEvent(res, ...e); });
         const entry = { res, deviceId: device.id, stop: () => { clearInterval(timer); unsubscribe(); } };
         // Each ping re-checks the device: a revoke from any path ends the stream

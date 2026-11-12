@@ -368,3 +368,12 @@ test('the README\'s PermissionDenied hook entry: async, filtered by jq to five f
   assert.deepEqual(Object.keys(out).sort(), ['at', 'hook_event_name', 'reason', 'session_id', 'tool_name']);
   assert.equal(checkNeedsYou(out).ok, true);
 });
+
+test('the TCP handler\'s needs-you route hands each event to onMoved as the ingest socket does (lib/answered-elsewhere.mjs closes the cards)', async () => {
+  const d = deps();
+  const moved = [];
+  const h = createHandler({ ...d, onMoved: v => { moved.push(v); return 0; } });
+  const res = await call(h, 'POST', '/api/ingest/needs-you', { hook_event_name: 'Stop', session_id: SID, at: 1794380000000 });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(moved, [{ event: 'Stop', sessionId: SID, kind: null, at: 1794380000000 }]);
+});

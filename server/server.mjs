@@ -23,6 +23,7 @@ import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
 import { createChatEventHandler, NTFY_WORDS } from './lib/chat-events.mjs';
+import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
 import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
@@ -41,7 +42,7 @@ import { createEvents, readEventsConfig } from './lib/events.mjs';
 import { createEventSocketRouter } from './lib/event-socket.mjs';
 import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
-import { createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
+import { parityStartLine, createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { homedir } from 'node:os';
@@ -221,6 +222,12 @@ let approvals = null;
 const onBlock = value => approvals?.noteBlock(value) ?? false;
 // A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
 const onExact = value => approvals?.noteExact(value) ?? 'off';
+// The lead's session moved on (lib/answered-elsewhere.mjs): the page's cards for the
+// prompts before that moment close. Made once the chat is on; a no-op until then.
+// Guarded by a source test (test/answered-elsewhere.test.mjs): a merge must keep
+// `onMoved` on both ingest handlers below.
+let answeredElsewhere = null;
+const onMoved = value => answeredElsewhere?.(value) ?? 0;
 // The ingest is served on its own socket (below); the TCP port keeps only the
 // needs-you route while config's `ingest.tcp` is "legacy" (routes.mjs), each post
 // there logged and, once a day, alerted (lib/ingest-socket.mjs).
@@ -236,7 +243,7 @@ const ackNotices = createAckNotices({
   onError: err => console.error('ack: the notice failed', err?.code ?? err?.name ?? 'error')
 });
 const api = createHandler({
-  cache, todos, config, acks: ackStore, needsYou, onBlock, onExact, onIngestTcp: ingestTcpNotice,
+  cache, todos, config, acks: ackStore, needsYou, onBlock, onExact, onMoved, onIngestTcp: ingestTcpNotice,
   // Each ack and renewal (lib/acks.mjs, ackNotice; notify.mjs, sendAckPepper and
   // sendAckNtfy): #pepper gets the details, limited per alert key (the first at once,
   // later ones for the key in 10 minutes counted and sent with the next or at the
@@ -283,7 +290,7 @@ await chmod(stateDir, 0o700);
 // with its own alert words (INGEST_LOST_ALERT), once per run.
 const ingestSocket = startIngestSocket({
   path: ingestSocketPath,
-  handler: createIngestHandler({ cache, needsYou, onBlock, onExact }),
+  handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved }),
   onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyMessage: 'The Control Room ingest socket is off: details in #pepper' })
 });
 ingestSocket.done.then(s => {
@@ -342,12 +349,17 @@ if (chatSettings.on && socketsReady) {
     isLead: id => { const who = sessionAgents.get(id) ?? null; return who === null || who === leadName; },
     // Exact-command reports count from the lead's session by name only.
     isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName,
+    // "parity": Allow wherever the channel's relay offers it (lib/approvals.mjs, header).
+    rules: approvalSettings.rules, hidden: approvalSettings.hidden,
     // Deny-only while the ingest socket is off and the TCP route closed (4-M1).
     ingestOk
   });
+  answeredElsewhere = createAnsweredElsewhere({ store: chatStore, isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName });
   approvals.killed();
   // `serverMode` is config and the kill file; `mode` also needs the channel's word, which comes with its hello.
   console.log(`chat: approvals ${approvals.configured}${approvals.serverMode() !== approvals.configured ? ' (the kill file holds them off)' : ''}; Bash ${approvalSettings.bash === 'exact' ? `by the hook's exact command (${approvalSettings.bashCommands.length} listed)` : 'Deny-only'}; ${approvalSettings.writeFolders.length} write folder${approvalSettings.writeFolders.length === 1 ? '' : 's'}, ${approvalSettings.writeProtected.length} protected place${approvalSettings.writeProtected.length === 1 ? '' : 's'} inside them`);
+  // Parity says so in a line of its own: the line above then describes rules that are not applied.
+  if (approvals.rules === 'parity') console.log(parityStartLine(approvals));
   // The accepted write folders, by name, so a start shows what the page may allow writes in.
   if (approvals.configured !== 'off') console.log(`chat: approvals write folders: ${approvalSettings.writeFolders.length ? approvalSettings.writeFolders.join(', ') : 'none'}`);
   // Alerted at every start with approvals on, and at any start whose mode differs from
@@ -356,7 +368,7 @@ if (chatSettings.on && socketsReady) {
   let lastMode = null;
   try { lastMode = JSON.parse(await readFile(modePath, 'utf8'))?.mode ?? null; } catch { lastMode = null; }
   if (approvals.configured !== 'off' || (lastMode !== null && lastMode !== approvals.configured)) {
-    await chatEvents({ kind: 'approvals-mode', mode: approvals.serverMode(), previous: lastMode });
+    await chatEvents({ kind: 'approvals-mode', mode: approvals.serverMode(), previous: lastMode, rules: approvals.rules, hidden: approvals.hidden });
   }
   if (lastMode !== approvals.configured) await writeFile(modePath, JSON.stringify({ mode: approvals.configured }), { mode: 0o600 }).catch(err => console.error(`chat: could not note the approvals mode (${err?.code ?? err})`));
   const socketRouter = createSocketRouter({ store: chatStore, events, approvals, onEvent: chatEvents, verifyRestart: createChannelVerifier({ channelServer: channelServer.path, launchPath }), verifyEveryHello: Boolean(channelServer.path) });

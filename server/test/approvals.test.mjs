@@ -30,7 +30,7 @@ const bash = cmd => rules('Bash', { command: cmd });
 // ---- the pure rules ----
 
 test('config: off unless "deny" or "on"; anything else is off with a problem; extra Deny-only patterns are lower-cased', () => {
-  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], bash: 'deny', bashCommands: [], writeFolders: [], writeProtected: [], problems: [] });
+  assert.deepEqual(readApprovalsConfig({}), { mode: 'off', patterns: [], bash: 'deny', bashCommands: [], writeFolders: [], writeProtected: [], rules: 'guarded', hidden: 'deny', problems: [] });
   assert.equal(readApprovalsConfig({ chat: { login: 'x' } }).mode, 'off', 'the default is off (Ultron H2)');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'deny' } }).mode, 'deny');
   assert.equal(readApprovalsConfig({ chat: { approvals: 'on' } }).mode, 'on');
@@ -692,7 +692,7 @@ async function setup(opts = {}) {
   const { mode = 'on' } = opts;
   // An explicit `relay: undefined` is a hello that names no mode.
   const relay = 'relay' in opts ? opts.relay : 'allow';
-  const env = { clock: { t: 1794380000000 }, events: [], files: new Set(), logs: [] };
+  const env = { clock: { t: 1794380000000 }, events: [], files: new Set(), logs: [], routeLogs: [] };
   env.dir = await mkdtemp(join(tmpdir(), 'appr-'));
   const now = () => env.clock.t;
   const onEvent = e => env.events.push(e);
@@ -702,7 +702,7 @@ async function setup(opts = {}) {
   await env.devices.load();
   env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, ...(opts.gate ?? {}) });
   env.socket = createSocketRouter({ store: env.store, now, onEvent, log: l => env.logs.push(l), pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
-  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: () => {}, pingMs: 60, approvals: env.approvals });
+  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: l => env.routeLogs.push(l), pingMs: 60, approvals: env.approvals });
   env.sockPath = join(env.dir, 'c.sock');
   env.adminPath = join(env.dir, 'a.sock');
   env.servers = [createServer((q, s) => env.socket.handler(q, s)), createServer((q, s) => createAdminRouter({ devices: env.devices, onEvent })(q, s)), createServer((q, s) => env.routes.handler(q, s))];
@@ -1427,4 +1427,138 @@ test('with the ingest socket off and no TCP route for needs-you, every request i
   plain.noteChannelRelay('allow');
   assert.equal(plain.view(p).canAllow, true);
   assert.match(INGEST_OFF, /answer at the terminal or in Discord/);
+});
+
+// ---- parity with the relay, and cards answered elsewhere, through the routes ----
+
+// One page stream, read for `ms`: its events as [name, data].
+const pageStream = (env, cookie, ms = 150) => new Promise((resolve, reject) => {
+  const q = request({ host: '127.0.0.1', port: env.port, method: 'GET', path: '/api/chat/stream', headers: { cookie } }, res => {
+    let text = '';
+    res.on('data', c => { text += c; });
+    setTimeout(() => {
+      q.destroy();
+      resolve(text.split('\n\n').map(b => { const name = /^event: (.+)$/m.exec(b)?.[1]; const data = /^data: (.+)$/m.exec(b)?.[1]; return name && data ? [name, JSON.parse(data)] : null; }).filter(Boolean));
+    }, ms);
+  });
+  q.on('error', err => (err.code === 'ECONNRESET' ? undefined : reject(err)));
+  q.end();
+});
+const status = async (env, cookie) => (await call({ port: env.port, path: '/api/chat/status', headers: { host: PAGE_HOST, cookie } })).json;
+
+test('parity (chat.approvalsRules "parity"): a Bash command of any shape and a write anywhere get Allow from an approver; a classifier block opens no window; hidden characters, a device with no mark, the hash and the kill file still hold', async () => {
+  const env = await setup({ gate: { rules: 'parity' } });
+  try {
+    assert.equal((await env.mark('phone', true)).status, 200);
+    await env.open('abcde', { command: 'cd /tmp && make build | tee out.log; echo done' });
+    const st = await status(env, env.phone);
+    assert.deepEqual(st.approvals, { mode: 'on', relay: 'allow', rules: 'parity', denyOnlyUntil: null });
+    assert.deepEqual([st.openPermission.tool, st.openPermission.denyOnly, st.openPermission.canAllow], ['Bash', [], true]);
+    assert.equal((await env.tap('abcde', env.ipad, 'allow')).status, 403, 'a device with no approver mark still may not allow');
+    assert.equal((await env.tap('abcde', env.phone, 'allow', { shown: 'e'.repeat(64) })).status, 409, 'the hash of what the card showed is still checked');
+    assert.equal(env.store.permission('abcde').state, 'open');
+    const ok = await env.tap('abcde', env.phone, 'allow');
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(env.store.permission('abcde').state, 'allowed');
+    // The block is noted and opens no window: the next card can be allowed, and says why it asked.
+    assert.equal(env.approvals.noteBlock({ sessionId: 'lead', tool: 'Write', reason: '[Data Exfiltration]' }), 'parity');
+    await env.open('fghij', { file_path: '/home/owner/elsewhere/CLAUDE.md', content: 'x' }, { tool: 'Write' });
+    const card = (await status(env, env.phone)).openPermission;
+    assert.deepEqual([card.denyOnly, card.canAllow], [[], true]);
+    assert.equal((await status(env, env.phone)).approvals.denyOnlyUntil, null);
+    assert.equal((await env.tap('fghij', env.phone, 'allow')).status, 200);
+    // A hidden character: marked on the card, Deny-only, and Deny works.
+    await env.open('kmnop', { command: `echo ${String.fromCodePoint(0x202e)}txt.exe` });
+    const hidden = (await status(env, env.phone)).openPermission;
+    assert.ok(hidden.fields.some(([k, v]) => k === 'command' && v.includes('⟦U+202E⟧')), 'the card shows the mark');
+    assert.deepEqual([hidden.denyOnly, hidden.canAllow], [['it carries invisible or direction characters'], false]);
+    const refused = await env.tap('kmnop', env.phone, 'allow');
+    assert.equal(refused.status, 403);
+    assert.match(refused.json.error, /invisible or direction characters/);
+    assert.equal((await env.tap('kmnop', env.phone, 'deny')).status, 200);
+    // The kill file: off for everyone, at once.
+    env.files.add('/k/approvals-off');
+    assert.equal((await env.open('qrstu', { command: 'ls' })).status, 403);
+    env.files.delete('/k/approvals-off');
+    assert.equal((await env.open('qrstu', { command: 'ls' })).status, 200);
+  } finally { await env.close(); }
+});
+
+test('parity with chat.approvalsHidden "allow": the hidden character is still marked on the card, and Allow is offered', async () => {
+  const env = await setup({ gate: { rules: 'parity', hidden: 'allow' } });
+  try {
+    await env.mark('phone', true);
+    await env.open('abcde', { command: `echo ${String.fromCodePoint(0x202e)}txt.exe` });
+    const card = (await status(env, env.phone)).openPermission;
+    assert.ok(card.fields.some(([, v]) => v.includes('⟦U+202E⟧')), 'marked all the same');
+    assert.deepEqual([card.denyOnly, card.canAllow], [[], true]);
+    assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 200);
+  } finally { await env.close(); }
+});
+
+test('the default is unchanged by parity\'s code: the same Bash request is Deny-only and a block opens the window', async () => {
+  const env = await setup();
+  try {
+    await env.mark('phone', true);
+    await env.open('abcde', { command: 'cd /tmp && make build | tee out.log; echo done' });
+    const st = await status(env, env.phone);
+    assert.deepEqual(st.approvals, { mode: 'on', relay: 'allow', denyOnlyUntil: null });
+    assert.equal(st.openPermission.canAllow, false);
+    assert.equal((await env.tap('abcde', env.phone, 'allow')).status, 403);
+    assert.equal(env.approvals.noteBlock({ sessionId: 'lead', tool: 'Read', reason: 'x' }), true);
+    assert.equal((await status(env, env.phone)).approvals.denyOnlyUntil, env.clock.t + BLOCK_WINDOW_MS);
+  } finally { await env.close(); }
+});
+
+test('a card answered somewhere else closes on the open page, a later tap on it is refused and sends nothing, and a request that timed out here is still sent to a page that connects', async () => {
+  const env = await setup();
+  try {
+    await env.mark('phone', true);
+    const live = pageStream(env, env.phone, 300);
+    await new Promise(r => setTimeout(r, 60));
+    await env.open('abcde');
+    env.clock.t += 5000;
+    const seqBefore = env.store.seq;
+    assert.deepEqual(env.store.closePermissionsElsewhere({ upTo: env.clock.t, event: 'Stop' }), ['abcde']);
+    const events = await live;
+    const closed = events.filter(([name]) => name === 'permission-closed').map(([, p]) => p);
+    assert.deepEqual(closed.map(p => [p.requestId, p.state, p.closedAt, p.canAllow]), [['abcde', 'elsewhere', env.clock.t, false]]);
+    assert.deepEqual(events.filter(([name]) => name === 'permission').map(([, p]) => [p.requestId, p.state]), [['abcde', 'open']]);
+    assert.equal((await status(env, env.phone)).openPermissions, 0);
+    for (const behavior of ['deny', 'allow']) {
+      const tap = await env.tap('abcde', env.phone, behavior);
+      assert.equal(tap.status, 409, behavior);
+      assert.match(tap.json.error, /already answered somewhere else, or no longer asked/);
+    }
+    assert.equal(env.store.seq, seqBefore, 'no verdict was written, so none reaches the channel');
+    assert.ok(env.routeLogs.some(l => /^chat: a verdict from phone was refused \(409: already answered somewhere else/.test(l)));
+    // Timed out here, perhaps still asked in Claude Code: a page that connects gets it, closed to answers.
+    await env.open('fghij');
+    env.clock.t += PERMISSION_TTL_MS;
+    const later = await pageStream(env, env.ipad, 120);
+    assert.deepEqual(later.filter(([name]) => name === 'permission').map(([, p]) => [p.requestId, p.state, p.canAllow]), [['fghij', 'expired', false]]);
+    assert.equal((await env.tap('fghij', env.phone, 'deny')).status, 409);
+    // Once the lead's session has moved on it is no longer sent.
+    env.clock.t += 1000;
+    env.store.closePermissionsElsewhere({ upTo: env.clock.t });
+    assert.deepEqual((await pageStream(env, env.ipad, 120)).filter(([name]) => name === 'permission'), []);
+  } finally { await env.close(); }
+});
+
+test('each request logs which paired devices had the chat open when it opened, or that none had', async () => {
+  const env = await setup();
+  try {
+    await env.open('abcde');
+    assert.equal(env.routeLogs.at(-1), 'chat: request abcde opened with no page open on the chat (a push goes to each device that takes one)');
+    const live = pageStream(env, env.ipad, 250);
+    const second = pageStream(env, env.ipad, 250);
+    await new Promise(r => setTimeout(r, 60));
+    await env.open('fghij');
+    assert.equal(env.routeLogs.at(-1), 'chat: request fghij opened with the chat open on ipad', 'a device with two streams is named once');
+    await Promise.all([live, second]);
+    // A late one opens no card to answer, so it is not counted as shown.
+    const before = env.routeLogs.length;
+    await env.open('kmnop', undefined, { relayedAt: env.clock.t - LATE_AFTER_MS - 1 });
+    assert.equal(env.routeLogs.length, before);
+  } finally { await env.close(); }
 });

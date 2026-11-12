@@ -417,6 +417,108 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Approvals parity and cards answered elsewhere: staged 2026-11-12 on
+`jos/approvals-consistency` (from main af58df0, worktree
+`~/Projects/.worktrees/ccr-approvals-consistency`), not committed, not live.** Jeff,
+2026-11-12, after an approval sat in the Claude app for 17 minutes and a second one showed
+Deny only on the page: "I don't want Jarvis OS to be deny only anymore. I don't want to
+have to check multiple spots to find the approve button. If we're approving in Discord, we
+can approve in Jarvis OS." README "Parity with the relay" and "A card answered somewhere
+else" describe both parts; the header of `server/lib/approvals.mjs` has the rule.
+
+- *What the 11-12 incident was (times UTC).* The server restarted on af58df0 at 15:35:50.
+  Request `rtqtj` (Bash) was relayed at 15:37:31, stored (seq 292) and pushed to the
+  iPhone and iPad (no push failure logged; neither device opened the page: last seen
+  12:59 and 03:53). The Mac's page had sent a message at 15:36:40 and next at 15:53:06;
+  the request timed out on the page at 15:47:31. A page that connects after that was sent
+  nothing for it (reproduced in headless Chromium on a scratch server: no card, only the
+  grey line in the thread), which is what Jeff met at 15:53. Whether the Mac's page had
+  the chat open and visible between 15:37:31 and 15:47:31 was not logged, so that part
+  is inferred. Not the cause, each reproduced on the scratch server with the live build
+  and the live commit's server code: the restart (the page's stream came back 1.5 s after
+  the server did, through a proxy answering 502 meanwhile, and the next request drew its
+  card), the strict policy from verdict-alerts-csp (0 violations; the web sources did not
+  change between the 11-11 build and af58df0), and the classifier-block window (the card
+  is drawn inside it). The second request `xceyc` (15:54:19) was Deny-only by design, twice
+  over: Bash is Deny-only under the page's own rules, though the block window had ended at
+  15:52:13. The card said so in small print. It stayed open after the prompt was allowed in
+  the Claude app, and the Deny tapped on the Mac at 15:55:16 was written and sent for a
+  request already answered; Claude Code drops such a verdict.
+- *Parity* (`chat.approvalsRules: "parity"`, default `"guarded"` = today's rules): the
+  page offers Allow wherever the channel's relay does. The Deny-only allowlist, the
+  15-minute block window, the flood window and the ingest check are not applied; the mode,
+  the kill file, the relay mode, the test-channel cap, the approver mark, the two-step
+  Allow, the hash, the tap limits and `approvalsDenyOnly` are. `chat.approvalsHidden`
+  (`"deny"` default, or `"allow"`) says whether a request with a hidden character stays
+  Deny-only; the mark is drawn either way. **Jeff decides that one** (my pick: `"deny"` to
+  start, the one place the page sees more than Discord; its cost is that joiner emoji and
+  no-break spaces in a Write's text also keep a card Deny-only).
+- *Cards answered elsewhere* (`server/lib/answered-elsewhere.mjs`): the lead's
+  `UserPromptSubmit`, `Stop` or `SessionEnd` closes every card relayed before it; the card
+  says "Answered elsewhere" and goes after a minute; a tap on it is 409 and nothing is
+  sent. A request that timed out here in the last hour is sent to a page that connects, as
+  "Too late to answer here" with where to answer. Each request logs which devices had the
+  chat open (`chat: request <id> opened with …`), so the next "it never showed" has an
+  answer in the log.
+- *Tests (2026-11-12):* server 1,001 in local time and Tokyo (978 before), web 205 (199
+  before). 52 mutations on the new checks, all caught at the end (the first pass left 5:
+  three missing assertions, written, and a dead check and two redundant lines, removed).
+  Headless Chromium (cached 1223 shell) on a scratch build and scratch server in parity,
+  1440 light as an approver and 390 dark as a device with no mark: a Bash command with
+  `&&`, a pipe and `;` right after a block shows Deny and Allow once; closed by a `Stop`
+  it reads "Answered elsewhere" with only Dismiss and the banner goes back to online; a
+  U+202E is drawn as its mark and the card is Deny-only with the lead line and "Why"; a
+  request that timed out while the page was hidden comes back as "Too late to answer
+  here", and stays gone after Dismiss and a new stream; no sideways scroll, 0 policy
+  violations. A verdict tap can't be made over http (the Origin rule wants https), so
+  taps rest on the route tests.
+- *To go live, in this order:* Ultron's read (this loosens his 11-11 findings on purpose;
+  he should see the list of what parity drops); Jeff's C&P; then config (Jarvis, with
+  Jeff's OK; back up `server/config.json` first): in the `chat` block add
+  `"approvalsRules": "parity"` and, only if Jeff picks marks-only, `"approvalsHidden":
+  "allow"`; nothing else changes (`approvals` stays `"on"`); then the service restart
+  (Vision or Jeff, step 3's command); then, right after it, `cd web && npm run build` (the old page already draws Allow when
+  the server offers it, but it shows a card closed elsewhere as still open, with a Deny
+  that answers 409, until the next status 20 s later drops it; checked with the live
+  build on the scratch server; the new page on the old server is harmless, it only reads
+  differently). The commit alone changes
+  nothing until the config key is there, except the card close, the replay of timed-out
+  requests and the new log line, which take effect at the restart.
+- *Checks after the restart:* the log says `chat: approvals follow the channel's relay
+  (parity): …` and #pepper's start line ends "parity with the relay: …"; no `config:` line
+  about approvals; a harmless Bash prompt (`ls` of a notes folder) shows Deny and Allow
+  once on an approver device, and Allow once (two taps) runs it; the next auto-mode
+  refusal logs `needs-you: PermissionDenied (…), noted; no Deny-only window (approvals
+  follow the relay)` and the card after it still has Allow; a prompt answered in the
+  Claude app closes its card when the turn ends (`chat: 1 permission card closed, …`);
+  `touch ~/.local/state/jarvis-os/approvals-off` still hides the next card (then `rm`).
+- *Rollback:* remove `approvalsRules` and restart (the page's own rules again, `deny` or
+  `exact` Bash as config says); at once, without a restart: the kill file, or
+  `rm ~/.local/state/jarvis-os/approvals-allow` (Deny only at the channel).
+- *Known costs and gaps:* (1) a card answered elsewhere stays open until the turn ends or
+  the next prompt is taken; closing it at once needs the tool call's name and input from a
+  `PostToolUse` hook (a settings change, and the server would then read tool input) or the
+  lead's transcript. (2) Discord's buttons can't be closed from here and never match the
+  page's Deny-only exceptions; turning Discord's permission relay off means a patched copy
+  of the official plugin (it declares the capability with no switch), which is Ultron's and
+  Jarvis's. (3) The page can answer for 10 minutes only (`PERMISSION_TTL_MS` here, and the
+  channel forgets a request after 11, `PERM_FORGET_MS` in Jarvis's repo); Discord's buttons
+  have no such limit, so after 10 minutes the approve button is still in one place only.
+  Lifting it is a change in both repos. (4) The tap limits (6 a minute, 30 an hour per
+  device) now count every Bash approval; a busy hour can hit 30, and the page then answers
+  429 until the hour moves on. (5) The Mac has no push subscription, so a page that is not
+  on the Chat tab, or hidden, learns of a request only from the tab's badge. (6) The
+  needs-you wait for a permission prompt is cleared by any `PostToolUse` from the same
+  session, a helper's included (11-12: opened 15:37:37.017, cleared 15:37:37.296), so
+  "Waiting on you" and its 5-minute alert never showed the 17-minute wait.
+- *Unverified:* everything live (no config change, no restart, no build); WebKit; that the
+  lead's session is named by the sessions panel when its hooks post (the close counts only
+  a session named for the lead, as the exact-command reports do); that `Stop` and
+  `UserPromptSubmit` never fire for the lead while one of its own prompts still waits (a
+  background helper's prompt could; its card would close early, the prompt itself stays);
+  that the channel delivered the 15:55:16 verdict to Claude Code (its own log was not
+  found; the server wrote it as seq 295, and the command had already run).
+
 **Approvals as buttons (board 2422f9d1): live since 2026-11-11 20:40 ET, Deny and Allow
 once** (main edfb349, which holds the final build e61708e and the go-live patch; the lead's
 repo build/v1 57f0a9e, channel 0.4.5; Jarvis reports all six live checks passed). **Channel

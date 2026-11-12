@@ -155,7 +155,10 @@ export function effectiveStatus(status, permissions, now = Date.now()) {
 //   open      Deny, and Allow once when `canAllow` (below)
 //   expired   10 minutes after the channel relayed it (`expiresAt`), on the page too
 //   terminal  late on arrival or a repeated id: shown, answered only at the terminal
-//   closed    allowed or denied: the "sent" line (`sentLine`) and a Dismiss
+//   closed    allowed or denied: the "sent" line (`sentLine`) and a Dismiss; also
+//             `elsewhere`: the server heard Jarvis's session move on, so the request
+//             was answered in another place (Claude Code's own prompt, Discord) or
+//             is no longer asked. Nothing was sent from here.
 // `approver` is this device's mark and `approvals` the status's `{ mode,
 // denyOnlyUntil }`: Allow is offered only when the server says the request may be
 // allowed, this device is an approver, and no Deny-only window is running now.
@@ -163,13 +166,16 @@ export function permissionView(p, now = Date.now(), { approver = false, approval
   if (!p) return null;
   const expiresAt = Number.isFinite(p.expiresAt) ? p.expiresAt : (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS;
   const state = p.state === 'open' && now >= expiresAt ? 'expired' : p.state;
-  if (state === 'allowed' || state === 'denied') return { ...p, view: 'closed', state, canAllow: false };
+  if (state === 'allowed' || state === 'denied' || state === 'elsewhere') return { ...p, view: 'closed', state, canAllow: false };
   if (state === 'late' || state === 'repeat') return { ...p, view: 'terminal', state, canAllow: false };
   if (state === 'expired') return { ...p, view: 'expired', state, canAllow: false };
   const windowOn = Number.isFinite(approvals?.denyOnlyUntil) && approvals.denyOnlyUntil > now;
   const reasons = [...(Array.isArray(p.denyOnly) ? p.denyOnly : [])];
   if (windowOn && !reasons.some(r => /auto mode blocked/.test(r))) reasons.push('auto mode blocked something in the last 15 minutes');
   if (approvals?.mode === 'deny' && !reasons.length) reasons.push('approvals are Deny only for now');
+  // The server would take an Allow for this one, but not from this device: say so,
+  // or the card's "Why" would be empty.
+  if (p.canAllow === true && approver !== true && !reasons.length) reasons.push(NOT_APPROVER);
   const canAllow = p.canAllow === true && approver === true && approvals?.mode !== 'deny' && !windowOn && reasons.length === 0;
   return { ...p, view: 'open', state, canAllow, denyOnly: reasons };
 }
@@ -226,11 +232,37 @@ export const allowArmed = (armedAt, now = Date.now()) => Number.isFinite(armedAt
 // "Deny sent from iPhone at 14:02. ..." The page can't know more: Claude Code
 // never says whether it used the answer.
 export function sentLine(p) {
+  if (p?.state === 'elsewhere') {
+    const when = Number.isFinite(p?.closedAt) ? ` at ${hhmm(p.closedAt)}` : '';
+    return `Jarvis moved on${when}: this was answered in Claude Code or Discord, or is no longer asked. Nothing was sent from here.`;
+  }
   const word = p?.state === 'allowed' ? 'Allow' : 'Deny';
   const from = p?.answeredBy ? ` from ${p.answeredBy}` : '';
   const at = Number.isFinite(p?.answeredAt) ? ` at ${hhmm(p.answeredAt)}` : '';
   return `${word} sent${from}${at}. Claude Code uses it if the prompt was still open.`;
 }
+
+// How long a closed card stays before it goes by itself: an answer sent from here for
+// 10 minutes (it says what was sent), one closed elsewhere for a minute.
+export const CLOSED_CARD_MS = 10 * 60e3;
+export const ELSEWHERE_CARD_MS = 60e3;
+export function cardGone(p, now = Date.now()) {
+  if (p?.view !== 'closed') return false;
+  if (p.state === 'elsewhere') return now - (p.closedAt ?? p.openedAt) >= ELSEWHERE_CARD_MS;
+  return now - (p.answeredAt ?? p.openedAt) >= CLOSED_CARD_MS;
+}
+
+// Whether a request the server sent belongs on the page: one the viewer dismissed
+// stays gone when a new stream replays it (a request that timed out here is replayed
+// for an hour), unless it is open, which has no Dismiss.
+export const keepCard = (p, dismissed) => Boolean(p?.requestId) && (p.state === 'open' || !dismissed?.has?.(p.requestId));
+
+export const NOT_APPROVER = 'this device is not marked as one that may allow (bin/chat-pair approver, on the machine)';
+
+// What a card that can only be denied here says first: where Allow is. In parity
+// (`rules: "parity"` in the status) the page offers what the relay offers, so a
+// Deny-only card is the exception and its reasons say why.
+export const DENY_ONLY_LEAD = 'This page can only deny this one. To allow it, answer in Claude Code or in Discord.';
 
 // The map of requests after a status: when the server counts no open request, a
 // card the page still shows as open missed its close (answered on Discord while

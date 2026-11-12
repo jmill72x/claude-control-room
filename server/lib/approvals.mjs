@@ -25,6 +25,19 @@
 // and Bash is Deny-only unless config says "exact", which needs the exact command from
 // the report-only PermissionRequest hook (lib/exact-commands.mjs) and then allows only a
 // strict one-liner or a command listed in config.
+//
+// Parity (config's `chat.approvalsRules: "parity"`; the owner's decision of 2026-11-12):
+// the page offers Allow and Deny whenever the channel's relay does, like the other
+// places the same request shows (Discord's DM buttons, Claude Code's own prompt). The
+// allowlist above is then not applied: Bash of any shape and a write anywhere can be
+// allowed from the page, and neither a classifier block nor a burst of requests makes
+// cards Deny-only (both are still logged; the burst is still alerted). What stays: the
+// mode, the kill file, the channel's relay mode and its test switch, the approver mark,
+// the limits on taps, the hash of what the card showed, config's own Deny-only words,
+// and the marks on hidden characters, which keep a card Deny-only unless config says
+// `chat.approvalsHidden: "allow"`. The risk this accepts is the one Discord's buttons
+// already carry: the relay folds whitespace, so a command of several lines can read as
+// one. The default is "guarded": the rules above.
 import { revealHiddenChars, hasHiddenChars } from './hidden-chars.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
@@ -34,6 +47,10 @@ import { fileURLToPath } from 'node:url';
 import { createExactCommands, exactTextOk, foldWhitespace } from './exact-commands.mjs';
 
 export const APPROVAL_MODES = Object.freeze(['off', 'deny', 'on']);
+// Which rules decide Allow: the page's own allowlist, or parity with the relay.
+export const RULES_MODES = Object.freeze(['guarded', 'parity']);
+// In parity, what a hidden character does to a card: Deny-only, or only its mark.
+export const HIDDEN_MODES = Object.freeze(['deny', 'allow']);
 // Each relayed field is kept whole up to this many code points (Claude Code sends each
 // top-level field of a preview up to 3,500, so a preview of several fields is longer).
 // The channel cuts at 16,000 and adds its own marker, so this leaves room for that
@@ -159,8 +176,27 @@ export function readApprovalsConfig(config, { home = homedir(), repoRoot = OWN_R
       writeFolders.length = 0;
     } else writeProtected.push(...rawProtected);
   }
-  return { mode, patterns, bash, bashCommands, writeFolders, writeProtected, problems };
+  // Parity with the relay (the header has the why). Anything not understood keeps the
+  // page's own rules, and a hidden character keeps its card Deny-only.
+  let rules = 'guarded';
+  const rawRules = isObject(chat) ? chat.approvalsRules : undefined;
+  if (rawRules !== undefined && rawRules !== null) {
+    if (RULES_MODES.includes(rawRules)) rules = rawRules;
+    else problems.push('chat.approvalsRules must be "guarded" or "parity"; the page keeps its own rules');
+  }
+  let hidden = 'deny';
+  const rawHidden = isObject(chat) ? chat.approvalsHidden : undefined;
+  if (rawHidden !== undefined && rawHidden !== null) {
+    if (HIDDEN_MODES.includes(rawHidden)) hidden = rawHidden;
+    else problems.push('chat.approvalsHidden must be "deny" or "allow"; a request with hidden characters stays Deny-only on the page');
+  }
+  return { mode, patterns, bash, bashCommands, writeFolders, writeProtected, rules, hidden, problems };
 }
+
+// The start line for parity (server.mjs logs it after the usual one, whose Bash mode and
+// write folders are then not applied).
+export const parityStartLine = ({ hidden } = {}) =>
+  `chat: approvals follow the channel's relay (parity): the page may allow any request it relays, Bash and writes anywhere included; the Bash mode, the write folders and the Deny-only windows are not applied; ${hidden === 'allow' ? 'hidden characters are marked and may be allowed' : 'a request with hidden characters stays Deny-only'}`;
 
 // Invisible, direction-changing and control characters (lib/hidden-chars.mjs: Unicode's
 // Cc, Cf, Zl, Zp, lone surrogates and the default-ignorables, so the tag characters,
@@ -193,12 +229,13 @@ export function capField(v, max = FIELD_MAX) {
 
 // The markers that say part of a field is not shown: Claude Code's elision, its
 // credential mask and its unserializable value, the channel's and this server's cuts.
+const HIDDEN_MARK = /⟦U\+[0-9A-F]{4,6}⟧/;
 const MARKERS = [
   ['part of it was elided', /⋯ \d+ code points elided ⋯/],
   ['part of it was masked', /\[REDACTED\]/],
   ['a value could not be shown', /\(value unserializable\)/],
   ['it was cut short', /⋯ \d+ code points cut by the (?:Control Room|channel) ⋯/],
-  [HIDDEN_REASON, /⟦U\+[0-9A-F]{4,6}⟧/]
+  [HIDDEN_REASON, HIDDEN_MARK]
 ];
 export const markerReasons = text => MARKERS.filter(([, re]) => re.test(String(text ?? ''))).map(([why]) => why);
 
@@ -495,10 +532,22 @@ export const INGEST_OFF = 'the ingest socket is off, so a block by auto mode wou
 export const NO_EXACT = 'no exact copy of this command came from the hook (answer at the terminal or in Discord)';
 export function denyOnlyReasons(req, {
   home = homedir(), realpath = safeRealpath, patterns = [], writeFolders = [], writeProtected = [], bash = 'deny', exact = null, exactProblem = null,
-  bashCommands = [], repoRoot = OWN_REPO, isExecutable = fileCanRun, isLink = pathIsLink
+  bashCommands = [], repoRoot = OWN_REPO, isExecutable = fileCanRun, isLink = pathIsLink,
+  rules = 'guarded', hidden = 'deny'
 } = {}) {
   const reasons = [];
   const add = r => { if (!reasons.includes(r)) reasons.push(r); };
+  // Parity with the relay: none of the page's own rules below. Two things remain, and
+  // neither is about what the request does: config's own Deny-only words, and (unless
+  // config says "allow") a hidden character, in the text as relayed or inside the
+  // preview's JSON, where it can sit as an escape. Anything but the plain word
+  // "parity" keeps the rules below.
+  if (rules === 'parity') {
+    const text = `${req?.description ?? ''}\n${req?.inputPreview ?? ''}`;
+    for (const p of patterns) if (text.toLowerCase().includes(p)) add('it matches a Deny-only pattern in config');
+    if (hidden !== 'allow' && (HIDDEN_MARK.test(text) || parsePreview(req?.inputPreview)?.hidden === true)) add(HIDDEN_REASON);
+    return reasons;
+  }
   const tool = String(req?.tool ?? '');
   if (req?.cut) add('it was cut short');
   for (const field of [req?.description, req?.inputPreview]) for (const r of markerReasons(field)) add(r);
@@ -701,10 +750,13 @@ export function createApprovals({
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
   bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun,
   writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink,
-  testChannelOk = false, ingestOk = () => true
+  testChannelOk = false, ingestOk = () => true, rules = 'guarded', hidden = 'deny'
 } = {}) {
   const configured = APPROVAL_MODES.includes(mode) ? mode : 'off';
   const bashMode = BASH_MODES.includes(bash) ? bash : 'deny';
+  // Parity with the relay (the header): only the plain word turns it on.
+  const parity = rules === 'parity';
+  const hiddenMode = HIDDEN_MODES.includes(hidden) ? hidden : 'deny';
   // The hook's reports of exact Bash commands: memory only, two minutes, the lead's.
   const exactReports = createExactCommands({ now });
   const previewCommand = p => { const c = parsePreview(p?.inputPreview)?.raw?.command; return typeof c === 'string' ? c : null; };
@@ -761,6 +813,9 @@ export function createApprovals({
     if (p.exactConflict) out.push(EXACT_CONFLICT);
     if (channelRelay !== 'allow') out.push(channelRelay === 'deny' ? 'the channel delivers Deny only' : 'the channel has not said it can deliver Allow');
     if (testCapped()) out.push('the channel runs in test mode');
+    // Parity: the relay's word is all that the moment adds. No block window, no flood
+    // window, and no ingest check (it guards only the block window).
+    if (parity) return out;
     // The hooks' way in (lib/ingest-socket.mjs; Ultron's 4-M1): with the ingest socket
     // off and no TCP route for needs-you, a classifier block would never open the
     // window above, so Allow would be offered blind. Fail closed, like a missing
@@ -812,7 +867,7 @@ export function createApprovals({
           else if (c.texts.length === 1) exact = c.texts[0];
         }
       }
-      const denyOnly = denyOnlyReasons(p, { home, realpath, patterns, writeFolders, writeProtected, bash: bashMode, exact, exactProblem, bashCommands, repoRoot, isExecutable, isLink });
+      const denyOnly = denyOnlyReasons(p, { home, realpath, patterns, writeFolders, writeProtected, bash: bashMode, exact, exactProblem, bashCommands, repoRoot, isExecutable, isLink, rules: parity ? 'parity' : 'guarded', hidden: hiddenMode });
       const why = lastBlock && at - lastBlock.at <= WHY_WINDOW_MS && lastBlock.tool === p.tool
         ? `Auto mode refused this ${lastBlock.tool} call${lastBlock.why ? ` (${lastBlock.why})` : ''}, so Claude Code is asking you`
         : null;
@@ -830,19 +885,25 @@ export function createApprovals({
       return 'kept';
     },
     bashMode,
+    rules: parity ? 'parity' : 'guarded',
+    hidden: hiddenMode,
     // A PermissionDenied hook event: { sessionId, tool, reason, at }. Only blocks in
     // the lead's session (or one that can't be told apart from it) open the window.
+    // In parity no window opens: the block is kept only as the next card's reason
+    // for asking, and the answer is the word "parity" (never true), for the log.
     noteBlock({ sessionId, tool, reason }) {
       if (!isLead(sessionId)) return false;
       const at = now();
-      blockUntil = at + BLOCK_WINDOW_MS;
       lastBlock = { at, tool: typeof tool === 'string' ? tool : null, why: blockReasonWords(reason) };
+      if (parity) return 'parity';
+      blockUntil = at + BLOCK_WINDOW_MS;
       return true;
     },
+    // `floodUntil` also spaces the alerts; in parity it makes no card Deny-only.
     noteOpenCount(n) {
       if (n > FLOOD_OPEN && now() >= floodUntil) {
         floodUntil = now() + FLOOD_MS;
-        onEvent({ kind: 'approvals-flood', open: n });
+        onEvent({ kind: 'approvals-flood', open: n, parity });
       }
     },
     reasonsNow,
@@ -851,7 +912,8 @@ export function createApprovals({
       const reasons = reasonsNow(p, at);
       return { mode: m, denyOnly: reasons, canAllow: m === 'on' && reasons.length === 0 && p.state === 'open' };
     },
-    status: (at = now()) => ({ mode: current(), relay: channelRelay ?? 'unknown', denyOnlyUntil: Math.max(blockUntil, floodUntil) > at ? Math.max(blockUntil, floodUntil) : null }),
+    // `rules` is in the answer only in parity, so the default answer keeps its shape.
+    status: (at = now()) => ({ mode: current(), relay: channelRelay ?? 'unknown', ...(parity ? { rules: 'parity' } : {}), denyOnlyUntil: !parity && Math.max(blockUntil, floodUntil) > at ? Math.max(blockUntil, floodUntil) : null }),
     // Before a device's verdict: locked out, or over its limits? Answers null or { status, error }.
     check(id) {
       const at = now();

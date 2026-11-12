@@ -57,14 +57,14 @@ export function chatEventLine(event) {
     verdict: `a permission was ${event.behavior} from ${event.device ?? 'a device'} (${event.tool ?? 'a tool'})`,
     'push-forbidden': `Apple's push service refused the chat's notification key (403) for ${event.device ?? 'a device'}`,
     'approver-changed': `${event.device?.name ?? 'a device'} ${event.on ? 'may now allow' : 'may no longer allow'} permissions (by ${event.by})`,
-    'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}`,
+    'approvals-mode': `chat approvals are ${event.mode === 'on' ? 'on (Deny and Allow once)' : event.mode === 'deny' ? 'on, Deny only' : 'off'} at this start${event.previous && event.previous !== event.mode ? ` (were ${event.previous})` : ''}${event.rules === 'parity' && event.mode !== 'off' ? `; parity with the relay: the page may allow whatever the channel relays${event.hidden === 'allow' ? ', hidden characters marked but allowed' : ', but a request with hidden characters stays Deny only'}` : ''}`,
     'approvals-relay': `the channel now says its permission relay is ${event.relay === 'allow' ? 'allow (Deny and Allow)' : event.relay === 'deny' ? 'Deny only' : event.relay === 'off' ? 'off' : 'not stated (the page offers Deny only)'}; it was ${event.previous ?? 'unknown'}`,
     'approvals-test-channel': 'a chat channel said hello in test mode: page approvals are Deny only while it holds the socket (the lead\'s own channel never runs that way; look for JARVIS_CHANNEL_TEST in a settings env block)',
     'approvals-kill': `the approvals kill file was ${event.on ? 'created: page approvals are off' : 'removed: page approvals follow config again'}`,
     'approvals-lockout': `${event.device ?? 'a device'} was locked out of approvals for 10 minutes after 10 refused taps`,
     'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
     'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
-    'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: page approvals are Deny only for 10 minutes`,
+    'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: ${event.parity === true ? 'the cards keep Allow (parity with the relay), so look before tapping' : 'page approvals are Deny only for 10 minutes'}`,
     'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)'
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;

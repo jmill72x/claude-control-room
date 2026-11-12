@@ -206,7 +206,9 @@ const answerError = (res, path, err) => {
 // `onBlock` hears a classifier block from the needs-you ingest (lib/approvals.mjs), and
 // `onExact` a Bash command's exact text from the exact-command ingest; it answers
 // "kept", "other" (not the lead's session) or "off".
-function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null }) {
+// `onMoved` hears each needs-you event that is neither a block nor refused
+// (lib/answered-elsewhere.mjs closes the page's cards when the lead's session moved on).
+function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null }) {
   return async function ingest(req, res, path) {
     if (req.method !== 'POST' || !INGEST_ROUTES.has(path)) return false;
     // A Claude Code hook posting that a session waits for a person, or moved on
@@ -220,13 +222,19 @@ function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log,
       if (!checked.ok) throw new HttpError(400, checked.error);
       if (BLOCK_EVENTS.has(checked.value.event)) {
         // Log only, for the approvals gate: no wait opens or clears.
-        const took = onBlock ? onBlock(checked.value) === true : false;
-        log(`needs-you: ${checked.value.event}${checked.value.tool ? ` (${checked.value.tool})` : ''}, ${took ? 'page approvals are Deny only for 15 minutes' : 'not the lead\'s session or approvals off, noted only'}`);
+        // `true`: the Deny-only window opened; "parity": the lead's block, kept only as
+        // the next card's reason for asking (lib/approvals.mjs, parity with the relay).
+        const answer = onBlock ? onBlock(checked.value) : false;
+        const took = answer === true;
+        log(`needs-you: ${checked.value.event}${checked.value.tool ? ` (${checked.value.tool})` : ''}, ${took ? 'page approvals are Deny only for 15 minutes' : answer === 'parity' ? 'noted; no Deny-only window (approvals follow the relay)' : 'not the lead\'s session or approvals off, noted only'}`);
         json(res, 200, { ok: true, block: took });
         return true;
       }
       const { open, stale } = needsYou.record(checked.value, Date.now());
       log(needsYouLogLine(checked.value, open, stale));
+      // A post that arrived out of order still says when its hook ran, which is all
+      // the cards' close reads; a failure here never fails the hook's post.
+      try { onMoved?.(checked.value); } catch (err) { log(`needs-you: the cards' close failed (${err?.code ?? err?.name ?? 'error'})`); }
       json(res, 200, stale ? { ok: true, open, stale: true } : { ok: true, open });
       return true;
     }
@@ -281,8 +289,8 @@ export function createIngestHandler(deps) {
 // ackNotice) with the alert's key, and pushes it through the notice limits
 // (lib/ack-notice-limit.mjs, server.mjs); it is not awaited, so a slow push never holds
 // the answer, and a failure is logged. `clock` is the write limit's time, for the tests.
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onIngestTcp = null, onAckNotice = null, clock = () => Date.now() }) {
-  const ingest = createIngestRoutes({ cache, needsYou, log, onBlock, onExact });
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, clock = () => Date.now() }) {
+  const ingest = createIngestRoutes({ cache, needsYou, log, onBlock, onExact, onMoved });
   const ingestTcp = readIngestConfig(config).tcp;
   const panels = now => {
     const payload = {};

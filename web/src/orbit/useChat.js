@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -41,6 +41,9 @@ export function useChat({ active }) {
     return () => holdReload('chat-unsent', false);
   }, [unsent]);
   const esRef = useRef(null);
+  // The cards the viewer dismissed, kept across streams: the server replays a request
+  // that timed out here for an hour, and a dismissed one must not come back.
+  const dismissedRef = useRef(new Set());
   const reopenRef = useRef(null);
   const aliveRef = useRef(true);
   const pairingRef = useRef(null); // the pairing poll's timer
@@ -86,8 +89,8 @@ export function useChat({ active }) {
     es.addEventListener('message', e => { const m = parse(e); if (m) setMessages(list => mergeMessages(list, m)); });
     es.addEventListener('edit', e => { const m = parse(e); if (m) setMessages(list => applyEdit(list, m)); });
     es.addEventListener('state', e => { const s = parse(e); if (s) setMessages(list => applyState(list, s)); });
-    es.addEventListener('permission', e => { const p = parse(e); if (p) setPermissions(map => upsertPermission(map, p)); });
-    es.addEventListener('permission-closed', e => { const p = parse(e); if (p) setPermissions(map => upsertPermission(map, p)); });
+    es.addEventListener('permission', e => { const p = parse(e); if (p && keepCard(p, dismissedRef.current)) setPermissions(map => upsertPermission(map, p)); });
+    es.addEventListener('permission-closed', e => { const p = parse(e); if (p && keepCard(p, dismissedRef.current)) setPermissions(map => upsertPermission(map, p)); });
     es.addEventListener('revoked', () => unpaired());
     es.addEventListener('error', () => {
       // The browser retries by itself while the connection merely dropped; once it
@@ -273,7 +276,10 @@ export function useChat({ active }) {
       return { ok: false, error: String(err?.message ?? err) };
     }
   }, [unpaired, device]);
-  const dismissPermission = useCallback(requestId => setPermissions(map => { const next = new Map(map); next.delete(requestId); return next; }), []);
+  const dismissPermission = useCallback(requestId => {
+    dismissedRef.current.add(requestId);
+    setPermissions(map => { const next = new Map(map); next.delete(requestId); return next; });
+  }, []);
 
   // ---- pairing (§2.2) ----
   useEffect(() => () => clearTimeout(pairingRef.current), []);
