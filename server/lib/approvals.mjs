@@ -699,7 +699,8 @@ export function createApprovals({
   mode = 'off', killPath = null, patterns = [], home = homedir(), realpath = safeRealpath,
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
   bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun,
-  writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink
+  writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink,
+  testChannelOk = false
 } = {}) {
   const configured = APPROVAL_MODES.includes(mode) ? mode : 'off';
   const bashMode = BASH_MODES.includes(bash) ? bash : 'deny';
@@ -710,6 +711,13 @@ export function createApprovals({
   // What the channel last said its relay does: null until its first hello, then
   // "off", "deny", "allow" or "unknown" (a channel that didn't say).
   let channelRelay = null;
+  // Whether the channel's last hello said it runs under its test switch (channel
+  // 0.4.6). Such a channel may read its approvals flags from a folder of its own,
+  // so it is offered Deny only whatever relay mode it reports. `testChannelOk` is
+  // for a scratch harness alone, whose channels all run that way: it is passed in
+  // code, never read from config, and server.mjs never passes it.
+  let channelTest = false;
+  const testCapped = () => channelTest && testChannelOk !== true;
   let lastKilled = null;
   let blockUntil = 0;
   let lastBlock = null; // { at, tool, why }
@@ -730,7 +738,7 @@ export function createApprovals({
   // Config and the kill file alone, and then with the channel's word: "on" needs a
   // channel that says it delivers Allow.
   const serverMode = () => (killed() ? 'off' : configured);
-  const current = () => { const m = serverMode(); return m === 'on' && channelRelay !== 'allow' ? 'deny' : m; };
+  const current = () => { const m = serverMode(); return m === 'on' && (channelRelay !== 'allow' || testCapped()) ? 'deny' : m; };
   const device = id => {
     if (!perDevice.has(id)) perDevice.set(id, { taps: [], refusals: [], lockedUntil: 0 });
     return perDevice.get(id);
@@ -751,6 +759,7 @@ export function createApprovals({
     }
     if (p.exactConflict) out.push(EXACT_CONFLICT);
     if (channelRelay !== 'allow') out.push(channelRelay === 'deny' ? 'the channel delivers Deny only' : 'the channel has not said it can deliver Allow');
+    if (testCapped()) out.push('the channel runs in test mode');
     if (at < blockUntil) out.push('auto mode blocked something in the last 15 minutes');
     if (at < floodUntil) out.push('too many requests at once');
     return out;
@@ -770,6 +779,14 @@ export function createApprovals({
       return next;
     },
     get channelRelay() { return channelRelay ?? 'unknown'; },
+    // What a hello says of the channel's test switch: `false`, or no word at all
+    // (a channel before 0.4.6), is not test mode; anything else is. Every hello
+    // that says test mode is an event, whatever the server's own mode.
+    noteChannelTest(value) {
+      channelTest = value !== undefined && value !== false;
+      if (testCapped()) onEvent({ kind: 'approvals-test-channel' });
+      return channelTest;
+    },
     // At open: the request's own reasons and why it is asking, if a block explains it.
     assess(p) {
       const at = now();
