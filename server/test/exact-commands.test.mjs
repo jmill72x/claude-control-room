@@ -17,6 +17,7 @@ import {
 } from '../lib/exact-commands.mjs';
 import { createApprovals, denyOnlyReasons, readApprovalsConfig, shownHash, NO_EXACT } from '../lib/approvals.mjs';
 import { createHandler, createIngestHandler } from '../routes.mjs';
+import { chatEventLine } from '../lib/chat-events.mjs';
 import { createCache } from '../cache.mjs';
 
 // A short scratch HOME: macOS caps a Unix socket path at 104 bytes, and the socket sits
@@ -64,7 +65,7 @@ test('the store: memory for two minutes, a window around the relay time, distinc
   const clock = { t: T0 };
   const s = createExactCommands({ now: () => clock.t });
   s.note('cat a\nrm b');
-  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b'], unusable: false, conflict: false });
+  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b'], unusable: false, conflict: false, evicted: false });
   assert.deepEqual(s.candidates('cat a\nrm b', T0).texts, ['cat a\nrm b'], 'a relay that did not fold matches outright');
   assert.deepEqual(s.candidates('cat a rm', T0).texts, [], 'character for character');
   assert.deepEqual(s.candidates('cat a rm b ', T0).texts, []);
@@ -78,9 +79,9 @@ test('the store: memory for two minutes, a window around the relay time, distinc
   assert.equal(s.candidates(null, T0).texts.length, 0);
   // The same text twice is one candidate; a different text with the same fold is a conflict.
   s.note('cat a\nrm b');
-  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b'], unusable: false, conflict: false });
+  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b'], unusable: false, conflict: false, evicted: false });
   s.note('cat a rm b');
-  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b', 'cat a rm b'], unusable: false, conflict: true });
+  assert.deepEqual(s.candidates('cat a rm b', T0), { texts: ['cat a\nrm b', 'cat a rm b'], unusable: false, conflict: true, evicted: false });
   // Two minutes, then gone.
   clock.t = T0 + EXACT_TTL_MS - 1;
   assert.equal(s.size(), 3);
@@ -93,15 +94,94 @@ test('the store: a matching report that cannot be shown counts against the match
   const clock = { t: T0 };
   const s = createExactCommands({ now: () => clock.t });
   s.note('ls /a\r\nrm /b');
-  assert.deepEqual(s.candidates('ls /a rm /b', T0), { texts: [], unusable: true, conflict: false });
+  assert.deepEqual(s.candidates('ls /a rm /b', T0), { texts: [], unusable: true, conflict: false, evicted: false });
   s.note('ls /a rm /b');
-  assert.deepEqual(s.candidates('ls /a rm /b', T0), { texts: ['ls /a rm /b'], unusable: true, conflict: true }, 'a forged plain copy only ties with the real one');
+  assert.deepEqual(s.candidates('ls /a rm /b', T0), { texts: ['ls /a rm /b'], unusable: true, conflict: true, evicted: false }, 'a forged plain copy only ties with the real one');
   const many = createExactCommands({ now: () => clock.t });
   many.note('first');
   for (let i = 0; i < EXACT_KEEP; i++) many.note(`cmd ${i}`);
   assert.equal(many.size(), EXACT_KEEP);
   assert.deepEqual(many.candidates('first', T0).texts, [], 'the oldest went first');
-  assert.deepEqual(many.candidates(`cmd ${EXACT_KEEP - 1}`, T0).texts, [`cmd ${EXACT_KEEP - 1}`]);
+  assert.deepEqual(many.candidates(`cmd ${EXACT_KEEP - 1}`, T0), { texts: [`cmd ${EXACT_KEEP - 1}`], unusable: false, conflict: true, evicted: true }, 'and since one was dropped, a match is a conflict');
+});
+
+test('the cap (Ultron, 11-11): once a report is dropped, every match is a conflict until the dropped one would have been forgotten', () => {
+  const clock = { t: T0 };
+  const s = createExactCommands({ now: () => clock.t });
+  const real = 'cat /a\nrm /b';
+  const forged = 'cat /a rm /b';
+  // The real report, then a flood of 40 unrelated ones a second later pushes it out, and a forged copy lands in the window.
+  s.note(real);
+  clock.t += 1000;
+  for (let i = 0; i < EXACT_KEEP - 1; i++) s.note(`noise ${i}`);
+  assert.deepEqual(s.candidates(forged, clock.t).texts, [real], 'exactly 40: nothing dropped yet');
+  assert.equal(s.candidates(forged, clock.t).conflict, false);
+  s.note(forged);
+  assert.equal(s.size(), EXACT_KEEP);
+  assert.deepEqual(s.candidates(forged, clock.t), { texts: [forged], unusable: false, conflict: true, evicted: true }, 'the forged copy is alone in the store, but it is not a match');
+  assert.equal(s.disputes(forged, forged), 'evicted');
+  // A text with no report at all is no match, so no conflict either.
+  assert.deepEqual(s.candidates('pwd', clock.t), { texts: [], unusable: false, conflict: false, evicted: false });
+  // It holds until the dropped report would have been forgotten (it came at T0), not a moment longer.
+  const flooded = clock.t;
+  clock.t = T0 + EXACT_TTL_MS - 1;
+  assert.equal(s.candidates(forged, flooded).conflict, true);
+  assert.equal(s.disputes(forged, forged), 'evicted');
+  clock.t = T0 + EXACT_TTL_MS;
+  assert.deepEqual(s.candidates(forged, flooded), { texts: [forged], unusable: false, conflict: false, evicted: false });
+  assert.equal(s.disputes(forged, forged), false);
+  // A later flood moves the end out: the newest dropped report counts.
+  const f = createExactCommands({ now: () => clock.t });
+  for (let i = 0; i < EXACT_KEEP + 3; i++) { f.note(`n ${i}`); clock.t += 100; }
+  const lastDropped = clock.t - (EXACT_KEEP + 1) * 100;
+  const newest = clock.t - 100;
+  clock.t = lastDropped + EXACT_TTL_MS - 1;
+  assert.equal(f.candidates(`n ${EXACT_KEEP + 2}`, newest).evicted, true);
+  clock.t = lastDropped + EXACT_TTL_MS;
+  assert.equal(f.candidates(`n ${EXACT_KEEP + 2}`, newest).evicted, false);
+});
+
+test('outside the window (Ultron, 11-11): a different report for the same preview is a conflict whenever it came, while it is kept', () => {
+  const clock = { t: T0 };
+  const s = createExactCommands({ now: () => clock.t });
+  const real = 'cat /a\nrm /b';
+  const forged = 'cat /a rm /b';
+  // The real report came 31 s before the relay (outside the window), the forged one inside it.
+  s.note(real);
+  clock.t += EXACT_WINDOW_BEFORE_MS + 1000;
+  s.note(forged);
+  const relayed = clock.t - 1000 + 1;
+  assert.deepEqual(s.candidates(forged, relayed), { texts: [forged], unusable: false, conflict: true, evicted: false });
+  // The same text outside the window is no rival.
+  const same = createExactCommands({ now: () => clock.t });
+  same.note(forged);
+  clock.t += 60e3;
+  same.note(forged);
+  assert.deepEqual(same.candidates(forged, clock.t), { texts: [forged], unusable: false, conflict: false, evicted: false });
+  // A report that can't be shown, outside the window, counts too; a non-matching one never does.
+  const cr = createExactCommands({ now: () => clock.t });
+  cr.note('cat /a\r\nrm /b');
+  cr.note('cat /z');
+  clock.t += 40e3;
+  cr.note(forged);
+  assert.equal(cr.candidates(forged, clock.t).conflict, true);
+  assert.equal(cr.candidates('cat /z', clock.t + EXACT_WINDOW_BEFORE_MS + 1).conflict, false, 'only reports outside the window: no match, so no conflict');
+  // Rivals after the window, too (a report that came well after the relay).
+  const after = createExactCommands({ now: () => clock.t });
+  after.note(forged);
+  const at = clock.t;
+  clock.t += EXACT_WINDOW_AFTER_MS + 10e3;
+  after.note(real);
+  assert.equal(after.candidates(forged, at).conflict, true);
+  // disputes(): store-wide, from the card's point of view.
+  assert.equal(after.disputes(forged, forged), 'differs');
+  assert.equal(after.disputes(forged, real), 'differs');
+  assert.equal(after.disputes('cat /q', 'cat /q'), false);
+  assert.equal(after.disputes(null, forged), false);
+  // Once a report is forgotten it no longer counts: the first one is gone here, the later one is not.
+  clock.t = at + EXACT_TTL_MS;
+  assert.equal(after.disputes(forged, real), false, 'only the card\'s own text is left');
+  assert.equal(after.disputes(forged, forged), 'differs', 'a card that showed the forgotten text still meets its rival');
 });
 
 // ---- the gate ----
@@ -256,6 +336,126 @@ test('a forged report can only tie: two different texts for one preview are Deny
   assert.ok(has(cr.open(forged).denyOnly, /outside plain ASCII, line breaks and tabs/));
   cr.report(forged);
   assert.ok(has(cr.open(forged).denyOnly, /two different exact copies/));
+});
+
+test('the gate, Ultron\'s two conditions: a rival outside the window and a flood that drops reports both make the card Deny-only, at open or later', () => {
+  const real = `cat ${APP}/a\nrm ${APP}/b`;
+  const forged = `cat ${APP}/a rm ${APP}/b`;
+  const EVICTED = /so many exact-command reports came in two minutes that some were dropped unread/;
+  // The real report 31 s before the relay: outside the window, but it still ties with the forged copy inside it.
+  const out = gate({ bashCommands: [forged] });
+  out.report(real);
+  out.clock.t += EXACT_WINDOW_BEFORE_MS + 1000;
+  out.report(forged);
+  const op = out.open(forged);
+  assert.equal(op.exact, null);
+  assert.ok(has(op.denyOnly, /two different exact copies/));
+  assert.deepEqual(out.events, [{ kind: 'approvals-exact-conflict' }]);
+  // A rival that lands 10 s after the relay (past the 5 s slack) still takes Allow away from an open card.
+  const late = gate({ bashCommands: [forged] });
+  late.report(forged);
+  const lp = late.open(forged);
+  assert.equal(late.a.view(lp).canAllow, true);
+  late.clock.t += EXACT_WINDOW_AFTER_MS + 10e3;
+  late.report(real);
+  assert.equal(late.a.view(lp).canAllow, false);
+  assert.ok(has(late.a.reasonsNow(lp), /two different exact copies/));
+  assert.deepEqual(late.events, [{ kind: 'approvals-exact-conflict' }]);
+  // A flood pushes the real report out before the request opens: the forged copy alone is no match.
+  const flood = gate({ bashCommands: [forged] });
+  flood.report(real);
+  for (let i = 0; i < EXACT_KEEP; i++) flood.report(`echo ${i}`);
+  flood.report(forged);
+  const fp = flood.open(forged);
+  assert.equal(fp.exact, null);
+  assert.ok(has(fp.denyOnly, EVICTED), fp.denyOnly.join('; '));
+  assert.equal(flood.a.view(fp).canAllow, false);
+  assert.deepEqual(flood.events, [{ kind: 'approvals-exact-conflict', evicted: true }]);
+  // A flood after the card opened: Allow goes, once, for good.
+  const after = gate({ bashCommands: [forged] });
+  after.report(forged);
+  const ap = after.open(forged);
+  assert.equal(after.a.view(ap).canAllow, true);
+  for (let i = 0; i <= EXACT_KEEP; i++) after.report(`echo ${i}`);
+  assert.equal(after.a.view(ap).canAllow, false);
+  assert.ok(has(after.a.reasonsNow(ap), EVICTED));
+  after.clock.t += EXACT_TTL_MS * 2;
+  assert.equal(after.a.view(ap).canAllow, false, 'sticky, after the flood is forgotten');
+  assert.deepEqual(after.events, [{ kind: 'approvals-exact-conflict', evicted: true }]);
+  // Exactly 40 in two minutes drops nothing, so nothing changes.
+  const full = gate({ bashCommands: [forged] });
+  for (let i = 0; i < EXACT_KEEP - 1; i++) full.report(`echo ${i}`);
+  full.report(forged);
+  const fu = full.open(forged);
+  assert.equal(fu.exact, forged);
+  assert.equal(full.a.view(fu).canAllow, true);
+  // The alert says which it was.
+  assert.match(chatEventLine({ kind: 'approvals-exact-conflict', evicted: true }), /some were dropped unread/);
+  assert.match(chatEventLine({ kind: 'approvals-exact-conflict' }), /two different exact-command reports/);
+});
+
+test('parity with "exact" (board 8ecf3ca9; the owner\'s pick 11-13: mark, never gate): a match draws the exact text; a conflict, at open or later, takes the text off the card and marks it, and Allow stays', () => {
+  const real = `ls ${APP} # look\nrm -rf ${APP}`;
+  const folded = foldWhitespace(real);
+  const MARK = /A different command with the same look was reported.*Check the terminal before allowing/;
+  // A match: the card carries the two lines, and Allow (parity).
+  const m = gate({ rules: 'parity' });
+  m.report(real);
+  const mp = m.open(folded);
+  assert.equal(mp.exact, real);
+  assert.deepEqual(mp.denyOnly, []);
+  assert.deepEqual(m.a.view(mp), { mode: 'on', denyOnly: [], canAllow: true }, 'no mark, and the view keeps its usual shape');
+  // Conflicts at open, by a rival outside the window or by a flood: no exact text, a mark, alerted, Allow kept.
+  const o = gate({ rules: 'parity' });
+  o.report(folded);
+  o.clock.t += EXACT_WINDOW_BEFORE_MS + 1000;
+  o.report(real);
+  const op = o.open(folded);
+  assert.equal(op.exact, null, 'neither text is drawn as the exact one');
+  assert.deepEqual(o.events, [{ kind: 'approvals-exact-conflict' }]);
+  const ov = o.a.view(op);
+  assert.equal(ov.canAllow, true);
+  assert.equal(ov.exact, null);
+  assert.match(ov.exactNote, MARK);
+  const f = gate({ rules: 'parity' });
+  for (let i = 0; i <= EXACT_KEEP; i++) f.report(`echo ${i}`);
+  f.report(real);
+  const fp = f.open(folded);
+  assert.equal(fp.exact, null);
+  assert.match(f.a.view(fp).exactNote, /Too many command reports came at once/);
+  assert.equal(f.a.view(fp).canAllow, true);
+  assert.deepEqual(f.events, [{ kind: 'approvals-exact-conflict', evicted: true }]);
+  // A card that drew a text, then a rival: the text comes off, the mark goes on, Allow stays; alerted once.
+  const d = gate({ rules: 'parity' });
+  d.report(real);
+  const dp = d.open(folded);
+  const before = shownHash(dp.tool, dp.description, dp.inputPreview, dp.exact);
+  d.clock.t += 20e3;
+  d.report(folded);
+  const dv = d.a.view(dp);
+  assert.deepEqual(dv.denyOnly, []);
+  assert.equal(dv.canAllow, true);
+  assert.equal(dv.exact, null);
+  assert.match(dv.exactNote, MARK);
+  assert.equal(dp.exact, null, 'gone from the request too, so the shown hash changes');
+  assert.notEqual(shownHash(dp.tool, dp.description, dp.inputPreview, dp.exact), before);
+  d.a.view(dp);
+  assert.deepEqual(d.events, [{ kind: 'approvals-exact-conflict' }]);
+  // A flood after the card drew a text: the other mark.
+  const fl = gate({ rules: 'parity' });
+  fl.report(real);
+  const flp = fl.open(folded);
+  for (let i = 0; i <= EXACT_KEEP; i++) fl.report(`echo ${i}`);
+  assert.match(fl.a.view(flp).exactNote, /Too many command reports came at once/);
+  assert.equal(fl.a.view(flp).canAllow, true);
+  // Guarded stays as it was: a later rival is Deny-only, and the text stays on the card.
+  const g = gate();
+  g.report(`cat ${APP}/a`);
+  const gp = g.open(`cat ${APP}/a`);
+  g.report(`cat ${APP}/a`.replace(' ', '  '));
+  assert.equal(g.a.view(gp).canAllow, false);
+  assert.equal(gp.exact, `cat ${APP}/a`);
+  assert.equal(g.a.view(gp).exactNote, undefined);
 });
 
 test('reports are kept only in exact mode with approvals on, only from the lead\'s session by name, and only inside the window', () => {

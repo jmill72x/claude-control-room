@@ -16,6 +16,7 @@ import {
   VERDICTS_PER_HOUR, REFUSALS_FOR_LOCKOUT, LOCKOUT_MS, ALLOW_BURST, FLOOD_OPEN, INGEST_OFF
 } from '../lib/approvals.mjs';
 import { createChatStore, PERMISSION_TTL_MS } from '../lib/chat-store.mjs';
+import { foldWhitespace } from '../lib/exact-commands.mjs';
 import { createDeviceStore, COOKIE_NAME, PAIR_COOKIE_NAME } from '../lib/chat-devices.mjs';
 import { createSocketRouter, toInbound, SESSION_HEADER, HEARTBEAT_FRESH_MS } from '../lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter } from '../lib/chat-routes.mjs';
@@ -1333,6 +1334,48 @@ test('config: a write folder may not be the Projects folder, nor hold or sit ins
   }
 });
 
+test('parity with "exact" over the routes: a rival after the card drew a text marks the card; an Allow made on the old card is refused as stale, and on the new one it goes through', async () => {
+  const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await env.mark('phone', true);
+    const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+    const folded = 'ls /home/owner/Projects/app # look rm -rf /home/owner/Projects/app';
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('ggggg', { command: folded });
+    const old = env.shown('ggggg');
+    assert.equal(env.store.permission('ggggg').exact, real);
+    clock(env, 20e3);
+    env.approvals.noteExact({ sessionId: 'lead', command: folded });
+    // The first look after the rival is the page's: it already gets no exact text, and the mark.
+    const status = await call({ port: env.port, path: '/api/chat/status', headers: { host: PAGE_HOST, cookie: env.phone } });
+    const open = status.json.openPermission;
+    assert.equal(open.requestId, 'ggggg');
+    assert.equal(open.exact, null);
+    assert.match(open.exactNote, /A different command with the same look was reported/);
+    assert.equal(open.canAllow, true);
+    const stale = await env.tap('ggggg', env.phone, 'allow', { shown: old });
+    assert.equal(stale.status, 409, stale.text);
+    clock(env, MIN);
+    const ok = await env.tap('ggggg', env.phone, 'allow');
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(env.events.filter(e => e.kind === 'approvals-exact-conflict').length, 1);
+  } finally { await env.close(); }
+  // When the tap comes before any look: refused as stale all the same.
+  const first = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await first.mark('phone', true);
+    const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+    first.approvals.noteExact({ sessionId: 'lead', command: real });
+    await first.open('ggggg', { command: foldWhitespace(real) });
+    const old = first.shown('ggggg');
+    clock(first, 20e3);
+    first.approvals.noteExact({ sessionId: 'lead', command: foldWhitespace(real) });
+    const stale = await first.tap('ggggg', first.phone, 'allow', { shown: old });
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(first.store.permission('ggggg').state, 'open');
+  } finally { await first.close(); }
+});
+
 test('the gate carries config\'s protected places, and the routes the exact command: shown on the card, covered by the hash, dropped when the request closes', async () => {
   const gateOpts = { bash: 'exact', bashCommands: ['cd /home/owner/Projects/app\nnpm test'], writeFolders: FINAL_WRITE, writeProtected: FINAL_PROTECTED, repoRoot: REPO, isLeadSession: id => id === 'lead' };
   const env = await setup({ gate: gateOpts });
@@ -1385,8 +1428,9 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     assert.match(tied.json.error, /two different exact copies/);
     assert.equal(env.events.filter(e => e.kind === 'approvals-exact-conflict').length, 1);
     assert.equal((await env.tap('ddddd', env.phone, 'deny')).status, 200, 'Deny always works');
-    // Expiry drops the text too.
-    clock(env, MIN);
+    // Expiry drops the text too. (Two minutes first: the forged copy above counts
+    // against every card for its preview for as long as it is kept, window or not.)
+    clock(env, 2 * MIN);
     env.approvals.noteExact({ sessionId: 'lead', command: real });
     await env.open('eeeee', { command: 'cd /home/owner/Projects/app npm test' });
     assert.equal(env.store.permission('eeeee').exact, real);

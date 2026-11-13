@@ -16,7 +16,11 @@ export const EXACT_WINDOW_AFTER_MS = 5e3;
 // Claude Code elides a preview field over 3,500 code points, and an elided preview is
 // Deny-only, so a longer command could never be allowed here anyway.
 export const EXACT_MAX_CHARS = 4000;
-// At most this many reports are kept; the oldest go first.
+// At most this many reports are kept; the oldest go first. A report dropped this way
+// can't be compared any more, so until it would have been forgotten anyway every match
+// counts as a conflict (Ultron, 11-11): the hook reports only permission prompts in the
+// lead's session, which come at a person's pace, so over 40 in two minutes is a flood, and a
+// flood must not push the real text out and leave a forged copy alone in the window.
 export const EXACT_KEEP = 40;
 
 const SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/;
@@ -54,31 +58,57 @@ export function checkExactReport(body) {
 // The reports, newest last. `candidates(previewCommand, relayedAt)` answers what a
 // relayed request can be matched to: the distinct usable texts whose fold equals the
 // preview's command character for character (or that equal it outright, for a relay
-// that did not fold), among the reports inside the window, and whether a report that
-// matched can't be shown (`unusable`). One text and nothing unusable is a match; more
-// than one is a conflict, which the caller treats as Deny-only and alerts.
+// that did not fold), among the reports inside the window, and whether a report there
+// that matched can't be shown (`unusable`). One text and nothing unusable is a match.
+// It is a `conflict` when there is a match and any other kept report for the same
+// preview differs from it, inside the window or outside it (Ultron, 11-11: the window
+// is a guess about clocks, so a rival just outside it still counts), or when a report
+// was dropped by the cap in the last two minutes (`evicted`). The caller treats a
+// conflict as Deny-only and alerts. `disputes(previewCommand, exact)` is the same
+// question for a card that already shows `exact`: is any kept report for its preview
+// different from it, or unusable, or was one dropped?
 export function createExactCommands({ now = () => Date.now() } = {}) {
   let list = []; // { at, text, fold, usable }
+  // Until this time a dropped report would still have been kept (see EXACT_KEEP).
+  let evictedUntil = 0;
   const prune = () => { const at = now(); list = list.filter(e => at - e.at < EXACT_TTL_MS); };
+  const evicted = () => now() < evictedUntil;
+  const matches = (e, previewCommand) => e.fold === previewCommand || e.text === previewCommand;
   return {
     note(command) {
       prune();
       const text = String(command);
       list.push({ at: now(), text, fold: foldWhitespace(text), usable: exactTextOk(text) });
-      if (list.length > EXACT_KEEP) list = list.slice(list.length - EXACT_KEEP);
+      if (list.length > EXACT_KEEP) {
+        const dropped = list.slice(0, list.length - EXACT_KEEP);
+        evictedUntil = Math.max(evictedUntil, ...dropped.map(e => e.at + EXACT_TTL_MS));
+        list = list.slice(list.length - EXACT_KEEP);
+      }
     },
     candidates(previewCommand, relayedAt) {
       prune();
       const texts = [];
       let unusable = false;
-      if (typeof previewCommand !== 'string' || !Number.isFinite(relayedAt)) return { texts, unusable, conflict: false };
+      if (typeof previewCommand !== 'string' || !Number.isFinite(relayedAt)) return { texts, unusable, conflict: false, evicted: false };
+      const all = [];
+      let anyUnusable = false;
       for (const e of list) {
+        if (!matches(e, previewCommand)) continue;
+        if (!e.usable) anyUnusable = true;
+        else if (!all.includes(e.text)) all.push(e.text);
         if (e.at < relayedAt - EXACT_WINDOW_BEFORE_MS || e.at > relayedAt + EXACT_WINDOW_AFTER_MS) continue;
-        if (e.fold !== previewCommand && e.text !== previewCommand) continue;
         if (!e.usable) unusable = true;
         else if (!texts.includes(e.text)) texts.push(e.text);
       }
-      return { texts, unusable, conflict: texts.length + (unusable ? 1 : 0) > 1 };
+      const matched = texts.length > 0 || unusable;
+      const dropped = matched && evicted();
+      return { texts, unusable, conflict: matched && (dropped || all.length + (anyUnusable ? 1 : 0) > 1), evicted: dropped };
+    },
+    disputes(previewCommand, exact) {
+      prune();
+      if (evicted()) return 'evicted';
+      if (typeof previewCommand !== 'string') return false;
+      return list.some(e => matches(e, previewCommand) && (!e.usable || e.text !== exact)) ? 'differs' : false;
     },
     size() { prune(); return list.length; }
   };

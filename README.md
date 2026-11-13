@@ -1372,13 +1372,19 @@ channel got the prompt to 5 seconds after, it takes those whose text, with each 
 whitespace folded to one space by the server's own rule (`foldWhitespace`), equals the
 preview's command character for character (or equals it outright, for a relay that did
 not fold). Exactly one distinct text is the match: the card shows it and the `shown` hash
-covers it. Two that differ are Deny-only with an alert (`approvals-exact-conflict`), also
-when the second arrives after the card opened; so a forged report (any local process can
-post to the ingest socket) can only tie with the real one, never replace it. None is
-Deny-only. A text with anything but printable ASCII, line breaks and tabs is never shown
+covers it. Two that differ are Deny-only with an alert (`approvals-exact-conflict`): the
+rival counts while it is kept (2 minutes), inside the window or outside it, and also when
+it arrives after the card opened; so a forged report (any local process can post to the
+ingest socket) can only tie with the real one, never replace it. When the 40-report cap
+pushes a report out, every match is a conflict until that report would have been
+forgotten (alerted with `evicted: true`), so a flood can't push the real text out and
+leave a forged copy alone. None is Deny-only. In parity (`chat.approvalsRules`), a conflict
+is a mark, never a gate: the card loses its exact text, shows the relayed preview with a
+note to check the terminal (`exactNote`), and keeps Allow; an Allow tapped on the card as
+it was before is refused as stale. A text with anything but printable ASCII, line breaks and tabs is never shown
 as exact (a carriage return included), and a preview with an elision or a `[REDACTED]`
-mask gets none. What the design leans on, and section 9.2 of the design tests in a scratch
-session before `"exact"` is turned on: that the hook's post lands before the relayed
+mask gets none. What the design leans on, and the scratch test (NEXT.md §10, exact Bash
+step 10, with the kit `bin/exact-hook-check.mjs`) checks before `"exact"` is turned on: that the hook's post lands before the relayed
 request (in auto mode's fallback prompts too), and that Claude Code's fold and the
 server's agree. If either fails, nothing matches and Bash stays Deny-only: the hook's
 absence is never an Allow.

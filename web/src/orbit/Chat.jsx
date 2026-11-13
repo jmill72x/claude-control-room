@@ -347,6 +347,9 @@ function PermissionCard({ p, chat, now }) {
           </div>
         ))
         : <p className="o-chat-sub">No input preview.</p>}
+      {/* Parity: two different exact copies of this command were reported, so the card
+          shows the relayed preview and says so (a mark, never a gate). */}
+      {p.exactNote && <p className="o-chat-card-hidden">{p.exactNote}</p>}
       {hasMarker(p) && <p className="o-chat-card-hidden">{p.view === 'open' && p.canAllow
         ? 'Part of this request is hidden, masked or cut short: this card does not show all of it.'
         : 'Part of this request is hidden or cut short, so it can only be denied here.'}</p>}

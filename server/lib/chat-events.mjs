@@ -67,7 +67,9 @@ export function chatEventLine(event) {
     'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
     'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
     'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: ${event.parity === true ? 'the cards keep Allow (parity with the relay), so look before tapping' : 'page approvals are Deny only for 10 minutes'}`,
-    'approvals-exact-conflict': 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)',
+    'approvals-exact-conflict': event.evicted === true
+      ? 'over 40 exact-command reports came in two minutes, so some were dropped unread: a Bash card is Deny only (a flood of hook reports)'
+      : 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)',
     'shortcut-code-made': `a code for a new Shortcut key was made by ${event.by ?? '?'} (${event.name || 'unnamed'}); whoever enters it in the next 10 minutes gets the key`,
     'shortcut-paired': `a Shortcut key was made: ${event.key?.name ?? '?'} (its code came from ${event.by ?? '?'}); it can send messages as the owner, and nothing else`,
     'shortcut-revoked': `a Shortcut key was revoked: ${event.key?.name ?? '?'} (by ${event.by ?? '?'})`,

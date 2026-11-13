@@ -421,6 +421,11 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       if (approvals.mode() !== 'on') throw refuse(403, 'approvals are Deny only for now; allow this one at the terminal or in Discord');
       if (device.approver !== true) throw refuse(403, 'this device may not allow; answer at the terminal or in Discord');
     }
+    // Before an Allow is checked against what the card showed: let the gate look again,
+    // so a parity card whose exact text was just disputed has lost it, and a tap made on
+    // the old card is refused as stale (409) instead of allowing a text that may be false.
+    // Not before a Deny: Deny always works.
+    if (behavior === 'allow') { const cur = store.permission(requestId); if (cur?.state === 'open') approvals.reasonsNow(cur); }
     const r = await store.answerPermission(requestId, behavior, device.name, {
       shown, requireShown: true,
       allowProblem: p => { const why = approvals.reasonsNow(p); return why.length ? `allow this one at the terminal or in Discord: ${why[0]}` : null; }

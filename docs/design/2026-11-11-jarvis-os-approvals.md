@@ -682,7 +682,10 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
   Since 0.2 the answer no longer decides a config value (`"strict"` is gone); it tells
   which branch of the exact-command match real requests take: the fold, or the outright
   match for a preview that kept its `\n`.
-- A1-H. **Does the exact-command hook report before the relay, and do the two folds
+- A1-H. *(2026-11-13: run it with the kit `bin/exact-hook-check.mjs` and the steps in
+  NEXT.md §10, exact Bash step 10, which replace the harness steps below: the hook now
+  posts to the ingest socket, not a port, and `--permission-mode default` is now `manual`.)*
+  **Does the exact-command hook report before the relay, and do the two folds
   agree?** (board 320ecc71; hard requirement 9 of 0.2. Run once, by Jeff or by Jarvis's
   hands at a terminal, never in Jarvis's session, before `chat.approvalsBash` is ever set to
   `"exact"`, and again after any Claude Code update that touches hooks or channels.) It

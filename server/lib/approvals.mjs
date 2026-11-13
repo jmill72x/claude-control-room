@@ -761,6 +761,11 @@ export function createApprovals({
   const exactReports = createExactCommands({ now });
   const previewCommand = p => { const c = parsePreview(p?.inputPreview)?.raw?.command; return typeof c === 'string' ? c : null; };
   const EXACT_CONFLICT = 'two different exact copies of this command were reported (answer at the terminal or in Discord)';
+  const EXACT_EVICTED = 'so many exact-command reports came in two minutes that some were dropped unread (answer at the terminal or in Discord)';
+  // In parity a conflict is a mark, never a gate (the owner's pick of 2026-11-13): the
+  // card loses its exact text, falls back to the relayed preview, and says why.
+  const EXACT_NOTE = 'A different command with the same look was reported, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
+  const EXACT_NOTE_EVICTED = 'Too many command reports came at once to confirm this one, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
   // What the channel last said its relay does: null until its first hello, then
   // "off", "deny", "allow" or "unknown" (a channel that didn't say).
   let channelRelay = null;
@@ -801,16 +806,20 @@ export function createApprovals({
   // Why Allow is out now for this request: its own reasons plus the moment's.
   function reasonsNow(p, at = now()) {
     const out = [...(p.denyOnly ?? [])];
-    // A card that shows an exact command: a second, different report for the same
-    // preview since it opened means one of the two is not what will run. Sticky.
+    // A card that shows an exact command: a different report for the same preview,
+    // whenever it came, means one of the two is not what will run; reports dropped by
+    // the cap can't be checked at all. Guarded: Deny-only, sticky. Parity: the exact
+    // text comes off the card (so the shown hash changes and a tap made on the old card
+    // is refused as stale) and the card carries a mark instead; Allow stays.
     if (typeof p.exact === 'string' && !p.exactConflict) {
-      const c = exactReports.candidates(previewCommand(p), p.relayedAt ?? p.openedAt ?? at);
-      if (c.unusable || c.texts.some(t => t !== p.exact)) {
-        p.exactConflict = true;
-        onEvent({ kind: 'approvals-exact-conflict' });
+      const d = exactReports.disputes(previewCommand(p), p.exact);
+      if (d) {
+        if (parity) { p.exact = null; p.exactNote = d === 'evicted' ? EXACT_NOTE_EVICTED : EXACT_NOTE; }
+        else p.exactConflict = d;
+        onEvent(d === 'evicted' ? { kind: 'approvals-exact-conflict', evicted: true } : { kind: 'approvals-exact-conflict' });
       }
     }
-    if (p.exactConflict) out.push(EXACT_CONFLICT);
+    if (p.exactConflict) out.push(p.exactConflict === 'evicted' ? EXACT_EVICTED : EXACT_CONFLICT);
     if (channelRelay !== 'allow') out.push(channelRelay === 'deny' ? 'the channel delivers Deny only' : 'the channel has not said it can deliver Allow');
     if (testCapped()) out.push('the channel runs in test mode');
     // Parity: the relay's word is all that the moment adds. No block window, no flood
@@ -854,7 +863,8 @@ export function createApprovals({
     assess(p) {
       const at = now();
       // In "exact" mode a Bash request is matched, by content, to the hook's reports:
-      // exactly one usable text, or it stays Deny-only (two that differ: also an alert).
+      // exactly one usable text, or it stays Deny-only (two that differ, in the window
+      // or not, or any report dropped by the cap: also an alert).
       let exact = null;
       let exactProblem = null;
       if (bashMode === 'exact' && p?.tool === 'Bash') {
@@ -862,7 +872,11 @@ export function createApprovals({
         if (markerReasons(p.inputPreview).length > 0) exactProblem = 'part of the command is hidden in the preview, so its exact copy is not used';
         else if (cmd !== null) {
           const c = exactReports.candidates(cmd, p.relayedAt ?? at);
-          if (c.conflict) { exactProblem = EXACT_CONFLICT; onEvent({ kind: 'approvals-exact-conflict' }); }
+          if (c.conflict) {
+            exactProblem = c.evicted ? EXACT_EVICTED : EXACT_CONFLICT;
+            if (parity) p.exactNote = c.evicted ? EXACT_NOTE_EVICTED : EXACT_NOTE;
+            onEvent(c.evicted ? { kind: 'approvals-exact-conflict', evicted: true } : { kind: 'approvals-exact-conflict' });
+          }
           else if (c.unusable) exactProblem = 'the exact command has characters outside plain ASCII, line breaks and tabs';
           else if (c.texts.length === 1) exact = c.texts[0];
         }
@@ -910,7 +924,8 @@ export function createApprovals({
     view(p, at = now()) {
       const m = current();
       const reasons = reasonsNow(p, at);
-      return { mode: m, denyOnly: reasons, canAllow: m === 'on' && reasons.length === 0 && p.state === 'open' };
+      // A card marked by an exact-command conflict (parity) shows no exact text, and says so.
+      return { mode: m, denyOnly: reasons, canAllow: m === 'on' && reasons.length === 0 && p.state === 'open', ...(typeof p.exactNote === 'string' ? { exact: null, exactNote: p.exactNote } : {}) };
     },
     // `rules` is in the answer only in parity, so the default answer keeps its shape.
     status: (at = now()) => ({ mode: current(), relay: channelRelay ?? 'unknown', ...(parity ? { rules: 'parity' } : {}), denyOnlyUntil: !parity && Math.max(blockUntil, floodUntil) > at ? Math.max(blockUntil, floodUntil) : null }),
