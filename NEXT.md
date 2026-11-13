@@ -419,8 +419,10 @@ half (the classic page's deletion, about 11-17) is still open.
 
 **Exact Bash on approval cards (board 320ecc71 and 8ecf3ca9): Ultron's two conditions and
 his 11-13 re-read fixes are merged (main e59ba37); the console test (step 10) ran 11-13 and
-reworked the match, staged 2026-11-13 on `jos/exact-bash-3` (from main e59ba37, worktree
-`~/Projects/.worktrees/ccr-exact-bash-3`), not committed; `approvalsBash` stays `"deny"`.**
+reworked the match (main 5cf038e), and Jeff's re-test of that passed 11-13 (the hook 18-23
+ms after the relay, every text matched). Ultron's re-read of the rework left L1-L3 (board
+9fba4216, 8b77e6e2): fixed and staged 2026-11-13 on `jos/exact-bash-4` (from main 5cf038e,
+worktree `~/Projects/.worktrees/ccr-exact-bash-4`), not committed; `approvalsBash` stays `"deny"`.**
 *What main has:* the 40-report cap (a dropped report makes every match a conflict until it
 would have been forgotten), rivals counted store-wide while kept (2 minutes), each kept
 report rechecking every open Bash card that shows an exact text (M1), a marked card
@@ -437,7 +439,7 @@ prompt, so round 2 used `touch` and `printf`): (1) the PermissionRequest hook re
 of spaces to one, leading and trailing ones included (`printf 'a  b'` relayed as
 `printf 'a b'`, two spaces either side of `touch t6.txt` as one). The kit then paired each
 request with the report before it, which was the previous command's, so it printed
-`ORDER FAIL` and `DIFFERS`: a kit bug, not a mismatch. *What the branch changes:* the fold
+`ORDER FAIL` and `DIFFERS`: a kit bug, not a mismatch. *What the rework (5cf038e) changed:* the fold
 (`foldWhitespace`) is now the relay's: runs of spaces only, never a line break or a tab
 (it folded all whitespace). The window is 1 s before the relay to 2 s after (was 30 s / 5
 s): a report from well before belongs to an earlier prompt. A card now usually opens with
@@ -457,11 +459,25 @@ both time zones; web 222 (unchanged; no page change, so no build). New: a replay
 console test's exact timings and texts over the routes, guarded and parity, expecting the
 exact text on every card, drawn then redrawn (fixture `server/test/fixtures/console-1113.mjs`),
 the same replay through the kit, and the tap-order cases. 21 of 22 mutants caught; the
-survivor was a redundant line, removed. *Go-live:* Ultron re-reads, C&P, the short re-test
-(step 10 with the new prompts), then steps 11 to 13. Nothing changes while
-`approvalsBash` is `"deny"`. *Unverified:* auto mode's fallback order (the 11-13 results
-have no auto-mode lines); that a relay folds nothing but spaces in other fields; the page's redraw
-of a gained text in a real browser (the page's upsert is the one L1 uses).
+survivor was a redundant line, removed. *What `jos/exact-bash-4` changes (Ultron's 11-13
+re-read):* L3, the shown hash (server `shownHash`, page `shownInput`) now covers the parity
+note `exactNote`, as a last `{ note }` item, so a card that gained its text late and then
+lost it to a rival no longer hashes like the folded card it started as; an Allow on any
+earlier copy (folded, or with the gained text) is the `changed` 409, and a late rival's
+mark now also sets `exactGained`, so a tap on the folded card before that mark is changed
+too, not a counted refusal. L2, the page arms Allow on a copy of the card (`armedCopy`): a
+redraw between the two taps disarms it, and the verdict hashes the copy the tap was made on
+(the armed one for Allow, the drawn one for Deny), never the newest in the page's map. L1,
+the wording says spacing may differ, not that line breaks fold (the parity notes, the
+deny-mode reason, the card's "command, as relayed (spacing may differ)" label). Tests:
+server 1173 (main 1171; the same `acks.test.mjs` failure as main), both time zones; web
+222 (new assertions in existing tests: pinned hashes shared with the server's, the arm);
+7 of 7 mutants caught. Web built to a scratch folder only. *Go-live:* Ultron re-reads
+`jos/exact-bash-4`, C&P (the merge's web build ships the page half), then steps 11 to 13.
+Nothing changes while `approvalsBash` is `"deny"`. *Unverified:* auto mode's fallback order
+(the 11-13 results have no auto-mode lines); that a relay folds nothing but spaces in other
+fields; the page's redraw of a gained text and the disarm on redraw in a real browser (the
+arm's logic is unit-tested, the component wiring is not).
 
 **Jarvis OS 6, self-healing loops (board b384cd92): designed 2026-11-12
 (`docs/design/2026-11-12-self-healing-loops.md`); loop 1 (board ea709def) built and staged
@@ -1108,7 +1124,7 @@ on the one before; the server always goes before the channel (Ultron H2).
     line right before the session, never ahead of time: the scratch MCP config names
     node by its versioned Homebrew path, which a `brew upgrade` removes.
     ```sh
-    cd ~/Projects/claude-control-room   # before jos/exact-bash-3 is merged: ~/Projects/.worktrees/ccr-exact-bash-3
+    cd ~/Projects/claude-control-room
     S=$(node bin/exact-hook-check.mjs setup) && cd "$S/work" && claude --version
     claude --debug-file "$S/debug-manual.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode manual --dangerously-load-development-channels server:exactcheck
     ```
@@ -1153,8 +1169,8 @@ on the one before; the server always goes before the channel (Ultron H2).
     reached the channel) keeps Bash Deny-only and goes back to Pepper with `results.txt`.
     Record the CLI version and the results here. Run it again after any Claude Code update
     that touches hooks or channels. *Ran 2026-11-13 on 2.1.323* (manual mode, the findings
-    in the exact Bash entry above); the re-test after `jos/exact-bash-3` is merged is the
-    manual round a to f plus the auto round g.
+    in the exact Bash entry above); the re-test on main 5cf038e passed 11-13 (hook 18-23 ms
+    after the relay, exact matches).
 11. The exact-command hook (Jarvis with Jeff, after Ultron re-vets the entry): add README
     "The exact-command hook"'s `PermissionRequest` entry to `~/.claude/settings.json`,
     unchanged. It reports to the ingest socket and decides nothing; while the server's

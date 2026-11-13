@@ -445,17 +445,20 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     if (p.state === 'elsewhere') return { ok: false, status: 409, error: 'already answered somewhere else, or no longer asked: Jarvis has moved on' };
     if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
-    const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact);
+    const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact, p.exactNote);
     // A tap made on the card as it was before the gate changed its exact text: it took a
-    // disputed text off (`exactWas`), or the hook's report came after the card opened and
-    // gave it one (`exactGained`: the card was drawn with no exact text; lib/approvals.mjs).
+    // disputed text off (`exactWas`; the card it was on had no note), or the hook's report
+    // came after the card opened and gave it a text or, in parity, a conflict's note
+    // (`exactGained`: the card was drawn with neither; lib/approvals.mjs). A card can be
+    // both (gained, then disputed): a tap on either earlier card is on an old card.
     // A Deny counts (Ultron's L2: Deny always works); an Allow is refused as `changed`,
     // with the request, so the route sends the page the card as it is now and doesn't
     // count the tap as a refusal (L1). Any other hash is a plain refusal.
     if ((requireShown || shown !== null) && shown !== hash) {
-      const was = typeof p.exactWas === 'string' ? shownHash(p.tool, p.description, p.inputPreview, p.exactWas)
-        : p.exactGained === true ? shownHash(p.tool, p.description, p.inputPreview, null) : null;
-      if (was === null || shown !== was) return { ok: false, status: 409, error: 'the request changed; reload' };
+      const earlier = [];
+      if (typeof p.exactWas === 'string') earlier.push(shownHash(p.tool, p.description, p.inputPreview, p.exactWas));
+      if (p.exactGained === true) earlier.push(shownHash(p.tool, p.description, p.inputPreview));
+      if (!earlier.includes(shown)) return { ok: false, status: 409, error: 'the request changed; reload' };
       if (behavior !== 'deny') return { ok: false, status: 409, error: 'the request changed; reload', changed: true, request: p };
     }
     if (behavior === 'allow') {

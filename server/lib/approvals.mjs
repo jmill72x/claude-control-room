@@ -258,9 +258,11 @@ export function parsePreview(text) {
 
 // sha256 (hex) of what a card showed (L11): the page computes the same over the
 // fields exactly as delivered, and a verdict must carry it. When the card also showed
-// the exact command (from the hook's report), the hash covers that text too.
-export const shownHash = (tool, description, inputPreview, exact = null) =>
-  createHash('sha256').update(JSON.stringify([tool ?? '', description ?? '', inputPreview ?? '', ...(typeof exact === 'string' ? [exact] : [])])).digest('hex');
+// the exact command (from the hook's report), the hash covers that text too; when it
+// showed the parity note that its exact copy was disputed (`exactNote`), the note too,
+// as an object, so it can never read as an exact text (Ultron's L3, 11-13).
+export const shownHash = (tool, description, inputPreview, exact = null, exactNote = null) =>
+  createHash('sha256').update(JSON.stringify([tool ?? '', description ?? '', inputPreview ?? '', ...(typeof exact === 'string' ? [exact] : []), ...(typeof exactNote === 'string' ? [{ note: exactNote }] : [])])).digest('hex');
 
 // ---- paths ----
 
@@ -625,7 +627,7 @@ export function denyOnlyReasons(req, {
     // What the rules below read: the preview's command, or in "exact" mode the exact
     // text, which must be the hook's report of this very command.
     let text = cmd;
-    if (bash !== 'exact') add('Bash is answered at the terminal or in Discord (a relayed command may have lost its line breaks)');
+    if (bash !== 'exact') add('Bash is answered at the terminal or in Discord (the spacing of a relayed command may differ from what runs)');
     else {
       if (typeof exact !== 'string') { add(typeof exactProblem === 'string' && exactProblem ? exactProblem : NO_EXACT); return reasons; }
       if (!exactTextOk(exact)) { add('the exact command has characters outside plain ASCII, line breaks and tabs'); return reasons; }
@@ -774,8 +776,8 @@ export function createApprovals({
   const EXACT_EVICTED = 'so many exact-command reports came in two minutes that some were dropped unread (answer at the terminal or in Discord)';
   // In parity a conflict is a mark, never a gate (the owner's pick of 2026-11-13): the
   // card loses its exact text, falls back to the relayed preview, and says why.
-  const EXACT_NOTE = 'A different command with the same look was reported, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
-  const EXACT_NOTE_EVICTED = 'Too many command reports came at once to confirm this one, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
+  const EXACT_NOTE = 'A different command with the same look was reported, so this card cannot show the exact command: its spacing may differ from what is shown. Check the terminal before allowing.';
+  const EXACT_NOTE_EVICTED = 'Too many command reports came at once to confirm this one, so this card cannot show the exact command: its spacing may differ from what is shown. Check the terminal before allowing.';
   // The alert says which rules apply (L3): in parity the card keeps Allow.
   const conflictEvent = evicted => ({ kind: 'approvals-exact-conflict', ...(evicted ? { evicted: true } : {}), ...(parity ? { parity: true } : {}) });
   // What the channel last said its relay does: null until its first hello, then
@@ -923,7 +925,9 @@ export function createApprovals({
     // again: one candidate gives it the exact text (its Deny-only reasons are worked out
     // again over that text), a conflict marks it as at open, and either way it is redrawn.
     // A tap made on the card before that is judged on the card as it was (the hash), and
-    // its Allow then gets the changed 409 (lib/chat-store.mjs, `exactGained`).
+    // its Allow then gets the changed 409 (lib/chat-store.mjs, `exactGained`: the card
+    // was drawn with neither text nor note; in parity a conflict gives it the note, which
+    // the hash covers, so that tap is on an old card too).
     noteExact({ sessionId, command } = {}) {
       if (bashMode !== 'exact' || serverMode() === 'off') return 'off';
       let lead = false;
@@ -940,7 +944,8 @@ export function createApprovals({
         const m = matchExact(p, at);
         if (p.exactSettled !== true) continue;
         p.denyOnly = denyOnlyFor(p, m.exact, m.exactProblem);
-        if (m.exact !== null) { p.exact = m.exact; p.exactGained = true; }
+        if (m.exact !== null) p.exact = m.exact;
+        if (m.exact !== null || typeof p.exactNote === 'string') p.exactGained = true;
         redraw(p);
       }
       return 'kept';

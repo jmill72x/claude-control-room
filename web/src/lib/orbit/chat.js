@@ -205,8 +205,11 @@ export const hasMarker = p => cardFields(p).some(([, v]) => MARKER.test(v)) || M
 // What the server compares a verdict against (Ultron L11): the fields exactly as
 // they were delivered, never as rendered.
 // When the card also showed a Bash command's exact text (`exact`, from the hook's
-// report), the hash covers it as a fourth item, as the server's does.
-export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '', ...(typeof p?.exact === 'string' ? [p.exact] : [])]);
+// report), the hash covers it as a fourth item, as the server's does; a parity note that
+// the exact copy was disputed (`exactNote`) goes last, as { note }, as the server's does
+// (Ultron's L3, 11-13: without it a card that gained a text and then lost it to a
+// dispute hashed like the card before either).
+export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '', ...(typeof p?.exact === 'string' ? [p.exact] : []), ...(typeof p?.exactNote === 'string' ? [{ note: p.exactNote }] : [])]);
 
 // The exact command as rows the card draws with every line break and tab visible:
 // one row per line, `end` true where a line break follows it, each row's text split
@@ -232,6 +235,12 @@ export async function sha256Hex(text, subtle = globalThis.crypto?.subtle) {
 // tap while armed sends.
 export const ALLOW_ARM_MS = 4000;
 export const allowArmed = (armedAt, now = Date.now()) => Number.isFinite(armedAt) && now - armedAt >= 0 && now - armedAt < ALLOW_ARM_MS;
+// The first tap arms Allow on the card as it was then: `{ at, shown }`, `shown` being its
+// shownInput. The second tap allows only if the card still shows that same copy, within
+// the 4 s; it answers that copy (what the verdict hashes), else null (Ultron's L2, 11-13:
+// a redraw between the taps, a gained text or a mark, must be read before an Allow).
+export const armedCopy = (armed, shown, now = Date.now()) =>
+  (armed && typeof armed.shown === 'string' && armed.shown === shown && allowArmed(armed.at, now) ? armed.shown : null);
 
 // "Deny sent from iPhone at 14:02. ..." The page can't know more: Claude Code
 // never says whether it used the answer.

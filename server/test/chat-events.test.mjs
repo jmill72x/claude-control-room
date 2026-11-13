@@ -184,7 +184,7 @@ async function setup() {
   env.open = (requestId, tool = 'Read') => call({ socketPath: env.sockPath, method: 'POST', path: '/v1/permission-request', headers: { [SESSION_HEADER]: env.token }, body: { requestId, tool, description: 'look', inputPreview: JSON.stringify({ file_path: '/home/owner/Projects/app/README.md' }), relayedAt: env.clock.t } });
   env.tap = (id, cookie, behavior) => {
     const p = env.store.permission(id);
-    return call({ port: env.port, method: 'POST', path: `/api/chat/permission/${id}`, headers: { ...PAGE, cookie }, body: { behavior, shown: shownHash(p.tool, p.description, p.inputPreview, p.exact) } });
+    return call({ port: env.port, method: 'POST', path: `/api/chat/permission/${id}`, headers: { ...PAGE, cookie }, body: { behavior, shown: shownHash(p.tool, p.description, p.inputPreview, p.exact, p.exactNote) } });
   };
   // Settle the handler's pushes (onEvent is not awaited by the routes).
   env.settle = () => new Promise(r => setTimeout(r, 20));

@@ -10,7 +10,7 @@ import { holdReload } from './buildWatch.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
   isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
@@ -289,25 +289,34 @@ function FieldText({ text }) {
 function PermissionCard({ p, chat, now }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
-  const [armedAt, setArmedAt] = useState(null);
+  // The card as this render shows it (what a verdict hashes), and the armed Allow as
+  // { at, shown }: armed on that copy only. A redraw that changes the copy (a gained
+  // exact text, a mark) disarms it at once, here and in the effect below, so a second
+  // tap never allows a card that changed after the first (Ultron's L2, 11-13).
+  const shown = shownInput(p);
+  const [armed, setArmed] = useState(null);
+  const armedNow = armed !== null && armed.shown === shown;
+  useEffect(() => { setArmed(null); }, [shown]);
   // The armed Allow falls back after 4 s, re-rendered by its own timer.
   useEffect(() => {
-    if (armedAt === null) return undefined;
-    const t = setTimeout(() => setArmedAt(null), ALLOW_ARM_MS);
+    if (armed === null) return undefined;
+    const t = setTimeout(() => setArmed(null), ALLOW_ARM_MS);
     return () => clearTimeout(t);
-  }, [armedAt]);
+  }, [armed]);
   const age = Math.max(0, Math.floor((now - (p.relayedAt ?? p.openedAt)) / 1000));
-  const answer = async behavior => {
+  // `copy` is the card the tap was made on: this render's for Deny, the armed one for Allow.
+  const answer = async (behavior, copy) => {
     setBusy(behavior);
     setError(null);
-    setArmedAt(null);
-    const r = await chat.verdict(p.requestId, behavior);
+    setArmed(null);
+    const r = await chat.verdict(p.requestId, behavior, copy);
     setBusy(null);
     if (!r.ok) setError(r.error);
   };
   const onAllow = () => {
-    if (allowArmed(armedAt, Date.now())) answer('allow');
-    else setArmedAt(Date.now());
+    const copy = armedCopy(armed, shown, Date.now());
+    if (copy !== null) answer('allow', copy);
+    else setArmed({ at: Date.now(), shown });
   };
   // Enter never answers a card: only a tap (or Space) does.
   const noEnter = e => { if (e.key === 'Enter') e.preventDefault(); };
@@ -342,7 +351,7 @@ function PermissionCard({ p, chat, now }) {
       {fields.length
         ? fields.map(([k, v]) => (
           <div key={k} className="o-chat-card-field">
-            <span className="o-chat-card-key o-mono">{k === 'command' && exact.length > 0 ? 'command, as relayed (line breaks folded)' : k}</span>
+            <span className="o-chat-card-key o-mono">{k === 'command' && exact.length > 0 ? 'command, as relayed (spacing may differ)' : k}</span>
             <pre className="o-mono o-chat-card-input" tabIndex={0} aria-label={`The ${k}`}><FieldText text={v} /></pre>
           </div>
         ))
@@ -386,10 +395,10 @@ function PermissionCard({ p, chat, now }) {
             </div>
           )}
           <div className="o-chat-card-actions">
-            <button type="button" className="o-cbtn o-cbtn-deny" disabled={busy !== null} onClick={() => answer('deny')}>{busy === 'deny' ? 'Denying…' : 'Deny'}</button>
+            <button type="button" className="o-cbtn o-cbtn-deny" disabled={busy !== null} onClick={() => answer('deny', shown)}>{busy === 'deny' ? 'Denying…' : 'Deny'}</button>
             {p.canAllow && (
-              <button type="button" className={`o-cbtn o-cbtn-allow${armedAt !== null ? ' o-cbtn-armed' : ''}`} disabled={busy !== null} onClick={onAllow}>
-                {busy === 'allow' ? 'Allowing…' : armedAt !== null ? 'Tap again to allow' : 'Allow once'}
+              <button type="button" className={`o-cbtn o-cbtn-allow${armedNow ? ' o-cbtn-armed' : ''}`} disabled={busy !== null} onClick={onAllow}>
+                {busy === 'allow' ? 'Allowing…' : armedNow ? 'Tap again to allow' : 'Allow once'}
               </button>
             )}
           </div>

@@ -1101,7 +1101,9 @@ and a `⇥` for a tab, so two lines can never read as one. Every field is a text
 never Markdown or a link. When a classifier
 block for the same tool came just before (see the hook below), the card says why it is
 asking ("Auto mode refused this Read call (Data Exfiltration), so Claude Code is asking
-you"). Deny is one tap; Allow once is a two-step press ("Tap again to allow", 4 s). A
+you"). Deny is one tap; Allow once is a two-step press ("Tap again to allow", 4 s), armed
+on the card as drawn: a redraw between the taps disarms it, and a verdict carries the hash
+of the copy it was tapped on. A
 Deny-only card shows its reasons and "Allow this one at the terminal or in Discord" in
 place of Allow. After a tap it reads "Deny sent from <device> at 14:02. Claude Code uses
 it if the prompt was still open": the page never knows more, because there is no
@@ -1390,8 +1392,8 @@ pushes a report out, every match is a conflict until that report would have been
 forgotten (alerted with `evicted: true`), so a flood can't push the real text out and
 leave a forged copy alone. None is Deny-only. In parity (`chat.approvalsRules`), a conflict
 is a mark, never a gate: the card loses its exact text, shows the relayed preview with a
-note to check the terminal (`exactNote`), and keeps Allow; an Allow tapped on the card as
-it was before gets a 409 with `changed: true` and the card as it is now, which the page
+note to check the terminal (`exactNote`, covered by the shown hash), and keeps Allow; an
+Allow tapped on any earlier copy of the card (folded, or with a text it gained late) gets a 409 with `changed: true` and the card as it is now, which the page
 draws (not counted toward the device lockout), while a Deny tapped on it counts. A text with anything but printable ASCII, line breaks and tabs is never shown
 as exact (a carriage return included), and a preview with an elision or a `[REDACTED]`
 mask gets none. What the design leans on, and the scratch test (NEXT.md §10, exact Bash

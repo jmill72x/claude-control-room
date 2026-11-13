@@ -113,7 +113,7 @@ const strict = cmd => denyOnlyReasons({ tool: 'Bash', description: 'd', inputPre
 const has = (list, re) => list.some(r => re.test(r));
 const cp = n => String.fromCodePoint(n);
 
-test('Bash is Deny-only on the page by default: a relayed command may have lost its line breaks (finding 1)', () => {
+test('Bash is Deny-only on the page by default: the spacing of a relayed command may differ from what runs (finding 1)', () => {
   for (const cmd of ['ls', 'pwd', 'git status', `cat ${APP}/notes.txt`, 'cat notes.txt rm -rf ~/Projects']) {
     assert.ok(has(bash(cmd), /Bash is answered at the terminal or in Discord/), cmd);
   }
@@ -727,7 +727,7 @@ async function setup(opts = {}) {
   env.unix = opts => call({ socketPath: env.sockPath, ...opts, headers: { [SESSION_HEADER]: env.token, ...(opts.headers ?? {}) } });
   // A request the page may allow by default: a Read inside a plain project folder.
   env.open = (requestId, preview = { file_path: '/home/owner/Projects/app/README.md' }, extra = {}) => env.unix({ method: 'POST', path: '/v1/permission-request', body: { requestId, tool: 'command' in preview ? 'Bash' : 'Read', description: 'list', inputPreview: JSON.stringify(preview), relayedAt: env.clock.t, ...extra } });
-  env.shown = id => { const p = env.store.permission(id); return shownHash(p.tool, p.description, p.inputPreview, p.exact); };
+  env.shown = id => { const p = env.store.permission(id); return shownHash(p.tool, p.description, p.inputPreview, p.exact, p.exactNote); };
   // `shown` defaults to the right hash; passing `shown: undefined` leaves it out.
   env.tap = (id, cookie, behavior, opts = {}) => {
     const shown = 'shown' in opts ? opts.shown : env.store.permission(id) ? env.shown(id) : 'f'.repeat(64);
@@ -1464,6 +1464,56 @@ test('a Deny made on a card that was marked but not yet redrawn counts; a change
     assert.equal((await env.tap('eeeee', env.phone, 'deny')).status, 200);
     // A closed card keeps no old text.
     assert.equal(env.store.permission('ddddd').exactWas, null);
+  } finally { await env.close(); }
+});
+
+test('parity: a card that gained its text late and then lost it to a rival, or that a late rival marked, is a new card; a tap on any earlier copy is changed (Ultron\'s L3, 11-13)', async () => {
+  const real = 'ls /home/owner/Projects/app  # look\nrm -rf /home/owner/Projects/app';
+  const folded = foldWhitespace(real);
+  const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await env.mark('phone', true);
+    // Gained, then disputed: the card ends with no text again, but with the note.
+    await env.open('gdgdg', { command: folded });
+    const plain = env.shown('gdgdg');
+    clock(env, 22);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    assert.equal(env.store.permission('gdgdg').exact, real);
+    const gained = env.shown('gdgdg');
+    clock(env, 20e3);
+    env.approvals.noteExact({ sessionId: 'lead', command: folded });
+    const p = env.store.permission('gdgdg');
+    assert.equal(p.exact, null);
+    assert.match(p.exactNote, /A different command with the same look/);
+    assert.notEqual(env.shown('gdgdg'), plain, 'the note is part of what the card shows');
+    // Allows made on either earlier copy: changed, with the card, never counted.
+    for (let i = 0; i < 10; i++) {
+      if (i % 5 === 0) clock(env, MIN);
+      const r = await env.tap('gdgdg', env.phone, 'allow', { shown: i % 2 ? gained : plain });
+      assert.equal(r.status, 409, `${i}: ${r.text}`);
+      assert.equal(r.json.changed, true, `${i}`);
+      assert.match(r.json.request.exactNote, /A different command with the same look/);
+    }
+    assert.ok(!env.events.some(e => e.kind === 'approvals-lockout'), 'no lockout for a card that changed');
+    assert.equal(env.store.permission('gdgdg').state, 'open');
+    clock(env, MIN);
+    assert.equal((await env.tap('gdgdg', env.phone, 'deny', { shown: plain })).status, 200, 'a Deny on the first copy counts');
+    // Marked by a late rival (a report kept from before the card's window, then one in it).
+    clock(env, 5 * MIN);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    clock(env, 5000);
+    await env.open('lmlml', { command: folded });
+    assert.equal(env.store.permission('lmlml').exactNote, undefined, 'nothing in its window yet');
+    const before = env.shown('lmlml');
+    clock(env, 22);
+    env.approvals.noteExact({ sessionId: 'lead', command: folded });
+    assert.match(env.store.permission('lmlml').exactNote, /A different command with the same look/);
+    assert.notEqual(env.shown('lmlml'), before);
+    const late = await env.tap('lmlml', env.phone, 'allow', { shown: before });
+    assert.equal(late.status, 409, late.text);
+    assert.equal(late.json.changed, true);
+    clock(env, MIN);
+    assert.equal((await env.tap('lmlml', env.phone, 'allow')).status, 200, 'on the marked card Allow goes through (parity)');
   } finally { await env.close(); }
 });
 

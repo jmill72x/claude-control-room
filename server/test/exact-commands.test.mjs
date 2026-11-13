@@ -11,6 +11,7 @@ import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   foldWhitespace, exactTextOk, checkExactReport, createExactCommands,
   EXACT_TTL_MS, EXACT_WINDOW_BEFORE_MS, EXACT_WINDOW_AFTER_MS, EXACT_MAX_CHARS, EXACT_KEEP
@@ -653,6 +654,17 @@ test('the shown hash covers the exact text when the card showed one', () => {
   assert.equal(shownHash('Bash', 'd', '{"command":"a b"}'), shownHash('Bash', 'd', '{"command":"a b"}', null), 'no exact text: the hash as before');
   assert.notEqual(shownHash('Bash', 'd', '{"command":"a b"}', 'a b'), shownHash('Bash', 'd', '{"command":"a b"}'));
   assert.notEqual(shownHash('Bash', 'd', '{"command":"a b"}', 'a b'), shownHash('Bash', 'd', '{"command":"a b"}', 'a\nb'), 'one line or two is another card');
+});
+
+test('the shown hash covers the parity note too, as an object after the exact text (Ultron\'s L3, 11-13)', () => {
+  const pv = '{"command":"a b"}';
+  assert.notEqual(shownHash('Bash', 'd', pv, null, 'N.'), shownHash('Bash', 'd', pv), 'a card with the note is not the card before it');
+  assert.equal(shownHash('Bash', 'd', pv, null, null), shownHash('Bash', 'd', pv), 'no note: the hash as before');
+  assert.notEqual(shownHash('Bash', 'd', pv, null, 'N.'), shownHash('Bash', 'd', pv, 'N.'), 'a note never reads as an exact text');
+  // Pinned, and pinned the same in web/test/orbit-chat.test.js: the page hashes alike.
+  assert.equal(shownHash('Bash', 'd', pv, null, 'N.'), createHash('sha256').update(JSON.stringify(['Bash', 'd', pv, { note: 'N.' }])).digest('hex'));
+  assert.equal(shownHash('Bash', 'd', pv, null, 'N.'), 'd211438aea7f2c7251cc228704cda9e51112e1971a713717554b8ab70b0225be');
+  assert.equal(shownHash('Bash', 'd', pv, 'a  b', 'N.'), 'ebaf5c7d63a829124085e339ccc1588e38989c9106624bdf06508915820e6b17');
 });
 
 // ---- the ingest ----

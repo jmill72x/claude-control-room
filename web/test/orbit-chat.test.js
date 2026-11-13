@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, changedCard, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, changedCard, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, armedCopy, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
   isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, pairedSince, codeState, KEY_IDLE_DAYS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
@@ -323,6 +323,15 @@ test('the exact command: the hash covers it, and its rows keep every line break 
   // The server's rule, computed apart: sha256 over the same four items.
   const { createHash } = await import('node:crypto');
   assert.equal(await sha256Hex(shownInput({ ...p, exact: 'cat a\nrm b' })), createHash('sha256').update(JSON.stringify([p.tool, p.description, p.inputPreview, 'cat a\nrm b'])).digest('hex'));
+  // The parity note (Ultron's L3): last, as { note }; pinned to the server's own hashes
+  // (server/test/exact-commands.test.mjs).
+  const q = { tool: 'Bash', description: 'd', inputPreview: '{"command":"a b"}' };
+  assert.equal(shownInput({ ...q, exact: null, exactNote: 'N.' }), JSON.stringify(['Bash', 'd', '{"command":"a b"}', { note: 'N.' }]));
+  assert.notEqual(shownInput({ ...q, exactNote: 'N.' }), shownInput(q), 'the note changes the card');
+  assert.notEqual(shownInput({ ...q, exactNote: 'N.' }), shownInput({ ...q, exact: 'N.' }), 'a note never reads as an exact text');
+  assert.equal(shownInput({ ...q, exactNote: 7 }), shownInput(q));
+  assert.equal(await sha256Hex(shownInput({ ...q, exact: null, exactNote: 'N.' })), 'd211438aea7f2c7251cc228704cda9e51112e1971a713717554b8ab70b0225be');
+  assert.equal(await sha256Hex(shownInput({ ...q, exact: 'a  b', exactNote: 'N.' })), 'ebaf5c7d63a829124085e339ccc1588e38989c9106624bdf06508915820e6b17');
   assert.deepEqual(exactRows('ls -la'), [{ parts: [{ text: 'ls -la' }], end: false }]);
   assert.deepEqual(exactRows('cat a\nrm b'), [{ parts: [{ text: 'cat a' }], end: true }, { parts: [{ text: 'rm b' }], end: false }]);
   assert.deepEqual(exactRows('a\tb'), [{ parts: [{ text: 'a' }, { tab: true }, { text: 'b' }], end: false }]);
@@ -340,6 +349,15 @@ test('Allow once is armed by the first tap for 4 seconds; the "sent" line never 
   assert.equal(allowArmed(T0, T0 + ALLOW_ARM_MS - 1), true);
   assert.equal(allowArmed(T0, T0 + ALLOW_ARM_MS), false);
   assert.equal(allowArmed(T0 + 10, T0), false, 'a clock that went back');
+  // Armed on a copy of the card (Ultron's L2): the second tap allows that copy only if
+  // the card still shows it, inside the 4 s.
+  const a = shownInput({ tool: 'Bash', description: 'd', inputPreview: '{"command":"a b"}' });
+  const b = shownInput({ tool: 'Bash', description: 'd', inputPreview: '{"command":"a b"}', exact: 'a  b' });
+  assert.equal(armedCopy({ at: T0, shown: a }, a, T0 + 1000), a);
+  assert.equal(armedCopy({ at: T0, shown: a }, b, T0 + 1000), null, 'the card changed between the taps');
+  assert.equal(armedCopy({ at: T0, shown: a }, a, T0 + ALLOW_ARM_MS), null, 'past the 4 s');
+  assert.equal(armedCopy(null, a, T0), null);
+  assert.equal(armedCopy({ at: T0 }, undefined, T0), null, 'no copy armed');
   assert.equal(sentLine({ state: 'allowed', answeredBy: 'iPhone', answeredAt: T0 }), 'Allow sent from iPhone at 09:05. Claude Code uses it if the prompt was still open.');
   assert.equal(sentLine({ state: 'denied' }), 'Deny sent. Claude Code uses it if the prompt was still open.');
 });

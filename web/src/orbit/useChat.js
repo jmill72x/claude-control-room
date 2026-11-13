@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -260,15 +260,18 @@ export function useChat({ active }) {
   const discard = useCallback(clientId => setMessages(list => list.filter(m => !(m.clientId === clientId && !Number.isInteger(m.seq)))), []);
 
   // ---- verdicts ----
-  // The verdict carries the hash of the request as this page received it, so a
-  // card that went stale (the request changed under the same id) is refused.
+  // The verdict carries the hash of the card the tap was made on (`shown`, its
+  // shownInput, from the card: for an Allow, the copy the first tap armed), never the
+  // latest copy, so a tap on a card that changed since (the request changed under the
+  // same id, or the gate redrew it) is refused (Ultron's L2, 11-13).
   const permissionsRef = useRef(permissions);
   permissionsRef.current = permissions;
-  const verdict = useCallback(async (requestId, behavior) => {
+  const verdict = useCallback(async (requestId, behavior, copy) => {
     try {
       const held = permissionsRef.current.get(requestId);
       if (!held) return { ok: false, error: 'this request is no longer on the page' };
-      const shown = await sha256Hex(shownInput(held));
+      if (typeof copy !== 'string') return { ok: false, error: 'this card cannot say what it showed; reload' };
+      const shown = await sha256Hex(copy);
       const r = await api.answerPermission(requestId, behavior, shown);
       setPermissions(map => { const p = map.get(requestId); return p ? upsertPermission(map, { ...p, state: r.state, answeredBy: device?.name ?? p.answeredBy ?? null, answeredAt: r.answeredAt ?? Date.now() }) : map; });
       return { ok: true };
