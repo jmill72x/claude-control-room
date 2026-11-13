@@ -723,6 +723,60 @@ go-live steps below are kept as the record of what was planned.**
   through Apple). "Ask Jarvis" speaking the answer (needs a read scope on the key; not
   built on purpose). Key expiry is the entry above (board 2fb1fea8).
 
+**Page approval cards live as long as the channel holds the request (board 94b380fd):
+staged 2026-11-13 on `jos/perm-hold` (from main ec4a9f0, worktree
+`~/Projects/.worktrees/ccr-perm-hold`), not committed, not live. It has no effect until
+the channel says how long it holds a request, which needs a channel release (below).**
+On 11-12 a card timed out at 10 minutes while Jeff was away; Claude Code's prompt and
+Discord's buttons have no limit.
+
+- *What is built.* (1) The page's window comes from the channel's hello: `permHoldMs`
+  less a minute, at most 12 hours (`permissionWindow`, `lib/chat-store.mjs`); a channel
+  that doesn't send it gets the old 10 minutes, so the server change is safe to take live
+  before the channel. Each request keeps the window in force when it opened, and the
+  card's `expiresAt` says it. Start line: `chat: the page can answer a permission request
+  for <N> min (…)`. (2) Cards end with their session: the channel's bye now expires every
+  open card (before, only the next hello from a new process did), and so does a channel
+  that has sent nothing (no heartbeat, request or hello) for 10 minutes (a session killed
+  with no SessionEnd and no bye); the lead's UserPromptSubmit, Stop and SessionEnd still
+  close them as answered elsewhere. (3) Bounds: at most 50 open (as the channel's
+  `PENDING_PERMS_MAX`; past it the oldest open one ends `crowded`), at most 500 kept in
+  all (oldest closed first), and the per-session id set is cleared at each new session.
+  An expired card says why (`ended`: `timeout`, `channel`, `crowded`) and the page words
+  each; the card's age reads in hours past two. A timed-out card is replayed to a page
+  for 50 minutes after its own window ends (was: an hour from the relay).
+- *The channel change it needs (Jarvis's repo, `jarvis-local/plugins/jarvis-channel/`,
+  a channel release, gated):* `PERM_FORGET_MS` from `11 * 60 * 1000` to
+  `12 * 60 * 60 * 1000 + 60 * 1000` (server.mjs line 149); the hello at line 1435 adds
+  `permHoldMs: PERM_FORGET_MS`; the test at test/channel.test.mjs:601 asserts the new
+  value, plus a test that the hello carries it. `PENDING_PERMS_MAX` (50),
+  `PERM_RESEND_MS` (10 min, only for a request not yet relayed) and
+  `VERDICT_MAX_AGE_MS` (120 s, the age of an answer, not of the request) stay. Memory:
+  at most 50 pending entries of three capped fields each.
+- *Go-live order:* this commit, the service restart (the log line says 10 min), then the
+  channel release (a new session; the log line says 720 min). Either alone is harmless:
+  this server with the old channel keeps 10 minutes; the new channel with the old server
+  is ignored (an unknown hello field) and keeps 10 minutes too. Then `cd web && npm run
+  build` (an old page shows the new server's cards correctly, only the expired wording
+  stays "10 minutes").
+- *Checks after both:* the log line above says 720 min; a harmless prompt left 15 minutes
+  can still be allowed from the page; ending the session (`/exit`) turns its open card to
+  "Jarvis's session or its channel ended".
+- *Rollback:* revert the commit and restart; or the channel alone back to 0.4.6 (10
+  minutes again).
+- *Costs:* a card can now be answered hours after it was asked, so its preview is
+  hours old too (the command shown is still exactly what waits); the flood count (more
+  than 5 open, in guarded mode) can be reached by requests that would have expired
+  before, though the turn-end close keeps the open set small; a stalled channel that
+  comes back after 10 silent minutes finds its cards ended here (fails closed: answer at
+  the terminal or in Discord).
+- *Tests:* `server/test/permission-hold.test.mjs` (13), `web/test/orbit-chat-hold.test.js`
+  (4); one replay test in approvals-parity now counts 50 minutes from the timeout. Server
+  1097, web 214. Mutation checks: 26 server mutants, 25 caught; the miss is the id set's
+  clear (memory only, not observable); 6 page mutants, all caught.
+- *Unverified:* everything live; that Claude Code itself never times out a channel's
+  permission request (its own docs say nothing; Discord's buttons have worked late).
+
 **Approvals parity and cards answered elsewhere: merged as c091760 and live since
 2026-11-12 16:47 ET (per Jarvis's 11-12 brief; built on `jos/approvals-consistency` from
 main af58df0).** Jeff,
@@ -807,10 +861,8 @@ else" describe both parts; the header of `server/lib/approvals.mjs` has the rule
   lead's transcript. (2) Discord's buttons can't be closed from here and never match the
   page's Deny-only exceptions; turning Discord's permission relay off means a patched copy
   of the official plugin (it declares the capability with no switch), which is Ultron's and
-  Jarvis's. (3) The page can answer for 10 minutes only (`PERMISSION_TTL_MS` here, and the
-  channel forgets a request after 11, `PERM_FORGET_MS` in Jarvis's repo); Discord's buttons
-  have no such limit, so after 10 minutes the approve button is still in one place only.
-  Lifting it is a change in both repos. (4) The tap limits (6 a minute, 30 an hour per
+  Jarvis's. (3) The page could answer for 10 minutes only; lifted to as long as the
+  channel holds the request (up to 12 hours) by the entry above, once the channel says so. (4) The tap limits (6 a minute, 30 an hour per
   device) now count every Bash approval; a busy hour can hit 30, and the page then answers
   429 until the hour moves on. (5) The Mac has no push subscription, so a page that is not
   on the Chat tab, or hidden, learns of a request only from the tab's badge. (6) The
