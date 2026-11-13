@@ -90,7 +90,9 @@ export function createHealth({
   log = console.error,
   now = () => Date.now(),
   // Whose processes count as the lead's session: the user this server runs as.
-  uid = process.getuid()
+  uid = process.getuid(),
+  // The heal runner's quiet marks (lib/heal-runner.mjs, quietOf), for the Jobs list.
+  quietOf = () => null
 }) {
   let answer = null;
   // Settled once the first collect has asked job-status, answered or not. The
@@ -168,7 +170,7 @@ export function createHealth({
       const unanswered = !settings.jobStatus ? 'job-status is not set up' : error ? `job-status ${error}` : null;
       const byLabel = new Map((answer?.jobs ?? []).map(j => [j.label, j]));
       const crons = cache?.get('crons', at)?.data;
-      const jobs = buildJobs({ settings, answer, error, crons, jobNames });
+      const jobs = buildJobs({ settings, answer, error, crons, jobNames, quietOf });
 
       const views = [];
       for (const service of settings.services) {

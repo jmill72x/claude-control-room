@@ -417,6 +417,56 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Jarvis OS 6, self-healing loops (board b384cd92): designed 2026-11-12
+(`docs/design/2026-11-12-self-healing-loops.md`); loop 1 (board ea709def) built and staged
+2026-11-12 on `jos/loop1` (from main ec4a9f0, worktree `~/Projects/.worktrees/ccr-loop1`),
+not committed, not live.** The branch carries the design doc byte for byte as committed on
+`jos/self-healing-design` (ea2241e), and this paragraph replaces that commit's 4-line
+pointer here, so merge `jos/loop1` in its place (merging both conflicts only on this
+paragraph; take this one). Loop 1 marks a job "quiet, ran clean" (grey, no push, no event)
+when job-status calls it overdue for its log's age alone and two read-only `launchctl print`
+readings show the run counter rose with exit 0 at both. It also lays the shared parts: the
+catalog loader with its verb-floor check, the runner, the ledger (`server/data/heals.json`),
+the kill switch (`~/.local/state/jarvis-os/heal-off`), `GET /api/loops` and a read-only
+Loops panel. README, "Self-healing loops", has the mechanism and the config block.
+- **Go-live, in this order:** C&P; `cd web && npm run build` (the live bundle shows a quiet
+  job as a red "failed" row under a green "all OK" chip: checked headless against the new
+  server, so the build goes before heals are on); the service restart; then Jarvis adds the
+  `heal` block to config.json (`enabled: true`, the NAS mount job as the one target with
+  `["mark-quiet"]`) and the service restarts again (config is read at start). With no block
+  it logs `heal: unset` and changes nothing.
+- **Undo:** `touch ~/.local/state/jarvis-os/heal-off` lifts every quiet mark within a minute
+  with no restart, or `heal.enabled: false` with a restart.
+- **Departures from the design, to defend:** (1) a calendar job is checked by the counter
+  across its next due time, not by `missed-runs`, which judges by the same stale log time
+  and would call a quiet job missed; (2) no `heal-done` event yet: an event wakes the lead,
+  loop 1's done-means says no wake, and the released channel maps unknown event names to
+  "unknown", so it waits for Jeff's answer to the design's question 3 and a channel change;
+  (3) the caps count instances, not ledger lines, because the quiet marks live in memory and
+  each restart re-checks (11 restarts on 11-11 would have spent the 3-a-day cap on one job);
+  (4) a comeback within the hour means another instance, so the same one checked again after
+  the kill switch or a restart is not refused.
+- **For Ultron:** the runner (`lib/heal-runner.mjs`: order of the kill checks, ledger line
+  before the mark, one attempt per instance), the floor check and `toolsFor`
+  (`lib/heal.mjs`), the hold in `collectors/notifier.mjs` (an already-pushed key is never
+  held), and the quiet downgrade (exit 0 at both readings, so a crash loop's rising counter
+  can't pass).
+- **Checked:** server 1137 tests (53 new) and web 217 (7 new), each in local time and `TZ=Asia/Tokyo`; 111
+  mutants over the heal code all caught (two no-op baselines pass); the Loops panel headless
+  (Chromium) at 390 and 1440 px in five modes (open, quiet, killed, not set up, a server
+  without loops), no sideways scroll, no CSP violation. The live `launchctl print` output
+  was read (read-only) for the field formats: `runs = N`, `last exit code = 0` or
+  `(never exited)`, `run interval = 180 seconds`, and `last terminating signal` in place of
+  an exit after a signal. **Unverified:** the counter's behaviour across sleep and wake and
+  for a job running at the moment of a reading (fixtures only); Safari.
+- **Not built (later loops, or follow-ups):** loops 2 and 3 and the T2 proposals with their
+  approve and decline routes; the "3 in 14 days" fix-item event; the loop count on the
+  health strip; the morning brief still reads job-status directly, so it still calls a quiet
+  job overdue (a Jarvis-side change: read `/api/loops`, or teach job-status the counter).
+  Board 20620d37 (an acked job red after a restart) is next door but untouched: the runner
+  runs after the crons pass's `whenAsked()` wait, so a first pass without job-status's
+  answer has no `staleLog` entry and opens no loop.
+
 **The drain's scope (Ultron's L1 on ec4a9f0, board 7be15fee): staged 2026-11-13 on
 `jos/shortcut-drain-scope` (from main ec4a9f0, worktree
 `~/Projects/.worktrees/ccr-shortcut-drain-scope`), not committed, not live.** A refusal

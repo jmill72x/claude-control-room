@@ -9,6 +9,8 @@ import { Note } from './Note.jsx';
 import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
 import { Waiting } from './Waiting.jsx';
 import { Routines } from './Routines.jsx';
+import { Loops } from './Loops.jsx';
+import { hasOpen } from '../lib/orbit/loops.js';
 import { youEvents } from '../lib/orbit/waiting.js';
 import { useMediaQuery } from '../hooks/useMediaQuery.js';
 import { useMore } from './useMore.js';
@@ -235,11 +237,16 @@ function HeatMap({ payload }) {
 // the agent work map, Today agent by agent, Latest runs, Next 24 hours, Burn beside
 // the week's heat map. On a phone the rest sits under one "More" disclosure that
 // remembers its state per viewer, so the first two screens are what Jeff came for.
+// The Loops panel (self-healing loops, §6) leads the rest, and moves up under Usage
+// limits while a loop is open, so a phone shows it without opening More.
 export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged }) {
   const phone = useMediaQuery(PHONE_QUERY);
   const [more, setMore] = useMore();
+  const loopsOpen = hasOpen(payload?.loops);
+  const loops = <Loops payload={payload} now={now} />;
   const rest = (
     <>
+      {!loopsOpen && loops}
       <AgentMap payload={payload} now={now} roster={roster} />
       <TodayByAgent payload={payload} now={now} roster={roster} />
       <LatestRuns payload={payload} now={now} roster={roster} />
@@ -257,11 +264,12 @@ export function Overview({ payload, now, roster, board, waiting, setWaiting, onO
         <UsageLimits payload={payload} now={now} />
         <Routines payload={payload} now={now} />
       </div>
+      {loopsOpen && loops}
       {!phone ? rest : (
         <section className="o-more-fold" aria-label="More panels">
           <button type="button" className="o-btn o-more-toggle" aria-expanded={more} aria-controls="o-more-panels" onClick={() => setMore(!more)}>
             <svg className={`o-wcard-turn${more ? ' o-turned' : ''}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-            {more ? 'Less' : 'More: agents, latest runs, next 24 hours, burn, this week'}
+            {more ? 'Less' : `More: ${loopsOpen || !payload?.loops ? '' : 'loops, '}agents, latest runs, next 24 hours, burn, this week`}
           </button>
           {more && <div id="o-more-panels" className="o-more-panels">{rest}</div>}
         </section>

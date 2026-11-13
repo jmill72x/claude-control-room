@@ -13,7 +13,11 @@ import { collectUsage } from './collectors/usage.mjs';
 import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
-import { createHealth, JOB_STATUS_TIMEOUT_MS } from './collectors/health.mjs';
+import { createHealth, JOB_STATUS_TIMEOUT_MS, runLaunchctlPrint } from './collectors/health.mjs';
+import { readHealConfig } from './lib/heal.mjs';
+import { createHealLedger } from './lib/heal-ledger.mjs';
+import { createHealRunner } from './lib/heal-runner.mjs';
+import { matchingAck } from './lib/acks.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readHealthConfig } from './lib/health.mjs';
 import { createToPush } from './collectors/to-push.mjs';
@@ -120,13 +124,47 @@ registry.register('usage', async () => {
 // The health strip (collectors/health.mjs): job-status every minute, whose
 // verdicts the crons panel then takes over launchd's own, so the morning brief,
 // the page, the mod and the alerts agree on every job.
-const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT });
+// The self-healing loops (lib/heal-runner.mjs; docs/design/2026-11-12-self-healing-loops.md):
+// loop 1 marks a job quiet when job-status calls it overdue for its log's age alone and
+// launchd's run counter shows it ran clean. Off unless config's `heal.enabled` is true;
+// the kill switch is the file `heal-off` beside the chat's sockets (no restart needed).
+// Its only launchd call is `launchctl print`, the same read-only call the health strip makes.
+const healSettings = readHealConfig(config);
+for (const problem of healSettings.problems) console.error(`config: ${problem}`);
+const healOffPath = join(homedir(), '.local', 'state', 'jarvis-os', 'heal-off');
+const heal = createHealRunner({
+  settings: healSettings,
+  ledger: createHealLedger({ path: join(HERE, 'data', 'heals.json') }),
+  launchctlPrint: runLaunchctlPrint,
+  killed: () => existsSync(healOffPath),
+  jobNames: roster.jobs
+});
+await heal.load();
+if (heal.catalogProblem()) console.error(`heal: the catalog was refused (${heal.catalogProblem()}); heals stay off`);
+{
+  const { status, why } = heal.status();
+  console.log(`heal: ${status}${why ? ` (${why})` : ''}, ${healSettings.targets.size} target${healSettings.targets.size === 1 ? '' : 's'}`);
+}
+const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT, quietOf: (label, since) => heal.quietOf(label, since) });
 // The first crons pass waits for job-status's first answer (whenAsked), or its
 // overlay misses the times an ack is matched by; the timeout is job-status's own.
+// Then the heal runner sees the overlaid panel (an acked instance opens no loop).
 registry.register('crons', async () => {
   const crons = await collectCrons();
   await Promise.race([health.whenAsked(), delay(JOB_STATUS_TIMEOUT_MS + 5e3, null, { ref: false })]);
-  return health.overlay(crons);
+  const overlaid = health.overlay(crons);
+  const now = Date.now();
+  let acks = [];
+  try { acks = await ackStore.read(now); } catch { acks = []; }
+  // A fault in the runner never costs the crons panel: the panel goes out as overlaid.
+  try {
+    return await heal.pass(overlaid, {
+      acked: c => Boolean(matchingAck({ kind: 'cron', key: `cron:launchd:${c.label}`, since: c.lastRunAt }, acks, now))
+    });
+  } catch (err) {
+    console.error(`heal: the pass failed (${err?.message ?? err})`);
+    return overlaid;
+  }
 }, 60 * 1000);
 registry.register('health', () => health.collect(), 60 * 1000);
 // Waiting on you's To push tile (collectors/to-push.mjs): git-read on each repo
@@ -254,7 +292,9 @@ const api = createHandler({
   // window's end); ntfy gets generic words at low priority, at most one an hour across
   // every key and 12 a local day (lib/ack-notice-limit.mjs). Guarded by a source test
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
-  onAckNotice: (notice, key) => ackNotices.notice(key, notice)
+  onAckNotice: (notice, key) => ackNotices.notice(key, notice),
+  // GET /api/loops and the dashboard's `loops` (lib/heal-runner.mjs, view).
+  loops: () => heal.view()
 });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the

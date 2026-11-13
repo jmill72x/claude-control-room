@@ -146,6 +146,19 @@ export function jobVerdict(entry, generatedAt) {
   return { state: neverRan ? 'new' : 'ok', reason: null, lastRunAt };
 }
 
+// job-status's log-age clause (jarvis/status.py, _job), when it is the whole reason.
+const LOG_AGE_ONLY = /^log last written \d+(?:\.\d+)? h ago, more than the \d+(?:\.\d+)? h expected$/;
+
+// A failure whose only fault is the log's age (self-healing loop 1): job-status says
+// not OK, launchd's last exit was 0, the job is loaded, and the reason is the log-age
+// clause and nothing else. Any second fault ("; ...") or another reason is not this.
+export function staleLogOnly(entry) {
+  return entry?.ok === false && entry.lastExit === 0 &&
+    typeof entry.state === 'string' && entry.state !== 'not loaded' &&
+    Number.isFinite(entry.logAgeHours) && Number.isFinite(entry.maxAgeHours) && entry.logAgeHours > entry.maxAgeHours &&
+    typeof entry.reason === 'string' && LOG_AGE_ONLY.test(entry.reason);
+}
+
 // The crons panel's short word for a failed job, which the mod and the classic
 // page show as they always have.
 function failedWord(entry) {
@@ -174,7 +187,10 @@ export function overlayCrons(crons, answer, now) {
     const state = v.state === 'new' ? 'never' : v.state;
     const last = state === 'failed' ? failedWord(entry) : state === 'never' ? 'Not yet run' : 'OK';
     const exit = state === 'failed' && Number.isInteger(entry.lastExit) && entry.lastExit !== 0 ? entry.lastExit : null;
-    return { ...c, ok: state !== 'failed', state, last, exit, lastRunAt: v.lastRunAt };
+    const out = { ...c, ok: state !== 'failed', state, last, exit, lastRunAt: v.lastRunAt };
+    // For the heal runner (lib/heal-runner.mjs), which may find it only quiet.
+    if (state === 'failed' && staleLogOnly(entry)) out.staleLog = true;
+    return out;
   }).sort(cronOrder);
 }
 
@@ -184,19 +200,22 @@ export const jobDisplayName = (label, jobNames = {}) => jobNames?.[label]?.name 
 
 // The Jobs chip: every job job-status reports that no service chip speaks for.
 // Failed first, then in job-status's own order (by label), so related jobs
-// stay together. `status` is ok, unset (no path in config) or error.
-export function buildJobs({ settings, answer, error = null, crons = [], jobNames = {} }) {
+// stay together. `status` is ok, unset (no path in config) or error. `quietOf(label,
+// since)` is the heal runner's: a failed job it found ran clean reads `quiet`.
+export const QUIET_REASON = 'its log is old, but launchd shows it ran clean';
+export function buildJobs({ settings, answer, error = null, crons = [], jobNames = {}, quietOf = () => null }) {
   if (!settings?.jobStatus) return { status: 'unset', error: null, list: [] };
   if (!answer) return { status: 'error', error: error ?? 'no answer yet', list: [] };
   const claimed = claimedLabels(settings);
   const schedules = new Map((Array.isArray(crons) ? crons : []).map(c => [c?.label, c?.schedule]));
   const list = answer.jobs.filter(j => !claimed.has(j.label)).map(j => {
     const v = jobVerdict(j, answer.generatedAt);
+    const quiet = v.state === 'failed' && staleLogOnly(j) && quietOf(j.label, v.lastRunAt);
     return {
       name: jobDisplayName(j.label, jobNames),
       schedule: typeof schedules.get(j.label) === 'string' ? schedules.get(j.label) : null,
-      state: v.state,
-      reason: v.reason
+      state: quiet ? 'quiet' : v.state,
+      reason: quiet ? QUIET_REASON : v.reason
     };
   });
   const failedFirst = list.map((j, i) => [j, i]).sort((a, b) =>

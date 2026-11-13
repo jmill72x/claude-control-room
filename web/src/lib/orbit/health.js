@@ -45,10 +45,13 @@ function jobsChip(jobs) {
   if (list.length === 0) return { value: 'none', tone: 'idle' };
   const failed = list.filter(j => j.state === 'failed' && !j.ack).length;
   const acked = list.filter(isAcked).length;
-  const ackWord = acked > 0 ? ` · ${plural(acked, 'ack', 'acks')}` : '';
+  // A job a heal loop found ran clean although its log is old (server/lib/heal-runner.mjs).
+  const quiet = list.filter(j => j.state === 'quiet').length;
+  const ackWord = (acked > 0 ? ` · ${plural(acked, 'ack', 'acks')}` : '') + (quiet > 0 ? ` · ${quiet} quiet` : '');
   if (failed > 0) return { value: `${failed} failed${ackWord}`, tone: 'bad' };
-  // Grey, not green: the acked job did fail, and the chip says so without shouting.
-  if (acked > 0) return { value: `all OK${ackWord}`, tone: 'idle' };
+  // Grey, not green: the acked job did fail, and the chip says so without shouting. A
+  // quiet one is the same: its log says one thing and launchd another.
+  if (acked > 0 || quiet > 0) return { value: `all OK${ackWord}`, tone: 'idle' };
   return { value: 'all OK', tone: 'ok' };
 }
 
@@ -93,6 +96,7 @@ export function healthChips(env, fresh) {
 const JOB_STATE = {
   ok: { state: 'OK', tone: 'ok' },
   new: { state: 'not run yet', tone: 'idle' },
+  quiet: { state: 'quiet', tone: 'idle' },
   failed: { state: 'failed', tone: 'bad' }
 };
 
@@ -103,9 +107,11 @@ function jobsDetail(jobs, now) {
   const failed = list.filter(j => j.state === 'failed' && !j.ack).length;
   const acked = list.filter(isAcked).length;
   const fresh = list.filter(j => j.state === 'new').length;
+  const quiet = list.filter(j => j.state === 'quiet').length;
   const note = [plural(list.length, 'job', 'jobs')];
   if (failed > 0) note.push(`${failed} failed`);
   if (acked > 0) note.push(`${acked} acknowledged`);
+  if (quiet > 0) note.push(`${quiet} quiet`);
   if (fresh > 0) note.push(`${fresh} ${fresh === 1 ? "hasn't had its" : "haven't had their"} first run yet`);
   return {
     title: 'Scheduled jobs',
@@ -118,7 +124,7 @@ function jobsDetail(jobs, now) {
       return {
         name: j.name,
         when: j.schedule ?? 'no schedule',
-        state: j.state === 'failed' && j.reason ? `failed: ${j.reason}` : s.state,
+        state: j.state === 'failed' && j.reason ? `failed: ${j.reason}` : j.state === 'quiet' && j.reason ? `quiet: ${j.reason}` : s.state,
         tone: s.tone
       };
     })

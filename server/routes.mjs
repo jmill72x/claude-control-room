@@ -289,7 +289,10 @@ export function createIngestHandler(deps) {
 // ackNotice) with the alert's key, and pushes it through the notice limits
 // (lib/ack-notice-limit.mjs, server.mjs); it is not awaited, so a slow push never holds
 // the answer, and a failure is logged. `clock` is the write limit's time, for the tests.
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, clock = () => Date.now() }) {
+// `loops()` is the heal runner's view (lib/heal-runner.mjs), read-only: GET /api/loops,
+// and `loops` in /api/dashboard. Without it, both say the loops are not set up.
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now() }) {
+  const loopsView = () => (loops ? loops() : { status: 'unset', why: 'this server has no heal runner', open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
   const ingest = createIngestRoutes({ cache, needsYou, log, onBlock, onExact, onMoved });
   const ingestTcp = readIngestConfig(config).tcp;
   const panels = now => {
@@ -399,9 +402,14 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
         payload.alerts = config.showAlertBanner ? alerts : [];
         payload.acked = config.showAlertBanner ? acked : [];
         payload.acks = active;
+        payload.loops = loopsView();
         payload.serverTime = now;
         return json(res, 200, payload);
       }
+
+      // The self-healing loops (docs/design/2026-11-12-self-healing-loops.md, §6): what
+      // is open, quiet, held and recently closed. Read-only; names only, no labels.
+      if (req.method === 'GET' && path === '/api/loops') return json(res, 200, loopsView(), { 'Cache-Control': 'no-store' });
 
       // Acknowledging a known miss (docs/design/2026-11-10-jarvis-os-home.md, §6).
       // Anyone who reaches the page may ack: the tailnet, which is the owner's own
