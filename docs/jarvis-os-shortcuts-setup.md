@@ -4,13 +4,16 @@ About 15 minutes, once. Four Shortcuts: **Jarvis Setup** (pairs the phone), **As
 Jarvis**, **Send to Jarvis**, and the **Arrive home** automation. The design and the
 reasons are in `docs/design/2026-11-12-jarvis-os-shortcuts.md`.
 
-Written from the Shortcuts app as of iOS 18, without a phone to try it on: a label may
-differ by a word. If a step doesn't match what you see, say which one.
+Written from the Shortcuts app as of iOS 18; photos and files were first built on a
+phone on 2026-11-13, and what that taught is in the steps. A label may differ by a
+word. If a step doesn't match what you see, say which one.
 
 ## Before you start
 
 - The server needs `chat.shortcuts: true` and a restart (NEXT.md §10 has the order).
 - Tailscale must be connected on the phone whenever a Shortcut runs.
+- Edit a Shortcut on one device at a time. They sync through iCloud, and editing on the
+  iPhone and the iPad together scrambled the step order once.
 - You need three addresses. They are the Jarvis OS address with a path on the end:
   - `https://<mini-hostname>.<tailnet>.ts.net/api/shortcut/pair`
   - `https://<mini-hostname>.<tailnet>.ts.net/api/shortcut/send`
@@ -49,6 +52,9 @@ Run it:
 4. It says "Paired with Jarvis OS." The page says the same a few seconds later.
 
 The key is never shown. If it says "Wrong code", make a new code and run it again.
+
+Each device needs its own key. On the iPad, make another key (name it `iPad`) and run
+Jarvis Setup there; the Shortcuts sync, the key file does not.
 
 A key lasts as long as it is used: every message and every arrive-home report starts
 its 30 days again. One that sends nothing for 30 days stops working, and you run
@@ -118,25 +124,30 @@ PDFs and Files), then these.
 4. Under it, add a second **If**. This one is for photos only, so a PDF or a text file
    is never touched.
    - Input: tap it › Select Variable › **Shortcut Input**. Tap the **Shortcut Input**
-     you just placed and choose **File Extension**.
+     you just placed, set its **Type** to **File** first, then choose **File
+     Extension**. (Without the File type it offers App properties instead.)
    - Condition: **is**. Text: `heic`
-   - Tap **Add to Condition**, switch **All** to **Any**, and add four more of the same
-     kind: is `heif`, is `jpg`, is `jpeg`, is `png`.
+   - Tap **Add to Condition**, switch **All** to **Any**, and add nine more of the same
+     kind: is `heif`, `jpg`, `jpeg`, `png`, `HEIC`, `HEIF`, `JPG`, `JPEG`, `PNG`. (Photos
+     names a file `IMG_1234.HEIC`; whether "is" minds capitals is not known yet, so keep
+     both.)
 5. Inside that second If, add **Convert Image**. Image: **Shortcut Input**. Format:
-   **JPEG**. Tap the arrow and turn **Preserve Metadata** off.
+   **JPEG**. Quality: **50 to 75%**, never full (a full-quality photo made a 31 MB
+   share, which was refused). Tap the arrow and turn **Preserve Metadata** off.
 6. Under Convert Image, still inside the second If, add **Set Variable**. Variable
    Name: `Share`. Input: **Converted Image**.
 7. Delete the **Otherwise** line that came with the second If (not the first one's),
    so its **End If** sits right under step 6.
-8. Under that **End If**, add a new **Get Contents of URL**. Paste the `/send` address.
-   Open it:
-   - Method: **POST**
-   - Headers › `Authorization` = `Bearer`, a space, the **File** variable (the key
-     file, as in the first one).
-   - Request Body: **Form**
-   - Add new field › Text. Key `text`. Value: the **Ask for Input** variable.
-   - Add new field › Text. Key `via`. Value: `share`
-   - Add new field › **File**. Key `file`. Value: the **Share** variable.
+8. Long-press the JSON **Get Contents of URL** from step 2 › **Duplicate**, and drag
+   the copy under that **End If**. Don't build this one by hand: a hand-built one drew
+   "400 Bad Request: invalid header name" from Tailscale Serve, cause unknown, and the
+   copy of the working one did not. Open the copy:
+   - Method, address and the `Authorization` header stay as they are.
+   - Request Body: switch **JSON** to **Form**.
+   - The fields should read: `text` (Text, the **Ask for Input** variable) and `via`
+     (Text, `share`). Delete `shared` if it came across.
+   - Add new field › **File**. Key `file`. Value: the **Share** variable. Once set,
+     the File field shows **blank**; "Choose" means it is not set.
 9. In **Get Dictionary Value** (now under the last **End If**), change the input from
    Contents of URL to **If Result**.
 
@@ -149,22 +160,16 @@ Try it: in Photos open a photo › Share › **Send to Jarvis** › Done. It say
 Jarvis." and the photo is in the chat. Then a PDF from Files, and a Safari page again
 to see that links still work.
 
-**Check on first try.** Three things in the steps above were written without a phone:
-
-- **Whether the second If offers File Extension** for Shortcut Input (step 4). If it
-  doesn't, say so; until it is sorted, leave the second If out and use Most Compatible
-  (below).
-- **Whether "is" minds capitals.** Photos names a file `IMG_1234.HEIC`. If the first
-  photo comes back with "Jarvis OS does not take HEIC photos", add `HEIC`, `JPG` and
-  `PNG` to the list in step 4.
-- **Whether Convert Image keeps the photo's name.** Look at the name under the photo
-  in the chat; it only matters for finding it later.
+**Still unknown:** whether the capital extensions in step 4 are needed (keep them),
+and whether Convert Image keeps the photo's name (it only matters for finding it in
+the chat later).
 
 **The fallback: Most Compatible.** Without the Convert Image step, or whenever it does
 not run, a HEIC photo is refused with "Jarvis OS does not take HEIC photos". In the
 share sheet tap **Options** at the top, choose **Most Compatible**, and share again:
 the phone then hands over a JPEG. That way keeps the photo's place and time in the
-file.
+file. Setting the camera itself to Most Compatible (Settings › Camera › Formats) makes
+every new photo a JPEG; the Shortcut works either way.
 
 What goes: photos (as JPEGs, see above; PNG and WebP are taken too), PDFs, and text or
 Markdown files. Up to 4 files in one share, 10 MB each, 25 MB together, 200 MB a day.
@@ -203,18 +208,22 @@ It is not an instruction, and it sends at most once every 10 minutes.
   an expired key that is tried is also reported in #pepper, once a day.
 - **"Too many messages"**: 20 in 10 minutes, 100 a day. Use the app.
 - **"Too big for Jarvis OS"**: a file is over 10 MB, or the share is over 25 MB
-  together. Share fewer at once, or send it from the Jarvis OS app.
+  together. Check Convert Image's Quality is 50 to 75%, share fewer at once, or send
+  it from the Jarvis OS app.
 - **"It can't take that one"**: the file is not a photo, a PDF or a text file (a
   video, a Word file). **"not what its name or type says"**: the file's contents and
   its name disagree, so it was refused.
 - **"No file reached Jarvis OS"**: the form came with a note at most and no file. In
   the second Get Contents of URL, the `file` field must be of type **File** and hold
-  the **Share** variable. Nothing was sent.
+  the **Share** variable (it shows blank when set; "Choose" means it is empty).
+  Nothing was sent.
 - **"The network connection was lost"** on a photo or a file while links work: the
   upload was dropped before the mini could answer. Check that the second Get Contents
   of URL's `Authorization` header holds the key file (the **File** from Get File from
   Folder), not what you shared, then tell Jarvis: the mini logs what it got of every
   share.
+- **"400 Bad Request: invalid header name"** on a photo or a file: the Form request
+  was built by hand. Delete it and make it again by duplicating the JSON one (step 8).
 - **"could not read that share"**: the second Get Contents of URL is not as written.
   Check that Request Body is **Form**, and that the `file` field is of type **File**
   with the key spelled `file`.
