@@ -5,7 +5,7 @@
 // name, address and id is invented; nothing touches :8322 or data/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, request } from 'node:http';
+import { createServer, request, Agent } from 'node:http';
 import { Readable, PassThrough } from 'node:stream';
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -27,7 +27,7 @@ import {
   createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, sharedLink, publicHostName, checkSend,
   SHARED_MAX, SHARED_WORDS, SHARED_LINK_WORDS, LINK_INLINE_MAX, SENDS_PER_WINDOW, SEND_WINDOW_MS, SENDS_PER_DAY, DUPLICATE_MS, EVENT_DEBOUNCE_MS, EVENTS_PER_DAY, REFUSALS_REPORTED_AT, CLIENT_ID_MAX, VIAS,
   classifyFile, cleanFileName, splitFileName, checkSendForm, attachedWords, FILE_SAY, FILES_MAX, FORM_BODY_MAX, FORM_DRAIN_MAX, FILE_BYTES_PER_DAY, UPLOADS_AT_ONCE, FILE_NAME_MAX, HEIC_MODES,
-  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX
+  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX, requestLine, partsSeen
 } from '../lib/shortcut-routes.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -63,7 +63,7 @@ const call = ({ socketPath, port, method = 'GET', path, headers = {}, body, raw 
 // fake clock, and both routers behind one port, split the way server.mjs splits them.
 async function setup(t, { login = LOGIN, withEvents = true, approvals = null, at = AFTERNOON, shortcutKeys = true, convertHeic = null, fileBytesPerDay = undefined, formTimeoutMs = undefined } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'sc-'));
-  const env = { dir, clock: { t: at }, seen: [], lines: [], timers: [], state: { killed: false, eventsKilled: false, online: true } };
+  const env = { dir, clock: { t: at }, seen: [], lines: [], requests: [], timers: [], state: { killed: false, eventsKilled: false, online: true } };
   const now = () => env.clock.t;
   const onEvent = e => env.seen.push(e);
   env.store = createChatStore({ dir: join(dir, 'chat'), now });
@@ -79,7 +79,8 @@ async function setup(t, { login = LOGIN, withEvents = true, approvals = null, at
     : null;
   env.socket = { status: () => ({ channelConnected: env.state.online, lastHeartbeatAt: null, helloAt: null }) };
   env.chat = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { chat: { login } }, now, onEvent, log: () => {}, approvals, shortcutKeys });
-  env.shortcuts = createShortcutRoutes({ keys: env.keys, devices: env.devices, store: env.store, events: env.events, socket: env.socket, login, now, log: l => env.lines.push(l), onEvent, killed: () => env.state.killed, convertHeic, ...(fileBytesPerDay === undefined ? {} : { fileBytesPerDay }), ...(formTimeoutMs === undefined ? {} : { formTimeoutMs }) });
+  env.shortcuts = createShortcutRoutes({ keys: env.keys, devices: env.devices, store: env.store, events: env.events, socket: env.socket, login, now, log: l => (l.startsWith('shortcut: request ') ? env.requests : env.lines).push(l), onEvent, killed: () => env.state.killed, convertHeic, ...(fileBytesPerDay === undefined ? {} : { fileBytesPerDay }), ...(formTimeoutMs === undefined ? {} : { formTimeoutMs }) });
+  // Each request's one log line (`requestLine`) goes to `env.requests`, every other line to `env.lines`.
   env.srv = createServer((req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     return env.shortcuts.owns(path) ? env.shortcuts.handler(req, res) : env.chat.handler(req, res);
@@ -1716,23 +1717,34 @@ test('a shared file\'s name: its last part, letters and digits only, 60 at most,
   }
 });
 
-test('checkSendForm: the four text fields and up to 4 file parts; an empty field is one left empty', () => {
+test('checkSendForm: the four text fields and up to 4 file parts; an empty field is one left empty; a form with no file is refused', () => {
   const f = (name, value) => ({ name, filename: null, type: null, data: Buffer.from(value) });
   const up = (filename, type, data) => ({ name: 'file', filename, type, data });
   const no = r => [r.ok, r.status, r.say];
-  assert.deepEqual(checkSendForm([f('text', ' hi '), f('via', 'share'), f('clientId', 'run-1')]), { ok: true, text: 'hi', shared: '', via: 'share', clientId: 'run-1', files: [] });
-  assert.deepEqual(checkSendForm([f('shared', ' https://example.com/ ')]), { ok: true, text: '', shared: 'https://example.com/', via: null, clientId: null, files: [] });
+  const sent = r => ({ ...r, files: r.files?.length });
+  assert.deepEqual(sent(checkSendForm([f('text', ' hi '), f('via', 'share'), f('clientId', 'run-1'), up('a.png', 'image/png', PNG)])), { ok: true, text: 'hi', shared: '', via: 'share', clientId: 'run-1', files: 1 });
+  assert.deepEqual(sent(checkSendForm([f('shared', ' https://example.com/ '), up('a.png', 'image/png', PNG)])), { ok: true, text: '', shared: 'https://example.com/', via: null, clientId: null, files: 1 });
   // A file alone is something to send.
   const one = checkSendForm([up('a.png', 'image/png', PNG)]);
   assert.deepEqual([one.ok, one.text, one.shared, one.via, one.clientId, one.files.length], [true, '', '', null, null, 1]);
   assert.deepEqual([one.files[0].kind, one.files[0].filename, one.files[0].data === PNG], ['image/png', 'a.png', true]);
   // Fields a Shortcut left empty are absent, not wrong.
-  assert.deepEqual(checkSendForm([f('text', 'hi'), f('via', ''), f('clientId', ''), f('shared', '')]), { ok: true, text: 'hi', shared: '', via: null, clientId: null, files: [] });
-  // An empty file field with no file name: nothing was put there. With a name, it is an empty file.
-  assert.equal(checkSendForm([f('text', 'hi'), { name: 'file', filename: null, type: null, data: Buffer.alloc(0) }, { name: 'file', filename: '', type: 'application/octet-stream', data: Buffer.alloc(0) }]).files.length, 0);
+  assert.deepEqual(sent(checkSendForm([f('text', 'hi'), f('via', ''), f('clientId', ''), f('shared', ''), up('a.png', 'image/png', PNG)])), { ok: true, text: 'hi', shared: '', via: null, clientId: null, files: 1 });
+  // An empty file field with no file name: nothing was put there, and it is no file
+  // beside one that is. With a name, it is an empty file.
+  const blank = [{ name: 'file', filename: null, type: null, data: Buffer.alloc(0) }, { name: 'file', filename: '', type: 'application/octet-stream', data: Buffer.alloc(0) }];
+  assert.equal(checkSendForm([f('text', 'hi'), ...blank, up('a.png', 'image/png', PNG)]).files.length, 1);
   assert.deepEqual(no(checkSendForm([f('text', 'hi'), up('a.txt', 'text/plain', Buffer.alloc(0))])), [false, 400, FILE_SAY.empty]);
-  // Nothing to say.
-  for (const empty of [[], [f('via', 'share')], [f('text', '  '), f('shared', '\n')], [{ name: 'file', filename: null, type: null, data: Buffer.alloc(0) }]]) assert.equal(checkSendForm(empty).ok, false);
+  // A form is how a file is sent: one with no file in it is refused in words that say
+  // so, whatever note it carries, and the error says whether a file part was there.
+  const none = r => [r.ok, r.status, r.say, r.error];
+  for (const b of blank) assert.deepEqual(none(checkSendForm([f('text', 'hi'), f('via', 'share'), b])), [false, undefined, FILE_SAY.noFile, 'the form\'s file part is empty']);
+  assert.deepEqual(none(checkSendForm([blank[0]])), [false, undefined, FILE_SAY.noFile, 'the form\'s file part is empty']);
+  for (const parts of [[], [f('via', 'share')], [f('text', ' hi '), f('via', 'share'), f('clientId', 'run-1')], [f('shared', 'https://example.com/')], [f('text', '  '), f('shared', '\n')]]) {
+    assert.deepEqual(none(checkSendForm(parts)), [false, undefined, FILE_SAY.noFile, 'the form holds no file part'], JSON.stringify(parts.map(p => p.name)));
+  }
+  // Nothing to say, beside a file: checkSend's rule does not apply (the file is it).
+  assert.equal(checkSendForm([f('text', '  '), f('shared', '\n'), up('a.png', 'image/png', PNG)]).ok, true);
   // Four files, never five; the count is checked before the fifth is looked at.
   const four = Array.from({ length: FILES_MAX }, (_, i) => up(`p${i}.png`, 'image/png', PNG));
   assert.deepEqual(checkSendForm(four).files.map(x => x.filename), ['p0.png', 'p1.png', 'p2.png', 'p3.png']);
@@ -1747,7 +1759,8 @@ test('checkSendForm: the four text fields and up to 4 file parts; an empty field
   // Any other field, a field twice, a text field with a file name, text that is not UTF-8, and checkSend's own rules.
   for (const bad of [[f('replyTo', 'm_abc123'), f('text', 'hi')], [f('text', 'a'), f('text', 'b')], [f('text', 'a'), f('via', 'siri'), f('via', 'share')], [{ name: 'text', filename: 'x.txt', type: 'text/plain', data: Buffer.from('hi') }], [f('__proto__', 'x'), f('text', 'hi')],
     [{ name: 'text', filename: null, type: null, data: Buffer.from([0xff, 0xfe]) }], [f('text', 'hi'), f('via', 'page')], [f('text', 'x'.repeat(MAX_PAGE_TEXT + 1))], [f('text', 'hi'), f('file2', 'x')], [f('text', 'hi'), f('clientId', 'a b')]]) {
-    const r = checkSendForm(bad);
+    // Each beside a file, so the refusal is the field's own.
+    const r = checkSendForm([...bad, up('a.png', 'image/png', PNG)]);
     assert.deepEqual([r.ok, r.say, typeof r.error], [false, undefined, 'string'], JSON.stringify(bad.map(p => p.name)));
   }
   assert.equal(checkSendForm([f('nope', 'x')]).error, 'the form may hold only text, shared, via and clientId, and file parts');
@@ -1755,7 +1768,7 @@ test('checkSendForm: the four text fields and up to 4 file parts; an empty field
   // before it is decoded: these bytes are not UTF-8, and it is the length that is said.
   assert.deepEqual([...FIELD_BYTES_MAX], [['text', 4 * MAX_PAGE_TEXT], ['shared', 4 * SHARED_MAX], ['via', 64], ['clientId', 4 * CLIENT_ID_MAX]]);
   for (const [name, max] of FIELD_BYTES_MAX) {
-    const sized = n => [...(name === 'text' ? [] : [f('text', 'hi')]), { name, filename: null, type: null, data: Buffer.alloc(n, 0xff) }];
+    const sized = n => [...(name === 'text' ? [] : [f('text', 'hi')]), { name, filename: null, type: null, data: Buffer.alloc(n, 0xff) }, up('a.png', 'image/png', PNG)];
     assert.deepEqual([checkSendForm(sized(max + 1)).ok, checkSendForm(sized(max + 1)).error], [false, `${name} is too long`]);
     assert.deepEqual([checkSendForm(sized(max)).ok, checkSendForm(sized(max)).error], [false, `${name} must be UTF-8 text`], 'at its limit it is looked at');
   }
@@ -1922,9 +1935,14 @@ test('a form is taken by the send route alone, from a Shortcut with its key, and
   await unread(f.type, Buffer.alloc(0), 'nothing');
   // Fields the route does not take, or takes once.
   const NOT_READ = 'Jarvis OS could not read that message.';
-  for (const parts of [[field('text', 'hi'), field('replyTo', 'm_abc123')], [field('text', 'a'), field('text', 'b')], [field('via', 'share')], [], [field('text', 'hi'), field('via', 'page')], [field('text', 'hi'), file('a.png', 'image/png', PNG, 'photo')], [file('x.txt', 'text/plain', Buffer.from('hi'), 'text')]]) {
+  for (const parts of [[field('text', 'hi'), field('replyTo', 'm_abc123')], [field('text', 'a'), field('text', 'b')], [field('text', 'hi'), field('via', 'page'), file('a.png', 'image/png', PNG)], [field('text', 'hi'), file('a.png', 'image/png', PNG, 'photo')], [file('x.txt', 'text/plain', Buffer.from('hi'), 'text')]]) {
     const r = await env.postForm(parts, auth);
     assert.deepEqual([r.status, r.json.say], [400, NOT_READ], JSON.stringify(parts.map(p => p.name)));
+  }
+  // A form with no file in it, with a note or without.
+  for (const parts of [[field('via', 'share')], [], [field('text', 'hi'), field('via', 'share')]]) {
+    const r = await env.postForm(parts, auth);
+    assert.deepEqual([r.status, r.json.say], [400, FILE_SAY.noFile], JSON.stringify(parts.map(p => p.name)));
   }
   assert.equal(env.chatMessages().length, 0);
   assert.deepEqual(await env.files(), []);
@@ -2035,7 +2053,6 @@ test('send: files count like messages, and toward a day\'s bytes of their own; g
   // Words still go, and so does shared text, which is no file of his: the budget is for files.
   assert.equal((await env.post('/api/shortcut/send', { text: 'words still go' }, env.withKey(key))).status, 200);
   assert.equal((await env.post('/api/shortcut/send', { shared: 'forwarded words '.repeat(400) }, env.withKey(key))).status, 200);
-  assert.equal((await env.postForm([field('text', 'a form with no file')], env.withKey(key))).status, 200);
   // The other key has its own day.
   assert.equal((await share(BUDGET, 6, other)).status, 200);
   assert.equal((await share(12, 7, other)).status, 429);
@@ -2118,8 +2135,8 @@ test('send: the same file with the same note within 15 s is one message and one 
   const PNG2 = png(9, 9);
   assert.equal((await env.postForm(look(PNG2), auth)).json.duplicate, undefined);
   assert.equal((await env.postForm([field('text', 'Look'), field('via', 'share'), file('renamed.png', 'image/png', PNG2)], auth)).json.duplicate, true);
-  // The same words without the file, or with one more, are their own messages.
-  assert.equal((await env.postForm([field('text', 'Look'), field('via', 'share')], auth)).json.duplicate, undefined);
+  // The same words without the file (as JSON: a form needs a file), or with one more, are their own messages.
+  assert.equal((await env.post('/api/shortcut/send', { text: 'Look', via: 'share' }, auth)).json.duplicate, undefined);
   assert.equal((await env.postForm([...look(PNG2), file('b.pdf', 'application/pdf', PDF)], auth)).json.duplicate, undefined);
   assert.deepEqual([env.chatMessages().length, (await env.files()).length], [4, 4]);
   // After 15 s the same share is sent again on purpose.
@@ -2728,4 +2745,306 @@ test('server.mjs: the Shortcut routes exist only when config says so, share the 
   // The admin socket still serves the chat's admin router for every other path.
   assert.match(block, /adminHandler = \(req, res\) => \(shortcutAdmin\.owns\(new URL\(req\.url, 'http:\/\/unix'\)\.pathname\) \? shortcutAdmin\.handler\(req, res\) : adminRouter\(req, res\)\);/);
   assert.match(src, /await listenUnix\(adminSocketPath, adminHandler, 'admin'\);/);
+});
+
+// ---- one log line per request, and a refusal that waits for the body (2026-11-13) ----
+// The iPad's photo shares failed with "The network connection was lost" and the log
+// said nothing: a refusal was logged nowhere, and one answered while the phone was
+// still uploading never reaches it as an answer.
+
+// A send whose body is written by hand, over a connection of its own or an agent's:
+// `answer` resolves to the status and the answer, or to the error's code when the
+// connection went first; `done` says whether it has.
+function handSend(env, headers, { agent = false, path = '/api/shortcut/send' } = {}) {
+  const out = { req: null, answer: null, done: false, continued: false };
+  out.answer = new Promise(resolve => {
+    const settle = v => { out.done = true; resolve(v); };
+    out.req = request({ host: '127.0.0.1', port: env.port, method: 'POST', path, agent, headers: { ...AS_OWNER, 'x-forwarded-for': ADDR, ...headers } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => { let json = null; try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { json = null; } settle({ status: res.statusCode, json, headers: res.headers }); });
+      res.on('error', err => settle({ status: err.code }));
+    });
+    out.req.on('error', err => settle({ status: err.code }));
+    out.req.on('continue', () => { out.continued = true; });
+  });
+  return out;
+}
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const waitFor = async (what, test) => { for (let i = 0; i < 400 && !test(); i++) await pause(5); assert.ok(test(), what); };
+
+test('requestLine: fixed words and numbers only; the type is looked up, never printed, and a form\'s parts are counts, kinds and sizes', () => {
+  const line = o => requestLine({ method: 'POST', path: '/api/shortcut/send', status: 200, ...o });
+  assert.equal(line({ headers: { 'content-type': 'multipart/form-data; boundary=x', 'content-length': '482113' }, seen: { read: 482113, form: true, parts: { files: [{ kind: 'jpg', bytes: 481723 }, { kind: 'unknown', bytes: 0 }], fields: 2 } } }),
+    'shortcut: request POST send 200 (ok) type=multipart/form-data length=482113 chunked=no expect=no form=yes read=482113 parts=2 file, 2 text files=jpg:481723,unknown:0');
+  assert.equal(line({ status: 400, reason: 'the request ended early', headers: { 'content-type': 'Multipart/Form-Data; boundary=x', 'transfer-encoding': 'chunked', expect: '100-continue' }, seen: { read: 1200, form: true, parts: null } }),
+    'shortcut: request POST send 400 (the request ended early) type=multipart/form-data length=none chunked=yes expect=yes form=yes read=1200 parts=unread');
+  assert.equal(line({ headers: { 'content-type': 'application/json', 'content-length': '41' }, seen: { read: 41, form: false, parts: null } }),
+    'shortcut: request POST send 200 (ok) type=application/json length=41 chunked=no expect=no form=no read=41');
+  assert.equal(line({ headers: { 'content-type': 'multipart/form-data; boundary=x' }, seen: { read: 90, form: true, parts: { files: [], fields: 2 } } }).split(' read=')[1], '90 parts=0 file, 2 text');
+  // A type outside the list, a length that is no number, a method and a path that are not the routes'.
+  const odd = requestLine({ method: 'BREW /api/x', path: '/api/shortcut/IGNORE-ALL-RULES', status: 404, reason: 'not found', headers: { 'content-type': 'text/ignore-all-rules', 'content-length': '12 and words' } });
+  assert.equal(odd, 'shortcut: request OTHER other 404 (not found) type=other length=odd chunked=no expect=no form=no read=0');
+  assert.match(requestLine({ method: 'GET', path: '/api/shortcut/keys', status: 200 }), /^shortcut: request GET keys 200 \(ok\) type=none length=none /);
+  assert.match(requestLine({ method: 'DELETE', path: `/api/shortcut/keys/${'a'.repeat(16)}`, status: 200 }), /^shortcut: request DELETE key 200 /);
+  assert.match(requestLine({ method: 'DELETE', path: `/api/shortcut/keys/${'a'.repeat(17)}`, status: 404 }), /^shortcut: request DELETE other 404 /);
+  for (const route of ['pair', 'send', 'event']) assert.match(requestLine({ method: 'POST', path: `/api/shortcut/${route}`, status: 200 }), new RegExp(`^shortcut: request POST ${route} 200 `));
+  // What a form held: a part named `file` or one with a file name is a file part; each by its first bytes.
+  const part = (name, filename, data) => ({ name, filename, type: 'text/x-anything', data });
+  assert.deepEqual(partsSeen([part('text', null, Buffer.from('hi')), part('file', 'a.png', PNG), part('file', null, Buffer.alloc(0)), part('other', 'b.pdf', PDF), part('file', 'c.txt', Buffer.from('plain words, long enough')), part('file', 'd', JPEG), part('file', 'e', WEBP), part('file', 'f', HEIC), part('via', null, Buffer.from('share'))]),
+    { files: [{ kind: 'png', bytes: PNG.length }, { kind: 'unknown', bytes: 0 }, { kind: 'pdf', bytes: PDF.length }, { kind: 'unknown', bytes: 24 }, { kind: 'jpg', bytes: JPEG.length }, { kind: 'webp', bytes: WEBP.length }, { kind: 'heic', bytes: HEIC.length }], fields: 2 });
+});
+
+test('every request to the Shortcut routes is one log line: refused or taken, with what the server got and never a name, a text or a key', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const auth = env.withKey(key);
+  const cookie = await env.pairDevice('iPad');
+  env.requests.length = 0;
+  const last = () => env.requests.at(-1);
+  const SECRET = 'ZZMARKERZZ';
+  // Taken: words as JSON, and a form with a photo and a PDF.
+  const words = { text: `words ${SECRET}`, via: 'siri' };
+  assert.equal((await env.post('/api/shortcut/send', words, auth)).status, 200);
+  const n = Buffer.byteLength(JSON.stringify(words));
+  assert.equal(last(), `shortcut: request POST send 200 (ok) type=application/json length=${n} chunked=no expect=no form=no read=${n}`);
+  env.clock.t += 1000;
+  const good = form([field('text', `note ${SECRET}`), field('via', 'share'), file(`${SECRET}.png`, 'image/png', PNG), file(`${SECRET}.pdf`, 'application/pdf', PDF)], `B-${SECRET}`);
+  const raw = (type, body, headers = auth, path = `/api/shortcut/send?${SECRET}=1`) => call({ port: env.port, method: 'POST', path, raw: body, headers: { 'Content-Type': type, ...AS_OWNER, 'x-forwarded-for': ADDR, ...headers } });
+  assert.equal((await raw(good.type, good.body)).status, 200);
+  assert.equal(last(), `shortcut: request POST send 200 (ok) type=multipart/form-data length=${good.body.length} chunked=no expect=no form=yes read=${good.body.length} parts=2 file, 2 text files=png:${PNG.length},pdf:${PDF.length}`);
+  // Refused, each with its own fixed reason. The key was wrong: the body is read and dropped, and counted.
+  assert.equal((await raw(good.type, good.body, env.withKey(`${KEY_PREFIX}${SECRET}${'A'.repeat(33)}`))).status, 401);
+  assert.equal(last(), `shortcut: request POST send 401 (this Shortcut is not paired) type=multipart/form-data length=${good.body.length} chunked=no expect=no form=yes read=${good.body.length} parts=unread`);
+  // Not a form and not JSON: what a Shortcut whose body is "File" sends.
+  assert.equal((await raw('image/jpeg', JPEG)).status, 415);
+  assert.equal(last(), `shortcut: request POST send 415 (Content-Type must be application/json) type=image/jpeg length=${JPEG.length} chunked=no expect=no form=no read=${JPEG.length}`);
+  assert.equal((await raw(`application/x-${SECRET}`, JPEG)).status, 415);
+  assert.match(last(), / type=other length=/);
+  // A form that can't be read, one whose file is not taken (the parts are still said), one with a field it does not take.
+  assert.equal((await raw(good.type, good.body.subarray(0, good.body.length - 30))).status, 400);
+  assert.equal(last(), `shortcut: request POST send 400 (the form could not be read: a part has no end) type=multipart/form-data length=${good.body.length - 30} chunked=no expect=no form=yes read=${good.body.length - 30} parts=unread`);
+  assert.equal((await env.postForm([field('text', `x ${SECRET}`), file(`${SECRET}.gif`, 'image/gif', GIF), file('b.png', 'image/png', PNG)], auth)).status, 415);
+  assert.match(last(), new RegExp(`^shortcut: request POST send 415 \\(a shared file is not a png, jpeg, webp, heic, pdf, txt or md\\) .* parts=2 file, 1 text files=unknown:${GIF.length},png:${PNG.length}$`));
+  assert.equal((await env.postForm([field(SECRET, 'x'), file('b.png', 'image/png', PNG)], auth)).status, 400);
+  assert.match(last(), /^shortcut: request POST send 400 \(the form may hold only text, shared, via and clientId, and file parts\) .* parts=1 file, 1 text files=png:\d+$/);
+  assert.equal((await env.post('/api/shortcut/send', { text: 'hi', [SECRET]: 1 }, auth)).status, 400);
+  assert.match(last(), /^shortcut: request POST send 400 \(the body may hold only text, shared, via and clientId\) type=application\/json /);
+  // The other routes, the page's side, and a path that is none of them.
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, auth)).status, 200);
+  assert.match(last(), /^shortcut: request POST event 200 \(ok\) type=application\/json length=24 chunked=no expect=no form=no read=24$/);
+  assert.equal((await env.post('/api/shortcut/pair', { code: SECRET })).status, 404);
+  assert.equal(last(), 'shortcut: request POST pair 404 (no Shortcut code is waiting) type=application/json length=21 chunked=no expect=no form=no read=21');
+  const made = await call({ port: env.port, method: 'POST', path: '/api/shortcut/keys', body: { name: 'Two' }, headers: { ...AS_OWNER, cookie } });
+  assert.equal(made.status, 200, made.text);
+  assert.equal(last(), 'shortcut: request POST keys 200 (ok) type=application/json length=14 chunked=no expect=no form=no read=14');
+  assert.equal((await call({ port: env.port, path: '/api/shortcut/keys', headers: { ...AS_OWNER, cookie } })).status, 200);
+  assert.match(last(), /^shortcut: request GET keys 200 \(ok\) type=none length=none chunked=no expect=no form=no read=0$/);
+  assert.equal((await call({ port: env.port, path: '/api/shortcut/keys', headers: AS_OWNER })).status, 401);
+  assert.match(last(), /^shortcut: request GET keys 401 \(this device is not paired\) /);
+  assert.equal((await call({ port: env.port, path: `/api/shortcut/${SECRET}`, headers: AS_OWNER })).status, 404);
+  assert.match(last(), /^shortcut: request GET other 404 \(not found\) /);
+  // A fault is "internal error" here, never its own words.
+  const { append } = env.store;
+  env.store.append = async () => { throw new Error(`boom ${SECRET}`); };
+  env.clock.t += 1000;
+  const fault = t.mock.method(console, 'error', () => {});
+  assert.equal((await env.post('/api/shortcut/send', { text: 'never kept' }, auth)).status, 500);
+  fault.mock.restore();
+  env.store.append = append;
+  assert.match(last(), /^shortcut: request POST send 500 \(internal error\) type=application\/json /);
+  // One line a request, and nothing of what came from outside in any of them.
+  assert.equal(env.requests.length, 16);
+  for (const l of [...env.requests, ...env.lines]) assert.ok(!l.includes(SECRET) && !l.includes(key) && !l.includes(made.json.code) && !l.includes('note') && !l.includes('words ') && !l.includes('boom'), l.slice(0, 80));
+  for (const l of env.requests) assert.match(l, /^shortcut: request [A-Z]+ [a-z]+ \d{3} \([A-Za-z0-9 ,:'/-]+\) type=[a-z/-]+ length=(none|\d+) chunked=(yes|no) expect=(yes|no) form=(yes|no) read=\d+( parts=(unread|\d+ file, \d+ text( files=[a-z0-9:,]+)?))?$/);
+});
+
+test('over a real connection: a form sent in chunks with no length, and one sent after Expect: 100-continue, are both taken', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const auth = env.withKey(key);
+  env.requests.length = 0;
+  // In chunks, with no Content-Length: what a proxy sends on when the phone gave no length.
+  const big = jpegOf(300 * 1024);
+  const one = form([field('text', 'in chunks'), field('via', 'share'), file('IMG_0001.jpeg', 'image/jpeg', big)]);
+  const chunked = handSend(env, { 'Content-Type': one.type, ...auth });
+  for (let at = 0; at < one.body.length; at += 7001) {
+    await new Promise(r => chunked.req.write(one.body.subarray(at, at + 7001), r));
+    if (at % 5 === 0) await pause(1);
+  }
+  chunked.req.end();
+  const a = await chunked.answer;
+  assert.deepEqual([a.status, a.json?.say], [200, 'Sent to Jarvis. His answer comes to Jarvis OS.'], JSON.stringify(a));
+  assert.equal(env.requests.at(-1), `shortcut: request POST send 200 (ok) type=multipart/form-data length=none chunked=yes expect=no form=yes read=${one.body.length} parts=1 file, 2 text files=jpg:${big.length}`);
+  // Expect: 100-continue, the body held back until the server says to go on (Node's
+  // server says so by itself: server.mjs sets no `checkContinue` listener, like this one).
+  env.clock.t += 1000;
+  const two = form([field('text', 'after continue'), file('scan.pdf', 'application/pdf', PDF)]);
+  const expecting = handSend(env, { 'Content-Type': two.type, 'Content-Length': two.body.length, Expect: '100-continue', ...auth });
+  expecting.req.flushHeaders();
+  await waitFor('the server said to go on', () => expecting.continued || expecting.done);
+  assert.equal(expecting.done, false, 'no answer before the body');
+  expecting.req.end(two.body);
+  const b = await expecting.answer;
+  assert.deepEqual([b.status, b.json?.ok], [200, true], JSON.stringify(b));
+  assert.match(env.requests.at(-1), /^shortcut: request POST send 200 \(ok\) type=multipart\/form-data length=\d+ chunked=no expect=yes form=yes read=\d+ parts=1 file, 1 text files=pdf:\d+$/);
+  // Both at once: chunks and Expect.
+  env.clock.t += 1000;
+  const three = form([file('scan.pdf', 'application/pdf', PDF)]);
+  const both = handSend(env, { 'Content-Type': three.type, Expect: '100-continue', ...auth });
+  both.req.flushHeaders();
+  await waitFor('the server said to go on', () => both.continued || both.done);
+  both.req.write(three.body.subarray(0, 50));
+  both.req.end(three.body.subarray(50));
+  assert.equal((await both.answer).status, 200);
+  assert.deepEqual(env.chatMessages().map(m => [m.text, m.attachments.length]), [['in chunks', 1], ['after continue', 1], [attachedWords(1), 1]]);
+  assert.equal(sha(await readFile(join(env.dir, 'chat', 'files', env.chatMessages()[0].attachments[0].id))), sha(big));
+  const src = await readFile(fileURLToPath(new URL('../server.mjs', import.meta.url)), 'utf8');
+  assert.ok(!src.includes('checkContinue') && !src.includes('checkExpectation'), 'server.mjs leaves Expect to Node');
+});
+
+test('a refusal is answered when the body is in, on a connection that stays open: never while the phone is still sending', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const auth = env.withKey(key);
+  const wrong = env.withKey(`${KEY_PREFIX}${'A'.repeat(43)}`);
+  let connections = 0;
+  env.srv.on('connection', () => { connections++; });
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  t.after(() => agent.destroy());
+  const photo = form([field('text', 'a big photo'), file('IMG_0002.jpeg', 'image/jpeg', jpegOf(3 * 1024 * 1024))]);
+  // Each refusal that is decided before the body is read: a wrong key, a body that is
+  // no form and no JSON, a caller that is not the owner, the off switch, and JSON far
+  // over its limit (read to its end and dropped; that connection still goes).
+  const cases = [
+    ['a wrong key', { 'Content-Type': photo.type, ...wrong }, 401, /not paired/, 'keep-alive'],
+    ['a body that is a file, not a form', { 'Content-Type': 'image/jpeg', ...auth }, 415, /could not take that request/, 'keep-alive'],
+    ['not the owner', { 'Content-Type': photo.type, ...auth, 'tailscale-user-login': 'someone@example.com' }, 403, /did not come through the tailnet/, 'keep-alive'],
+    ['switched off', { 'Content-Type': photo.type, ...auth }, 503, /switched off/, 'keep-alive'],
+    ['JSON over its limit', { 'Content-Type': 'application/json', ...auth }, 413, /could not take that request/, 'close']
+  ];
+  for (const [what, headers, status, say, connection] of cases) {
+    env.state.killed = what === 'switched off';
+    env.requests.length = 0;
+    const lengths = what === 'a wrong key' ? {} : { 'Content-Length': photo.body.length };
+    const sent = handSend(env, { ...headers, ...lengths }, { agent });
+    // A third of the body, then a wait: the refusal is decided, and nothing is answered.
+    const third = Math.floor(photo.body.length / 3);
+    await new Promise(r => sent.req.write(photo.body.subarray(0, third), r));
+    await pause(120);
+    assert.equal(sent.done, false, `${what}: answered while the body was still on its way`);
+    assert.deepEqual(env.requests, [], what);
+    sent.req.end(photo.body.subarray(third));
+    const a = await sent.answer;
+    assert.deepEqual([a.status, a.headers?.connection], [status, connection], `${what}: ${JSON.stringify(a.status)}`);
+    assert.match(a.json.say, say, what);
+    // The whole body was read before the answer, and the line says so.
+    assert.equal(env.requests.length, 1, what);
+    assert.match(env.requests[0], new RegExp(`^shortcut: request POST send ${status} \\(.+\\) .* read=${photo.body.length}( parts=unread)?$`), what);
+  }
+  env.state.killed = false;
+  // The four that kept their connection used one between them: nothing was reset. (The
+  // 413 closed it after its answer; the send below opens the second.)
+  env.clock.t += 1000;
+  const after = handSend(env, { 'Content-Type': photo.type, 'Content-Length': photo.body.length, ...auth }, { agent });
+  after.req.end(photo.body);
+  assert.equal((await after.answer).status, 200);
+  assert.equal(connections, 2);
+  assert.equal(env.chatMessages().length, 1);
+});
+
+test('a refusal does not wait for a body that is too long, too slow or gone: it is answered, logged with the bytes read, and the connection goes', async t => {
+  const env = await setup(t, { formTimeoutMs: 400 });
+  const key = await env.pairKey('Phone');
+  const auth = env.withKey(key);
+  const wrong = env.withKey(`${KEY_PREFIX}${'A'.repeat(43)}`);
+  const f = form([field('text', 'hi'), file('a.png', 'image/png', PNG)]);
+  env.requests.length = 0;
+  // Says it is over 64 MB: answered at once.
+  const began = Date.now();
+  const long = handSend(env, { 'Content-Type': f.type, 'Content-Length': FORM_DRAIN_MAX + 1, ...wrong });
+  long.req.write(f.body.subarray(0, 100));
+  const a = await Promise.race([long.answer, pause(2000).then(() => ({ status: 'nothing' }))]);
+  long.req.destroy();
+  assert.ok([401, 'ECONNRESET', 'EPIPE'].includes(a.status), String(a.status));
+  assert.ok(Date.now() - began < 300, `answered after ${Date.now() - began} ms`);
+  if (a.status === 401) assert.equal(a.headers.connection, 'close');
+  await waitFor('it was logged', () => env.requests.length === 1);
+  assert.match(env.requests[0], new RegExp(`^shortcut: request POST send 401 \\(this Shortcut is not paired\\) type=multipart/form-data length=${FORM_DRAIN_MAX + 1} .* read=\\d+ parts=unread$`));
+  // Too slow: the wait ends at the form's own time limit, and the answer still comes.
+  const started = Date.now();
+  const slow = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong });
+  slow.req.write(f.body.subarray(0, 100));
+  const b = await Promise.race([slow.answer, pause(3000).then(() => ({ status: 'nothing' }))]);
+  slow.req.destroy();
+  assert.deepEqual([b.status, b.headers?.connection, b.json?.say], [401, 'close', 'This Shortcut is not paired with Jarvis OS. Run the Jarvis Setup Shortcut.']);
+  assert.ok(Date.now() - started >= 390, `waited ${Date.now() - started} ms`);
+  assert.match(env.requests[1], / 401 \(this Shortcut is not paired\) .* read=100 parts=unread$/);
+  // Gone: the phone hung up. Logged all the same, with what had come.
+  const gone = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong });
+  await new Promise(r => gone.req.write(f.body.subarray(0, 60), r));
+  await pause(30);
+  gone.req.destroy();
+  await waitFor('it was logged', () => env.requests.length === 3);
+  assert.match(env.requests[2], / 401 \(this Shortcut is not paired\) .* read=60 parts=unread$/);
+  // A share with a key that works, cut off half-way, and one that runs out of time:
+  // each is a line with the bytes read so far.
+  const early = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...auth });
+  await new Promise(r => early.req.write(f.body.subarray(0, 120), r));
+  await pause(30);
+  early.req.destroy();
+  await waitFor('it was logged', () => env.requests.length === 4);
+  assert.equal(env.requests[3], `shortcut: request POST send 400 (the request ended early) type=multipart/form-data length=${f.body.length} chunked=no expect=no form=yes read=120 parts=unread`);
+  const lateAt = Date.now();
+  const late = handSend(env, { 'Content-Type': f.type, ...auth });
+  late.req.write(f.body.subarray(0, 77));
+  const c = await Promise.race([late.answer, pause(3000).then(() => ({ status: 'nothing' }))]);
+  late.req.destroy();
+  assert.deepEqual([c.status, c.headers?.connection, c.json?.say], [408, 'close', FILE_SAY.slow]);
+  // Its time was up: the answer does not wait a second time.
+  assert.ok(Date.now() - lateAt < 700, `answered after ${Date.now() - lateAt} ms`);
+  assert.equal(env.requests[4], 'shortcut: request POST send 408 (a share must arrive within 0 s) type=multipart/form-data length=none chunked=yes expect=no form=yes read=77 parts=unread');
+  assert.equal(env.chatMessages().length, 0);
+});
+
+test('a form whose file field is blank, or that has no file part, is refused in words that say so, on a connection that stays open', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const auth = env.withKey(key);
+  let connections = 0;
+  env.srv.on('connection', () => { connections++; });
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  t.after(() => agent.destroy());
+  env.requests.length = 0;
+  const send = async parts => {
+    const f = form(parts);
+    const sent = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...auth }, { agent });
+    sent.req.end(f.body);
+    return sent.answer;
+  };
+  const NO_FILE = [400, FILE_SAY.noFile, 'keep-alive'];
+  const got = a => [a.status, a.json?.say, a.headers?.connection];
+  // The file field is there and empty, as a blank File field may arrive: with an empty
+  // file name and a type, with no file name at all, and with a note or without.
+  const emptyNamed = { name: 'file', filename: '', type: 'application/octet-stream', data: Buffer.alloc(0) };
+  const a = await send([field('text', 'see this photo'), field('via', 'share'), emptyNamed]);
+  assert.deepEqual(got(a), NO_FILE);
+  assert.equal(a.json.error, 'the form\'s file part is empty');
+  assert.match(env.requests.at(-1), /^shortcut: request POST send 400 \(the form's file part is empty\) type=multipart\/form-data length=\d+ chunked=no expect=no form=yes read=\d+ parts=1 file, 2 text files=unknown:0$/);
+  assert.deepEqual(got(await send([field('text', 'see this photo'), field('file', '')])), NO_FILE);
+  assert.match(env.requests.at(-1), / \(the form's file part is empty\) .* parts=1 file, 1 text files=unknown:0$/);
+  assert.deepEqual(got(await send([field('via', 'share'), emptyNamed])), NO_FILE);
+  // No file part at all, and a note: the note is not sent alone as if the share had worked.
+  const b = await send([field('text', 'see this photo'), field('via', 'share')]);
+  assert.deepEqual(got(b), NO_FILE);
+  assert.equal(b.json.error, 'the form holds no file part');
+  assert.match(env.requests.at(-1), /^shortcut: request POST send 400 \(the form holds no file part\) type=multipart\/form-data length=\d+ chunked=no expect=no form=yes read=\d+ parts=0 file, 2 text$/);
+  // A file part with a name and nothing in it is an empty file, in its own words.
+  assert.deepEqual(got(await send([field('text', 'see this'), file('IMG_0003.jpeg', 'image/jpeg', Buffer.alloc(0))])), [400, FILE_SAY.empty, 'keep-alive']);
+  // Nothing was made or kept, none of it was a use, and the same connection then takes a real share.
+  assert.deepEqual([env.chatMessages().length, await env.files(), env.keys.list()[0].uses], [0, [], 0]);
+  assert.deepEqual(got(await send([field('text', 'see this photo'), field('via', 'share'), emptyNamed, file('IMG_0003.jpeg', 'image/jpeg', JPEG)])), [200, 'Sent to Jarvis. His answer comes to Jarvis OS.', 'keep-alive']);
+  assert.equal(connections, 1);
+  assert.equal(env.requests.length, 6);
+  assert.deepEqual(env.chatMessages().map(m => [m.text, m.attachments.length]), [['see this photo', 1]]);
 });

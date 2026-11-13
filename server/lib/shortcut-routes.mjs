@@ -58,6 +58,14 @@
 // a `say` line the Shortcut can show or speak as it is. Nothing here logs or echoes a
 // message's text. A kill file (`~/.local/state/jarvis-os/shortcuts-off`) refuses every
 // Shortcut-side route and new codes at once; listing and revoking still work.
+//
+// **Every request is logged in one line of fixed words and numbers** (`requestLine`):
+// the route, the status, a refusal's own fixed reason, what kind of body the request
+// said it had and how long, how many bytes of it were read, and for a form how many
+// parts of each kind it held and what each file part's first bytes are, with its size.
+// Never a name, a text, a key or a byte of the body. **A refusal is answered only when
+// the request's body is in** (`drain`): an answer written while a phone is still
+// uploading reaches it as "The network connection was lost", never as the answer.
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
@@ -131,6 +139,7 @@ export const FILE_SAY = Object.freeze({
   spoofed: 'Jarvis OS refused that file: it is not what its name or type says it is.',
   text: 'Jarvis OS could not read that text file: it must be plain UTF-8 text.',
   empty: 'That file is empty, so nothing was sent.',
+  noFile: 'No file reached Jarvis OS, so nothing was sent. In the Shortcut, check that the form\'s file field holds what you shared.',
   fileTooBig: 'Too big for Jarvis OS: a file can be 10 MB at most.',
   tooBig: 'Too big for Jarvis OS: one share can be 25 MB at most, and each file 10 MB.',
   tooMany: `Too many files: Jarvis OS takes ${FILES_MAX} in one share.`,
@@ -299,15 +308,19 @@ export function classifyFile({ filename = null, type = null, data }, { heic = tr
 }
 
 // A form's parts as a send: the same four text fields, and `file` parts. An empty
-// field is one the Shortcut left empty: it counts as absent. Answers what `checkSend`
-// answers, with `files` (each `{ filename, data, kind }`), or the refusal with its own
-// `status` and `say`.
+// field is one the Shortcut left empty: it counts as absent. **A form is how a file is
+// sent, so one with no file in it is refused,** in words that say so: a Shortcut whose
+// file field is blank would send its note alone, and "Sent" would be wrong, since what
+// was shared did not come. Words alone go as JSON. Answers what `checkSend` answers,
+// with `files` (each `{ filename, data, kind }`), or the refusal with its own `status`
+// and `say`.
 export function checkSendForm(parts, { heic = true } = {}) {
   const fields = {};
   const files = [];
+  let blank = false;
   for (const p of parts) {
     if (p.name === 'file') {
-      if (p.data.length === 0 && !p.filename) continue;
+      if (p.data.length === 0 && !p.filename) { blank = true; continue; }
       if (files.length >= FILES_MAX) return { ok: false, error: `a share holds at most ${FILES_MAX} files`, say: FILE_SAY.tooMany };
       const c = classifyFile(p, { heic });
       if (!c.ok) return c;
@@ -321,9 +334,76 @@ export function checkSendForm(parts, { heic = true } = {}) {
     if (!isUtf8(p.data)) return { ok: false, error: `${p.name} must be UTF-8 text` };
     fields[p.name] = p.data.toString('utf8');
   }
+  if (files.length === 0) return { ok: false, error: blank ? 'the form\'s file part is empty' : 'the form holds no file part', say: FILE_SAY.noFile };
   const checked = checkSend(Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== '')), { files: files.length });
   return checked.ok ? { ...checked, files } : checked;
 }
+
+// ---- one log line per request ----
+// What a request's log line may say of its Content-Type: one of these, or "other". The
+// header is outside text, so it is looked up, never printed.
+const LOGGED_TYPES = new Set([MULTIPART_TYPE, 'application/json', 'application/x-www-form-urlencoded', 'application/octet-stream', 'multipart/mixed', 'multipart/related',
+  'text/plain', 'text/markdown', 'application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp', 'image/gif', 'image/tiff', 'video/quicktime', 'video/mp4']);
+const LOGGED_METHODS = new Set(['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS']);
+const routeName = path => (SHORTCUT_SIDE.has(path) ? path.slice('/api/shortcut/'.length) : path === '/api/shortcut/keys' ? 'keys' : /^\/api\/shortcut\/keys\/[a-f0-9]{16}$/.test(path) ? 'key' : 'other');
+// What a form held, for the line: how many parts are files (a part named `file`, or
+// one with a file name) and how many are text fields, and for each file part what its
+// first bytes say it is ("png", "jpg", "webp", "heic", "pdf", or "unknown": text has
+// no first bytes to go by) with its size. Counts and fixed words only.
+export function partsSeen(parts) {
+  const files = parts.filter(p => p.name === 'file' || p.filename !== null);
+  return { files: files.map(p => ({ kind: EXT_OF.get(sniffType(p.data)) ?? 'unknown', bytes: p.data.length })), fields: parts.length - files.length };
+}
+// The line itself. `seen` is what the route learnt of the body: `read` (bytes), `form`
+// (whether it was taken as a form) and `parts` (`partsSeen`, once a form was parsed).
+// `reason` must be fixed words: a refusal's own message, which never holds a name, a
+// text or a key (the handler passes nothing else).
+export function requestLine({ method, path, headers = {}, status, reason = 'ok', seen = {} }) {
+  const type = mediaType(headers['content-type']);
+  const length = headers['content-length'];
+  const yes = v => (v ? 'yes' : 'no');
+  const parts = seen.parts
+    ? ` parts=${seen.parts.files.length} file, ${seen.parts.fields} text${seen.parts.files.length > 0 ? ` files=${seen.parts.files.map(f => `${f.kind}:${f.bytes}`).join(',')}` : ''}`
+    : seen.form ? ' parts=unread' : '';
+  return `shortcut: request ${LOGGED_METHODS.has(method) ? method : 'OTHER'} ${routeName(path)} ${status} (${reason})`
+    + ` type=${type === '' ? 'none' : LOGGED_TYPES.has(type) ? type : 'other'} length=${length === undefined ? 'none' : /^\d{1,15}$/.test(length) ? length : 'odd'}`
+    + ` chunked=${yes(/chunked/i.test(String(headers['transfer-encoding'] ?? '')))} expect=${yes(headers.expect !== undefined)} form=${yes(seen.form)} read=${seen.read ?? 0}${parts}`;
+}
+// The request with its bytes counted into `seen.read` as they are read, once.
+function counted(req, seen) {
+  if (!seen.counting) {
+    seen.counting = true;
+    req.on('data', c => { seen.read += c.length; });
+  }
+  return req;
+}
+// Before a refusal is answered: the rest of the request's body is read and dropped,
+// so the answer goes out when the phone has finished sending. A phone that gets an
+// answer while it is still uploading shows "The network connection was lost" and not
+// the answer's words (the proxy in front, or the phone's own HTTP, drops the rest).
+// Up to `limit` bytes in all and `timeoutMs`, like a form's own read. Resolves to
+// whether the whole body is in: when it is not (too long, too slow, or the phone hung
+// up), the answer goes as it is, and the connection goes with it.
+const drain = (req, seen, limit, timeoutMs) => new Promise(resolve => {
+  if (req.readableEnded) return resolve(true);
+  // Gone, or already cut off past `limit` (by what it said, or as it came): no waiting.
+  if (req.destroyed || Number(req.headers?.['content-length']) > limit || seen.read > limit) return resolve(false);
+  let settled = false;
+  const over = whole => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (!whole) req.pause?.();
+    resolve(whole);
+  };
+  // Like a form's own timer: it never keeps the process alive.
+  const timer = setTimeout(() => over(false), timeoutMs);
+  timer.unref();
+  counted(req, seen).on('data', () => { if (seen.read > limit) over(false); });
+  req.on('end', () => over(true));
+  for (const gone of ['error', 'close']) req.on(gone, () => over(false));
+  req.resume();
+});
 
 // A form's body as bytes. One over `limit` is still read to its end and dropped, so
 // the refusal is an answer the Shortcut can show; one over `drainLimit` (by its own
@@ -332,8 +412,9 @@ export function checkSendForm(parts, { heic = true } = {}) {
 // limit for a whole request is longer, and not this code's to rely on); a body still
 // on its way then is stopped, and the connection goes with the answer. A request that
 // closes or fails before its end is over too, so nothing waits on it for good.
-// (Settling twice is harmless: a promise keeps its first answer.)
-const readForm = (req, limit, drainLimit, timeoutMs) => new Promise((resolve, reject) => {
+// (Settling twice is harmless: a promise keeps its first answer.) `seen.read` counts
+// the bytes as they come, for the request's log line.
+const readForm = (req, limit, drainLimit, timeoutMs, seen = { read: 0 }) => new Promise((resolve, reject) => {
   const tooBig = () => new Refusal(413, `a share is at most ${Math.round(limit / 1024 / 1024)} MB`, FILE_SAY.tooBig);
   // The timer never keeps the process alive, and ends with the read however it ends.
   const timer = setTimeout(() => { req.pause?.(); reject(new Refusal(408, `a share must arrive within ${Math.round(timeoutMs / 1000)} s`, FILE_SAY.slow)); }, timeoutMs);
@@ -342,11 +423,10 @@ const readForm = (req, limit, drainLimit, timeoutMs) => new Promise((resolve, re
   const cut = () => { req.pause?.(); over(reject, tooBig()); };
   if (Number(req.headers?.['content-length']) > drainLimit) return cut();
   // `chunks` is null from the first byte over `limit`: nothing of such a body is kept.
-  let chunks = [], size = 0;
-  req.on('data', c => {
-    size += c.length;
-    if (size > drainLimit) return cut();
-    if (size > limit) chunks = null; else chunks.push(c);
+  let chunks = [];
+  counted(req, seen).on('data', c => {
+    if (seen.read > drainLimit) return cut();
+    if (seen.read > limit) chunks = null; else chunks.push(c);
   });
   req.on('end', () => (chunks === null ? over(reject, tooBig()) : over(resolve, Buffer.concat(chunks))));
   // The phone hung up half-way, or the server ended the request: an error when there
@@ -476,11 +556,12 @@ export function createShortcutRoutes({
     if (pairRefusals.n === REFUSALS_REPORTED_AT) onEvent({ kind: 'shortcut-pair-refused', count: pairRefusals.n });
   }
 
-  async function send(req, res) {
+  async function send(req, res, seen) {
     const form = requireShortcutCaller(req, { forms: true });
+    seen.form = form;
     const key = requireKey(req);
     if (!form) {
-      const checked = checkSend(await readBody(req, SEND_BODY_MAX));
+      const checked = checkSend(await readBody(counted(req, seen), SEND_BODY_MAX));
       if (!checked.ok) throw new Refusal(400, checked.error, 'Jarvis OS could not read that message.');
       return json(res, 200, await deliver(key, { ...checked, files: [] }), NO_STORE);
     }
@@ -496,7 +577,7 @@ export function createShortcutRoutes({
     uploading.set(key.id, inFlight + 1);
     let answer;
     try {
-      const raw = await readForm(req, FORM_BODY_MAX, FORM_DRAIN_MAX, formTimeoutMs);
+      const raw = await readForm(req, FORM_BODY_MAX, FORM_DRAIN_MAX, formTimeoutMs, seen);
       // Before anything is made of the body: it may have been two minutes.
       stillAllowed(key);
       const boundary = formBoundary(req.headers?.['content-type']);
@@ -506,6 +587,8 @@ export function createShortcutRoutes({
         if (!(err instanceof MultipartError)) throw err;
         throw new Refusal(400, `the form could not be read: ${err.message}`, FILE_SAY.unread);
       }
+      // For the log line, before anything is refused: counts, kinds and sizes only.
+      seen.parts = partsSeen(parts);
       const checked = checkSendForm(parts, { heic: convertHeic !== null });
       if (!checked.ok) throw new Refusal(checked.status ?? 400, checked.error, checked.say ?? 'Jarvis OS could not read that message.');
       answer = await deliver(key, checked);
@@ -653,10 +736,10 @@ export function createShortcutRoutes({
     return { ok: true, id: m.id, seq: m.seq, online: up, say: up ? 'Sent to Jarvis. His answer comes to Jarvis OS.' : 'Sent. Jarvis is offline now; he gets it when he is back.' };
   }
 
-  async function event(req, res) {
+  async function event(req, res, seen) {
     requireShortcutCaller(req);
     const key = requireKey(req);
-    const body = await readBody(req, SMALL_BODY_MAX);
+    const body = await readBody(counted(req, seen), SMALL_BODY_MAX);
     if (!isObject(body) || Object.keys(body).some(k => k !== 'event') || typeof body.event !== 'string' || !Object.hasOwn(PRESENCE_EVENTS, body.event)) {
       throw new Refusal(400, `the body must be {"event": …} with one of ${Object.keys(PRESENCE_EVENTS).join(', ')}`, 'Jarvis OS does not know that event.');
     }
@@ -694,58 +777,72 @@ export function createShortcutRoutes({
 
   async function handler(req, res) {
     const path = new URL(req.url, 'http://localhost').pathname;
+    // What is learnt of the request's body on the way, for its one log line.
+    const seen = { read: 0, form: false, parts: null };
+    const logged = (status, reason) => log(requestLine({ method: req.method, path, headers: req.headers, status, reason, seen }));
     try {
-      // ---- the Shortcut's side ----
-      if (req.method === 'POST' && path === '/api/shortcut/pair') {
-        requireShortcutCaller(req);
-        const body = await readBody(req, SMALL_BODY_MAX);
-        const r = await keys.claim(isObject(body) ? body.code : null, { addr: proxyAddress(req.headers) });
-        if (!r.ok) {
-          pairRefused(r.status);
-          throw new Refusal(r.status, r.error, PAIR_SAY[r.status] ?? 'Jarvis OS could not pair this Shortcut.');
-        }
-        log(`shortcut: a Shortcut collected its key (${r.name})`);
-        return json(res, 200, { key: r.key, name: r.name, say: 'Paired with Jarvis OS.' }, NO_STORE);
-      }
-      if (req.method === 'POST' && path === '/api/shortcut/send') return await send(req, res);
-      if (req.method === 'POST' && path === '/api/shortcut/event') return await event(req, res);
-
-      // ---- the page's side ----
-      if (req.method === 'GET' && path === '/api/shortcut/keys') {
-        requireDevice(req);
-        return json(res, 200, { keys: keys.list(), waiting: keys.waiting(), off: killed() }, NO_STORE);
-      }
-      // A code for one new key: shown on this page, typed into the Shortcut.
-      if (req.method === 'POST' && path === '/api/shortcut/keys') {
-        guardWrite(req);
-        const device = requireDevice(req);
-        if (killed()) throw new HttpError(503, 'Shortcut keys are switched off on the server');
-        const body = await readBody(req, SMALL_BODY_MAX);
-        const r = await keys.mint(isObject(body) ? body.name : null, { by: device.name, byId: device.id });
-        if (!r.ok) throw new HttpError(r.status, r.error);
-        return json(res, 200, { code: r.code, name: r.name, expiresAt: r.expiresAt }, NO_STORE);
-      }
-      const one = /^\/api\/shortcut\/keys\/([a-f0-9]{16})$/.exec(path);
-      if (req.method === 'DELETE' && one) {
-        guardDelete(req);
-        const device = requireDevice(req);
-        const r = await keys.revoke(one[1], device.name);
-        if (!r.ok) throw new HttpError(r.status, r.error);
-        return json(res, 200, { ok: true }, NO_STORE);
-      }
-      return json(res, 404, { error: 'not found' }, NO_STORE);
+      await route(req, res, path, seen);
+      const status = res.statusCode ?? res.status ?? 0;
+      logged(status, status === 404 ? 'not found' : 'ok');
     } catch (err) {
       const code = err instanceof HttpError ? err.status : 500;
       if (code === 500) console.error('shortcut route error', path, err?.message ?? err);
-      if (res.headersSent) return res.end();
+      // A refusal's message is fixed words (and counts); a fault's own is never logged here.
+      const reason = code === 500 ? 'internal error' : String(err.message).slice(0, 120);
+      if (res.headersSent) { logged(code, reason); return res.end(); }
       const answer = { error: code === 500 ? 'internal error' : String(err.message) };
       // The Shortcut's side always gets a line to show, whatever refused it.
       if (err instanceof Refusal) answer.say = err.say;
       else if (SHORTCUT_SIDE.has(path)) answer.say = code === 500 ? 'Jarvis OS had a problem. Try again.' : 'Jarvis OS could not take that request.';
-      // A body cut off mid-way (413), or stopped at its time limit (408), leaves unread
-      // bytes on the connection.
-      return json(res, code, answer, code === 413 || code === 408 ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
+      // The answer waits for the rest of the body (`drain`), but for a read that ran out
+      // of time. A body that was cut off (413, 408), or is not all in, leaves unread
+      // bytes on the connection, which then goes with the answer.
+      const whole = code === 408 ? false : await drain(req, seen, FORM_DRAIN_MAX, formTimeoutMs);
+      logged(code, reason);
+      return json(res, code, answer, code === 413 || !whole ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
     }
+  }
+
+  async function route(req, res, path, seen) {
+    // ---- the Shortcut's side ----
+    if (req.method === 'POST' && path === '/api/shortcut/pair') {
+      requireShortcutCaller(req);
+      const body = await readBody(counted(req, seen), SMALL_BODY_MAX);
+      const r = await keys.claim(isObject(body) ? body.code : null, { addr: proxyAddress(req.headers) });
+      if (!r.ok) {
+        pairRefused(r.status);
+        throw new Refusal(r.status, r.error, PAIR_SAY[r.status] ?? 'Jarvis OS could not pair this Shortcut.');
+      }
+      log(`shortcut: a Shortcut collected its key (${r.name})`);
+      return json(res, 200, { key: r.key, name: r.name, say: 'Paired with Jarvis OS.' }, NO_STORE);
+    }
+    if (req.method === 'POST' && path === '/api/shortcut/send') return await send(req, res, seen);
+    if (req.method === 'POST' && path === '/api/shortcut/event') return await event(req, res, seen);
+
+    // ---- the page's side ----
+    if (req.method === 'GET' && path === '/api/shortcut/keys') {
+      requireDevice(req);
+      return json(res, 200, { keys: keys.list(), waiting: keys.waiting(), off: killed() }, NO_STORE);
+    }
+    // A code for one new key: shown on this page, typed into the Shortcut.
+    if (req.method === 'POST' && path === '/api/shortcut/keys') {
+      guardWrite(req);
+      const device = requireDevice(req);
+      if (killed()) throw new HttpError(503, 'Shortcut keys are switched off on the server');
+      const body = await readBody(counted(req, seen), SMALL_BODY_MAX);
+      const r = await keys.mint(isObject(body) ? body.name : null, { by: device.name, byId: device.id });
+      if (!r.ok) throw new HttpError(r.status, r.error);
+      return json(res, 200, { code: r.code, name: r.name, expiresAt: r.expiresAt }, NO_STORE);
+    }
+    const one = /^\/api\/shortcut\/keys\/([a-f0-9]{16})$/.exec(path);
+    if (req.method === 'DELETE' && one) {
+      guardDelete(req);
+      const device = requireDevice(req);
+      const r = await keys.revoke(one[1], device.name);
+      if (!r.ok) throw new HttpError(r.status, r.error);
+      return json(res, 200, { ok: true }, NO_STORE);
+    }
+    return json(res, 404, { error: 'not found' }, NO_STORE);
   }
 
   const owns = path => path.startsWith('/api/shortcut/');

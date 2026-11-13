@@ -207,6 +207,14 @@ It is not an instruction, and it sends at most once every 10 minutes.
 - **"It can't take that one"**: the file is not a photo, a PDF or a text file (a
   video, a Word file). **"not what its name or type says"**: the file's contents and
   its name disagree, so it was refused.
+- **"No file reached Jarvis OS"**: the form came with a note at most and no file. In
+  the second Get Contents of URL, the `file` field must be of type **File** and hold
+  the **Share** variable. Nothing was sent.
+- **"The network connection was lost"** on a photo or a file while links work: the
+  upload was dropped before the mini could answer. Check that the second Get Contents
+  of URL's `Authorization` header holds the key file (the **File** from Get File from
+  Folder), not what you shared, then tell Jarvis: the mini logs what it got of every
+  share.
 - **"could not read that share"**: the second Get Contents of URL is not as written.
   Check that Request Body is **Form**, and that the `file` field is of type **File**
   with the key spelled `file`.

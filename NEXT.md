@@ -417,6 +417,64 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Photo and PDF shares fail on the phone with "The network connection was lost" (board
+95b5013b): a request log line, and refusals that wait for the body, staged 2026-11-13
+(UTC) on `jos/send-refusal-log` (from main f7614d3, worktree
+`~/Projects/.worktrees/ccr-send-refusal-log`), not committed, not live. The cause is
+not proven yet; the first share after the restart says which of three it is.**
+
+- *What Jeff saw (live test, 02:23 to 02:38Z on 11-13).* Links shared from the iPad's
+  key arrive (JSON). Every photo, and a PDF from Files (no Convert Image), fails on the
+  phone with "The network connection was lost". The service log had nothing: a refusal
+  was logged nowhere.
+- *Evidence.* The mini's system log has seven lines from the Tailscale extension in
+  exactly that window and none in the 14 hours before:
+  `http2: server connection error from <phone>: connection error: PROTOCOL_ERROR`.
+  That is Tailscale Serve's HTTP/2 server dropping the phone's connection, which is what
+  the phone reports. Read with
+  `/usr/bin/log show --last 2h --style compact --predicate 'process CONTAINS[c] "tailscale" AND eventMessage CONTAINS "http2: server connection error"'`
+  (read-only; Serve itself is Vision's).
+- *What is built.* (1) **One log line per request to `/api/shortcut/*`**, refused or
+  taken, in fixed words and numbers (`requestLine`, lib/shortcut-routes.mjs):
+  `shortcut: request POST send 401 (this Shortcut is not paired) type=multipart/form-data length=482113 chunked=no expect=no form=yes read=482113 parts=unread`,
+  or for a share that was read
+  `... 200 (ok) ... read=482113 parts=1 file, 2 text files=jpg:481723`. The type is
+  looked up in a fixed list (else `other`), never printed; a file part is said by its
+  first bytes (`png`, `jpg`, `webp`, `heic`, `pdf`, `unknown`) and its size; no name,
+  text, key or byte of the body. A share that ended early or ran out of time is such a
+  line too (`400 (the request ended early) ... read=<so far>`, `408`). (2) **A refusal
+  is answered only when the request's body is in** (`drain`): before, a wrong key, a
+  body that is not a form, the off switch, a third share in flight and JSON over its
+  limit were answered while the phone was still uploading, and an answer sent then
+  reaches a phone as a dropped connection, not as its `say` line. Up to 64 MB and the
+  form's two minutes; past either, the answer goes at once with `Connection: close`,
+  as before. (3) **A form with no file in it is refused** (400, "No file reached Jarvis
+  OS, so nothing was sent…"), whether its file part is blank or missing: before, a
+  Shortcut whose file field was blank sent its note alone and said "Sent". Words alone
+  still go as JSON. This changes design §11's "a form may carry only text"; drop the
+  one line in `checkSendForm` to undo it.
+- *Tested, over real connections:* a form in chunks with no Content-Length, one after
+  `Expect: 100-continue`, and both at once are taken (Node answers the Expect itself;
+  server.mjs sets no `checkContinue`). Nothing in the form path was found that answers
+  or closes before the body is read, apart from the refusals in (2).
+- *Reading the first share after the restart.* A line with a refusal: the phone now
+  shows its words; fix what it names. A line `400 (the request ended early)` with
+  `read` under `length`: the upload was cut on its way (the proxy or the phone). **No
+  line at all, and a new `http2: server connection error` in the system log:** the
+  request died in Tailscale Serve's HTTP/2 layer before it reached the dashboard. In
+  Go's HTTP/2 server a connection-level PROTOCOL_ERROR on a new request is most often
+  its headers (a header list far too large, or an invalid header value that runs over
+  several frames), so check first that the Form action's `Authorization` header holds
+  the key file (the **File** from Get File from Folder) and not the shared item. If
+  the headers are right, it is the upload's framing, and the way round is to send the
+  file inside JSON (Base64 Encode on the phone), which is not built.
+- *Not verified.* Anything on a phone or through Tailscale Serve: every test here is a
+  Node client against a Node server. That an early answer is what a phone shows as
+  "connection lost" behind this proxy is the known behaviour of that kind of client and
+  proxy, not something measured here.
+- *Go-live.* Merge, then restart the service (Needs Jeff; Vision's launchctl). No page
+  change, no config change. Roll back by reverting the commit and restarting.
+
 **Send to Jarvis takes photos and files (board d345df98): staged 2026-11-12 on
 `jos/shortcut-files` (from main fc37633, worktree
 `~/Projects/.worktrees/ccr-shortcut-files`), not committed, not live. Ultron read it

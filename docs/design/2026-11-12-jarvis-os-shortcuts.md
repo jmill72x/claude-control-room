@@ -453,3 +453,33 @@ M2 is answered by the default. M3 is open.
 - **`sips` under the service's own environment.** The tests run it with an empty
   environment from a shell; the service's temp folder and sandbox state were not tried.
 - **`server.mjs` wiring** beyond its source test.
+
+## 12. The request log line, and refusals that wait (2026-11-13, board 95b5013b)
+
+The first live test of §11 failed on the phone with "The network connection was lost"
+for every photo and for a PDF, while links (JSON) from the same key arrived, and the
+service log said nothing. NEXT.md §10 has the evidence and how to read the next try.
+Three changes, all in `lib/shortcut-routes.mjs`:
+
+- **One log line per request** (`requestLine`), refused or taken: route, status, the
+  refusal's own fixed reason, the Content-Type looked up in a fixed list (else
+  `other`), Content-Length, whether the body came in chunks or after `Expect`, whether
+  it was taken as a form, bytes read, and for a parsed form the count of file parts and
+  text fields and each file part's first-bytes kind and size. The header values are
+  outside text, so none is printed: each is looked up or reduced to digits. A fault
+  (500) is "internal error" here; its own words stay on the error line that already
+  existed.
+- **A refusal is answered when the body is in** (`drain`). The form path always read
+  the body first, but the checks before it (a browser's headers, the type, the login,
+  the off switch, the key, two shares in flight) and JSON over its limit answered at
+  once. Node then reads the rest by itself, so the wait costs nothing new; what changes
+  is when the answer is written. The limits are the form's own (64 MB, two minutes);
+  past them the answer goes with `Connection: close`, as before. A read that already
+  ran out of time (408) or was cut off past 64 MB is not waited on again.
+- **A form with no file is refused** (`FILE_SAY.noFile`), blank file part or none.
+  §11 let a form carry words alone; nothing in the setup doc sends one, and a Shortcut
+  whose file field was blank would have sent the note and said "Sent".
+
+Not verified: a phone, and Tailscale Serve. The tests are a Node client against a Node
+server: chunked with no length, `Expect: 100-continue`, both, and each early refusal
+with a body still on its way.

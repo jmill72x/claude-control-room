@@ -1578,6 +1578,22 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   30 days without use. Make a new code in Jarvis OS and run the Jarvis Setup Shortcut.").
   It says whether the lead is online, and nothing from the chat. No log line or error body carries a
   message's text, a code or a key.
+- **Every request is one line in the service log, and a refusal waits for the body**
+  (2026-11-13). `shortcut: request POST send 200 (ok) type=multipart/form-data
+  length=482113 chunked=no expect=no form=yes read=482113 parts=1 file, 2 text
+  files=jpg:481723`: the route, the status, a refusal's own fixed reason, the
+  Content-Type looked up in a fixed list (else `other`), the Content-Length, whether the
+  body came in chunks or after `Expect`, whether it was taken as a form, the bytes read,
+  and for a form its file parts and text fields by count, each file part by what its
+  first bytes are (`png`, `jpg`, `webp`, `heic`, `pdf`, `unknown`) and its size. Never a
+  name, a text, a key or a byte of the body: what the request says of itself is looked
+  up or reduced to digits, never printed. A share that ended early (400) or ran out of
+  time (408) is a line too, with the bytes read so far. A refusal decided before the
+  body is read (a wrong key, a body that is no form, the off switch, a third share in
+  flight) is answered only when the body is in, up to 64 MB and two minutes: an answer
+  written while a phone is still uploading reaches it as "The network connection was
+  lost", never as its `say` line. A form with no file in it (a blank `file` field, or
+  none) is refused in words that say so; words alone go as JSON.
 - **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
   ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
   wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no
