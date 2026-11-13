@@ -392,6 +392,13 @@ test('the gate, Ultron\'s two conditions: a rival outside the window and a flood
   // The alert says which it was.
   assert.match(chatEventLine({ kind: 'approvals-exact-conflict', evicted: true }), /some were dropped unread/);
   assert.match(chatEventLine({ kind: 'approvals-exact-conflict' }), /two different exact-command reports/);
+  // And which rules hold (Ultron's L3): Deny only when guarded, Allow kept in parity.
+  for (const evicted of [false, true]) {
+    assert.match(chatEventLine({ kind: 'approvals-exact-conflict', evicted }), /the card is Deny only$/);
+    assert.doesNotMatch(chatEventLine({ kind: 'approvals-exact-conflict', evicted, parity: true }), /Deny only/);
+    assert.match(chatEventLine({ kind: 'approvals-exact-conflict', evicted, parity: true }), /keeps Allow \(parity with the relay\)/);
+    assert.match(chatEventLine({ kind: 'approvals-exact-conflict', evicted, parity: 'yes' }), /Deny only$/, 'only a plain true');
+  }
 });
 
 test('parity with "exact" (board 8ecf3ca9; the owner\'s pick 11-13: mark, never gate): a match draws the exact text; a conflict, at open or later, takes the text off the card and marks it, and Allow stays', () => {
@@ -412,7 +419,7 @@ test('parity with "exact" (board 8ecf3ca9; the owner\'s pick 11-13: mark, never 
   o.report(real);
   const op = o.open(folded);
   assert.equal(op.exact, null, 'neither text is drawn as the exact one');
-  assert.deepEqual(o.events, [{ kind: 'approvals-exact-conflict' }]);
+  assert.deepEqual(o.events, [{ kind: 'approvals-exact-conflict', parity: true }]);
   const ov = o.a.view(op);
   assert.equal(ov.canAllow, true);
   assert.equal(ov.exact, null);
@@ -424,7 +431,7 @@ test('parity with "exact" (board 8ecf3ca9; the owner\'s pick 11-13: mark, never 
   assert.equal(fp.exact, null);
   assert.match(f.a.view(fp).exactNote, /Too many command reports came at once/);
   assert.equal(f.a.view(fp).canAllow, true);
-  assert.deepEqual(f.events, [{ kind: 'approvals-exact-conflict', evicted: true }]);
+  assert.deepEqual(f.events, [{ kind: 'approvals-exact-conflict', evicted: true, parity: true }]);
   // A card that drew a text, then a rival: the text comes off, the mark goes on, Allow stays; alerted once.
   const d = gate({ rules: 'parity' });
   d.report(real);
@@ -440,7 +447,7 @@ test('parity with "exact" (board 8ecf3ca9; the owner\'s pick 11-13: mark, never 
   assert.equal(dp.exact, null, 'gone from the request too, so the shown hash changes');
   assert.notEqual(shownHash(dp.tool, dp.description, dp.inputPreview, dp.exact), before);
   d.a.view(dp);
-  assert.deepEqual(d.events, [{ kind: 'approvals-exact-conflict' }]);
+  assert.deepEqual(d.events, [{ kind: 'approvals-exact-conflict', parity: true }]);
   // A flood after the card drew a text: the other mark.
   const fl = gate({ rules: 'parity' });
   fl.report(real);

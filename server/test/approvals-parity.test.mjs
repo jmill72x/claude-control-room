@@ -462,6 +462,8 @@ test('server.mjs: both ingest handlers get onMoved, the close counts only the le
   assert.match(src, /answeredElsewhere = createAnsweredElsewhere\(\{ store: chatStore, isLeadSession: id => leadName !== null && \(sessionAgents\.get\(id\) \?\? null\) === leadName \}\);/);
   const gate = src.slice(src.indexOf('approvals = createApprovals({'));
   assert.match(gate.slice(0, gate.indexOf('\n  });')), /\brules: approvalSettings\.rules, hidden: approvalSettings\.hidden,/);
+  // The open cards, so a kept exact-command report rechecks them (Ultron's M1, 11-13).
+  assert.match(gate.slice(0, gate.indexOf('\n  });')), /\n    cards: chatStore\n?$/);
   assert.match(src, /if \(approvals\.rules === 'parity'\) console\.log\(parityStartLine\(approvals\)\);/);
   assert.match(src, /kind: 'approvals-mode', mode: approvals\.serverMode\(\), previous: lastMode, rules: approvals\.rules, hidden: approvals\.hidden \}/);
 });

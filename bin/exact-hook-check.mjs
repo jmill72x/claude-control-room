@@ -9,7 +9,12 @@
 //   3. what does a real two-line Bash command look like in `input_preview`?
 //
 //   node bin/exact-hook-check.mjs setup           make a scratch folder under /tmp and
-//                                                 print the commands to run
+//                                                 print its path, nothing else (NEXT.md
+//                                                 §10 step 10 has the commands). Run it
+//                                                 right before the session: the MCP config
+//                                                 names this node by its own path, which
+//                                                 with Homebrew is a versioned Cellar path
+//                                                 that a `brew upgrade` removes
 //   node bin/exact-hook-check.mjs channel <dir>   (Claude Code starts this itself, from
 //                                                 the scratch MCP config) a stand-in
 //                                                 channel that declares the permission
@@ -17,7 +22,9 @@
 //                                                 ingest socket for the hook
 //
 // The hook in the scratch settings is README's exact-command entry word for word, with
-// only the socket path changed to the scratch one (setup checks that). The channel never
+// only the socket path changed to the scratch one (setup checks that); the same file
+// turns off the two channel plugins by name, in case user settings load after all
+// (Ultron's L4, 11-13; step 10 checks `/status` and `/hooks` too). The channel never
 // answers a prompt: every one is answered in the terminal. It writes what it saw to
 // <dir>/results.txt (for a person) and <dir>/events.jsonl (raw). Ask only for harmless
 // commands: the commands are written there in full. Checked by
@@ -32,6 +39,8 @@ import { checkExactReport, createExactCommands, foldWhitespace, EXACT_WINDOW_BEF
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 export const CHANNEL_NAME = 'exactcheck';
+// The real channels, off in the scratch session whatever else loads (L4).
+export const SCRATCH_PLUGINS_OFF = Object.freeze({ 'discord@claude-plugins-official': false, 'jarvis-channel@jarvis-local': false });
 // A report this long after a relay, with no report before it, is called late.
 const LATE_MS = 10e3;
 
@@ -59,7 +68,7 @@ export function setup({ base = '/tmp', readme = readFileSync(join(REPO, 'README.
   if (Buffer.byteLength(socketPath) > 100) throw new Error(`the socket path is too long for macOS: ${socketPath}`);
   mkdirSync(join(dir, 'work'));
   writeFileSync(join(dir, 'work', 'notes.txt'), 'scratch notes for the exact-command test\n');
-  writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PermissionRequest: scratchHookEntry(readme, socketPath) } }, null, 2) + '\n');
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PermissionRequest: scratchHookEntry(readme, socketPath) }, enabledPlugins: SCRATCH_PLUGINS_OFF }, null, 2) + '\n');
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { [CHANNEL_NAME]: { command: node, args: [fileURLToPath(import.meta.url), 'channel', dir] } } }, null, 2) + '\n');
   writeFileSync(join(dir, 'results.txt'), '');
   return { dir, socketPath };

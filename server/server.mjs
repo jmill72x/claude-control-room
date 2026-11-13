@@ -409,7 +409,10 @@ if (chatSettings.on && socketsReady) {
     // "parity": Allow wherever the channel's relay offers it (lib/approvals.mjs, header).
     rules: approvalSettings.rules, hidden: approvalSettings.hidden,
     // Deny-only while the ingest socket is off and the TCP route closed (4-M1).
-    ingestOk
+    ingestOk,
+    // The open cards, so a kept exact-command report rechecks them at once and a
+    // marked card is redrawn (Ultron's M1 and L1, 11-13). Guarded by a source test.
+    cards: chatStore
   });
   answeredElsewhere = createAnsweredElsewhere({ store: chatStore, isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName });
   approvals.killed();

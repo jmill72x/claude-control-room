@@ -314,6 +314,13 @@ export function upsertPermission(map, p) {
   return next;
 }
 
+// A verdict refused because the card changed under the tap (409 with `changed`):
+// the card as the server has it now, when the answer carries this request's; else null.
+export function changedCard(err, requestId) {
+  const card = err?.status === 409 && err?.body?.changed === true ? err.body.request : null;
+  return card && typeof card === 'object' && card.requestId === requestId ? card : null;
+}
+
 // ---- photos (§2.5) ----
 
 // The size a photo is drawn at: the long edge at most 1568 px, the aspect kept,

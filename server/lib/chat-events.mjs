@@ -67,9 +67,12 @@ export function chatEventLine(event) {
     'approvals-anonymous': `${event.count ?? 'many'} verdicts with no paired device were refused in 10 minutes`,
     'approvals-burst': `${event.count ?? 'several'} permissions were allowed from the page in 5 minutes`,
     'approvals-flood': `${event.open ?? 'many'} permission requests were open at once: ${event.parity === true ? 'the cards keep Allow (parity with the relay), so look before tapping' : 'page approvals are Deny only for 10 minutes'}`,
-    'approvals-exact-conflict': event.evicted === true
-      ? 'over 40 exact-command reports came in two minutes, so some were dropped unread: a Bash card is Deny only (a flood of hook reports)'
-      : 'two different exact-command reports matched one Bash request: its card is Deny only (a doubled or forged hook report)',
+    // In parity (L3) the card keeps Allow and loses only its exact text.
+    'approvals-exact-conflict': `${event.evicted === true
+      ? 'over 40 exact-command reports came in two minutes (a flood of hook reports), so some were dropped unread'
+      : 'two different exact-command reports matched one Bash request (a doubled or forged hook report)'}: ${event.parity === true
+      ? 'the card shows no exact text and keeps Allow (parity with the relay), so check the terminal before allowing'
+      : 'the card is Deny only'}`,
     'shortcut-code-made': `a code for a new Shortcut key was made by ${event.by ?? '?'} (${event.name || 'unnamed'}); whoever enters it in the next 10 minutes gets the key`,
     'shortcut-paired': `a Shortcut key was made: ${event.key?.name ?? '?'} (its code came from ${event.by ?? '?'}); it can send messages as the owner, and nothing else`,
     'shortcut-revoked': `a Shortcut key was revoked: ${event.key?.name ?? '?'} (by ${event.by ?? '?'})`,

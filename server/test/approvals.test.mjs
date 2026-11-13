@@ -701,7 +701,7 @@ async function setup(opts = {}) {
   await env.store.load();
   env.devices = createDeviceStore({ path: join(env.dir, 'devices.json'), now, onEvent });
   await env.devices.load();
-  env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, ...(opts.gate ?? {}) });
+  env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, cards: env.store, ...(opts.gate ?? {}) });
   env.socket = createSocketRouter({ store: env.store, now, onEvent, log: l => env.logs.push(l), pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
   env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: l => env.routeLogs.push(l), pingMs: 60, approvals: env.approvals });
   env.sockPath = join(env.dir, 'c.sock');
@@ -1360,8 +1360,9 @@ test('parity with "exact" over the routes: a rival after the card drew a text ma
     assert.equal(ok.status, 200, ok.text);
     assert.equal(env.events.filter(e => e.kind === 'approvals-exact-conflict').length, 1);
   } finally { await env.close(); }
-  // When the tap comes before any look: refused as stale all the same.
-  const first = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  // When the tap comes before any look: refused as stale all the same. No cards here, so
+  // the report's own recheck (M1) can't mark it first: this is the verdict route's look.
+  const first = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead', cards: null } });
   try {
     await first.mark('phone', true);
     const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
@@ -1374,6 +1375,115 @@ test('parity with "exact" over the routes: a rival after the card drew a text ma
     assert.equal(stale.status, 409, stale.text);
     assert.equal(first.store.permission('ggggg').state, 'open');
   } finally { await first.close(); }
+});
+
+test('a rival report marks open cards when it arrives, and the mark outlives it: nothing looks for 3 minutes, then a tap (Ultron\'s M1, 11-13)', async () => {
+  const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+  const folded = foldWhitespace(real);
+  // Parity: the card loses its text at once and every page gets it again; 3 minutes on
+  // (the rival long forgotten) an Allow made on the old card is refused as changed.
+  const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await env.mark('phone', true);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('mmmmm', { command: folded });
+    await env.open('nnnnn', { command: 'ls /home/owner/Projects/other' });
+    const old = env.shown('mmmmm');
+    assert.equal(env.store.permission('mmmmm').exact, real);
+    const sent = [];
+    env.store.subscribe(e => { if (e.type === 'permission') sent.push({ id: e.request.requestId, ...env.approvals.view(e.request) }); });
+    clock(env, 20e3);
+    assert.equal(env.approvals.noteExact({ sessionId: 'lead', command: folded }), 'kept');
+    assert.equal(env.store.permission('mmmmm').exact, null, 'marked when the rival arrived, before any look');
+    assert.equal(sent.length, 1, 'one redraw, for the disputed card only');
+    assert.equal(sent[0].id, 'mmmmm');
+    assert.equal(sent[0].exact, null);
+    assert.match(sent[0].exactNote, /A different command with the same look/);
+    assert.deepEqual(env.events.filter(e => e.kind === 'approvals-exact-conflict'), [{ kind: 'approvals-exact-conflict', parity: true }]);
+    clock(env, 3 * MIN);
+    const stale = await env.tap('mmmmm', env.phone, 'allow', { shown: old });
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(stale.json.changed, true);
+    assert.equal(stale.json.request.requestId, 'mmmmm', 'the answer carries the card as it is now');
+    assert.equal(stale.json.request.exact, null);
+    assert.match(stale.json.request.exactNote, /A different command with the same look/);
+    assert.equal(env.store.permission('mmmmm').state, 'open');
+    assert.equal((await env.tap('mmmmm', env.phone, 'allow')).status, 200, 'on the redrawn card Allow goes through (parity)');
+  } finally { await env.close(); }
+  // Guarded: the card is Deny-only from the rival on, and still 3 minutes later.
+  const g = await setup({ gate: { bash: 'exact', bashCommands: [real], isLeadSession: id => id === 'lead' } });
+  try {
+    await g.mark('phone', true);
+    g.approvals.noteExact({ sessionId: 'lead', command: real });
+    await g.open('mmmmm', { command: folded });
+    assert.equal(g.approvals.view(g.store.permission('mmmmm')).canAllow, true, 'a listed command: allowable until the rival');
+    const sent = [];
+    g.store.subscribe(e => { if (e.type === 'permission') sent.push(e.request.requestId); });
+    clock(g, 20e3);
+    g.approvals.noteExact({ sessionId: 'lead', command: folded });
+    assert.deepEqual(sent, ['mmmmm'], 'redrawn as Deny-only');
+    clock(g, 3 * MIN);
+    const r = await g.tap('mmmmm', g.phone, 'allow');
+    assert.equal(r.status, 403, r.text);
+    assert.match(r.json.error, /two different exact copies/);
+    assert.equal(g.store.permission('mmmmm').state, 'open');
+    assert.deepEqual(g.events.filter(e => e.kind === 'approvals-exact-conflict'), [{ kind: 'approvals-exact-conflict' }]);
+  } finally { await g.close(); }
+});
+
+test('a Deny made on a card that was marked but not yet redrawn counts; a changed card is no refused tap (Ultron\'s L1, L2)', async () => {
+  const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+  const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await env.mark('phone', true);
+    env.approvals.noteExact({ sessionId: 'lead', command: real });
+    await env.open('ddddd', { command: foldWhitespace(real) });
+    await env.open('eeeee', { command: foldWhitespace(real) });
+    const old = env.shown('ddddd');
+    clock(env, 20e3);
+    env.approvals.noteExact({ sessionId: 'lead', command: foldWhitespace(real) });
+    // Ten Allows on the old card, under the tap limits: none counts toward the lockout.
+    for (let i = 0; i < 10; i++) {
+      if (i % 5 === 0) clock(env, MIN);
+      const r = await env.tap('ddddd', env.phone, 'allow', { shown: old });
+      assert.equal(r.status, 409, `${i}: ${r.text}`);
+    }
+    assert.ok(!env.events.some(e => e.kind === 'approvals-lockout'), 'no lockout for a card that changed');
+    clock(env, MIN);
+    // A wrong hash is still a wrong tap: refused, with no card, and a Deny with it too.
+    const wrong = await env.tap('ddddd', env.phone, 'deny', { shown: 'f'.repeat(64) });
+    assert.equal(wrong.status, 409);
+    assert.equal(wrong.json.changed, undefined);
+    assert.equal((await env.tap('ddddd', env.phone, 'allow', { shown: 'e'.repeat(64) })).json.changed, undefined);
+    // The Deny made on the old card goes through.
+    const deny = await env.tap('ddddd', env.phone, 'deny', { shown: old });
+    assert.equal(deny.status, 200, deny.text);
+    assert.equal(env.store.permission('ddddd').state, 'denied');
+    // And on the redrawn card too.
+    assert.equal((await env.tap('eeeee', env.phone, 'deny')).status, 200);
+    // A closed card keeps no old text.
+    assert.equal(env.store.permission('ddddd').exactWas, null);
+  } finally { await env.close(); }
+});
+
+test('the store redraws only an open card of its own', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'redraw-'));
+  try {
+    const store = createChatStore({ dir });
+    await store.load();
+    const sent = [];
+    store.subscribe(e => sent.push(e.type));
+    await store.openPermission({ requestId: 'rrrrr', tool: 'Read', description: 'd', inputPreview: '{}' });
+    sent.length = 0;
+    const p = store.permission('rrrrr');
+    assert.equal(store.redrawPermission(p), true);
+    assert.equal(store.redrawPermission({ ...p }), false, 'a copy is not the store\'s');
+    assert.equal(store.redrawPermission(null), false);
+    await store.answerPermission('rrrrr', 'deny', 'phone');
+    sent.length = 0;
+    assert.equal(store.redrawPermission(p), false, 'closed');
+    assert.deepEqual(sent, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('the gate carries config\'s protected places, and the routes the exact command: shown on the card, covered by the hash, dropped when the request closes', async () => {

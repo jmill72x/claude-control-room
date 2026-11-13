@@ -744,13 +744,18 @@ export function verdictOriginProblem(headers, allowedHosts) {
 // `isLeadSession(id)` is the strict one for exact-command reports: the lead's session
 // by name, and nothing else. `ingestOk()` says whether the hooks' posts can reach the
 // server (server.mjs: the ingest socket is on, or the TCP route is still "legacy");
-// while it says no, every request is Deny-only.
+// while it says no, every request is Deny-only. `cards` is the chat store (server.mjs):
+// `openPermissions()` lists the open requests and `redrawPermission(p)` sends a card to
+// every page again. A kept exact-command report rechecks each open Bash card that shows
+// an exact text (Ultron's M1, 11-13: reports live 2 minutes but cards up to 12 hours, so
+// a rival must mark the card when it arrives, not when someone next looks), and a card
+// the gate marks is redrawn at once (L1).
 export function createApprovals({
   mode = 'off', killPath = null, patterns = [], home = homedir(), realpath = safeRealpath,
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
   bash = 'deny', writeFolders = [], repoRoot = OWN_REPO, isExecutable = fileCanRun,
   writeProtected = [], bashCommands = [], isLeadSession = () => false, isLink = pathIsLink,
-  testChannelOk = false, ingestOk = () => true, rules = 'guarded', hidden = 'deny'
+  testChannelOk = false, ingestOk = () => true, rules = 'guarded', hidden = 'deny', cards = null
 } = {}) {
   const configured = APPROVAL_MODES.includes(mode) ? mode : 'off';
   const bashMode = BASH_MODES.includes(bash) ? bash : 'deny';
@@ -766,6 +771,8 @@ export function createApprovals({
   // card loses its exact text, falls back to the relayed preview, and says why.
   const EXACT_NOTE = 'A different command with the same look was reported, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
   const EXACT_NOTE_EVICTED = 'Too many command reports came at once to confirm this one, so this card cannot show the exact command: it may have more lines than shown. Check the terminal before allowing.';
+  // The alert says which rules apply (L3): in parity the card keeps Allow.
+  const conflictEvent = evicted => ({ kind: 'approvals-exact-conflict', ...(evicted ? { evicted: true } : {}), ...(parity ? { parity: true } : {}) });
   // What the channel last said its relay does: null until its first hello, then
   // "off", "deny", "allow" or "unknown" (a channel that didn't say).
   let channelRelay = null;
@@ -809,14 +816,17 @@ export function createApprovals({
     // A card that shows an exact command: a different report for the same preview,
     // whenever it came, means one of the two is not what will run; reports dropped by
     // the cap can't be checked at all. Guarded: Deny-only, sticky. Parity: the exact
-    // text comes off the card (so the shown hash changes and a tap made on the old card
-    // is refused as stale) and the card carries a mark instead; Allow stays.
+    // text comes off the card (so the shown hash changes and an Allow made on the old
+    // card is refused as stale) and the card carries a mark instead; Allow stays. The old
+    // text stays as `exactWas`, so a Deny made on the old card still counts (L2). Either
+    // way every page gets the card again at once (L1).
     if (typeof p.exact === 'string' && !p.exactConflict) {
       const d = exactReports.disputes(previewCommand(p), p.exact);
       if (d) {
-        if (parity) { p.exact = null; p.exactNote = d === 'evicted' ? EXACT_NOTE_EVICTED : EXACT_NOTE; }
+        if (parity) { p.exactWas = p.exact; p.exact = null; p.exactNote = d === 'evicted' ? EXACT_NOTE_EVICTED : EXACT_NOTE; }
         else p.exactConflict = d;
-        onEvent(d === 'evicted' ? { kind: 'approvals-exact-conflict', evicted: true } : { kind: 'approvals-exact-conflict' });
+        onEvent(conflictEvent(d === 'evicted'));
+        try { cards?.redrawPermission?.(p); } catch { /* the card is marked all the same */ }
       }
     }
     if (p.exactConflict) out.push(p.exactConflict === 'evicted' ? EXACT_EVICTED : EXACT_CONFLICT);
@@ -875,7 +885,7 @@ export function createApprovals({
           if (c.conflict) {
             exactProblem = c.evicted ? EXACT_EVICTED : EXACT_CONFLICT;
             if (parity) p.exactNote = c.evicted ? EXACT_NOTE_EVICTED : EXACT_NOTE;
-            onEvent(c.evicted ? { kind: 'approvals-exact-conflict', evicted: true } : { kind: 'approvals-exact-conflict' });
+            onEvent(conflictEvent(c.evicted));
           }
           else if (c.unusable) exactProblem = 'the exact command has characters outside plain ASCII, line breaks and tabs';
           else if (c.texts.length === 1) exact = c.texts[0];
@@ -889,13 +899,19 @@ export function createApprovals({
     },
     // A report from the PermissionRequest hook: { sessionId, command }. Kept only in
     // "exact" mode with approvals on, and only from the lead's session; answers
-    // "kept", "off" or "other". The text is never logged.
+    // "kept", "off" or "other". The text is never logged. A kept report rechecks, now,
+    // every open Bash card that shows an exact text (M1, the header): one it disputes is
+    // marked (parity) or made Deny-only (guarded) and redrawn, and stays so after the
+    // report itself is forgotten.
     noteExact({ sessionId, command } = {}) {
       if (bashMode !== 'exact' || serverMode() === 'off') return 'off';
       let lead = false;
       try { lead = isLeadSession(sessionId) === true; } catch { lead = false; }
       if (!lead) return 'other';
       exactReports.note(command);
+      let open = [];
+      try { open = cards?.openPermissions?.() ?? []; } catch { open = []; }
+      for (const p of open) if (p?.tool === 'Bash' && typeof p.exact === 'string') reasonsNow(p);
       return 'kept';
     },
     bashMode,

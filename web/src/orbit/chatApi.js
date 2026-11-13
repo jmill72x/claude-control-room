@@ -6,12 +6,12 @@
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export class ChatError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, body = null) { super(message); this.status = status; this.body = body; }
 }
 
 async function answer(res) {
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ChatError(res.status, body?.error ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new ChatError(res.status, body?.error ?? `HTTP ${res.status}`, body);
   return body;
 }
 const get = url => fetch(url, { cache: 'no-store' }).then(answer);

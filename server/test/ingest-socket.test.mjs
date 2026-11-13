@@ -551,7 +551,7 @@ test('server.mjs: the socket is started with retries and the off alert, and appr
   assert.match(src, /const ingestSocket = startIngestSocket\(\{[\s\S]*?onOff: async \(_, words\) => sendAlert\(\{[^\n]*message: words,/);
   assert.match(src, /\nconst ingestOk = \(\) => ingestSocket\.check\(\) \|\| ingestSettings\.tcp === 'legacy';\n/, 'the file is checked on each approval, first');
   const approvals = src.slice(src.indexOf('approvals = createApprovals({'));
-  assert.match(approvals.slice(0, approvals.indexOf('\n  });') + 1), /\n    ingestOk\n/, 'createApprovals gets ingestOk');
+  assert.match(approvals.slice(0, approvals.indexOf('\n  });') + 1), /\n    ingestOk,?\n/, 'createApprovals gets ingestOk');
   assert.ok(!/listenIngestSocket\(/.test(src), 'no single-try start left behind');
 });
 

@@ -400,7 +400,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // out), its lockout and limits, the Origin rule, then the body: Allow needs mode
   // "on" and an approver device, and the store checks the request is open, the
   // `shown` hash matches and nothing makes it Deny-only now. Every refusal after the
-  // device is known counts toward its lockout, and changes nothing.
+  // device is known counts toward its lockout, and changes nothing, except a card that
+  // changed under the tap (below), which still counts toward the tap limits.
   async function verdict(req, res, requestId) {
     guardWrite(req);
     if (!approvals || approvals.mode() === 'off') throw new HttpError(403, 'approvals are off on this server');
@@ -430,6 +431,13 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       shown, requireShown: true,
       allowProblem: p => { const why = approvals.reasonsNow(p); return why.length ? `allow this one at the terminal or in Discord: ${why[0]}` : null; }
     });
+    // A card that changed under the tap (the gate marked it after the page drew it) is
+    // no wrong tap: it is not counted toward the lockout, and the answer carries the card
+    // as it is now, so the page redraws it before anyone taps again (Ultron's L1).
+    if (!r.ok && r.changed === true && r.request) {
+      log(`chat: a verdict from ${device.name} was refused (409: ${r.error}); the page gets the card again`);
+      return json(res, 409, { error: r.error, changed: true, request: pubPermission(r.request) });
+    }
     if (!r.ok) throw refuse(r.status, r.error);
     log(`chat: permission ${requestId} ${r.request.state} by ${device.name}`);
     if (behavior === 'allow') approvals.noteAllow();

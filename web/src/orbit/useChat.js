@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, shownInput, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -274,8 +274,16 @@ export function useChat({ active }) {
       return { ok: true };
     } catch (err) {
       if (err?.status === 401) unpaired();
-      // 409: already answered (in Discord, or on another device); the server's
-      // own event tells the card what happened.
+      // 409 "changed": the card changed under the tap (an exact command was disputed
+      // after the page drew it). The answer carries the card as it is now: draw it, and
+      // ask for a fresh look before another tap.
+      const fresh = changedCard(err, requestId);
+      if (fresh) {
+        if (keepCard(fresh, dismissedRef.current)) setPermissions(map => upsertPermission(map, fresh));
+        return { ok: false, error: 'this request changed while it was on screen; read the card again before answering' };
+      }
+      // Any other 409: already answered (in Discord, or on another device); the
+      // server's own event tells the card what happened.
       return { ok: false, error: String(err?.message ?? err) };
     }
   }, [unpaired, device]);

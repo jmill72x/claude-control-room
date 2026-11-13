@@ -27,7 +27,9 @@ test('setup: README\'s hook word for word but the socket, a stand-in channel in 
     const { dir, socketPath } = setup({ base: b, readme, node: '/opt/node' });
     assert.equal(socketPath, join(dir, 'ingest.sock'));
     const settings = JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8'));
-    assert.deepEqual(Object.keys(settings), ['hooks'], 'hooks only: nothing else of a settings file');
+    assert.deepEqual(Object.keys(settings), ['hooks', 'enabledPlugins'], 'the hook and the plugins off: nothing else of a settings file');
+    // The two real channels off by name (Ultron's L4, 11-13).
+    assert.deepEqual(settings.enabledPlugins, { 'discord@claude-plugins-official': false, 'jarvis-channel@jarvis-local': false });
     assert.deepEqual(Object.keys(settings.hooks), ['PermissionRequest']);
     const live = readmeHookEntry(readme)[0];
     const mine = settings.hooks.PermissionRequest[0];
@@ -95,7 +97,7 @@ test('the stand-in channel, unit: order, fold, raw preview and the card\'s exact
   assert.match(lines.at(-1), /REFUSED as the server would refuse it: tool_name must be Bash/);
   // The raw log keeps no session id, only that one was there.
   assert.ok(raws.filter(r => r.kind === 'report').every(r => r.body.session_id === 'present'));
-  assert.equal(shown('aé‮'), '"a\\u00e9\\u202e"');
+  assert.equal(shown('a\u00e9\u202e'), '"a\\u00e9\\u202e"');
 });
 
 test('the stand-in channel, for real: started as Claude Code starts it, it answers on stdio, takes the scratch hook\'s post on its socket, and removes the socket on exit', async t => {

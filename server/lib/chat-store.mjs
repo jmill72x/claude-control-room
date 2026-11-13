@@ -325,7 +325,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (p.state === 'open' && at - p.relayedAt >= p.windowMs) endPermission(p, 'timeout');
       else if (p.state === 'open' && gone) endPermission(p, 'channel');
       // A closed request drops its exact command at the next look (any read prunes).
-      if (p.state !== 'open') p.exact = null;
+      if (p.state !== 'open') { p.exact = null; p.exactWas = null; }
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
       if (at - p.openedAt >= 7 * DAY) forget(uid, p);
     }
@@ -446,7 +446,16 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
     const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact);
-    if ((requireShown || shown !== null) && shown !== hash) return { ok: false, status: 409, error: 'the request changed; reload' };
+    // A tap made on the card as it was before the gate took a disputed exact text off it
+    // (`exactWas`, lib/approvals.mjs): a Deny counts (Ultron's L2: Deny always works); an
+    // Allow is refused as `changed`, with the request, so the route sends the page the
+    // card as it is now and doesn't count the tap as a refusal (L1). Any other hash is a
+    // plain refusal.
+    if ((requireShown || shown !== null) && shown !== hash) {
+      const was = typeof p.exactWas === 'string' ? shownHash(p.tool, p.description, p.inputPreview, p.exactWas) : null;
+      if (was === null || shown !== was) return { ok: false, status: 409, error: 'the request changed; reload' };
+      if (behavior !== 'deny') return { ok: false, status: 409, error: 'the request changed; reload', changed: true, request: p };
+    }
     if (behavior === 'allow') {
       const why = allowProblem(p);
       if (why) return { ok: false, status: 403, error: why };
@@ -460,6 +469,13 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   const openPermissions = () => { prunePermissions(); return [...permissions.values()].filter(p => p.state === 'open'); };
+  // The gate changed an open card (an exact-command mark, lib/approvals.mjs): every page
+  // gets it again. A request that is not open, or not this store's, sends nothing.
+  const redrawPermission = p => {
+    if (!p || p.state !== 'open' || findPermission(p.requestId) !== p) return false;
+    emit({ type: 'permission', request: p });
+    return true;
+  };
   // What a page gets when its stream opens: the open requests, and those that timed
   // out here unanswered in the last CARD_REPLAY_MS and may still be waiting in Claude
   // Code. A page that was away for the request's whole window then shows where to
@@ -566,7 +582,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     // The page's "slow" state: an answer to an event is not an answer to the owner.
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
-    openPermission, answerPermission, openPermissions, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
+    openPermission, answerPermission, openPermissions, redrawPermission, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
     setPermissionHold, noteChannelAlive,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },

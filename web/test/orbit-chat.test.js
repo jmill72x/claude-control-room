@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, changedCard, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
   isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, pairedSince, codeState, KEY_IDLE_DAYS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
@@ -417,4 +417,16 @@ test('codeState: a code the sheet made is waiting, then paired (a new active key
   assert.equal(codeState(made, null), 'gone');
   assert.deepEqual(pairedSince(null, [{ id: 'a', name: 'iPhone' }], 'iPhone'), { id: 'a', name: 'iPhone' });
   assert.equal(pairedSince(['a'], null, 'iPhone'), null);
+});
+
+test('a verdict refused because the card changed hands back the card as it is now, and only that one (Ultron\'s L1)', () => {
+  const card = { requestId: 'abcde', tool: 'Bash', exact: null, exactNote: 'A different command with the same look was reported' };
+  const err = status => Object.assign(new Error('the request changed; reload'), { status, body: { error: 'x', changed: true, request: card } });
+  assert.equal(changedCard(err(409), 'abcde'), card);
+  assert.equal(changedCard(err(403), 'abcde'), null, 'only a 409');
+  assert.equal(changedCard(err(409), 'other'), null, 'another request\'s card is not drawn here');
+  assert.equal(changedCard(Object.assign(new Error('already allowed'), { status: 409, body: { error: 'already allowed' } }), 'abcde'), null, 'a 409 without changed');
+  assert.equal(changedCard(Object.assign(new Error('x'), { status: 409, body: { changed: 'yes', request: card } }), 'abcde'), null, 'only a plain true');
+  assert.equal(changedCard(new Error('network'), 'abcde'), null);
+  assert.equal(changedCard(null, 'abcde'), null);
 });

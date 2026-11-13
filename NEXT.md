@@ -417,41 +417,52 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Exact Bash on approval cards, Ultron's two conditions (board 320ecc71 and 8ecf3ca9):
-staged 2026-11-13 on `jos/exact-bash` (from main f8cd1b1, worktree
-`~/Projects/.worktrees/ccr-exact-bash`), not committed, not live; `approvalsBash` stays
-`"deny"`.** Ultron (11-11) allowed `"exact"` only after two fixes, both now in
-`lib/exact-commands.mjs`: (1) *the 40-report cap:* when a report is pushed out by the cap,
-every match is a conflict until the dropped report would have been forgotten (its time
-plus 2 minutes). Reports come only from permission prompts in the lead's session, at a
-person's pace, so 40 in two minutes is a flood, and a flood must not push the real text
+**Exact Bash on approval cards (board 320ecc71 and 8ecf3ca9): Ultron's two conditions
+merged 2026-11-13 (main 1163dc2, page built); his 11-13 re-read findings (board 70bb1407
+and 1b1dccd8) staged 2026-11-13 on `jos/exact-bash-2` (from main 1163dc2, worktree
+`~/Projects/.worktrees/ccr-exact-bash-2`), not committed; `approvalsBash` stays
+`"deny"`.** *What main has:* (1) *the 40-report cap:* when a report is pushed out by the
+cap, every match is a conflict until the dropped report would have been forgotten (its
+time plus 2 minutes). Reports come only from permission prompts in the lead's session, at
+a person's pace, so 40 in two minutes is a flood, and a flood must not push the real text
 out and leave a forged copy alone. (2) *Conflicts outside the window:* a different text
 with the same fold counts against a match for as long as it is kept (2 minutes), not only
-inside the 30 s before / 5 s after window; an open card is checked against the whole store
-too (`disputes()`), so a rival 10 s after the relay now takes its Allow away. A dropped
-report gives its own card reason ("so many exact-command reports came in two minutes that
-some were dropped unread") and its alert says so (`approvals-exact-conflict` with
-`evicted: true`). *In parity* (live; Jeff's pick (b), 11-13: mark, never gate), any
-conflict, at open or after the card drew a text, takes the exact text off the card (it
-falls back to the relayed, folded preview), adds a mark (`exactNote`: "A different command
-with the same look was reported, so this card cannot show the exact command: it may have
-more lines than shown. Check the terminal before allowing.", or the flood wording), and
-keeps Allow. Before an Allow the verdict route lets the gate look again, so a tap made on
-the card that still showed the old text is refused as stale (409) and the page reloads;
-Deny is never refreshed (Deny always works). Guarded mode keeps Deny-only. The page draws
-the mark (`web/src/orbit/Chat.jsx`), which needs the usual web build after the merge. *The scratch test kit,* `bin/exact-hook-check.mjs`: it makes
-a scratch folder under `/tmp` with a settings file holding README's hook entry word for
-word but the socket (a scratch one), a scratch MCP config, and a stand-in channel that
-declares the permission relay, never answers, and writes the order, the fold and the raw
-preview to `results.txt`. Steps: step 10 below. *Tests:* server 1162 (was 1154; the one
-failure, `acks.test.mjs` "an alert with no since takes at most 24 hours over the route
-too", fails the same on a clean export of main f8cd1b1, so it is not this branch's); web
-221; 26 mutants on the new code, all caught. *Go-live:* Ultron re-reads, C&P, the web build, then
-steps 10 to 13 below. Nothing changes while `approvalsBash` is `"deny"`, so the restart
-can wait for step 12. *Unverified:* everything the scratch test checks; that `--setting-sources
-project` keeps the user's plugins and hooks out of the scratch session (the step checks
-`/mcp` and `/hooks` first); that `--permission-mode auto` starts without the user's
-settings.
+inside the 30 s before / 5 s after window. A dropped report gives its own card reason and
+its alert says so (`approvals-exact-conflict` with `evicted: true`). *In parity* (live;
+Jeff's pick (b), 11-13: mark, never gate), any conflict takes the exact text off the card
+(it falls back to the relayed, folded preview), adds a mark (`exactNote`: "A different
+command with the same look was reported, so this card cannot show the exact command: it
+may have more lines than shown. Check the terminal before allowing.", or the flood
+wording), and keeps Allow. Guarded mode makes the card Deny-only. *What the branch adds:*
+**M1** (the gate for `"exact"`): reports live 2 minutes but cards up to 12 hours, and an
+open card was checked only when someone looked, so a rival nobody saw for 2 minutes was
+forgotten and a later Allow passed on a possibly forged text. Now each kept report
+rechecks every open Bash card that shows an exact text at once (`createApprovals`' new
+`cards` option, the chat store, passed in `server.mjs`), and the mark sticks. **L1:** a
+card the gate marks is sent to every page again at once (a `permission` event, through the
+store's new `redrawPermission`). An Allow made on the card as it was before the mark gets
+a 409 with `changed: true` and the card as it is now; the page draws that card and says
+"this request changed while it was on screen; read the card again before answering"
+(`web/src/orbit/useChat.js`, `changedCard` in `lib/orbit/chat.js`), and that 409 doesn't
+count toward the device lockout (any other wrong hash still does). **L2:** a Deny made on
+the pre-mark card counts: the store keeps the old text as `exactWas` (dropped when the
+request closes) and accepts its hash for a Deny only. **L3:** the conflict alert carries
+`parity: true` in parity and then says the card "shows no exact text and keeps Allow
+(parity with the relay), so check the terminal before allowing", not "Deny only". **L4,
+L5:** the kit's scratch `settings.json` also turns the Discord and jarvis-channel plugins
+off by name; step 10 checks `/status` (no User settings) and `/hooks` (only the one
+`PermissionRequest`, matcher `Bash`), names the "blocked by org policy" case, runs setup
+right before the session, and its cleanup also removes the scratch session's transcript
+folder; the kit's header says setup prints only the folder. *Tests:* server 1165 (main
+1162; the one failure, `acks.test.mjs` "an alert with no since takes at most 24 hours over
+the route too", fails on main too), in both time zones; web 222; 14 mutants on the new
+code, all caught; page built to a scratch folder only, oxlint clean but the old Lanes.jsx
+warning. The page's redraw on a changed 409 is tested as a function only (no browser
+check). *Go-live:* Ultron re-reads, C&P, the web build, then steps 10 to 13 below.
+Nothing changes while `approvalsBash` is `"deny"`, so the restart can wait for step 12.
+*Unverified:* everything the scratch test checks; that `--setting-sources project` keeps
+the user's plugins and hooks out (step 10 checks `/status`, `/mcp` and `/hooks` first);
+that `--permission-mode auto` starts without the user's settings.
 
 **Jarvis OS 6, self-healing loops (board b384cd92): designed 2026-11-12
 (`docs/design/2026-11-12-self-healing-loops.md`); loop 1 (board ea709def) built and staged
@@ -1091,15 +1102,22 @@ on the one before; the server always goes before the channel (Ultron H2).
     never in Jarvis's session. It installs nothing, reads none of the user's settings
     (`--setting-sources project`, and the scratch folder has none), loads only the stand-in
     channel (`--strict-mcp-config`), and its hook posts to a scratch socket, never the
-    live one. Ask only for harmless commands: they are written in full to `results.txt`.
+    live one; its settings file also turns the Discord and jarvis-channel plugins off. Ask
+    only for harmless commands: they are written in full to `results.txt`. Run the setup
+    line right before the session, never ahead of time: the scratch MCP config names
+    node by its versioned Homebrew path, which a `brew upgrade` removes.
     ```sh
-    cd ~/Projects/.worktrees/ccr-exact-bash      # ~/Projects/claude-control-room once merged
+    cd ~/Projects/claude-control-room   # before jos/exact-bash-2 is merged: ~/Projects/.worktrees/ccr-exact-bash-2
     S=$(node bin/exact-hook-check.mjs setup) && cd "$S/work" && claude --version
     claude --debug-file "$S/debug-manual.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode manual --dangerously-load-development-channels server:exactcheck
     ```
-    Accept the folder-trust and development-channel prompts. Type `/mcp`: it must list
-    `exactcheck` and nothing else (anything else: `/exit` and stop). Type `/hooks`: it must
-    show one `PermissionRequest` hook (matcher `Bash`). Then send these one at a time, and
+    Accept the folder-trust and development-channel prompts. If Claude Code says the
+    channel is "blocked by org policy", that comes from the managed channel list (the
+    organization's managed settings), not from these flags or the scratch files: `/exit`,
+    stop, and send Jarvis that line. Before the first prompt, three checks; if any fails,
+    `/exit` and stop: `/status` must show no "User settings" among its setting sources;
+    `/mcp` must list `exactcheck` and nothing else; `/hooks` must show nothing but one
+    `PermissionRequest` hook (matcher `Bash`). Then send these one at a time, and
     each time the permission dialog opens, answer **No** in the terminal:
     a. `Run this exact Bash command as one tool call: cat notes.txt`
     b. `Run this exact Bash command as one tool call, keeping the line break: first line cat notes.txt, second line echo second-line`
@@ -1107,7 +1125,8 @@ on the one before; the server always goes before the channel (Ultron H2).
     d. `Run this exact Bash command as one tool call: echo 'a  b' (two spaces inside the quotes)`
     e. `Run this exact Bash command as one tool call: two spaces, then cat notes.txt, then two spaces`
     f. `Create a file lines.md here whose content is three lines: one, two, three`
-    Then `/exit`, and the auto-mode fallback, in the same folder:
+    Then `/exit`, and the auto-mode fallback, in the same folder (the same three checks
+    before its first prompt):
     ```sh
     claude --debug-file "$S/debug-auto.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode auto --dangerously-load-development-channels server:exactcheck
     ```
@@ -1115,8 +1134,13 @@ on the one before; the server always goes before the channel (Ultron H2).
     If auto mode just runs or refuses it without a dialog, try
     `Run this exact Bash command as one tool call: sudo -n true`; if neither opens a dialog,
     note "no fallback prompt seen". Answer **No** to any dialog, `/exit`, then send Jarvis
-    the output of `cat "$S/results.txt"` and the `claude --version` line, and run
-    `rm -rf "$S"`.
+    the output of `cat "$S/results.txt"` and the `claude --version` line, and clean up
+    (the second line removes the scratch sessions' transcripts; `(N)` lets zsh run it when
+    there are none):
+    ```sh
+    rm -rf "$S"
+    rm -rf ~/.claude/projects/-private-tmp-exact-*(N)
+    ```
     *Pass:* every Bash request in `results.txt` says `ORDER PASS` (one of them from the auto
     session, after its `channel started` line); a, b, c, d and e say `EQUALS` (or `the
     report EQUALS the preview's command as it is: this preview was NOT folded`) and `exact
