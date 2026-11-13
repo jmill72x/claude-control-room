@@ -1720,6 +1720,82 @@ or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the o
 post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
 leaves the chat up.
 
+### Self-healing loops (Jarvis OS 6; loop 1 built, off by default)
+
+A loop is detect, diagnose, act, verify, then close or escalate, for one failure instance
+(the alert's key plus its `since`, the pair an ack uses). The design, with the tiers (T0
+heal silently, T1 heal then tell, T2 wait for a tap, T3 page and never act) and the
+guardrails, is `docs/design/2026-11-12-self-healing-loops.md`. Built so far: **loop 1**,
+and the shared parts the later loops use. The code is `server/lib/heal.mjs` (the tiers,
+verb floors, catalog loader, config, readings, ledger lines and the page's view),
+`server/lib/heal-runner.mjs` (the runner), `server/lib/heal-ledger.mjs`, the hold in
+`server/collectors/notifier.mjs`, and `web/src/orbit/Loops.jsx` with
+`web/src/lib/orbit/loops.js`; tests in `server/test/heal.test.mjs`,
+`server/test/heal-runner.test.mjs` and `web/test/orbit-loops.test.js`.
+
+- **Loop 1, a stale log's false "overdue" (T1).** job-status calls a job failed when its
+  log is older than its schedule allows, which can't tell a dead job from one that logs
+  only on a change (the NAS mount job, 2026-11-11). A crons-panel entry whose only fault is
+  that (job-status's reason is the log-age clause and nothing else, launchd's last exit 0,
+  the job loaded: `staleLogOnly` in `lib/health.mjs`, flagged `staleLog` on the overlay)
+  opens a loop when config lists the job as a heal target. The runner reads
+  `launchctl print gui/<uid>/<label>` (read-only; the same call the health strip makes),
+  then again one interval later (launchd's own `run interval`, plus a minute), or for a
+  calendar job two minutes after its next due time. If the run counter rose and the last
+  exit was 0 at both readings, the ledger gets a line and the alert is marked **quiet**:
+  the crons entry reads `ok: true`, `state: "quiet"`, `last: "Quiet · ran clean"`, the
+  Jobs list's row reads `quiet` in grey, and nothing is pushed or sent as an event. While
+  quiet, the same check repeats every interval or due time; a failed one lifts the quiet
+  (`relapsed`) and the alert goes red and pushes.
+- **"Can't tell" never acts.** No counter, a last exit that isn't 0 (a signal counts), a
+  counter that went back (launchd loaded the job again), no schedule to check against, or a
+  ledger line that can't be written each leave the alert red, escalated, with the reason in
+  the ledger. A calendar job is judged by the counter across its due time, not by
+  `missed-runs`, which judges by the same log time that is stale.
+- **The hold.** While a loop is checking, its crons entry carries `holdUntil` (10 minutes
+  after it was seen at most), the alert carries it too, and the notifier holds that alert's
+  push and event until then. A key that was pushed before is never held (Jeff already has
+  it, and a hold would make the event ledger forget it and wake the lead again). So a heal
+  that works costs no push and no wake; one that fails pushes as soon as it fails, or when
+  the 10 minutes are up.
+- **Limits.** One attempt per instance (an escalated or relapsed one is never healed
+  again); at most 3 heals of one target and 20 in all in 24 hours, counted by instance, so a
+  restart that re-checks the same instance (the quiet marks live in memory) is no second
+  heal; and no heal of another instance of a target within an hour of its last one.
+- **The catalog and the floor check.** Each catalog entry declares its verbs; every verb
+  has a floor tier (`VERB_FLOORS`: reads T0, `alert:mark-quiet` T1, every `launchctl` write,
+  deploy, commit, delete, ack and remote action T2), and the loader refuses the whole
+  catalog when an entry's tier is below its verbs' floor, names an unknown verb, or is T3.
+  A refused catalog keeps heals off and says so at start. An entry is handed only the tools
+  for the verbs it declares (`toolsFor`).
+- **The ledger.** `server/data/heals.json` (gitignored with `data/`), 0600, a temp file
+  renamed into place, the last 30 days. One line per closed loop: class, action, tier,
+  config's target id, the instance, outcome (`healed`, `escalated`, `relapsed`,
+  `cleared`), a reason key and the two counter readings. A ledger that exists but can't be
+  read keeps heals off for the run and is never written over.
+- **The kill switch.** While `~/.local/state/jarvis-os/heal-off` exists, nothing is read or
+  marked, every quiet mark is lifted at once (the alert goes red and pushes as it always
+  has), and the targets show as held. It is checked at each pass and again before each
+  reading and before a heal's ledger line; no restart is needed either way. After the file
+  goes, each instance is checked again from the start.
+- **The page.** `GET /api/loops` (read-only, `no-store`) and `loops` in `/api/dashboard`:
+  the status (`on`, `killed`, `off`, `unset`) and why, the loops open now with their step
+  and next reading, the quiet jobs, the held ones, the last 7 days' closed loops in words,
+  and healed counts per class per week over 4 weeks. Names come from config's `jobs` (else
+  the label's last part, as the health strip does); no label, path or reading is sent. The
+  Loops panel on the Overview shows it, with no buttons; it moves up under Usage limits
+  while a loop is open, and otherwise leads the rest (under More on a phone). The Jobs chip
+  counts quiet jobs in grey ("all OK · 1 quiet"), and Today's routines reads a quiet job's
+  covered due times as "ran, log old".
+- **Off by default.** Nothing runs unless config's `heal.enabled` is `true` and
+  `heal.targets` lists the job (Configuration, "Self-healing loops"). The service log says
+  `heal: on|off|killed|unset (…), N targets` at start, and one `heal:` line per closed loop.
+- **Not built yet:** the T2 proposals and their approve and decline routes (loops 2 and 3),
+  a `heal-done` event for the lead (an event wakes the lead's session, and the released
+  channel names only the event types it knows), the "3 in 14 days" fix-item event, and a
+  loop count on the health strip. The morning brief reads job-status itself, so it still
+  calls a quiet job overdue.
+
 ### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
 
 The Feed tab shows what each agent and job posted to its Discord feed, without Discord
@@ -2266,6 +2342,18 @@ A bad entry is left out and named once in the service log at startup (`config: �
 At most one `session`, one `self` and one `pi`. A bad entry is left out and named once in
 the service log at startup, as above. The labels a service chip names (and the
 launcher's) are left out of the Jobs list. None of this block reaches the page.
+
+### Self-healing loops (config's `heal`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `heal.enabled` | `true` or `false` | Off unless exactly `true`. |
+| `heal.targets` | object | The jobs a loop may heal, by an id of your choosing (lower case, digits and `-`, at most 40): `{ "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } }`. `label` is the job's launchd label; `actions` lists the catalog actions allowed for it (today only `mark-quiet`). A job not listed is never read or healed. |
+| `heal.off` | list | Catalog actions turned off, each by id. |
+
+A bad entry is left out and named once in the service log at startup. The ids and labels
+never reach the page; the page names a target by config's `jobs` name for its label. The
+kill switch is a file, not config (Architecture, "Self-healing loops").
 
 ### To push (the Orbit page)
 

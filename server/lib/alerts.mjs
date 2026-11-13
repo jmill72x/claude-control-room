@@ -41,7 +41,10 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
           since: Number.isFinite(cron.lastRunAt) ? cron.lastRunAt : null,
           // The exit code as a number, for the event's words (lib/events.mjs); never `last`.
           exit: Number.isInteger(cron.exit) ? cron.exit : null,
-          nextRunAt: Number.isFinite(cron.nextRunAt) ? cron.nextRunAt : null
+          nextRunAt: Number.isFinite(cron.nextRunAt) ? cron.nextRunAt : null,
+          // A heal loop is checking this one (lib/heal-runner.mjs): the notifier holds
+          // its push and event until then (collectors/notifier.mjs). launchd's only.
+          ...(source === 'launchd' && Number.isFinite(cron.holdUntil) ? { holdUntil: cron.holdUntil } : {})
         });
       }
     }

@@ -13,6 +13,7 @@ const endOfDay = now => { const d = new Date(now); d.setHours(24, 0, 0, 0); retu
 //   ran        its log was written at or after the due time (the lane's filled mark)
 //   due        the time hasn't come yet
 //   acked      no run since, but the job's failure is acknowledged
+//   quiet      no log since, but a heal loop found it ran clean by then (its log is old)
 //   missed     no run since, and job-status says the job failed
 //   late       no run since, the time has passed, and the job is not (yet) failed
 //   scheduled  no run time is known at all (no job-status overlay)
@@ -22,6 +23,7 @@ export function verdictFor(cron, dueAt, now) {
   if (last === null) return 'scheduled';
   if (last >= dueAt - RAN_GRACE_MS) return 'ran';
   if (cron.ack) return 'acked';
+  if (cron.state === 'quiet' && Number.isFinite(cron.quietAt) && cron.quietAt >= dueAt) return 'quiet';
   if (cron.ok === false || cron.state === 'failed') return 'missed';
   return 'late';
 }
@@ -30,6 +32,7 @@ export const VERDICT_WORDS = {
   ran: { word: 'ran', tone: 'ok' },
   due: { word: 'due', tone: 'idle' },
   acked: { word: 'acked', tone: 'idle' },
+  quiet: { word: 'ran, log old', tone: 'idle' },
   missed: { word: 'missed', tone: 'bad' },
   late: { word: 'no run yet', tone: 'idle' },
   scheduled: { word: 'scheduled', tone: 'idle' }

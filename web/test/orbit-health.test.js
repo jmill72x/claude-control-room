@@ -44,6 +44,17 @@ test('the Jobs chip: failures counted, a first run still to come not a failure, 
   assert.equal(chip(jobs([])).value, 'none');
 });
 
+test('a quiet job (a heal loop found it ran clean) is grey and counted, never a failure', () => {
+  const chip = list => healthChips(env({ jobs: jobs(list), services: [] }), OK)[0];
+  assert.deepEqual(chip([J('a', 'ok'), J('b', 'quiet', { reason: "its log is old, but launchd shows it ran clean" })]), { key: 'jobs', label: 'Jobs', value: 'all OK · 1 quiet', tone: 'idle' });
+  assert.deepEqual(chip([J('a', 'failed', { reason: 'last exit code 1' }), J('b', 'quiet')]), { key: 'jobs', label: 'Jobs', value: '1 failed · 1 quiet', tone: 'bad' });
+  assert.deepEqual(chip([J('a', 'failed', { ack: { key: 'k', by: 'jeff', until: NOW + 3600e3 } }), J('b', 'quiet')]).value, 'all OK · 1 ack · 1 quiet');
+  const d = healthDetail(env({ jobs: jobs([J('a', 'ok'), J('b', 'quiet', { reason: "its log is old, but launchd shows it ran clean" })]), services: [] }), 'jobs', OK, NOW);
+  assert.equal(d.note, '2 jobs · 1 quiet');
+  assert.deepEqual(d.rows[1], { name: 'b', when: 'Every day, 06:00', state: "quiet: its log is old, but launchd shows it ran clean", tone: 'idle' });
+  assert.equal(healthDetail(env({ jobs: jobs([J('b', 'quiet')]), services: [] }), 'jobs', OK, NOW).rows[0].state, 'quiet');
+});
+
 test('a service chip says down, not running, a warning by name, or unknown', () => {
   const chip = s => healthChips(env({ jobs: jobs([]), services: [s] }), OK)[1];
   assert.deepEqual([chip({ ...services[0], state: 'down' }).value, chip({ ...services[0], state: 'down' }).tone], ['down', 'bad']);

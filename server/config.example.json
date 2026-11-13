@@ -51,6 +51,13 @@
       { "kind": "pi", "name": "NAS", "stateFile": "/absolute/path/to/watch.state", "log": "/absolute/path/to/watch.log", "watchJob": "com.example.nas-watch", "about": "the NAS, as this machine's watch sees it" }
     ]
   },
+  "heal": {
+    "enabled": false,
+    "targets": {
+      "nightly-backup": { "label": "com.example.nightly-backup", "actions": ["mark-quiet"] }
+    },
+    "off": []
+  },
   "toPush": {
     "gitRead": "/absolute/path/to/git-read",
     "repos": [

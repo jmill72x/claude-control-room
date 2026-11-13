@@ -33,7 +33,18 @@ test('a verdict: ran, due, missed, acked, late (not failed yet) or scheduled (no
   assert.equal(verdictFor({ lastRunAt: at(9, 9), ok: true }, due, NOW), 'late');
   assert.equal(verdictFor({ lastRunAt: null }, due, NOW), 'scheduled');
   assert.equal(verdictFor({}, due, NOW), 'scheduled');
-  assert.deepEqual(Object.keys(VERDICT_WORDS).sort(), ['acked', 'due', 'late', 'missed', 'ran', 'scheduled']);
+  assert.deepEqual(Object.keys(VERDICT_WORDS).sort(), ['acked', 'due', 'late', 'missed', 'quiet', 'ran', 'scheduled']);
+});
+
+test('a job a heal loop found ran clean reads quiet for the due times its check covers, and grey', () => {
+  const due = at(10, 9);
+  const quiet = { lastRunAt: at(9, 9), ok: true, state: 'quiet', quietAt: due + 4 * MIN };
+  assert.equal(verdictFor(quiet, due, NOW), 'quiet');
+  assert.equal(verdictFor({ ...quiet, quietAt: due - MIN }, due, NOW), 'late', 'a check before the due time proves nothing about it');
+  assert.equal(verdictFor({ ...quiet, quietAt: undefined }, due, NOW), 'late');
+  assert.equal(verdictFor({ ...quiet, state: 'ok' }, due, NOW), 'late');
+  assert.equal(verdictFor({ ...quiet, lastRunAt: due + 5e3 }, due, NOW), 'ran', 'a fresh log is a plain run');
+  assert.deepEqual(VERDICT_WORDS.quiet, { word: 'ran, log old', tone: 'idle' });
 });
 
 test("today's rows: every due time today in order, named from config, with its verdict; later runs today as due; then the next day's first", () => {
