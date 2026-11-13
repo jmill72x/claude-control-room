@@ -33,7 +33,7 @@ import { startIngestSocket, createLegacyNotice } from './lib/ingest-socket.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
-import { createChatStore } from './lib/chat-store.mjs';
+import { createChatStore, ATTACHMENT_MAX_BYTES } from './lib/chat-store.mjs';
 import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
@@ -47,6 +47,7 @@ import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { createShortcutKeys } from './lib/shortcut-keys.mjs';
 import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig } from './lib/shortcut-routes.mjs';
+import { createHeicConverter, SIPS } from './lib/heic-convert.mjs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
@@ -423,7 +424,11 @@ if (chatSettings.on && socketsReady) {
     let keyCount = null;
     try { keyCount = await shortcutKeys.load(); } catch (err) { console.error(`shortcuts: the keys file could not be read (${err?.code ?? err?.name ?? 'error'}); Shortcut keys stay off`); }
     if (keyCount !== null) {
-      shortcuts = createShortcutRoutes({ keys: shortcutKeys, devices: chatDevices, store: chatStore, events, socket: socketRouter, login: chatSettings.login, onEvent: chatEvents, killed: shortcutsOff });
+      // A shared HEIC photo is refused (the Shortcut is told to share it as Most
+      // Compatible) unless config's `chat.shortcutHeic` is "convert" and sips is there:
+      // then it is made a JPEG with macOS's own sips (lib/heic-convert.mjs).
+      const convertHeic = shortcutSettings.heic === 'convert' && existsSync(SIPS) ? createHeicConverter({ maxBytes: ATTACHMENT_MAX_BYTES }) : null;
+      shortcuts = createShortcutRoutes({ keys: shortcutKeys, devices: chatDevices, store: chatStore, events, socket: socketRouter, login: chatSettings.login, onEvent: chatEvents, killed: shortcutsOff, convertHeic });
       const shortcutAdmin = createShortcutAdminRouter({ keys: shortcutKeys, killed: shortcutsOff });
       adminHandler = (req, res) => (shortcutAdmin.owns(new URL(req.url, 'http://unix').pathname) ? shortcutAdmin.handler(req, res) : adminRouter(req, res));
       onDeviceRevoked = device => {
@@ -431,6 +436,7 @@ if (chatSettings.on && socketsReady) {
           .catch(err => console.error(`shortcuts: the keys a revoked device made could not be revoked (${err?.code ?? err?.name ?? 'error'})`));
       };
       console.log(`shortcuts: on, ${keyCount} key${keyCount === 1 ? '' : 's'} on file${shortcutsOff() ? ' (the kill file is there: every send is refused)' : ''}`);
+      console.log(`shortcuts: a shared HEIC photo is ${convertHeic ? 'converted to JPEG here' : shortcutSettings.heic === 'convert' ? `refused (${SIPS} is not there)` : 'refused (chat.shortcutHeic is not "convert")'}`);
     }
   }
   await listenUnix(channelSocketPath, socketRouter.handler, 'channel');

@@ -1396,13 +1396,15 @@ PermissionDenied ingest in `server/test/needs-you.test.mjs`.
 
 ### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; off by default)
 
-Three iPhone Shortcuts reach the chat without the page: one shares a link or text from
-the share sheet, one takes a dictated question through Siri, and a location automation
-says the owner arrived home. Design, the auth options that were weighed, the review's
+Three iPhone Shortcuts reach the chat without the page: one shares a link, text, a photo
+or a file from the share sheet, one takes a dictated question through Siri, and a
+location automation says the owner arrived home. Design, the auth options that were weighed, the review's
 findings and what is not verified: `docs/design/2026-11-12-jarvis-os-shortcuts.md`. The
 steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
 `server/lib/shortcut-keys.mjs`, `server/lib/shortcut-routes.mjs`, the `presence` source in
-`server/lib/events.mjs`; tests in `server/test/shortcuts.test.mjs`. **Off unless
+`server/lib/events.mjs`, and for shared files `server/lib/multipart.mjs` and
+`server/lib/heic-convert.mjs`; tests in `server/test/shortcuts.test.mjs`,
+`multipart.test.mjs` and `heic-convert.test.mjs`. **Off unless
 `config.json` has `chat.shortcuts: true`** (and the chat itself is on); off, every
 `/api/shortcut/*` path is a 404 and the page shows nothing of it.
 
@@ -1453,10 +1455,11 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   each reported like any key revoke.
 - **The Shortcut's side refuses a browser.** `pair`, `send` and `event` answer 403 to any
   request with an `Origin` or `Sec-Fetch-Site` header (a Shortcut sends neither, a page
-  always sends one), want JSON, and want the owner's tailnet login from the proxy like every
-  chat route. So a key is useless off the tailnet, and to a web page.
+  always sends one), want JSON (`send` also takes a form, below), and want the owner's
+  tailnet login from the proxy like every chat route. So a key is useless off the tailnet,
+  and to a web page.
 - **`POST /api/shortcut/send`** takes `{text?, shared?, via?, clientId?}` and nothing else
-  (no reply target, no uploads; any other field is a 400). It appends with the same store
+  (no reply target; any other field is a 400; files come as a form, the next entry). It appends with the same store
   call as the page's route (`from: jeff`, `kind: chat`, `state: queued`), so the channel's
   line for it has the page's fields. Its `device` is the key's name and how it came,
   `<name> (Shortcut, Siri)`, `(Shortcut, share)` or `(Shortcut)` (`via`: `siri`, `share` or
@@ -1473,6 +1476,79 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   a picture are still stored and served as text. The page shows a PDF or a text file as a
   chip that downloads (`Content-Disposition: attachment`), and only image types as
   pictures.
+- **A shared photo or file comes as a form** (2026-11-12). `send` also takes
+  `multipart/form-data`, which is what a Shortcut's "Get Contents of URL" sends for a Form
+  body with a File field: the same four fields as text parts, and up to 4 parts named
+  `file`. No other route takes a form, and no route takes
+  `application/x-www-form-urlencoded`: a Shortcut never sends it, and Node's reader for
+  it (`URLSearchParams`) takes seconds for a megabyte of `a&`, with the whole server
+  waiting, so it is refused by its type like any other body (a 415). A form needs no
+  preflight from a page, so the JSON rule is not what keeps
+  a page out here; the two rules beside it are: any `Origin` or `Sec-Fetch-Site` header is
+  a 403, and the key travels in `Authorization`, which no page's form can set. The key is
+  checked before a byte of the body is read. The body is held whole, 25 MB at most; one
+  over that is still read to its end and dropped, up to 64 MB, so the refusal reaches the
+  Shortcut as a line it can show, and past 64 MB (by `Content-Length`, or as it arrives)
+  the connection is cut. The body has 120 s to arrive, by a timer of the read's own (a
+  408, and the connection goes with it), and a request that closes or fails before its
+  end is over at once, so nothing holds a place for good. A text field with more bytes
+  than four times its limit in characters is refused before it is decoded.
+  `server/lib/multipart.mjs` is the reader: no dependency, strict
+  (the body begins with its boundary, 16 parts, 4 KB of headers a part, no encoded parts,
+  `filename*` not read), and a part's bytes are a view into the body, never a copy.
+  **The kill switch and the key are looked at again** as soon as a form's body is in,
+  before each conversion, and just before the message is made (that last look for a
+  JSON body too): a switch thrown, or a key revoked or run out, while a share was on
+  its way makes no message, and the share's counts and files go back.
+  - **The bytes decide what a file is** (`classifyFile`). The chat store's `sniffType`
+    reads the first bytes (PNG, JPEG, WebP, HEIC, PDF). The part's declared type and its
+    name's ending are only what the file claims to be: a declared type outside the list
+    is refused whatever the bytes are, and a claim of another family (photo, PDF, text)
+    than the bytes is refused as dressed up (a PDF named `.png`, words typed
+    `image/jpeg`). Text has no first bytes to go by, so a file is text only when it
+    claims to be (`text/plain`, `text/markdown`, or a `.txt` or `.md` name with no type),
+    is valid UTF-8 and holds no NUL. A file is 10 MB at most, the store's own cap, and the
+    store sniffs it again when it keeps it. One refused file refuses the whole share.
+  - **A HEIC photo is refused unless config says to convert it.** The lead can't open
+    one. By default (`chat.shortcutHeic` absent or `"refuse"`) the Shortcut is told
+    "Jarvis OS does not take HEIC photos. In the share sheet tap Options, choose Most
+    Compatible, and share again.", whatever the file is named or typed, and the phone
+    is where a photo becomes a JPEG (a Convert Image step in the Shortcut, which also
+    takes out its place and time; `docs/jarvis-os-shortcuts-setup.md`). With
+    `chat.shortcutHeic: "convert"` the server converts it instead
+    (`server/lib/heic-convert.mjs`): macOS's own `/usr/bin/sips`, run with a list of arguments
+    (no shell), an empty environment and a 20 s limit ended by SIGKILL, in a new 0700
+    folder under the temp folder that is removed whatever happened. The photo's size is
+    read first (`sips -g`, which parses the file's container but decodes no pixels), and
+    one over 120 megapixels is refused before its pixels are decoded;
+    a JPEG over 10 MB is made again with its long side at 4096 px when the photo is
+    larger than that, and refused otherwise or if still too large; what comes back must
+    begin like a JPEG. At most 2 conversions run at once, across every key; the rest wait
+    their turn. A key has 30 conversions in 10 minutes and 200 a day, counted when its
+    share is taken and never given back, so photos that fail to convert can't be sent
+    without end. A conversion that fails is one log line of fixed words,
+    `shortcut: <name> (Shortcut, share): a HEIC photo could not be converted (<why>)`,
+    where `<why>` is `timeout`, `unreadable`, `too large` or `failed`, never a path or the
+    tool's output. **Converting runs the system's image
+    decoder on bytes from outside, as the owner's user and with no sandbox, which is why
+    it is off by default**; turn it on only as a risk taken knowingly (the review asks
+    for a `sandbox-exec` wrap first, which is not built). A machine with no `sips`
+    refuses as well. A photo uploaded from the page is not converted; it keeps its HEIC
+    as before. A photo that is not HEIC is kept as it arrives, metadata included.
+    While a share waits (for its body, or for the photo before it), the kill switch and
+    the key are looked at again before each conversion.
+  - **A file's name is outside text** that the lead and the page both see. A text file
+    is kept as `shared.txt` or `shared.md`, never under its own name. For a photo or a
+    PDF only the last path part is used; hidden code points are dropped first
+    (`server/lib/hidden-chars.mjs`: controls, direction and zero-width characters, and
+    what draws as nothing, the Hangul fillers among them, which Unicode calls letters);
+    then letters, digits, spaces and `. _ ( ) -` stay and anything else
+    becomes `_`; 60 characters at most; and the ending is the one for what the file is
+    (`IMG_1.HEIC`, converted, is `IMG_1.jpg`). The message's text is the note, or the
+    fixed line "Shared from the share sheet: a file is attached." (or "N files are
+    attached."); the log says how many files, never a name. Each file is an attachment on
+    the owner's message, so the channel marks it as data (`attachments_are_data`) and
+    nothing in it is the owner's words.
 - **`POST /api/shortcut/event`** takes `{"event": "arrived-home"}` and nothing else. No
   text travels: the line is the events module's template, `Presence: arrived home at HH:MM
   (from the Shortcut key <name>)`, stored `from: system`, `kind: event`, source
@@ -1487,6 +1563,15 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   same step as its check, before anything awaits**, so requests in flight together can't
   all pass the check first (150 sends at once pass 20; 40 reports at once make one event);
   a send or report that then fails gives its count, its retry mark and its file back.
+  **Files:** 4 a share, 10 MB each, 25 MB a share, and 200 MB a day per key, counted in
+  the same step as the message; each file counts as the larger of what was uploaded and
+  what is kept (a JPEG can be several times its HEIC). A key has at most 2 forms in
+  flight at once, from before the body is read until the message is made or refused,
+  which bounds what a key can hold in memory (2 bodies of 25 MB); a
+  third is told to try again in a moment. HEIC conversions have a count of their own
+  (30 in 10 minutes, 200 a day), which is never given back. A share that is refused or fails gives its
+  bytes back, and its place is free before its answer is written. "The same message
+  again" covers the files, each by the hash of its bytes.
 - **Every answer has a `say` line** the Shortcut shows or speaks as it is ("Sent to
   Jarvis. His answer comes to Jarvis OS.", "This Shortcut is not paired…", and for an
   expired key "This Shortcut is not paired with Jarvis OS any more: its key expired after
@@ -1497,7 +1582,8 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
   wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no
   code waiting; the first is logged, the rest only counted), a key over a limit (once per
-  key and limit in 10 minutes, however often it is refused), and a key used from an
+  key and limit in 10 minutes, however often it is refused; the limits are messages,
+  presence reports, a day's file bytes, shares in flight and HEIC conversions), and a key used from an
   address it had not used before. Each key remembers up to 4 addresses (what the proxy
   put in `X-Forwarded-For`, when that is one IP); the address itself goes to the service
   log only. It is a tripwire, not a lock: a phone reaches the proxy over either of its
@@ -2123,6 +2209,7 @@ and that must not reach every device on the tailnet.
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
 | `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. The approvals keys (`approvals`, `approvalsRules` `"guarded"` or `"parity"`, `approvalsHidden` `"deny"` or `"allow"`, `approvalsBash`, `approvalsBashCommands`, `approvalsWriteFolders`, `approvalsWriteProtected`, `approvalsDenyOnly`) are in "Approvals as buttons". |
 | `chat.shortcuts` | bool, default `false` | Turns on Shortcut keys (see "Shortcut keys"): the `/api/shortcut/*` routes and the section in the Chat tab's settings. Only with the chat on. Anything but `true` or `false` is a `config:` line, and off. |
+| `chat.shortcutHeic` | `"refuse"` (default) or `"convert"` | What happens to a HEIC photo shared through a Shortcut (see "Shortcut keys"): refused in words that say to share it as Most Compatible (the Shortcut's own Convert Image step is what normally makes a photo a JPEG), or made a JPEG on this machine with `/usr/bin/sips`, which runs an image decoder on outside bytes with no sandbox. Anything else is a `config:` line, and refuses. The start logs which: `shortcuts: a shared HEIC photo is …`. |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |

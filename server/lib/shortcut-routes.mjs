@@ -14,13 +14,24 @@
 // - `send`: one chat message from the owner, appended to the same store by the same
 //   call the page's route makes (`from: jeff`, `kind: chat`, `state: queued`), so the
 //   channel gets it down the same stream. Its `device` is the key's name with
-//   "(Shortcut…)", which the channel shows the lead. It carries no reply target and no
-//   uploads. **What the owner typed or dictated (`text`) is the message; what he shared
-//   (`shared`) is outside content:** a single short http(s) link to a public host name
+//   "(Shortcut…)", which the channel shows the lead. It carries no reply target.
+//   **What the owner typed or dictated (`text`) is the message; what he shared is
+//   outside content:** a single short http(s) link to a public host name
 //   goes in the text as `URL` rebuilt it, under the fixed line "Shared link, outside
 //   content:"; any other shared text (a long link, one to an address or to this machine
 //   included) becomes a `text/plain` attachment, which the channel already marks as
-//   data (`attachments_are_data`), never as his words.
+//   data (`attachments_are_data`), never as his words. **A shared photo or file** comes
+//   as a form (`multipart/form-data`, what a Shortcut's "Get Contents of URL" sends for
+//   a Form body with a File field; a JSON body can't carry one): up to FILES_MAX `file`
+//   parts beside the same text fields, each kept as an attachment by the chat's own
+//   store, with its types and its 10 MB cap. The bytes decide what a file is; one
+//   whose name or declared type says another kind is refused, a HEIC photo is made a
+//   JPEG first (lib/heic-convert.mjs) or refused in words that say what to do, and a
+//   file's name is cleaned and given the ending of what it is. The send route alone
+//   takes a form: it still needs the key, which no page's form can carry, and still
+//   refuses any request with an `Origin` or `Sec-Fetch-Site` header. No route takes
+//   `application/x-www-form-urlencoded` (a Shortcut never sends it, and Node's reader
+//   for it is slow enough on a large body to stop the server: Ultron's M1).
 // - `event`: a presence report by name (`arrived-home`). No text travels: the words
 //   are a template's (lib/events.mjs), it reaches the lead as an event (data, from
 //   `system`, never the owner), and the event caps and kill switch apply.
@@ -29,7 +40,15 @@
 // again within 15 s is answered as the first (a retry never doubles it); the same
 // presence report within 10 minutes is a duplicate; 6 reports a day. Each is counted
 // in the same step as its check, before anything awaits, so requests in flight
-// together can't all pass; a send that then fails gives its count back. A key over a
+// together can't all pass; a send that then fails gives its count back. Files count
+// too: FILE_BYTES_PER_DAY of them per key a day (the larger of what came and what is
+// kept, for each file), counted in the same step; a form's body is FORM_BODY_MAX at
+// most and must arrive within FORM_TIMEOUT_MS, and a key has UPLOADS_AT_ONCE forms in
+// flight at most, which bounds the memory a key can hold. A HEIC photo to convert is
+// counted too (CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY), and that count is never
+// given back, so photos that fail to convert can't be sent without end. The kill
+// switch and the key are looked at again after the body is read, just before the
+// message is made: a key revoked while its share was on the way makes nothing. A key over a
 // limit, and a run of refused pairing tries, are reported (rate-limited), not logged
 // line by line. A key that made no message and no report for 30 days has expired
 // (lib/shortcut-keys.mjs): it is refused like one that is not paired, in words that say
@@ -40,11 +59,15 @@
 // message's text. A kill file (`~/.local/state/jarvis-os/shortcuts-off`) refuses every
 // Shortcut-side route and new codes at once; listing and revoking still work.
 import { createHash } from 'node:crypto';
+import { isUtf8 } from 'node:buffer';
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
-import { isClientId, MAX_PAGE_TEXT } from './chat-store.mjs';
+import { isClientId, sniffType, MAX_PAGE_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
+import { formBoundary, parseMultipart, mediaType, MultipartError } from './multipart.mjs';
 import { PRESENCE_EVENTS } from './events.mjs';
 import { proxyAddress, KEY_IDLE_DAYS } from './shortcut-keys.mjs';
 import { oneLine } from './chat-events.mjs';
+import { isHiddenCodePoint } from './hidden-chars.mjs';
+import { REASONS } from './heic-convert.mjs';
 
 const MIN = 60e3, DAY = 24 * 3600e3;
 export const SHARED_MAX = 100000;
@@ -68,9 +91,64 @@ export const CLIENT_ID_MAX = 60;
 export const VIAS = Object.freeze({ share: ' (Shortcut, share)', siri: ' (Shortcut, Siri)' });
 const VIA_NONE = ' (Shortcut)';
 const SEND_FIELDS = new Set(['text', 'shared', 'via', 'clientId']);
+// ---- shared files (a form) ----
+// As many as a page's message may carry (lib/chat-routes.mjs).
+export const FILES_MAX = 4;
+// A form's whole body: the files together, their part headers and the note.
+export const FORM_BODY_MAX = 25 * 1024 * 1024;
+// A body over FORM_BODY_MAX is still read to its end, and dropped, up to this: the
+// refusal then reaches the Shortcut as an answer it can show. Past it the connection
+// is cut, and the phone shows its own error.
+export const FORM_DRAIN_MAX = 64 * 1024 * 1024;
+// A key's files in a day, as uploaded.
+export const FILE_BYTES_PER_DAY = 200 * 1024 * 1024;
+// Forms being read or kept at once, per key.
+export const UPLOADS_AT_ONCE = 2;
+// A form's body must have arrived within this, whatever the server's own limit is.
+export const FORM_TIMEOUT_MS = 120e3;
+// HEIC photos a key may have converted. Counted when the share is taken and never
+// given back, also when the conversion fails.
+export const CONVERSIONS_PER_WINDOW = 30;
+export const CONVERSIONS_PER_DAY = 200;
+export const FILE_NAME_MAX = 60;
+// A form's text fields in bytes, looked at before a field is decoded: four times each
+// one's limit in characters, which is the most UTF-8 can need for it.
+export const FIELD_BYTES_MAX = new Map([['text', 4 * MAX_PAGE_TEXT], ['shared', 4 * SHARED_MAX], ['via', 4 * 16], ['clientId', 4 * CLIENT_ID_MAX]]);
+const MULTIPART_TYPE = 'multipart/form-data';
+// What a file is, by the ending of its name and by the type its part declares. Maps,
+// so a name like "constructor" finds nothing.
+const EXT_OF = new Map([['image/png', 'png'], ['image/jpeg', 'jpg'], ['image/webp', 'webp'], ['image/heic', 'heic'], ['application/pdf', 'pdf'], ['text/plain', 'txt'], ['text/markdown', 'md']]);
+const KIND_BY_EXT = new Map([['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'], ['webp', 'image/webp'], ['heic', 'image/heic'], ['heif', 'image/heic'], ['pdf', 'application/pdf'], ['txt', 'text/plain'], ['text', 'text/plain'], ['md', 'text/markdown'], ['markdown', 'text/markdown']]);
+const KIND_BY_TYPE = new Map([['image/png', 'image/png'], ['image/jpeg', 'image/jpeg'], ['image/jpg', 'image/jpeg'], ['image/webp', 'image/webp'], ['image/heic', 'image/heic'], ['image/heif', 'image/heic'], ['application/pdf', 'application/pdf'], ['text/plain', 'text/plain'], ['text/markdown', 'text/markdown'], ['text/x-markdown', 'text/markdown']]);
+// A declared type that says nothing: the name's ending is then what the file claims.
+const NO_CLAIM = new Set(['', 'application/octet-stream']);
+const family = kind => (kind.startsWith('image/') ? 'image' : kind.startsWith('text/') ? 'text' : 'pdf');
+const BASE_NAME = Object.freeze({ image: 'photo', pdf: 'file', text: 'shared' });
+// What the Shortcut shows for a file that is refused.
+export const FILE_SAY = Object.freeze({
+  takes: 'Jarvis OS takes photos (PNG, JPEG, WebP, HEIC), PDFs and text or Markdown files. It can\'t take that one.',
+  takesNoHeic: 'Jarvis OS takes photos (PNG, JPEG, WebP), PDFs and text or Markdown files. It can\'t take that one.',
+  spoofed: 'Jarvis OS refused that file: it is not what its name or type says it is.',
+  text: 'Jarvis OS could not read that text file: it must be plain UTF-8 text.',
+  empty: 'That file is empty, so nothing was sent.',
+  fileTooBig: 'Too big for Jarvis OS: a file can be 10 MB at most.',
+  tooBig: 'Too big for Jarvis OS: one share can be 25 MB at most, and each file 10 MB.',
+  tooMany: `Too many files: Jarvis OS takes ${FILES_MAX} in one share.`,
+  unread: 'Jarvis OS could not read that share.',
+  busy: 'Jarvis OS is still taking an earlier share from this Shortcut. Try again in a moment.',
+  budget: 'Too many files from this Shortcut today. Use the Jarvis OS app for now.',
+  heicOff: 'Jarvis OS does not take HEIC photos. In the share sheet tap Options, choose Most Compatible, and share again.',
+  heicFailed: 'Jarvis OS could not convert that HEIC photo. In the share sheet tap Options, choose Most Compatible, and share again.',
+  conversions: 'Too many HEIC photos from this Shortcut for now. In the share sheet tap Options, choose Most Compatible, and share again.',
+  slow: 'That share took too long to reach Jarvis OS. Try again on a better connection.',
+  kept: 'Jarvis OS could not keep that file.'
+});
 const SHORTCUT_SIDE = new Set(['/api/shortcut/pair', '/api/shortcut/send', '/api/shortcut/event']);
 const SHARED_NAME = 'shared-text.txt';
 export const SHARED_WORDS = 'Shared from the share sheet: the text is attached.';
+// The message's text when he shared files and wrote no note: fixed words and a count,
+// never a file's name.
+export const attachedWords = n => (n === 1 ? 'Shared from the share sheet: a file is attached.' : `Shared from the share sheet: ${n} files are attached.`);
 // The fixed line over a shared link in a message's text: the link is not his words.
 export const SHARED_LINK_WORDS = 'Shared link, outside content:';
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -91,11 +169,25 @@ class Refusal extends HttpError {
 
 // What config says: on only with `chat.shortcuts: true` (the chat itself must be on;
 // server.mjs checks that). Anything else but absent or false is a problem, and off.
+// `chat.shortcutHeic` says what happens to a shared HEIC photo: "refuse" (the default:
+// the Shortcut is told to share it as Most Compatible; the phone's own Convert Image
+// step is how a photo is meant to arrive, as a JPEG) or "convert" (made a JPEG on this
+// machine, lib/heic-convert.mjs, which runs the system's image decoder on bytes from
+// outside with no sandbox, so only config can turn it on). Anything else is a problem,
+// and refuses.
+export const HEIC_MODES = Object.freeze(['convert', 'refuse']);
 export function readShortcutsConfig(config) {
   const raw = config?.chat?.shortcuts;
-  if (raw === undefined || raw === null || raw === false) return { on: false, problems: [] };
-  if (raw === true) return { on: true, problems: [] };
-  return { on: false, problems: ['chat.shortcuts must be true or false; Shortcut keys stay off'] };
+  const problems = [];
+  const mode = config?.chat?.shortcutHeic;
+  let heic = 'refuse';
+  if (mode !== undefined && mode !== null) {
+    if (typeof mode === 'string' && HEIC_MODES.includes(mode)) heic = mode;
+    else problems.push('chat.shortcutHeic must be "convert" or "refuse"; HEIC photos are refused');
+  }
+  if (raw === undefined || raw === null || raw === false) return { on: false, heic, problems };
+  if (raw === true) return { on: true, heic, problems };
+  return { on: false, heic, problems: ['chat.shortcuts must be true or false; Shortcut keys stay off', ...problems] };
 }
 
 // A shared value that is one short http(s) link to a public host name and nothing
@@ -129,8 +221,8 @@ export function sharedLink(shared) {
 }
 
 // What a send's body must be: `{ text?, shared?, via?, clientId? }` and nothing else,
-// with something to say in `text` or `shared`.
-export function checkSend(body) {
+// with something to say in `text` or `shared` (or `files` of them beside it, in a form).
+export function checkSend(body, { files = 0 } = {}) {
   if (!isObject(body)) return { ok: false, error: 'the body must be an object' };
   for (const k of Object.keys(body)) if (!SEND_FIELDS.has(k)) return { ok: false, error: 'the body may hold only text, shared, via and clientId' };
   const text = body.text ?? '';
@@ -141,18 +233,143 @@ export function checkSend(body) {
   if (via !== null && (typeof via !== 'string' || !Object.hasOwn(VIAS, via))) return { ok: false, error: `via must be one of ${Object.keys(VIAS).join(', ')}` };
   const clientId = body.clientId ?? null;
   if (clientId !== null && (!isClientId(clientId) || clientId.length > CLIENT_ID_MAX)) return { ok: false, error: `clientId must be an id of at most ${CLIENT_ID_MAX} characters` };
-  if (text.trim() === '' && shared.trim() === '') return { ok: false, error: 'a message needs text or something shared' };
+  if (text.trim() === '' && shared.trim() === '' && files === 0) return { ok: false, error: 'a message needs text or something shared' };
   return { ok: true, text: text.trim(), shared: shared.trim(), via, clientId };
 }
 
+// A file name's last part and its ending: no folders, and an ending only when it looks
+// like one (letters and digits, 8 at most).
+export function splitFileName(filename) {
+  const raw = typeof filename === 'string' ? filename.normalize('NFC') : '';
+  const leaf = raw.slice(Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\')) + 1);
+  const dot = leaf.lastIndexOf('.');
+  const ext = dot > 0 ? leaf.slice(dot + 1).toLowerCase() : '';
+  return /^[a-z0-9]{1,8}$/.test(ext) ? { base: leaf.slice(0, dot), ext } : { base: leaf, ext: '' };
+}
+
+// The name a shared file is kept under. A file's name is outside text that the lead
+// and the page both see. A text file gets a fixed name, `shared.txt` or `shared.md`:
+// the lead reads it as words, and its own name would be more of someone else's words
+// beside them. A photo's or a PDF's name loses every hidden code point first
+// (lib/hidden-chars.mjs: controls, direction and zero-width characters, half a
+// surrogate pair, and what draws as nothing, the Hangul fillers among them, which are
+// letters to Unicode); then only letters, digits, spaces and `. _ ( ) -` stay,
+// FILE_NAME_MAX at most, and the ending is the one for what the file is, never the one
+// it came with.
+export function cleanFileName(filename, kind) {
+  if (family(kind) === 'text') return `${BASE_NAME.text}.${EXT_OF.get(kind)}`;
+  const seen = Array.from(splitFileName(filename).base).filter(ch => !isHiddenCodePoint(ch.codePointAt(0))).join('');
+  const kept = Array.from(seen.replace(/[^\p{L}\p{N} ._()-]/gu, '_').replace(/_{2,}/g, '_')).slice(0, FILE_NAME_MAX).join('').replace(/^[ ._]+|[ ._]+$/g, '');
+  return `${kept || BASE_NAME[family(kind)]}.${EXT_OF.get(kind)}`;
+}
+
+// What a shared file is: `{ ok: true, kind }`, or the refusal. **The bytes decide**
+// (the chat store's `sniffType`); the name and the declared type only say what the
+// file claims to be, and a claim of another family (a photo, a PDF, text) than the
+// bytes is refused as dressed up. Text has no first bytes to go by, so a file is text
+// only when it claims to be, is valid UTF-8 and holds no NUL. A declared type outside
+// the list is refused whatever the bytes are.
+export function classifyFile({ filename = null, type = null, data }, { heic = true } = {}) {
+  const no = (status, error, say) => ({ ok: false, status, error, say });
+  if (!Buffer.isBuffer(data) || data.length === 0) return no(400, 'a shared file is empty', FILE_SAY.empty);
+  if (data.length > ATTACHMENT_MAX_BYTES) return no(413, 'a shared file is over 10 MB', FILE_SAY.fileTooBig);
+  const declared = typeof type === 'string' ? type : '';
+  const { ext } = splitFileName(filename);
+  const wrong = no(415, 'a shared file is not a png, jpeg, webp, heic, pdf, txt or md', heic ? FILE_SAY.takes : FILE_SAY.takesNoHeic);
+  const spoofed = no(415, 'a shared file is not what its name or type says', FILE_SAY.spoofed);
+  let claim;
+  if (KIND_BY_TYPE.has(declared)) claim = KIND_BY_TYPE.get(declared);
+  else if (NO_CLAIM.has(declared)) claim = KIND_BY_EXT.get(ext) ?? null;
+  else return wrong;
+  const sniffed = sniffType(data);
+  let kind;
+  if (sniffed) {
+    if (claim && family(claim) !== family(sniffed)) return spoofed;
+    kind = sniffed;
+  } else if (!claim) {
+    return wrong;
+  } else if (family(claim) !== 'text') {
+    return spoofed;
+  } else {
+    if (data.includes(0) || !isUtf8(data)) return no(415, 'a shared text file is not UTF-8 text', FILE_SAY.text);
+    kind = claim === 'text/markdown' || KIND_BY_EXT.get(ext) === 'text/markdown' ? 'text/markdown' : 'text/plain';
+  }
+  if (kind === 'image/heic' && !heic) return no(415, 'HEIC photos are not taken here', FILE_SAY.heicOff);
+  return { ok: true, kind };
+}
+
+// A form's parts as a send: the same four text fields, and `file` parts. An empty
+// field is one the Shortcut left empty: it counts as absent. Answers what `checkSend`
+// answers, with `files` (each `{ filename, data, kind }`), or the refusal with its own
+// `status` and `say`.
+export function checkSendForm(parts, { heic = true } = {}) {
+  const fields = {};
+  const files = [];
+  for (const p of parts) {
+    if (p.name === 'file') {
+      if (p.data.length === 0 && !p.filename) continue;
+      if (files.length >= FILES_MAX) return { ok: false, error: `a share holds at most ${FILES_MAX} files`, say: FILE_SAY.tooMany };
+      const c = classifyFile(p, { heic });
+      if (!c.ok) return c;
+      files.push({ filename: p.filename, data: p.data, kind: c.kind });
+      continue;
+    }
+    if (!SEND_FIELDS.has(p.name) || p.filename !== null) return { ok: false, error: 'the form may hold only text, shared, via and clientId, and file parts' };
+    if (Object.hasOwn(fields, p.name)) return { ok: false, error: `the form holds ${p.name} twice` };
+    // Too many bytes to be within its limit in characters: refused before it is decoded.
+    if (p.data.length > FIELD_BYTES_MAX.get(p.name)) return { ok: false, error: `${p.name} is too long` };
+    if (!isUtf8(p.data)) return { ok: false, error: `${p.name} must be UTF-8 text` };
+    fields[p.name] = p.data.toString('utf8');
+  }
+  const checked = checkSend(Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== '')), { files: files.length });
+  return checked.ok ? { ...checked, files } : checked;
+}
+
+// A form's body as bytes. One over `limit` is still read to its end and dropped, so
+// the refusal is an answer the Shortcut can show; one over `drainLimit` (by its own
+// count, or as it arrives) is cut off, and `Connection: close` goes with the answer.
+// The body has `timeoutMs` to arrive, by a timer of this read's own (the server's
+// limit for a whole request is longer, and not this code's to rely on); a body still
+// on its way then is stopped, and the connection goes with the answer. A request that
+// closes or fails before its end is over too, so nothing waits on it for good.
+// (Settling twice is harmless: a promise keeps its first answer.)
+const readForm = (req, limit, drainLimit, timeoutMs) => new Promise((resolve, reject) => {
+  const tooBig = () => new Refusal(413, `a share is at most ${Math.round(limit / 1024 / 1024)} MB`, FILE_SAY.tooBig);
+  // The timer never keeps the process alive, and ends with the read however it ends.
+  const timer = setTimeout(() => { req.pause?.(); reject(new Refusal(408, `a share must arrive within ${Math.round(timeoutMs / 1000)} s`, FILE_SAY.slow)); }, timeoutMs);
+  timer.unref();
+  const over = (settle, value) => { clearTimeout(timer); settle(value); };
+  const cut = () => { req.pause?.(); over(reject, tooBig()); };
+  if (Number(req.headers?.['content-length']) > drainLimit) return cut();
+  // `chunks` is null from the first byte over `limit`: nothing of such a body is kept.
+  let chunks = [], size = 0;
+  req.on('data', c => {
+    size += c.length;
+    if (size > drainLimit) return cut();
+    if (size > limit) chunks = null; else chunks.push(c);
+  });
+  req.on('end', () => (chunks === null ? over(reject, tooBig()) : over(resolve, Buffer.concat(chunks))));
+  // The phone hung up half-way, or the server ended the request: an error when there
+  // is one, and a close with no end before it.
+  for (const gone of ['error', 'close']) req.on(gone, () => over(reject, new HttpError(400, 'the request ended early')));
+});
+
+// `convertHeic` makes a HEIC photo's bytes a JPEG's (lib/heic-convert.mjs); without
+// one (the default), a shared HEIC photo is refused in words that say to share it as
+// Most Compatible.
+// `fileBytesPerDay` is FILE_BYTES_PER_DAY but in a test, which can't send 200 MB, and
+// `formTimeoutMs` FORM_TIMEOUT_MS but in a test, which can't wait two minutes.
 export function createShortcutRoutes({
   keys, devices, store, events = null, socket = null, login = null,
-  now = () => Date.now(), log: logLine = console.log, onEvent = () => {}, killed = () => false
+  now = () => Date.now(), log: logLine = console.log, onEvent = () => {}, killed = () => false, convertHeic = null, fileBytesPerDay = FILE_BYTES_PER_DAY, formTimeoutMs = FORM_TIMEOUT_MS
 }) {
   // A key's name is cleaned when it pairs; one read back from the file was not.
   const log = line => logLine(oneLine(line));
   const owner = typeof login === 'string' && login.trim() ? login.trim().toLowerCase() : null;
   const sends = new Map();     // key id -> times of its sends in the last day
+  const fileBytes = new Map(); // key id -> [{ at, bytes }]: its files in the last day
+  const conversions = new Map(); // key id -> times of the HEIC photos it had converted in the last day
+  const uploading = new Map(); // key id -> forms of its being read or kept right now
   const reports = new Map();   // key id -> times of its presence reports in the last day
   const lastSend = new Map();  // key id -> { hash, at, done: resolves to { id, seq } or null }
   const lastReport = new Map(); // `${key id}:${event}` -> when
@@ -172,12 +389,30 @@ export function createShortcutRoutes({
     if (!device) throw new HttpError(401, 'this device is not paired');
     return device;
   }
+  const switchedOff = () => new Refusal(503, 'Shortcut keys are switched off on the server', 'Shortcuts are switched off in Jarvis OS for now.');
+  const notPaired = () => new Refusal(401, 'this Shortcut is not paired', 'This Shortcut is not paired with Jarvis OS. Run the Jarvis Setup Shortcut.');
   // The Shortcut's side: never a browser, JSON only, the owner's login, not switched off.
-  function requireShortcutCaller(req) {
+  // `forms` (the send route alone): a `multipart/form-data` body is taken too, which is
+  // how a Shortcut sends a file. A form needs no preflight from a page, so the JSON rule
+  // is not what keeps a page out here: the line above it is (any Origin or
+  // Sec-Fetch-Site header), and the key in `Authorization`, which no page's form can
+  // set. Answers whether the body is a form.
+  function requireShortcutCaller(req, { forms = false } = {}) {
     if (req.headers?.origin !== undefined || req.headers?.['sec-fetch-site'] !== undefined) throw new Refusal(403, 'this route is for a Shortcut, never a page', 'Jarvis OS refused this: the route is for a Shortcut.');
-    guardWrite(req);
+    const form = forms && mediaType(req.headers?.['content-type']) === MULTIPART_TYPE;
+    if (!form) guardWrite(req);
     requireLogin(req);
-    if (killed()) throw new Refusal(503, 'Shortcut keys are switched off on the server', 'Shortcuts are switched off in Jarvis OS for now.');
+    if (killed()) throw switchedOff();
+    return form;
+  }
+  // The same two looks again, for a send that has waited since: reading a body takes
+  // time (a form has two minutes) and so does a conversion, and the switch may have
+  // been thrown, or the key revoked or run out, meanwhile. Made as soon as a form's body
+  // is in, before each conversion, and last just before the message. Not counted with
+  // the wrong keys: the request carried a key that worked.
+  function stillAllowed(key) {
+    if (killed()) throw switchedOff();
+    if (!keys.list().some(k => k.id === key.id && !k.revokedAt && !k.expired)) throw notPaired();
   }
   // The key behind a request, or a 401. Wrong keys are counted, and the fifth in 10
   // minutes is reported once. An expired key is a 401 of its own: the answer says to
@@ -198,7 +433,7 @@ export function createShortcutRoutes({
     if (at - refusals.start >= SEND_WINDOW_MS) refusals = { start: at, n: 0 };
     refusals.n++;
     if (refusals.n === REFUSALS_REPORTED_AT) onEvent({ kind: 'shortcut-refused', count: refusals.n });
-    throw new Refusal(401, 'this Shortcut is not paired', 'This Shortcut is not paired with Jarvis OS. Run the Jarvis Setup Shortcut.');
+    throw notPaired();
   }
   // The times a key acted in the last day: one array per key, pruned in place, so
   // every request in flight sees, and adds to, the same one (Ultron's M2: a new array
@@ -212,6 +447,15 @@ export function createShortcutRoutes({
     return times;
   };
   const takeBack = (times, at) => { const i = times.lastIndexOf(at); if (i >= 0) times.splice(i, 1); };
+  // The files a key sent in the last day: one list per key, pruned in place, like `recent`.
+  const spentBytes = (id, at) => {
+    let list = fileBytes.get(id);
+    if (!list) { list = []; fileBytes.set(id, list); }
+    let old = 0;
+    while (old < list.length && at - list[old].at >= DAY) old++;
+    if (old > 0) list.splice(0, old);
+    return list;
+  };
   const online = () => socket?.status?.().channelConnected === true;
   // A key over a limit is reported once per key and limit in 10 minutes, however often
   // it is refused: the event is the log line, and the alert kind is rate-limited too.
@@ -233,20 +477,59 @@ export function createShortcutRoutes({
   }
 
   async function send(req, res) {
-    requireShortcutCaller(req);
+    const form = requireShortcutCaller(req, { forms: true });
     const key = requireKey(req);
-    const checked = checkSend(await readBody(req, SEND_BODY_MAX));
-    if (!checked.ok) throw new Refusal(400, checked.error, 'Jarvis OS could not read that message.');
-    const { text, shared, via } = checked;
+    if (!form) {
+      const checked = checkSend(await readBody(req, SEND_BODY_MAX));
+      if (!checked.ok) throw new Refusal(400, checked.error, 'Jarvis OS could not read that message.');
+      return json(res, 200, await deliver(key, { ...checked, files: [] }), NO_STORE);
+    }
+    // A form, which may carry files: a key has UPLOADS_AT_ONCE of them in flight at
+    // most, from before the body is read until the message is made or refused. That
+    // bounds what a key can hold in memory, and how many conversions it has running.
+    // Counted in the same step as its check; nothing awaits between.
+    const inFlight = uploading.get(key.id) ?? 0;
+    if (inFlight >= UPLOADS_AT_ONCE) {
+      overLimit(key, 'uploads', now());
+      throw new Refusal(429, `a Shortcut key has at most ${UPLOADS_AT_ONCE} shares in flight at once`, FILE_SAY.busy);
+    }
+    uploading.set(key.id, inFlight + 1);
+    let answer;
+    try {
+      const raw = await readForm(req, FORM_BODY_MAX, FORM_DRAIN_MAX, formTimeoutMs);
+      // Before anything is made of the body: it may have been two minutes.
+      stillAllowed(key);
+      const boundary = formBoundary(req.headers?.['content-type']);
+      if (boundary === null) throw new Refusal(400, 'the form names no boundary', FILE_SAY.unread);
+      let parts;
+      try { parts = parseMultipart(raw, boundary); } catch (err) {
+        if (!(err instanceof MultipartError)) throw err;
+        throw new Refusal(400, `the form could not be read: ${err.message}`, FILE_SAY.unread);
+      }
+      const checked = checkSendForm(parts, { heic: convertHeic !== null });
+      if (!checked.ok) throw new Refusal(checked.status ?? 400, checked.error, checked.say ?? 'Jarvis OS could not read that message.');
+      answer = await deliver(key, checked);
+    } finally {
+      uploading.set(key.id, uploading.get(key.id) - 1);
+    }
+    // The place is free before the answer goes (a refusal's too: it is written by the
+    // handler, after this), so a Shortcut that has its answer can send the next share.
+    return json(res, 200, answer, NO_STORE);
+  }
+
+  // One checked send becomes one message: answers what the Shortcut is told (for a
+  // repeat, the first one's answer), or throws the refusal.
+  async function deliver(key, { text, shared, via, clientId: givenId, files }) {
     const label = `${key.name}${via ? VIAS[via] : VIA_NONE}`;
-    const duplicate = m => json(res, 200, { ok: true, id: m.id, seq: m.seq, duplicate: true, online: online(), say: 'Already sent to Jarvis.' }, NO_STORE);
+    const duplicate = m => ({ ok: true, id: m.id, seq: m.seq, duplicate: true, online: online(), say: 'Already sent to Jarvis.' });
     // A given clientId is the key's own: it can never name a page's message.
-    const clientId = checked.clientId ? `sc.${key.id}.${checked.clientId}` : null;
+    const clientId = givenId ? `sc.${key.id}.${givenId}` : null;
     const had = clientId ? store.byClientId(clientId) : null;
     if (had) return duplicate(had);
     // The same words again within 15 s: a retry, answered as the first, also while the
     // first is still being written (it waits for it).
-    const hash = createHash('sha256').update(JSON.stringify([via, text, shared])).digest('hex');
+    // "The same" covers the files: each by the hash of its bytes as they came.
+    const hash = createHash('sha256').update(JSON.stringify([via, text, shared, ...files.map(f => createHash('sha256').update(f.data).digest('hex'))])).digest('hex');
     const last = lastSend.get(key.id);
     if (last && last.hash === hash && now() - last.at < DUPLICATE_MS) {
       const first = await last.done;
@@ -261,50 +544,113 @@ export function createShortcutRoutes({
       overLimit(key, 'message', at);
       throw new Refusal(429, `a Shortcut key sends at most ${SENDS_PER_WINDOW} messages in 10 minutes and ${SENDS_PER_DAY} a day`, 'Too many messages from this Shortcut. Use the Jarvis OS app for now.');
     }
+    // His files count against the key's day too, in the same step and as uploaded.
+    const incoming = files.reduce((n, f) => n + f.data.length, 0);
+    const spent = spentBytes(key.id, at);
+    if (spent.reduce((n, e) => n + e.bytes, 0) + incoming > fileBytesPerDay) {
+      overLimit(key, 'files', at);
+      throw new Refusal(429, `a Shortcut key sends at most ${Math.round(fileBytesPerDay / 1024 / 1024)} MB of files a day`, FILE_SAY.budget);
+    }
+    // And the HEIC photos among them, each a conversion: this count is never given
+    // back, whatever becomes of the share, so failing conversions can't go on for free.
+    const heics = files.filter(f => f.kind === 'image/heic').length;
+    const converted = recent(conversions, key.id, at);
+    if (converted.length + heics > CONVERSIONS_PER_DAY || converted.filter(t => at - t < SEND_WINDOW_MS).length + heics > CONVERSIONS_PER_WINDOW) {
+      overLimit(key, 'conversions', at);
+      throw new Refusal(429, `a Shortcut key has at most ${CONVERSIONS_PER_WINDOW} HEIC photos converted in 10 minutes and ${CONVERSIONS_PER_DAY} a day`, FILE_SAY.conversions);
+    }
+    for (let i = 0; i < heics; i++) converted.push(at);
     sent.push(at);
+    const entry = { at, bytes: incoming };
+    spent.push(entry);
+    const giveBack = () => {
+      takeBack(sent, at);
+      const i = spent.indexOf(entry);
+      if (i >= 0) spent.splice(i, 1);
+    };
     let settle;
     const mine = { hash, at, done: new Promise(resolve => { settle = resolve; }) };
     lastSend.set(key.id, mine);
     // What he shared: a short public link in the text under a fixed line, anything else
-    // a text file (data to the lead).
+    // a text file (data to the lead); and his files, each an attachment.
     const link = sharedLink(shared);
     const attachments = [];
+    const what = [];
     let body = text;
-    let what = 'text';
     let m = null;
     try {
       if (link) {
         body = `${text ? `${text}\n\n` : ''}${SHARED_LINK_WORDS}\n${link}`;
-        what = 'a link';
+        what.push('a link');
       } else if (shared !== '') {
         // `textOnly`: the words decide nothing about the file's type. Text that begins
         // like a PDF or a picture is still kept, and served, as text/plain (Ultron's L5).
         try { attachments.push(await store.putAttachment({ name: SHARED_NAME, type: 'text/plain', data: Buffer.from(shared.replaceAll(NUL, ''), 'utf8'), textOnly: true })); } catch (err) { throw new Refusal(err.status ?? 400, 'the shared text could not be kept', 'Jarvis OS could not keep the shared text.'); }
         body = text || SHARED_WORDS;
-        what = 'shared text, attached';
+        what.push('shared text, attached');
       }
+      let kept = 0;
+      for (const f of files) {
+        let { data, kind } = f;
+        if (kind === 'image/heic') {
+          // Made a JPEG before it is kept: the lead can't open a HEIC. What comes back
+          // is checked here, by its first bytes, like anything else from outside. A
+          // conversion that fails is logged in one of the converter's fixed words,
+          // never its error's own, which could hold a path or the tool's output.
+          // No conversion is started for a key or a switch that changed while this
+          // share waited (for its body, or for the photo before this one).
+          stillAllowed(key);
+          let why = null;
+          try {
+            data = await convertHeic(data);
+            if (sniffType(data) !== 'image/jpeg') why = 'failed';
+          } catch (err) { why = REASONS.includes(err?.reason) ? err.reason : 'failed'; }
+          if (why !== null) {
+            log(`shortcut: ${label}: a HEIC photo could not be converted (${why})`);
+            throw new Refusal(415, 'a HEIC photo could not be converted', FILE_SAY.heicFailed);
+          }
+          kind = 'image/jpeg';
+        }
+        // The store goes by the first bytes again, and agrees: a text file's begin
+        // like no picture and no PDF, or classifyFile had called it one.
+        let a;
+        try { a = await store.putAttachment({ name: cleanFileName(f.filename, kind), type: kind, data }); } catch (err) {
+          throw new Refusal(err.status ?? 400, 'a shared file could not be kept', err.status === 413 ? FILE_SAY.fileTooBig : FILE_SAY.kept);
+        }
+        attachments.push(a);
+        // Against the day's bytes: the larger of what came and what is kept (a JPEG
+        // can be several times its HEIC).
+        kept += Math.max(f.data.length, a.bytes);
+      }
+      entry.bytes = kept;
+      if (files.length > 0) {
+        if (!link && text === '') body = attachedWords(attachments.length);
+        what.push(`${files.length} file${files.length === 1 ? '' : 's'}, attached`);
+      }
+      // Nothing awaits between this look and the message.
+      stillAllowed(key);
       m = await store.append({ from: 'jeff', kind: 'chat', text: body, replyTo: null, device: label, clientId, attachments, state: 'queued', meta: { shortcut: { key: key.id, via: via ?? 'shortcut' } } });
     } catch (err) {
-      // Not sent: the count goes back, and so does the file. The retry mark needs no
+      // Not sent: the counts go back, and so do the files. The retry mark needs no
       // undoing: it resolves to nothing below, and a send that finds it goes on alone.
-      takeBack(sent, at);
+      giveBack();
       for (const a of attachments) await store.removeAttachment(a.id);
       throw err;
     } finally {
       settle(m ? { id: m.id, seq: m.seq } : null);
     }
     // The store answered with an earlier message of this clientId (two of them in
-    // flight together): this one made nothing, so its file and its count go back.
+    // flight together): this one made nothing, so its files and its counts go back.
     if (attachments.length > 0 && !m.attachments.some(a => a.id === attachments[0].id)) {
-      takeBack(sent, at);
+      giveBack();
       for (const a of attachments) await store.removeAttachment(a.id);
       return duplicate(m);
     }
     // A message was made: that is a use, and the key's idle clock starts again.
     keys.used(key.id);
-    log(`shortcut: ${label} sent a message (${what})`);
+    log(`shortcut: ${label} sent a message (${what.length > 0 ? what.join(' and ') : 'text'})`);
     const up = online();
-    return json(res, 200, { ok: true, id: m.id, seq: m.seq, online: up, say: up ? 'Sent to Jarvis. His answer comes to Jarvis OS.' : 'Sent. Jarvis is offline now; he gets it when he is back.' }, NO_STORE);
+    return { ok: true, id: m.id, seq: m.seq, online: up, say: up ? 'Sent to Jarvis. His answer comes to Jarvis OS.' : 'Sent. Jarvis is offline now; he gets it when he is back.' };
   }
 
   async function event(req, res) {
@@ -396,8 +742,9 @@ export function createShortcutRoutes({
       // The Shortcut's side always gets a line to show, whatever refused it.
       if (err instanceof Refusal) answer.say = err.say;
       else if (SHORTCUT_SIDE.has(path)) answer.say = code === 500 ? 'Jarvis OS had a problem. Try again.' : 'Jarvis OS could not take that request.';
-      // A body cut off mid-way (413) leaves unread bytes on the connection.
-      return json(res, code, answer, code === 413 ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
+      // A body cut off mid-way (413), or stopped at its time limit (408), leaves unread
+      // bytes on the connection.
+      return json(res, code, answer, code === 413 || code === 408 ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
     }
   }
 

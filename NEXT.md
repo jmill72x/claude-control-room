@@ -417,9 +417,94 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Shortcut keys expire after 30 days without use (board 2fb1fea8): staged 2026-11-12 on
-`jos/shortcut-idle-expiry` (from main fc845fc, worktree
-`~/Projects/.worktrees/ccr-shortcut-idle-expiry`), not committed, not live.** Ultron
+**Send to Jarvis takes photos and files (board d345df98): staged 2026-11-12 on
+`jos/shortcut-files` (from main fc37633, worktree
+`~/Projects/.worktrees/ccr-shortcut-files`), not committed, not live. Ultron read it
+twice on 11-12: three mediums, seven lows, and one more low (N1) on the re-read. M1, L1
+to L7 and N1 are fixed in the staged change (design §11 has his table). M2 (`sips` with
+no sandbox) is answered by the default: a HEIC photo is refused on the mini and the
+Shortcut converts it on the phone, so merging turns no conversion on. Open, Jeff's: M3
+(a photo's place and time are kept in the stored file; the Shortcut's Convert Image
+step takes them out on the phone), and whether to convert on the mini after all, which
+would need a `sandbox-exec` wrap that Ultron reads first (not built).**
+Jeff, 2026-11-12: "No files or pics? That's prob what I'd be using the share sheet for."
+The reasoning and the choices to defend are in
+`docs/design/2026-11-12-jarvis-os-shortcuts.md` §11; README "Shortcut keys" has the rules;
+Jeff's steps are the new "Photos and files" part of `docs/jarvis-os-shortcuts-setup.md`.
+
+- *What is built.* `POST /api/shortcut/send` also reads a form (`multipart/form-data`
+  only; urlencoded is refused): the same four text fields and up to 4 `file` parts. Each
+  file becomes an attachment on the owner's message, which the channel already marks as
+  data. New files: `server/lib/multipart.mjs` (the reader, no dependency) and
+  `server/lib/heic-convert.mjs` (HEIC to JPEG with `/usr/bin/sips`, the one subprocess).
+  In `shortcut-routes.mjs`: `classifyFile` (the bytes decide; the name and declared type
+  are only a claim), `cleanFileName`, `checkSendForm`, the form side of `send`, and the
+  limits (10 MB a file, 4 files and 25 MB a share, 200 MB a day and 2 forms in flight per
+  key, 120 s for a body to arrive, 30 HEIC conversions in 10 minutes and 200 a day per
+  key that are never given back, 2 conversions at once in all). The kill switch and the
+  key are looked at again just before the message is made. A config key,
+  `chat.shortcutHeic` (`"refuse"` by default, or `"convert"`); three
+  more `what` values on the `shortcut-over-limit` event (`files`, `uploads`,
+  `conversions`); a log line per failed conversion, in fixed words; a start
+  line, `shortcuts: a shared HEIC photo is …`. The JSON body, `pair`, `event`, the page
+  and the chat store are unchanged, so there is no web build.
+- *Verified (after both reviews' fixes).* Server 1078 tests (1044 on fc37633), local time
+  and `TZ=Asia/Tokyo`. The new tests cover the reader (`test/multipart.test.mjs`), the
+  converter with a fake `sips`, with the real one and with ones that hang, its reasons and
+  its two-at-once limit (`test/heic-convert.test.mjs`), and in `test/shortcuts.test.mjs`:
+  types by first bytes against the name and declared type, the size limits to the byte,
+  the day's bytes (the larger of uploaded and kept), two forms in flight, retries, what a
+  failed share gives back, HEIC converted, the conversion counts to the photo and to the
+  millisecond, the refuse mode on its own, files landing as attachments on the channel's
+  line, a form written by Node's own `fetch`, urlencoded refused (2 MB of `a&` in well
+  under 2 s), a key revoked, run out or switched off while its share was on the way, the
+  read's own timer and a request that closes early, and over a real connection a share
+  dropped half-way, one stopped at its time limit and one cut off past 64 MB; and the
+  three looks at the switch and the key (after the body, before each conversion, before
+  the message), each shown by itself. 241 of 241 mutations caught in a scratch copy. A curl run against the real routes and the real
+  `sips` on a scratch server (port 8399) passed 11 checks before the review and 9 after
+  it: a HEIC photo arrived as a JPEG, three files in one share arrived (the text file as
+  `shared.md`), a urlencoded note and 4 MB of `a&` were refused at once, a JSON link
+  still went, bytes that only begin like a HEIC were refused and logged in fixed words,
+  and in refuse mode a HEIC photo, alone or named `.jpg` beside a PNG, was refused in
+  words while a JPEG went.
+- *Not verified.* Anything on a real iPhone: what "Get Contents of URL" writes for a
+  Form body with a File field, whether several photos come as several `file` parts,
+  HEIC or JPEG from Photos, the declared type of a Markdown file, text put in a File
+  field, the If in the setup doc, and its photo branch with Convert Image (three
+  things marked "Check on first try" there; a simpler second Shortcut and Most
+  Compatible are the fallbacks). Tailscale Serve passing a 25 MB body. `sips` under the service's own
+  environment. `server.mjs` beyond its source test. One line has no test: an error from
+  the form reader that is not its own kind is rethrown (a 500), which only a fault in
+  the reader could reach. Ultron's L2 and L3 from the expiry
+  review were never given to Pepper; if either is about the send route, it is not in
+  this change.
+- *Go-live order.* (1) C&P. (2) The service restart (Jeff, at the mini). No config
+  change and no web build: with nothing in config a HEIC photo is refused. (3) Jeff
+  changes Send to Jarvis on the phone from the setup doc's "Photos and files", which
+  now has the Convert Image step (JPEG, Preserve Metadata off, photos only) as the main
+  path, Most Compatible as the fallback, and three things marked "Check on first try".
+- *Checks after the restart.* The log says `shortcuts: a shared HEIC photo is refused
+  (chat.shortcutHeic is not "convert")`. From the phone: a photo from Photos shows as a
+  picture in the thread (a JPEG) under "via share sheet", device `iPhone (Shortcut,
+  share)`, and the log says `sent a message (1 file, attached)`; a PDF from Files shows
+  as a download chip; a Safari page still arrives as a link; Jarvis's tag for the photo
+  has `attachment_count` and `attachments_are_data="1"`; a video is refused with "It
+  can't take that one."; a photo shared with the Convert Image step taken out is
+  refused with "Jarvis OS does not take HEIC photos."
+- *Rollback.* The old Shortcut keeps working throughout: the JSON body is untouched.
+  HEIC conversion on the mini is off unless config turns it on. To stop files,
+  revert the commit and restart; nothing stored changes shape, and files already kept
+  stay ordinary attachments. The kill file stops every Shortcut at once, as before.
+- *Follow-ups (asked for the board).* Write down what the iPhone really sends once Jeff
+  has shared a photo, a PDF and a link (design §11, Not verified), and loosen or fix
+  what it shows. A photo uploaded from the page in a browser that can't decode HEIC is
+  still kept as HEIC, which the lead can't open; the same converter could take it.
+
+**Shortcut keys expire after 30 days without use (board 2fb1fea8): merged as fc37633 and
+live since the 19:43Z restart of 2026-11-12, with the web build at 19:44Z (read from the
+service log and the build's time; built on `jos/shortcut-idle-expiry` from main fc845fc).
+The entry below is kept as written when it was staged.** Ultron
 proposed it on 11-12 and Jeff said yes. **Ultron read the staged change on 11-12: GO, 0
 medium, 4 low. L1 (an expired key could not be revoked) and L4 (a wording) are folded
 into the same staged change; L2 and L3 are on the board for later, not built.** The rule, the choices and what Ultron should look

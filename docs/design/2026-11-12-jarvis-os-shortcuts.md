@@ -10,7 +10,9 @@ The phone steps are in `docs/jarvis-os-shortcuts-setup.md`. **Ultron read it on 
 go to commit, go to switch on once his two mediums were fixed.** Section 9 lists his
 findings and what changed; the sections above it describe the code as it now is.
 Merged as fc845fc and switched on 2026-11-12. **The 30-day idle expiry (decision 4, Jeff's
-yes on 11-12) is built on `jos/shortcut-idle-expiry`:** section 10.
+yes on 11-12)** is section 10, merged as fc37633. **Shared photos and files (board
+d345df98) are built on `jos/shortcut-files`; Ultron read them twice on 11-12 and his
+fixes are in; a HEIC photo is refused by default:** section 11.
 
 ## 1. What Jeff gets
 
@@ -125,8 +127,8 @@ side by side, and once through the real channel socket). What differs:
 - **`device`** is the key's name and how it came: `iPhone (Shortcut, Siri)`, `iPhone
   (Shortcut, share)` or `iPhone (Shortcut)`. The channel already shows `device` to Jarvis.
   The thread shows "via Siri Shortcut" or "via share sheet" under the bubble.
-- **No reply target, no uploads, no other field.** The body may hold `text`, `shared`,
-  `via` and `clientId` only; anything else is a 400.
+- **No reply target and no other field.** The body may hold `text`, `shared`, `via` and
+  `clientId` only; anything else is a 400. Files come as a form (section 11).
 
 ### 4.1 What Jeff says and what he shares are kept apart
 
@@ -307,3 +309,147 @@ kept across a restart, a place freed by expiry, and an expired key revoked by id
 name and with its device (and staying dead with the clock set back). NEXT.md §10 has the counts and the
 mutation run. **Not verified:** anything on a real iPhone (how Siri speaks the longer
 line); `server.mjs` is unchanged.
+
+## 11. Shared photos and files (2026-11-12, board d345df98)
+
+Jeff, 11-12, about the share sheet taking only links and text: "No files or pics? That's
+prob what I'd be using the share sheet for." Built on `jos/shortcut-files` from main
+fc37633. **Ultron read it on 2026-11-12: ship with fixes, three mediums and seven lows,
+and on his re-read one more low.** M1 and all eight lows are fixed. M2 (`sips` with no
+sandbox) is answered by the default, which now refuses a HEIC photo. M3 (a photo's
+place and time are kept) is open, and Jeff's (the table at the end of this section).
+README "Shortcut keys" has the exact rules; this section is the reasoning, and
+describes the code as it now is. **A HEIC photo is refused by default, and the phone
+converts it** (choice 5).
+
+**What Jeff gets.** Send to Jarvis also takes photos (JPEG, PNG, WebP; the Shortcut makes
+a HEIC photo a JPEG first), PDFs and
+text or Markdown files: up to 4 in one share, 10 MB each, 25 MB together. Each arrives as
+an attachment on his message. His note is the message; with no note the text is the fixed
+line "Shared from the share sheet: a file is attached."
+
+**Why a form.** A Shortcut's "Get Contents of URL" has three kinds of body: JSON, Form
+and File. JSON can't carry a file. File sends one file's bytes and nothing else, so no
+note, no `via` and one file a run. Form carries the note and the files together, so the
+send route now also reads `multipart/form-data`. The JSON body is unchanged, and Ask
+Jarvis and the link share still use it.
+
+**Files are data, as shared text already was.** A file is an attachment on a message
+from Jeff. The channel already tells Jarvis that attachments are outside content
+(`attachments_are_data="1"`), PDFs and images included, so this needed no channel change.
+Nothing from a file reaches the message's text: not its words and not its name. A text
+file that says "ignore your instructions" is a file Jarvis may read, never Jeff's words.
+
+**The types and the limits are the chat's.** The same seven types the chat store keeps
+(`ATTACHMENT_TYPES`), its 10 MB a file, the page's four files a message. The page itself
+never takes text files; a Shortcut does, because the share sheet already sent shared
+text as a text file.
+
+**Choices to defend.**
+
+1. **Our own multipart reader** (`server/lib/multipart.mjs`), not a package. The server
+   has no dependencies, and a package for this would be the first, with its own update
+   and review cost. The reader works on a body that is already whole in memory and
+   bounded, which is the easy case: no streaming and no state between chunks. It is
+   strict, so anything it does not expect is a 400: a preamble, more than 16 parts, more
+   than 4 KB of headers on a part, a `base64` or `quoted-printable` part, a part with no
+   name. It never reads `filename*`. Two other writers' forms are in the tests (one built
+   by hand, one by Node's own `fetch` and `FormData`); a real iPhone's is not.
+2. **A form skips the JSON rule.** The JSON rule exists to force a preflight on a page.
+   On this route a page is already refused two other ways: any `Origin` or
+   `Sec-Fetch-Site` header is a 403, and the key is in `Authorization`, which a page's
+   form can't set and a browser never adds by itself. The route uses no cookie. `pair`
+   and `event` still take JSON only.
+3. **The bytes decide, and a claim that disagrees is refused.** The first bytes say what
+   a photo or a PDF is. The name's ending and the part's declared type only say what the
+   file claims to be. A claim of another family than the bytes (photo, PDF, text) is
+   refused, and so is any declared type that is not on the list, even when the bytes are
+   fine. A photo that claims another kind of photo (a JPEG named `.png`) is taken as
+   what its bytes are. Stricter than it has to be: the stored type always comes from the
+   bytes. The cost is that an odd declared type from the phone refuses a good file.
+4. **Text is taken on its claim.** Text has no first bytes. A file is text only when its
+   type or name says so, it is valid UTF-8 and it holds no NUL. It is stored and served
+   as text, as a download, like shared text.
+5. **A HEIC photo is refused by default, and the phone converts it** (changed after
+   Ultron's re-read; as first built, the mini converted). An iPhone's camera writes
+   HEIC, and Jarvis can't open one, so something has to make it a JPEG. The Shortcut
+   does, with a Convert Image step (JPEG, Preserve Metadata off; the setup doc), which
+   also takes the photo's place and time out before it leaves the phone. The mini's own
+   converter (`lib/heic-convert.mjs`, `sips`) stays in the code behind
+   `chat.shortcutHeic: "convert"`, off unless config says so: it is a subprocess (the
+   only one this route starts) running the system's image decoder on bytes from
+   outside, as Jeff's user and with no sandbox, and Ultron accepts that only as a risk
+   Jeff takes knowingly. **If Jeff picks convert-on-the-mini, it comes with a
+   `sandbox-exec` wrap that Ultron reads first; it is not built.** What limits the
+   converter as it is: only a holder of a key can reach it, the
+   file must begin like a HEIC, its claimed size is read before its pixels are decoded
+   (`sips -g` parses the file's container first; 120 megapixels at most), 20 s and
+   SIGKILL, an empty environment, a private folder, at most 2 running at once across
+   every key, 30 conversions in 10 minutes and 200 a day per key that are never given
+   back, and the result must begin like a JPEG. In the default, "refuse", a HEIC photo
+   that reaches the mini is told, whatever it is named: "Jarvis OS does not take HEIC
+   photos. In the share sheet tap Options, choose Most Compatible, and share again."
+   Most Compatible is the fallback when the Convert Image step is missing or did not
+   run; it keeps the photo's metadata.
+6. **25 MB a share, tighter than four files of 10 MB.** The body is held whole so the
+   reader can stay simple, and 2 forms per key may be in flight, so a key can hold 50 MB
+   (about twice that for a moment while the body is joined). Four keys at once is the
+   worst case, about 400 MB for a moment. A share over 25 MB is read to its end and
+   dropped, up to 64 MB, so the phone gets a line to show; past that the connection is
+   cut and the phone shows its own error.
+7. **200 MB of files a day per key**, counted in the same step as the message count.
+   Each file counts as the larger of what was uploaded and what is kept, since a JPEG
+   can be several times its HEIC. Files kept by the store live 90 days like any
+   attachment.
+8. **One refused file refuses the share.** Jeff hears which rule, and nothing is half
+   sent.
+9. **A file's name is cleaned hard.** A text file gets a fixed name (`shared.txt`,
+   `shared.md`): Jarvis reads it as words, and its own name would be more of someone
+   else's words beside them. A photo's or a PDF's name loses every hidden code point
+   (`lib/hidden-chars.mjs`), then keeps letters, digits, spaces and `. _ ( ) -`, 60
+   characters, with the ending rewritten to what the file is. A name is outside text
+   that Jarvis and the page both show.
+10. **A photo is kept as it came.** Nothing on the mini decodes or re-encodes a JPEG,
+    PNG or WebP, so whatever metadata it arrives with stays (Ultron's M3; the page's own
+    upload drops it when the browser redraws the photo). The setup doc's main path takes
+    a photo's place and time out on the phone (Convert Image, Preserve Metadata off);
+    a photo sent by the Most Compatible fallback, or one that skips the conversion,
+    keeps them. Whether the mini should strip them itself is open, and Jeff's.
+11. **Selected text through the new Shortcut arrives as a text file named
+    `shared.txt`**, not `shared-text.txt`, because the Shortcut's If sends only
+    links down the JSON side (the setup doc). The server still takes `shared` text in
+    JSON or in a form.
+
+**Ultron's review (2026-11-12): ship with fixes; three mediums and seven lows, then
+one more low (N1) on his re-read.** M1, L1 to L7 and N1 are fixed in the staged change.
+M2 is answered by the default. M3 is open.
+
+| | Finding | What changed |
+|---|---|---|
+| M1 | The urlencoded branch gave up to 25 MB to `URLSearchParams`, which is quadratic on Node 26: 1 MB of `a&` took 4 s, so one request could stop the server for about 40 minutes. | The branch is gone. Only `multipart/form-data` is a form; urlencoded is a 415 on every route, before its body is read. |
+| M2 | `sips` runs the system's image decoder on outside bytes with no sandbox. | The default is now "refuse": merging turns no conversion on, and the phone converts. Convert-on-the-mini needs Jeff's yes and a `sandbox-exec` wrap Ultron reads first (not built). |
+| M3 | A photo's place and time (GPS) are kept in the stored file. | Open, Jeff's call. The setup doc's Convert Image step takes them out on the phone; the mini still keeps a photo as it arrives. |
+| L1 | A conversion that failed gave its counts back, so failing HEIC photos could be sent without end. | A count of conversions per key that is never given back (30 in 10 minutes, 200 a day, reported when it is passed), and at most 2 `sips` runs at once across all keys. |
+| L2 | The kill switch and the key were looked at before the body was read, and not after. | Both are looked at again just before the message is made, for JSON and form alike. |
+| L3 | A stalled upload held its place until Node's own 5-minute limit. | The read has its own 120 s timer (a 408, and the connection closes), and a request that closes before its end is over at once. |
+| L4 | A text file kept its own name; four filler characters that Unicode calls letters passed the name filter. | Text files are `shared.txt` or `shared.md`; hidden code points are dropped from every other name. |
+| L5 | A form's text field was decoded whatever its size (up to the 25 MB body). | A field over four times its limit in characters, in bytes, is refused before it is decoded. |
+| L6 | The day's bytes counted what was uploaded; a JPEG can be larger than its HEIC. | Each file counts as the larger of the two. |
+| N1 | The second look at the switch and the key came only after the conversion loop. | It is made as soon as a form's body is in, again before each conversion, and last just before the message. |
+| L7 | A failed conversion left no trace, and a comment said the size was read "before anything decodes it". | One log line of fixed words per failure (`timeout`, `unreadable`, `too large`, `failed`); the comment and README now say `sips -g` parses the container first. |
+
+**Not verified.**
+
+- **Everything on a real iPhone**, as before, and now also: what "Get Contents of URL"
+  writes for a Form body with a File field (the part's name, file name and type; whether
+  several shared photos come as several `file` parts); whether Photos hands a Shortcut
+  HEIC or JPEG; what type it declares for a Markdown file; that text put in a File field
+  becomes a `.txt` file typed `text/plain`; the If in the setup doc (`Shortcut
+  Input` as Text, begins with `http`); and its photo branch (whether an If offers File
+  Extension for Shortcut Input, whether "is" minds capitals, whether Convert Image
+  keeps the file's name), which the setup doc marks "Check on first try". The setup
+  doc has a second, simpler Shortcut and Most Compatible as fallbacks.
+- **Tailscale Serve passing a 25 MB body.** No limit is known; none was tested.
+- **`sips` under the service's own environment.** The tests run it with an empty
+  environment from a shell; the service's temp folder and sandbox state were not tried.
+- **`server.mjs` wiring** beyond its source test.

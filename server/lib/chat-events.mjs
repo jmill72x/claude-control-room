@@ -75,7 +75,9 @@ export function chatEventLine(event) {
     // The address itself is in the service log (lib/shortcut-keys.mjs writes that line): never in a push.
     'shortcut-new-address': `the Shortcut key ${event.key?.name ?? '?'} was used from an address it had not used before`,
     'shortcut-refused': `${event.count ?? 'several'} requests with a wrong or missing Shortcut key were refused in 10 minutes`,
-    'shortcut-over-limit': `the Shortcut key ${event.key?.name ?? '?'} went over its ${event.what === 'presence' ? 'presence' : 'message'} limit and is being refused`,
+    // `what`: message, presence, files (the day's bytes), uploads (shares in flight at
+    // once) or conversions (HEIC photos made JPEGs).
+    'shortcut-over-limit': `the Shortcut key ${event.key?.name ?? '?'} went over its ${event.what === 'presence' ? 'presence' : event.what === 'files' ? 'daily file' : event.what === 'uploads' ? 'shares-at-once' : event.what === 'conversions' ? 'photo conversion' : 'message'} limit and is being refused`,
     'shortcut-pair-refused': `${event.count ?? 'several'} Shortcut pairing tries were refused in 10 minutes (a wrong code, or no code waiting)`,
     // At most once a day per key (lib/shortcut-routes.mjs), however often the key is tried.
     'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
