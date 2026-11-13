@@ -13,7 +13,7 @@ import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, allowArmed, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
-  isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS
+  isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -318,7 +318,7 @@ function PermissionCard({ p, chat, now }) {
     <section className={`o-chat-card${p.view !== 'open' ? ' o-chat-card-expired' : ''}`} aria-label={`Permission request: ${p.tool}`} onKeyDown={noEnter}>
       <div className="o-chat-card-head">
         <span className="o-chat-label">{label}</span>
-        <span className="o-chat-sub">{age < 60 ? `${age} s ago` : `${Math.floor(age / 60)} min ago`}</span>
+        <span className="o-chat-sub">{ageLine(age)}</span>
       </div>
       <h3 className="o-chat-card-tool o-mono">{p.tool}</h3>
       {p.why && <p className="o-chat-card-why">{p.why}</p>}
@@ -364,7 +364,7 @@ function PermissionCard({ p, chat, now }) {
       )}
       {p.view === 'expired' && (
         <div className="o-chat-card-expired-note">
-          <span>This page could answer it for 10 minutes. If Jarvis is still waiting on it, answer in Claude Code or in Discord.</span>
+          <span>{expiredLine(p)}</span>
           <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.dismissPermission(p.requestId)}>Dismiss</button>
         </div>
       )}

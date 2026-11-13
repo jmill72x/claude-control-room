@@ -9,8 +9,9 @@
 //
 // Permission requests and verdicts are messages too (kinds `permission` and
 // `verdict`), so replay carries them; the open requests also live in memory with
-// their state, expire 10 minutes after the channel relayed them, and lose their input
-// preview after 24 h (the approvals rules: lib/approvals.mjs).
+// their state, expire as long after the channel relayed them as the channel says it
+// holds one (`setPermissionHold`, from its hello; 10 minutes when it doesn't say), and
+// lose their input preview after 24 h (the approvals rules: lib/approvals.mjs).
 // Attachments are files under `files/<random id>`, named only by that id.
 import { open, readFile, writeFile, mkdir, readdir, rename, stat, unlink, chmod } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
@@ -25,10 +26,31 @@ export const CHAT_FROM = new Set(['jeff', 'jarvis', 'system']);
 export const MAX_TEXT = 32000;
 export const MAX_PAGE_TEXT = 8000;
 export const EDIT_WINDOW_MS = DAY;
+// How long the page can answer a request, counted from `relayedAt` (board 94b380fd).
+// Claude Code's own prompt and Discord's buttons have no limit; the page's limit is
+// the channel's, which forgets a request after a while (`PERM_FORGET_MS` in the lead's
+// repo) and then drops a verdict for it. So the page answers for as long as the
+// channel says at hello that it holds one (`permHoldMs`), less a minute, and never
+// more than 12 hours. A channel that doesn't say (0.4.6 and older forget after 11
+// minutes) gets PERMISSION_TTL_MS, the old 10 minutes.
 export const PERMISSION_TTL_MS = 10 * 60e3;
-// A request that timed out here is still sent to a page that connects this long after
-// the channel relayed it (as a card that can't be answered here).
-export const CARD_REPLAY_MS = 60 * 60e3;
+export const PERMISSION_HOLD_MAX_MS = 12 * HOUR;
+export const PERMISSION_HOLD_MARGIN_MS = 60e3;
+export function permissionWindow(holdMs) {
+  if (!Number.isSafeInteger(holdMs) || holdMs <= 0) return PERMISSION_TTL_MS;
+  return Math.max(0, Math.min(holdMs - PERMISSION_HOLD_MARGIN_MS, PERMISSION_HOLD_MAX_MS));
+}
+// At most this many open at once, as the channel (PENDING_PERMS_MAX): past it the
+// oldest open one ends here, as the channel forgets it there. And at most this many
+// kept in all (open or not; the oldest closed ones go first).
+export const OPEN_PERMISSIONS_MAX = 50;
+export const PERMISSIONS_KEPT_MAX = 500;
+// A channel with no hello or heartbeat for this long is gone (a session killed with no
+// SessionEnd and no bye): the requests it relayed end here.
+export const CHANNEL_GONE_MS = 10 * 60e3;
+// A request that timed out here is still sent to a page that connects up to this long
+// after it timed out (as a card that can't be answered here).
+export const CARD_REPLAY_MS = 50 * 60e3;
 export const PREVIEW_TTL_MS = DAY;
 export const UNANSWERED_WINDOW_MS = DAY;
 export const UNANSWERED_MAX = 10;
@@ -270,41 +292,72 @@ export function createChatStore({ dir, now = () => Date.now() }) {
 
   // ---- permissions ----
   // A request is keyed by the channel session it came in on and its id (L7): a new
-  // channel session (`newPermissionSession`, a hello from a new process) expires every
-  // open request, and an id seen again in the same session opens a fresh entry marked
-  // `repeat`, which nobody can answer here (Claude Code drops channel verdicts for a
-  // repeated id). The routes find a request by id: always its newest entry.
+  // channel session (`newPermissionSession`, a hello from a new process, or the
+  // channel's bye) expires every open request, and an id seen again in the same
+  // session opens a fresh entry marked `repeat`, which nobody can answer here (Claude
+  // Code drops channel verdicts for a repeated id). The routes find a request by id:
+  // always its newest entry. An expired request says why in `ended`: `timeout` (its
+  // window ran out; also `timedOut`), `channel` (its channel ended or went silent) or
+  // `crowded` (more than OPEN_PERMISSIONS_MAX were open).
 
   let permSession = 0;
   let permUid = 0;
+  let permWindow = PERMISSION_TTL_MS; // for requests opened from now on
+  let channelSeenAt = null;           // the channel's last hello or heartbeat
   const latest = new Map();   // requestId -> uid of its newest entry
-  const seenIds = new Set();  // `${session}:${requestId}`
+  const seenIds = new Set();  // `${session}:${requestId}`, this session's only
+
+  const endPermission = (p, ended) => {
+    p.state = 'expired';
+    p.ended = ended;
+    if (ended === 'timeout') p.timedOut = true;
+    emit({ type: 'permission-closed', request: p });
+  };
+  const forget = (uid, p) => {
+    permissions.delete(uid);
+    if (latest.get(p.requestId) === uid) latest.delete(p.requestId);
+  };
 
   function prunePermissions() {
     const at = now();
+    const gone = channelSeenAt !== null && at - channelSeenAt >= CHANNEL_GONE_MS;
     for (const [uid, p] of permissions) {
-      if (p.state === 'open' && at - p.relayedAt >= PERMISSION_TTL_MS) { p.state = 'expired'; p.timedOut = true; emit({ type: 'permission-closed', request: p }); }
+      if (p.state === 'open' && at - p.relayedAt >= p.windowMs) endPermission(p, 'timeout');
+      else if (p.state === 'open' && gone) endPermission(p, 'channel');
       // A closed request drops its exact command at the next look (any read prunes).
       if (p.state !== 'open') p.exact = null;
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
-      if (at - p.openedAt >= 7 * DAY) {
-        permissions.delete(uid);
-        if (latest.get(p.requestId) === uid) latest.delete(p.requestId);
+      if (at - p.openedAt >= 7 * DAY) forget(uid, p);
+    }
+    // The count bound: the oldest that are no longer open go first (at most
+    // OPEN_PERMISSIONS_MAX are open, so there is always one).
+    if (permissions.size > PERMISSIONS_KEPT_MAX) {
+      for (const [uid, p] of permissions) {
+        if (permissions.size <= PERMISSIONS_KEPT_MAX) break;
+        if (p.state !== 'open') forget(uid, p);
       }
     }
   }
 
   // A new channel session: every open request expires (its channel process, and the
-  // prompt ids it knew, are gone or can't be told from a new one's).
+  // prompt ids it knew, are gone or can't be told from a new one's). The ids seen in
+  // the old session can never match again, so they are let go.
   function newPermissionSession() {
     permSession++;
-    for (const p of permissions.values()) {
-      if (p.state !== 'open') continue;
-      p.state = 'expired';
-      emit({ type: 'permission-closed', request: p });
-    }
+    seenIds.clear();
+    for (const p of permissions.values()) if (p.state === 'open') endPermission(p, 'channel');
     return permSession;
   }
+
+  // From the channel's hello: how long it holds a request (`permHoldMs`; anything but
+  // a positive whole number means it doesn't say). Applies to requests opened from now
+  // on. Answers the page's window.
+  function setPermissionHold(holdMs) {
+    permWindow = permissionWindow(holdMs);
+    return permWindow;
+  }
+  // The channel said hello or sent a heartbeat (lib/chat-socket.mjs).
+  function noteChannelAlive(at = now()) { channelSeenAt = at; }
 
   // `assess(p)` (lib/approvals.mjs) answers { denyOnly, why } for the stored fields.
   // Fields are kept whole up to FIELD_MAX code points; a longer one is cut, marked and
@@ -324,7 +377,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     const p = {
       requestId, tool: t.text, description: d.text, inputPreview: ip.text,
       cut: Boolean(cut) || t.cut || d.cut || ip.cut,
-      openedAt: at, relayedAt: ra, session: permSession,
+      openedAt: at, relayedAt: ra, session: permSession, windowMs: permWindow,
       state: repeat ? 'repeat' : late ? 'late' : 'open',
       answeredBy: null, answeredAt: null, messageId: null, denyOnly: [], why: null, exact: null
     };
@@ -340,6 +393,14 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     const uid = ++permUid;
     permissions.set(uid, p);
     latest.set(requestId, uid);
+    // Past OPEN_PERMISSIONS_MAX the oldest open ones end, as the channel forgets them.
+    if (p.state === 'open') {
+      let over = [...permissions.values()].filter(q => q.state === 'open').length - OPEN_PERMISSIONS_MAX;
+      for (const q of permissions.values()) {
+        if (over <= 0) break;
+        if (q.state === 'open' && q !== p) { endPermission(q, 'crowded'); over--; }
+      }
+    }
     // The description is model text: one that looks like it holds a secret never
     // reaches the disk (L12); the card still shows it from memory.
     const onDisk = secretShapes(p.description).length ? 'Jarvis asked for a permission (its summary looked like it held a secret, so it is not kept)' : p.description;
@@ -401,12 +462,12 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   const openPermissions = () => { prunePermissions(); return [...permissions.values()].filter(p => p.state === 'open'); };
   // What a page gets when its stream opens: the open requests, and those that timed
   // out here unanswered in the last CARD_REPLAY_MS and may still be waiting in Claude
-  // Code. A page that was away for the request's 10 minutes then shows where to
+  // Code. A page that was away for the request's whole window then shows where to
   // answer it instead of nothing. One closed any other way is not replayed.
   const cardPermissions = () => {
     prunePermissions();
     const at = now();
-    return [...permissions.values()].filter(p => p.state === 'open' || (p.state === 'expired' && p.timedOut === true && at - p.relayedAt < CARD_REPLAY_MS));
+    return [...permissions.values()].filter(p => p.state === 'open' || (p.state === 'expired' && p.timedOut === true && at - (p.relayedAt + p.windowMs) < CARD_REPLAY_MS));
   };
   const publicPermission = p => {
     const parsed = parsePreview(p.inputPreview);
@@ -414,9 +475,10 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       requestId: p.requestId, tool: p.tool, description: p.description, inputPreview: p.inputPreview,
       fields: parsed ? parsed.fields : null, cut: Boolean(p.cut), why: p.why ?? null, denyOnly: p.denyOnly ?? [],
       exact: typeof p.exact === 'string' ? p.exact : null,
-      openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + PERMISSION_TTL_MS,
+      openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + p.windowMs,
       state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId,
-      ...(p.state === 'elsewhere' ? { closedAt: p.closedAt ?? null } : {})
+      ...(p.state === 'elsewhere' ? { closedAt: p.closedAt ?? null } : {}),
+      ...(p.state === 'expired' ? { ended: p.ended ?? null } : {})
     };
   };
 
@@ -505,6 +567,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
     openPermission, answerPermission, openPermissions, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
+    setPermissionHold, noteChannelAlive,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },
     putAttachment, attachment, pruneAttachments, pruneOrphans, removeAttachment,

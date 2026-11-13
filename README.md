@@ -727,7 +727,8 @@ three pieces, each with its own router:
   text, replyTo, device, attachments, editedAt, state, meta }` (only `system` makes an
   `event`; see "Events" below); the page and the channel
   never see its `clientId`. Permission requests and verdicts are messages too (so a replay
-  carries them) and the open requests live in memory, expiring after 10 minutes and losing
+  carries them) and the open requests live in memory, expiring when the channel would
+  forget them (up to 12 hours; 10 minutes for a channel that doesn't say) and losing
   their input preview after 24 hours. Attachments are files under `data/chat/files/<random
   id>` (0600), sniffed by their first bytes (png, jpeg, webp, heic, pdf; txt and md by
   declared type), at most 10 MB, pruned after 90 days. A restart forgets open permission
@@ -1069,11 +1070,20 @@ and, with approvals on, `chat: approvals write folders: <the accepted list>`.
 relayedAt, cut}` from the channel) keeps each field whole up to 16,100 code points (Claude
 Code sends each top-level field of a preview up to 3,500; the channel keeps 16,000 and
 marks its own cut, and the extra 100 leave room for that marker); a longer one is cut,
-marked "⋯ N code points cut by the Control Room ⋯" and Deny-only. Expiry is 10 minutes from
-`relayedAt` (when the channel got the prompt); a request more than 2 minutes old on
-arrival is `late`, shown with "answer at the terminal" and no buttons. Requests are keyed
-by the channel session and id: a hello from a new channel process expires every open one
-(the holder's own re-hello keeps them), and an id seen again in the same session opens a
+marked "⋯ N code points cut by the Control Room ⋯" and Deny-only. A request can be answered
+here for as long as the channel holds it (board 94b380fd): the channel names its hold in
+hello (`permHoldMs`), and expiry is that less a minute, at most 12 hours, from `relayedAt`
+(when the channel got the prompt); a channel that names none (0.4.6 and older, which forget
+a request after 11 minutes) gets 10 minutes. The start log says which: `chat: the page can
+answer a permission request for <N> min (…)`. A request keeps the window in force when it
+opened. A request more than 2 minutes old on arrival is `late`, shown with "answer at the
+terminal" and no buttons. Requests are keyed by the channel session and id: a hello from a
+new channel process, or the channel's bye, expires every open one (the holder's own
+re-hello keeps them), and so does a channel that has sent nothing (no heartbeat, no
+request, no hello) for 10 minutes; at most 50 are open at once (as the channel), the
+oldest open one expiring past that, and at most 500 are kept in all, the oldest closed ones
+dropped first. An expired request says why in `ended` (`timeout`, `channel`, `crowded`) and
+the card words it. An id seen again in the same session opens a
 `repeat` entry nobody can answer here (Claude Code drops channel verdicts for a repeated
 id). The description is model text: one that looks like it holds a credential
 (`secret-shape.mjs`) is replaced on disk by a fixed line, and the card shows it from
@@ -1134,7 +1144,8 @@ page offer Allow and Deny whenever the channel's relay does:
   relay mode and its test switch (the page never offers an Allow the channel would drop);
   the approver mark on the device; the two-step Allow; the hash of what the card showed;
   the limits on taps and the lockout; a request that came late or repeats an id; config's
-  own words in `chat.approvalsDenyOnly`; and the 10 minutes a card can be answered.
+  own words in `chat.approvalsDenyOnly`; and how long a card can be answered (as long as
+  the channel holds the request, up to 12 hours).
 - **Hidden characters** are always shown as `⟦U+XXXX⟧` on the card, in parity too. Whether
   a request that carries one can be allowed from the page is `chat.approvalsHidden`:
   `"deny"` (the default: such a card stays Deny-only, the one case where the page is
@@ -1174,11 +1185,12 @@ the same prompt was allowed in Claude Code changed nothing); the card's own line
 "Claude Code uses it if the prompt was still open". Discord's buttons can't be closed from
 here at all: they stay live until tapped.
 
-A request the page could no longer answer (10 minutes after the channel relayed it) used
-to vanish from a page that connected later; a page that was hidden, or on another tab, for
-those 10 minutes showed nothing. Now a new stream is also sent the requests that timed out
-in the last hour and were not closed since, as a card that says "Too late to answer here"
-and where to answer; Dismiss keeps it gone. Each request also logs which paired devices
+A request the page could no longer answer (its window over) used to vanish from a page
+that connected later; a page that was hidden, or on another tab, for the whole window
+showed nothing. Now a new stream is also sent the requests that timed out here in the last
+50 minutes and were not closed since, as a card that says "Too late to answer here" and
+where to answer; Dismiss keeps it gone. One ended with its channel, or crowded out, is not
+sent again. Each request also logs which paired devices
 had the chat open when it opened: `chat: request <id> opened with the chat open on
 <names>`, or `… with no page open on the chat (a push goes to each device that takes
 one)`.

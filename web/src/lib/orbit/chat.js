@@ -5,6 +5,8 @@
 
 import { markdownPlain } from './markdown.js';
 
+// A card's window when the server sends no `expiresAt` (an older server): the old
+// 10 minutes. A server now sends how long the channel holds the request, up to 12 h.
 export const PERMISSION_TTL_MS = 10 * 60e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
 export const PHOTO_LONG_EDGE = 1568;
@@ -153,7 +155,9 @@ export function effectiveStatus(status, permissions, now = Date.now()) {
 
 // A card's state as the page shows it (approvals design §5.3):
 //   open      Deny, and Allow once when `canAllow` (below)
-//   expired   10 minutes after the channel relayed it (`expiresAt`), on the page too
+//   expired   at `expiresAt` (as long as the channel holds it, up to 12 hours after
+//             it relayed it), on the page too; or ended by the server: `ended` says
+//             why (`timeout`, `channel` or `crowded`; `expiredLine` words it)
 //   terminal  late on arrival or a repeated id: shown, answered only at the terminal
 //   closed    allowed or denied: the "sent" line (`sentLine`) and a Dismiss; also
 //             `elsewhere`: the server heard Jarvis's session move on, so the request
@@ -240,6 +244,32 @@ export function sentLine(p) {
   const from = p?.answeredBy ? ` from ${p.answeredBy}` : '';
   const at = Number.isFinite(p?.answeredAt) ? ` at ${hhmm(p.answeredAt)}` : '';
   return `${word} sent${from}${at}. Claude Code uses it if the prompt was still open.`;
+}
+
+// A card's age, from seconds: "40 s ago", "12 min ago", then hours past two.
+export function ageLine(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s < 60) return `${s} s ago`;
+  if (s < 120 * 60) return `${Math.floor(s / 60)} min ago`;
+  return `${Math.floor(s / 3600)} h ago`;
+}
+
+// A span of time in words: "10 minutes", "90 minutes", "12 hours".
+const spanWords = ms => {
+  const min = Math.round(ms / 60e3);
+  if (min < 120) return `${min} minute${min === 1 ? '' : 's'}`;
+  const h = Math.round(min / 60);
+  return `${h} hours`;
+};
+
+// Why an expired card can't be answered here, and where to answer it.
+const ELSEWHERE_HINT = 'If Jarvis is still waiting on it, answer in Claude Code or in Discord.';
+export function expiredLine(p) {
+  if (p?.ended === 'channel') return 'Jarvis\'s session or its channel ended, so this page can no longer answer it. If a prompt is still open, answer it in Claude Code.';
+  if (p?.ended === 'crowded') return `Too many requests were waiting at once, so this page let the oldest go. ${ELSEWHERE_HINT}`;
+  const from = p?.relayedAt ?? p?.openedAt;
+  const span = Number.isFinite(p?.expiresAt) && Number.isFinite(from) && p.expiresAt > from ? p.expiresAt - from : PERMISSION_TTL_MS;
+  return `This page could answer it for ${spanWords(span)}. ${ELSEWHERE_HINT}`;
 }
 
 // How long a closed card stays before it goes by itself: an answer sent from here for

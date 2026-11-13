@@ -256,6 +256,12 @@ export function createSocketRouter({
         // A new channel process: the requests the old one relayed can't be answered
         // through this one (L7). The holder's own re-hello keeps them.
         if (!holder) store.newPermissionSession?.();
+        // How long the channel holds a relayed request before it forgets it (board
+        // 94b380fd): the page answers for that long, less a minute, at most 12 hours;
+        // a channel that doesn't say (0.4.6 and older) gets the old 10 minutes.
+        store.noteChannelAlive?.(at);
+        const windowMs = store.setPermissionHold?.(body.permHoldMs);
+        if (approvals && Number.isFinite(windowMs)) log(`chat: the page can answer a permission request for ${Math.round(windowMs / 60e3)} min (${Number.isSafeInteger(body.permHoldMs) && body.permHoldMs > 0 ? 'the channel holds one that long, less a minute' : 'the channel does not say how long it holds one'})`);
         // What the channel says its permission relay does (off, deny or allow); one
         // that doesn't say counts as unknown, and the page then offers Deny only.
         const relay = approvals?.noteChannelRelay?.(body.relay) ?? null;
@@ -288,6 +294,8 @@ export function createSocketRouter({
       if (req.method === 'GET' && path === '/v1/status') return json(res, 200, { ...status(), seq: store.seq, epoch: store.epoch, deliveredSeq: store.deliveredSeq });
       // Everything from here on is the current client's alone.
       requireHolder(req);
+      // Any request from the holder shows its channel is alive (heartbeats come every 15 s).
+      store.noteChannelAlive?.(now());
       if (req.method === 'POST' && path === '/v1/bye') {
         // A clean exit (stdin EOF): the place is free now, not in 45 s. Logged, not alerted.
         byePid = client.pid;
@@ -295,6 +303,8 @@ export function createSocketRouter({
         byeAt = now();
         endInbound('bye');
         log('chat: the channel said bye');
+        // Its session has ended, and the requests it relayed with it: their cards end.
+        store.newPermissionSession?.();
         // No hello within 2 minutes: the lead's session has lost the chat. Alerted once.
         if (silenceTimer !== null) clearTimer(silenceTimer);
         const since = byeAt;

@@ -286,10 +286,10 @@ test('store: a request that timed out here is closed elsewhere too; one answered
   } finally { await s.clean(); }
 });
 
-test('store: a new stream is sent the open requests and those that timed out here in the last hour, never one closed any other way', async () => {
+test('store: a new stream is sent the open requests and those that timed out here in the last 50 minutes, never one closed any other way', async () => {
   const s = await storeAt(T0);
   try {
-    assert.equal(CARD_REPLAY_MS, 60 * 60e3);
+    assert.equal(CARD_REPLAY_MS, 50 * 60e3);
     await s.open('abcde');
     assert.deepEqual(s.store.cardPermissions().map(p => p.requestId), ['abcde']);
     s.clock.t += PERMISSION_TTL_MS;
@@ -305,10 +305,10 @@ test('store: a new stream is sent the open requests and those that timed out her
     s.store.newPermissionSession();
     assert.deepEqual(s.store.cardPermissions(), [], 'ended by a new channel session: not replayed');
     await s.open('bcdef');
-    s.clock.t += CARD_REPLAY_MS - 1;
+    s.clock.t += PERMISSION_TTL_MS + CARD_REPLAY_MS - 1;
     assert.deepEqual(s.store.cardPermissions().map(p => p.requestId), ['bcdef']);
     s.clock.t += 1;
-    assert.deepEqual(s.store.cardPermissions(), [], 'an hour after it was relayed it is no longer sent');
+    assert.deepEqual(s.store.cardPermissions(), [], '50 minutes after it timed out it is no longer sent');
   } finally { await s.clean(); }
 });
 
