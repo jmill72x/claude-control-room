@@ -417,11 +417,36 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**Photo and PDF shares fail on the phone with "The network connection was lost" (board
-95b5013b): a request log line, and refusals that wait for the body, staged 2026-11-13
-(UTC) on `jos/send-refusal-log` (from main f7614d3, worktree
-`~/Projects/.worktrees/ccr-send-refusal-log`), not committed, not live. The cause is
-not proven yet; the first share after the restart says which of three it is.**
+**The drain's scope (Ultron's L1 on ec4a9f0, board 7be15fee): staged 2026-11-13 on
+`jos/shortcut-drain-scope` (from main ec4a9f0, worktree
+`~/Projects/.worktrees/ccr-shortcut-drain-scope`), not committed, not live.** A refusal
+that waits for its body (below) held a connection for up to two minutes on any route,
+from any caller, as many at once as came, and the two minutes started only at the
+refusal. Now (`lib/shortcut-routes.mjs`): (1) only the Shortcut's own routes (pair, send,
+event) wait, and only when the request has no `Origin` and no `Sec-Fetch-Site` (a page
+or browser is answered at once, `Connection: close`); (2) at most 4 wait at once
+(`DRAINS_AT_ONCE`, across keys and routes); a fifth is answered at once with
+`Connection: close`, and its log line ends ` drain=full`; (3) the wait ends two minutes
+(`FORM_TIMEOUT_MS`) after the request began, by a clock that only moves forward
+(`performance.now()`), not two minutes after the refusal; (4) server.mjs sets
+`server.requestTimeout` to `SERVER_REQUEST_TIMEOUT_MS` (300 s, Node's default made
+explicit, longer than the form's two minutes). A page's own refusal (the key routes)
+now always closes its connection, even for a small body sent whole: it is decided before
+the body is parsed (`req.complete` is never set by then, checked), and the browser opens
+another. *Tests:* four new in `server/test/shortcuts.test.mjs` (server 1088); 15
+mutants, all caught after two dead checks found by them were removed (a "time already
+spent" early return, equivalent because a negative timer fires at once, and the
+`req.complete` look). *Go-live:* merge, restart (Needs Jeff); no page or config change.
+*Rollback:* revert and restart. *Unverified:* anything through Tailscale Serve.
+
+**Photo and PDF shares through Send to Jarvis: the request log line and refusals that
+wait for the body merged as ec4a9f0 and live since 2026-11-13; the first iPhone PDF
+(03:22Z) and photo (03:26Z) arrived over https (board 95b5013b).** The change on the
+phone that made it work (with this server live): a hand-built Form request drew Tailscale
+Serve's "400 Bad Request: invalid header name" (the HTTP/2 PROTOCOL_ERROR in the
+mini's log), cause still unknown, and a copy of the working JSON request switched to
+Form did not; a full-quality Convert Image made a 31 MB share (413). The setup doc has
+these lessons (board fdc9da80). What follows is the record of the investigation.
 
 - *What Jeff saw (live test, 02:23 to 02:38Z on 11-13).* Links shared from the iPad's
   key arrive (JSON). Every photo, and a PDF from Files (no Convert Image), fails on the

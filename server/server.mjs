@@ -46,7 +46,7 @@ import { parityStartLine, createApprovals, readApprovalsConfig } from './lib/app
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { createShortcutKeys } from './lib/shortcut-keys.mjs';
-import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig } from './lib/shortcut-routes.mjs';
+import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, SERVER_REQUEST_TIMEOUT_MS } from './lib/shortcut-routes.mjs';
 import { createHeicConverter, SIPS } from './lib/heic-convert.mjs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -493,6 +493,10 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({ error: 'internal error' }));
   }
 });
+
+// The limit on receiving a whole request, set here and not left to Node's default:
+// longer than a Shortcut form's own two minutes, so its answer always comes first.
+server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
 
 const selfCheck = () => new Promise((resolve, reject) => {
   const req = get({ host: '127.0.0.1', port: PORT, path: '/api/health', timeout: 5000, agent: false }, res => {

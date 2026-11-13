@@ -1590,10 +1590,16 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   up or reduced to digits, never printed. A share that ended early (400) or ran out of
   time (408) is a line too, with the bytes read so far. A refusal decided before the
   body is read (a wrong key, a body that is no form, the off switch, a third share in
-  flight) is answered only when the body is in, up to 64 MB and two minutes: an answer
-  written while a phone is still uploading reaches it as "The network connection was
-  lost", never as its `say` line. A form with no file in it (a blank `file` field, or
-  none) is refused in words that say so; words alone go as JSON.
+  flight) is answered only when the body is in, up to 64 MB and two minutes from the
+  request's start: an answer written while a phone is still uploading reaches it as
+  "The network connection was lost", never as its `say` line. Only the Shortcut's own
+  routes (pair, send, event) wait so, only for a caller with no `Origin` and no
+  `Sec-Fetch-Site`, and at most 4 at a time; any other refusal whose body is not in is
+  answered at once with `Connection: close`, and one turned away because 4 already wait
+  ends its line with ` drain=full`. The HTTP server's own limit on receiving a request is
+  set in server.mjs (`server.requestTimeout`, 5 minutes, Node's default made explicit).
+  A form with no file in it (a blank `file` field, or none) is refused in words that say
+  so; words alone go as JSON.
 - **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
   ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
   wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no

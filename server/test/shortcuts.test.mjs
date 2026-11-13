@@ -27,7 +27,7 @@ import {
   createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, sharedLink, publicHostName, checkSend,
   SHARED_MAX, SHARED_WORDS, SHARED_LINK_WORDS, LINK_INLINE_MAX, SENDS_PER_WINDOW, SEND_WINDOW_MS, SENDS_PER_DAY, DUPLICATE_MS, EVENT_DEBOUNCE_MS, EVENTS_PER_DAY, REFUSALS_REPORTED_AT, CLIENT_ID_MAX, VIAS,
   classifyFile, cleanFileName, splitFileName, checkSendForm, attachedWords, FILE_SAY, FILES_MAX, FORM_BODY_MAX, FORM_DRAIN_MAX, FILE_BYTES_PER_DAY, UPLOADS_AT_ONCE, FILE_NAME_MAX, HEIC_MODES,
-  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX, requestLine, partsSeen
+  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX, requestLine, partsSeen, DRAINS_AT_ONCE, SERVER_REQUEST_TIMEOUT_MS
 } from '../lib/shortcut-routes.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -3047,4 +3047,137 @@ test('a form whose file field is blank, or that has no file part, is refused in 
   assert.equal(connections, 1);
   assert.equal(env.requests.length, 6);
   assert.deepEqual(env.chatMessages().map(m => [m.text, m.attachments.length]), [['see this photo', 1]]);
+});
+
+// ---- the drain's scope (Ultron's L1 on ec4a9f0, board 7be15fee) ----
+// A refusal waits for its body only on a Shortcut's own routes, from a caller that sends
+// no Origin and no Sec-Fetch-Site, four at a time at most, and never past the form's
+// time limit counted from the request's start.
+
+test('only a Shortcut\'s own routes, called with no Origin or Sec-Fetch-Site, wait for the body: a page\'s route or a browser\'s call is answered at once and the connection goes', async t => {
+  const env = await setup(t, { formTimeoutMs: 5000 });
+  const key = await env.pairKey('Phone');
+  const wrong = env.withKey(`${KEY_PREFIX}${'A'.repeat(43)}`);
+  const agent = new Agent({ keepAlive: true, maxSockets: 8 });
+  t.after(() => agent.destroy());
+  const f = form([field('text', 'a photo'), file('a.jpg', 'image/jpeg', jpegOf(200 * 1024))]);
+  const json = Buffer.from(JSON.stringify({ name: 'x'.repeat(4000) }));
+  const atOnce = [
+    ['the page\'s key route', '/api/shortcut/keys', { 'Content-Type': 'application/json', 'Content-Length': json.length }, json, 401],
+    ['send with an Origin', '/api/shortcut/send', { 'Content-Type': f.type, 'Content-Length': f.body.length, origin: 'https://elsewhere.example', ...env.withKey(key) }, f.body, 403],
+    ['send with Sec-Fetch-Site alone', '/api/shortcut/send', { 'Content-Type': f.type, 'Content-Length': f.body.length, 'sec-fetch-site': 'none', ...env.withKey(key) }, f.body, 403],
+    ['pair with an Origin', '/api/shortcut/pair', { 'Content-Type': 'application/json', 'Content-Length': json.length, origin: 'https://elsewhere.example' }, json, 403]
+  ];
+  for (const [what, path, headers, body, status] of atOnce) {
+    env.requests.length = 0;
+    const began = Date.now();
+    const sent = handSend(env, headers, { agent, path });
+    sent.req.write(body.subarray(0, 1000));
+    const a = await Promise.race([sent.answer, pause(1500).then(() => ({ status: 'nothing' }))]);
+    sent.req.destroy();
+    assert.deepEqual([a.status, a.headers?.connection], [status, 'close'], what);
+    assert.ok(Date.now() - began < 800, `${what}: answered after ${Date.now() - began} ms`);
+    await waitFor(`${what}: logged`, () => env.requests.length === 1);
+    assert.match(env.requests[0], new RegExp(` ${status} \\(.+\\) .* read=\\d+`), what);
+    assert.ok(Number(/read=(\d+)/.exec(env.requests[0])[1]) < body.length, `${what}: the body was not read to its end`);
+    assert.doesNotMatch(env.requests[0], /drain=/, what);
+  }
+  // A page's refusal never waits, even for a small body sent whole: it is decided before
+  // the body is read, so the connection goes with it (the page opens another).
+  const whole = await call({ port: env.port, method: 'POST', path: '/api/shortcut/keys', body: { name: 'iPad' }, headers: { ...AS_OWNER } });
+  assert.deepEqual([whole.status, whole.headers.connection], [401, 'close']);
+  // The same send as a Shortcut makes it waits for the body, and keeps its connection.
+  const shortcut = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong }, { agent });
+  await new Promise(r => shortcut.req.write(f.body.subarray(0, 1000), r));
+  await pause(150);
+  assert.equal(shortcut.done, false, 'a Shortcut\'s refusal waits for its body');
+  shortcut.req.end(f.body.subarray(1000));
+  const b = await shortcut.answer;
+  assert.deepEqual([b.status, b.headers?.connection], [401, 'keep-alive']);
+});
+
+test('at most four refusals wait for their bodies at once: a fifth is answered at once, marked drain=full, and a freed place waits again', async t => {
+  assert.equal(DRAINS_AT_ONCE, 4);
+  const env = await setup(t, { formTimeoutMs: 5000 });
+  const wrong = env.withKey(`${KEY_PREFIX}${'A'.repeat(43)}`);
+  const agent = new Agent({ keepAlive: true, maxSockets: 8 });
+  t.after(() => agent.destroy());
+  const f = form([field('text', 'a photo'), file('a.jpg', 'image/jpeg', jpegOf(200 * 1024))]);
+  const start = () => {
+    const sent = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong }, { agent });
+    sent.req.write(f.body.subarray(0, 1000));
+    return sent;
+  };
+  const waiting = [];
+  for (let i = 0; i < DRAINS_AT_ONCE; i++) waiting.push(start());
+  t.after(() => { for (const w of waiting) w.req.destroy(); });
+  await pause(200);
+  assert.deepEqual(waiting.map(w => w.done), [false, false, false, false]);
+  assert.deepEqual(env.requests, []);
+  const began = Date.now();
+  const fifth = start();
+  const a = await Promise.race([fifth.answer, pause(1500).then(() => ({ status: 'nothing' }))]);
+  fifth.req.destroy();
+  assert.deepEqual([a.status, a.headers?.connection, a.json?.say], [401, 'close', 'This Shortcut is not paired with Jarvis OS. Run the Jarvis Setup Shortcut.']);
+  assert.ok(Date.now() - began < 800, `answered after ${Date.now() - began} ms`);
+  await waitFor('the fifth was logged', () => env.requests.length === 1);
+  assert.match(env.requests[0], /^shortcut: request POST send 401 \(this Shortcut is not paired\) .* read=\d+ parts=unread drain=full$/);
+  // One of the four gets the rest of its body: answered, its connection kept, and its place free.
+  waiting[0].req.end(f.body.subarray(1000));
+  const first = await waiting[0].answer;
+  assert.deepEqual([first.status, first.headers?.connection], [401, 'keep-alive']);
+  await waitFor('the first was logged', () => env.requests.length === 2);
+  assert.match(env.requests[1], new RegExp(` read=${f.body.length} parts=unread$`));
+  const sixth = start();
+  waiting.push(sixth);
+  await pause(200);
+  assert.equal(sixth.done, false, 'a freed place is taken by the next refusal, which waits');
+  sixth.req.end(f.body.subarray(1000));
+  assert.equal((await sixth.answer).status, 401);
+  // A refusal that ends early (the phone hung up) frees its place too.
+  waiting[1].req.destroy();
+  await waitFor('the hung-up one was logged', () => env.requests.length === 4);
+  const seventh = start();
+  waiting.push(seventh);
+  await pause(200);
+  assert.equal(seventh.done, false, 'the place of one that hung up is free again');
+});
+
+test('a refusal\'s wait for the body ends the form\'s time limit after the request began, not after the refusal', async t => {
+  const env = await setup(t, { formTimeoutMs: 700 });
+  // Over the pairing route's 2,048 bytes at about 400 ms: refused then, its body not in.
+  const body = Buffer.from(JSON.stringify({ code: 'x'.repeat(9000) }));
+  const began = Date.now();
+  const sent = handSend(env, { 'Content-Type': 'application/json', 'Content-Length': body.length }, { path: '/api/shortcut/pair' });
+  sent.req.write(body.subarray(0, 1000));
+  await pause(400);
+  sent.req.write(body.subarray(1000, 2600));
+  const a = await Promise.race([sent.answer, pause(3000).then(() => ({ status: 'nothing' }))]);
+  const took = Date.now() - began;
+  sent.req.destroy();
+  assert.deepEqual([a.status, a.headers?.connection], [413, 'close']);
+  assert.ok(took >= 600 && took < 950, `answered ${took} ms after the request began (700 from its start; 1,100 if counted from the refusal)`);
+  // Past the limit already when it is refused: no wait at all.
+  const env2 = await setup(t, { formTimeoutMs: 300 });
+  const began2 = Date.now();
+  const late = handSend(env2, { 'Content-Type': 'application/json', 'Content-Length': body.length }, { path: '/api/shortcut/pair' });
+  late.req.write(body.subarray(0, 1000));
+  await pause(400);
+  late.req.write(body.subarray(1000, 2600));
+  const b = await Promise.race([late.answer, pause(3000).then(() => ({ status: 'nothing' }))]);
+  const took2 = Date.now() - began2;
+  late.req.destroy();
+  assert.deepEqual([b.status, b.headers?.connection], [413, 'close']);
+  assert.ok(took2 < 650, `answered ${took2} ms after the request began`);
+});
+
+test('server.mjs sets its HTTP server\'s request timeout itself, longer than a form\'s own two minutes', async () => {
+  assert.equal(SERVER_REQUEST_TIMEOUT_MS, 300e3);
+  assert.ok(SERVER_REQUEST_TIMEOUT_MS > FORM_TIMEOUT_MS + 30e3);
+  const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.match(src, /import \{[^}]*SERVER_REQUEST_TIMEOUT_MS[^}]*\} from '\.\/lib\/shortcut-routes\.mjs';/);
+  assert.match(src, /\nserver\.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;\n/);
+  // Set before the server listens.
+  assert.ok(src.indexOf('server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;') < src.indexOf('server.listen(PORT'));
+  assert.ok(src.indexOf('const server = createServer(') < src.indexOf('server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;'));
 });

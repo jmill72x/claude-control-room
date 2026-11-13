@@ -65,7 +65,11 @@
 // parts of each kind it held and what each file part's first bytes are, with its size.
 // Never a name, a text, a key or a byte of the body. **A refusal is answered only when
 // the request's body is in** (`drain`): an answer written while a phone is still
-// uploading reaches it as "The network connection was lost", never as the answer.
+// uploading reaches it as "The network connection was lost", never as the answer. Only
+// a Shortcut's own routes wait so (pair, send, event, from a caller with no `Origin` and
+// no `Sec-Fetch-Site`), at most DRAINS_AT_ONCE at a time, and never past the request's
+// own FORM_TIMEOUT_MS from its start (Ultron's L1 on ec4a9f0); any other refusal whose
+// body is not in is answered at once, and the connection goes with it.
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
@@ -112,8 +116,16 @@ export const FORM_DRAIN_MAX = 64 * 1024 * 1024;
 export const FILE_BYTES_PER_DAY = 200 * 1024 * 1024;
 // Forms being read or kept at once, per key.
 export const UPLOADS_AT_ONCE = 2;
-// A form's body must have arrived within this, whatever the server's own limit is.
+// A form's body must have arrived within this, whatever the server's own limit is; a
+// refusal's wait for the rest of a body ends this long after the request began.
 export const FORM_TIMEOUT_MS = 120e3;
+// Refusals waiting for their bodies at once, across every key and route: each holds a
+// connection for up to FORM_TIMEOUT_MS. Past this, a refusal is answered at once.
+export const DRAINS_AT_ONCE = 4;
+// The HTTP server's own limit on receiving a whole request (server.mjs sets it): Node's
+// default, made explicit so no body read leans on a default, and longer than
+// FORM_TIMEOUT_MS so a form's own 408 always answers first.
+export const SERVER_REQUEST_TIMEOUT_MS = 300e3;
 // HEIC photos a key may have converted. Counted when the share is taken and never
 // given back, also when the conversion fails.
 export const CONVERSIONS_PER_WINDOW = 30;
@@ -367,7 +379,8 @@ export function requestLine({ method, path, headers = {}, status, reason = 'ok',
     : seen.form ? ' parts=unread' : '';
   return `shortcut: request ${LOGGED_METHODS.has(method) ? method : 'OTHER'} ${routeName(path)} ${status} (${reason})`
     + ` type=${type === '' ? 'none' : LOGGED_TYPES.has(type) ? type : 'other'} length=${length === undefined ? 'none' : /^\d{1,15}$/.test(length) ? length : 'odd'}`
-    + ` chunked=${yes(/chunked/i.test(String(headers['transfer-encoding'] ?? '')))} expect=${yes(headers.expect !== undefined)} form=${yes(seen.form)} read=${seen.read ?? 0}${parts}`;
+    + ` chunked=${yes(/chunked/i.test(String(headers['transfer-encoding'] ?? '')))} expect=${yes(headers.expect !== undefined)} form=${yes(seen.form)} read=${seen.read ?? 0}${parts}`
+    + (seen.drain === 'full' ? ' drain=full' : '');
 }
 // The request with its bytes counted into `seen.read` as they are read, once.
 function counted(req, seen) {
@@ -386,7 +399,8 @@ function counted(req, seen) {
 // up), the answer goes as it is, and the connection goes with it.
 const drain = (req, seen, limit, timeoutMs) => new Promise(resolve => {
   if (req.readableEnded) return resolve(true);
-  // Gone, or already cut off past `limit` (by what it said, or as it came): no waiting.
+  // Gone, or already cut off past `limit` (by what it said, or as it came): no
+  // waiting. (Out of time already: the timer below fires at once.)
   if (req.destroyed || Number(req.headers?.['content-length']) > limit || seen.read > limit) return resolve(false);
   let settled = false;
   const over = whole => {
@@ -457,6 +471,7 @@ export function createShortcutRoutes({
   const expiredAt = new Map(); // key id -> when its use after expiry was last reported
   let refusals = { start: 0, n: 0 };
   let pairRefusals = { start: 0, n: 0 };
+  let draining = 0;            // refusals waiting for their bodies right now
 
   function requireLogin(req) {
     if (owner === null) return;
@@ -776,6 +791,9 @@ export function createShortcutRoutes({
   }
 
   async function handler(req, res) {
+    // When the request began, by a clock that only moves forward: a refusal's wait for
+    // its body ends FORM_TIMEOUT_MS (formTimeoutMs) after it.
+    const began = performance.now();
     const path = new URL(req.url, 'http://localhost').pathname;
     // What is learnt of the request's body on the way, for its one log line.
     const seen = { read: 0, form: false, parts: null };
@@ -794,14 +812,26 @@ export function createShortcutRoutes({
       // The Shortcut's side always gets a line to show, whatever refused it.
       if (err instanceof Refusal) answer.say = err.say;
       else if (SHORTCUT_SIDE.has(path)) answer.say = code === 500 ? 'Jarvis OS had a problem. Try again.' : 'Jarvis OS could not take that request.';
-      // The answer waits for the rest of the body (`drain`), but for a read that ran out
-      // of time. A body that was cut off (413, 408), or is not all in, leaves unread
-      // bytes on the connection, which then goes with the answer.
-      const whole = code === 408 ? false : await drain(req, seen, FORM_DRAIN_MAX, formTimeoutMs);
+      // The answer waits for the rest of the body (`drain`) only on a Shortcut's own
+      // routes, from a caller that is no page, while fewer than DRAINS_AT_ONCE wait, and
+      // until formTimeoutMs from the request's start; never for a read that ran out of
+      // time. A body that was cut off (413, 408), or is not all in, leaves unread bytes
+      // on the connection, which then goes with the answer.
+      let whole = req.readableEnded === true;
+      if (!whole && code !== 408 && fromShortcut(req, path)) {
+        if (draining >= DRAINS_AT_ONCE) seen.drain = 'full';
+        else {
+          draining++;
+          try { whole = await drain(req, seen, FORM_DRAIN_MAX, formTimeoutMs - (performance.now() - began)); } finally { draining--; }
+        }
+      }
       logged(code, reason);
       return json(res, code, answer, code === 413 || !whole ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
     }
   }
+
+  // A Shortcut's own route, called as a Shortcut calls it: no page sends neither header.
+  const fromShortcut = (req, path) => SHORTCUT_SIDE.has(path) && req.headers?.origin === undefined && req.headers?.['sec-fetch-site'] === undefined;
 
   async function route(req, res, path, seen) {
     // ---- the Shortcut's side ----
