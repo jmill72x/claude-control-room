@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setup, scratchHookEntry, readmeHookEntry, createChannel, shown, CHANNEL_NAME } from '../../bin/exact-hook-check.mjs';
-import { foldWhitespace } from '../lib/exact-commands.mjs';
+import { EXACT_WINDOW_AFTER_MS, EXACT_WINDOW_BEFORE_MS } from '../lib/exact-commands.mjs';
+import { CONSOLE_1113 } from './fixtures/console-1113.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const KIT = join(REPO, 'bin', 'exact-hook-check.mjs');
@@ -45,58 +46,109 @@ test('setup: README\'s hook word for word but the socket, a stand-in channel in 
   } finally { await rm(b, { recursive: true, force: true }); }
 });
 
-test('the stand-in channel, unit: order, fold, raw preview and the card\'s exact text, in plain words', () => {
-  const clock = { t: 1794380000000 };
-  const lines = [], sent = [], raws = [];
-  const ch = createChannel({ dir: '/x', now: () => clock.t, out: m => sent.push(m), say: s => lines.push(s), raw: o => raws.push(o) });
-  ch.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '9.9.9' } } });
-  assert.deepEqual(sent[0].result.capabilities.experimental, { 'claude/channel': {}, 'claude/channel/permission': {} });
-  assert.equal(sent[0].result.protocolVersion, '2025-06-18');
-  assert.match(lines.at(-1), /channel started by "claude-code" "9.9.9"/);
-  ch.handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2026-07-28' } });
-  assert.equal(sent[1].result.protocolVersion, '2025-06-18', 'never a newer protocol than it knows');
-  const two = 'cat notes.txt\necho second-line';
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command: two });
-  clock.t += 40;
-  ch.handle({ jsonrpc: '2.0', method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'd', input_preview: JSON.stringify({ command: foldWhitespace(two) }) } });
-  const block = lines.at(-1);
-  assert.match(block, /permission request #1: Bash/);
-  assert.match(block, /input_preview, raw: "\{\\"command\\":\\"cat notes.txt echo second-line\\"\}"/);
-  assert.match(block, /40 ms BEFORE this request: ORDER PASS/);
-  assert.match(block, /reported command: "cat notes.txt\\necho second-line"/);
-  assert.match(block, /fold of the report EQUALS the preview's command/);
-  assert.match(block, /exact text on the card: yes/);
-  assert.equal(sent.length, 2, 'it never answers a prompt');
-  // A preview that kept the line break.
-  clock.t += 60e3;
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command: 'ls\npwd' });
-  ch.onPermission({ tool_name: 'Bash', input_preview: JSON.stringify({ command: 'ls\npwd' }) });
-  assert.match(lines.at(-1), /the report EQUALS the preview's command as it is: this preview was NOT folded/);
-  // A fold that differs, a carriage return, a request with no report, and a report after it.
-  clock.t += 60e3;
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command: 'echo  a' });
-  ch.onPermission({ tool_name: 'Bash', input_preview: JSON.stringify({ command: 'echo  a b' }) });
-  assert.match(lines.at(-1), /DIFFERS FROM/);
-  assert.match(lines.at(-1), /exact text on the card: no \(no report matched\)/);
-  clock.t += 60e3;
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command: 'cat a\r\nrm b' });
-  ch.onPermission({ tool_name: 'Bash', input_preview: JSON.stringify({ command: 'cat a rm b' }) });
-  assert.match(lines.at(-1), /reported command: "cat a\\r\\nrm b"/);
-  assert.match(lines.at(-1), /exact text on the card: no \(characters outside plain ASCII/);
-  clock.t += 60e3;
-  ch.onPermission({ tool_name: 'Bash', input_preview: JSON.stringify({ command: 'pwd' }) });
-  assert.match(lines.at(-1), /no hook report has come in the 30 s before it: ORDER FAIL/);
-  clock.t += 120;
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command: 'pwd' });
-  assert.match(lines.at(-1), /came 120 ms AFTER permission request #5: ORDER FAIL/);
-  // Not Bash: the raw preview is still written (the A1-F Write case).
-  ch.onPermission({ tool_name: 'Write', input_preview: JSON.stringify({ file_path: '/x/a.md', content: 'one\ntwo' }) });
-  assert.match(lines.at(-1), /permission request #6: Write\n.*content.*one\\\\ntwo.*\n.*not Bash: no hook report is expected/);
+// A channel with a fake clock and fake timers: `fire()` runs the timers that are due.
+const unitChannel = () => {
+  const env = { clock: { t: 1794380000000 }, lines: [], sent: [], raws: [], timers: [] };
+  env.ch = createChannel({ dir: '/x', now: () => env.clock.t, out: m => env.sent.push(m), say: s => env.lines.push(s), raw: o => env.raws.push(o), later: (ms, fn) => env.timers.push({ at: env.clock.t + ms, fn }) });
+  env.fire = () => { const due = env.timers.filter(x => x.at <= env.clock.t); env.timers = env.timers.filter(x => x.at > env.clock.t); for (const x of due) x.fn(); };
+  env.report = command => env.ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', command });
+  env.request = (command, tool = 'Bash') => env.ch.onPermission({ tool_name: tool, input_preview: JSON.stringify(tool === 'Bash' ? { command } : command) });
+  return env;
+};
+
+test('the stand-in channel, unit: the console test of 11-13 replayed: each request paired with the report after it, ORDER AFTER with the gap, EQUALS, and the exact text on every card', () => {
+  const env = unitChannel();
+  env.ch.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '9.9.9' } } });
+  assert.deepEqual(env.sent[0].result.capabilities.experimental, { 'claude/channel': {}, 'claude/channel/permission': {} });
+  assert.equal(env.sent[0].result.protocolVersion, '2025-06-18');
+  assert.match(env.lines.at(-1), /channel started by "claude-code" "9.9.9"/);
+  env.ch.handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2026-07-28' } });
+  assert.equal(env.sent[1].result.protocolVersion, '2025-06-18', 'never a newer protocol than it knows');
+  const start = env.clock.t;
+  for (const [i, r] of CONSOLE_1113.entries()) {
+    env.clock.t = start + r.at;
+    env.fire();
+    env.ch.handle({ jsonrpc: '2.0', method: 'notifications/claude/channel/permission_request', params: { request_id: `abcd${i}`, tool_name: 'Bash', description: 'd', input_preview: JSON.stringify({ command: r.preview }) } });
+    assert.match(env.lines.at(-1), new RegExp(`permission request #${i + 1}: Bash\n.*input_preview, raw: .*\n.*preview's command: `));
+    assert.doesNotMatch(env.lines.at(-1), /ORDER|EQUALS|DIFFERS/, 'nothing to compare before the report');
+    env.clock.t += r.after;
+    env.report(r.report);
+    assert.match(env.lines.at(-2), new RegExp(`hook report: Bash, ${r.report.length} characters`));
+    const block = env.lines.at(-1);
+    assert.match(block, new RegExp(`request #${i + 1}: its hook report came ${r.after} ms AFTER it: ORDER AFTER \\(\\+${r.after} ms\\)`), block);
+    assert.match(block, new RegExp(`reported command: ${shown(r.report).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`));
+    assert.match(block, /the server's fold of the report EQUALS the preview's command/);
+    assert.match(block, /exact text on the card: yes/);
+  }
+  env.clock.t += 60e3;
+  env.fire();
+  assert.doesNotMatch(env.lines.join('\n'), /ORDER FAIL|NO REPORT|NO REQUEST|DIFFERS/);
+  // The Write: its raw preview keeps the line breaks.
+  env.request({ file_path: '/x/lines.md', content: 'one\ntwo\nthree\n' }, 'Write');
+  assert.match(env.lines.at(-1), /permission request #6: Write\n.*content.*one\\\\ntwo\\\\nthree.*\n.*not Bash: no hook report is expected/);
+  assert.equal(env.sent.length, 2, 'it never answers a prompt');
+});
+
+test('the stand-in channel, unit: a report before its request, a fold that differs, a carriage return, a request with no report, a report with no request', () => {
+  const env = unitChannel();
+  // A report 40 ms before the request (inside the window's 1 s before).
+  env.report('touch a.txt');
+  env.clock.t += 40;
+  env.request('touch a.txt');
+  assert.match(env.lines.at(-1), /request #1: its hook report came 40 ms BEFORE it: ORDER BEFORE \(-40 ms\)/);
+  assert.match(env.lines.at(-1), /EQUALS/);
+  // A preview that kept a run of spaces (the relay stopped folding).
+  env.clock.t += 60e3;
+  env.request('touch  b.txt');
+  env.clock.t += 20;
+  env.report('touch  b.txt');
+  assert.match(env.lines.at(-1), /the report EQUALS the preview's command as it is: this preview was NOT folded/);
+  // A fold that differs: a tab is never a space.
+  env.clock.t += 60e3;
+  env.request('touch c.txt');
+  env.clock.t += 20;
+  env.report('touch\tc.txt');
+  assert.match(env.lines.at(-1), /DIFFERS FROM/);
+  assert.match(env.lines.at(-1), /exact text on the card: no \(no report matched\)/);
+  // A carriage return: the relay keeps it, and the card can't show it.
+  env.clock.t += 60e3;
+  env.request('touch d\r\ntouch e');
+  env.clock.t += 20;
+  env.report('touch d\r\ntouch e');
+  assert.match(env.lines.at(-1), /reported command: "touch d\\r\\ntouch e"/);
+  assert.match(env.lines.at(-1), /exact text on the card: no \(characters outside plain ASCII/);
+  // A request with no report: said once its window has closed, not before.
+  env.clock.t += 60e3;
+  env.request('touch f.txt');
+  env.clock.t += EXACT_WINDOW_AFTER_MS;
+  env.fire();
+  assert.doesNotMatch(env.lines.at(-1), /NO REPORT/);
+  env.clock.t += 1;
+  env.fire();
+  assert.match(env.lines.at(-1), /request #5: no hook report from 1 s before it to 2 s after it: NO REPORT/);
+  // A report 2 s after (too late to count for that request) met no request.
+  env.report('touch f.txt');
+  env.clock.t += EXACT_WINDOW_BEFORE_MS + 1;
+  env.fire();
+  assert.match(env.lines.at(-1), /met no Bash request .*: NO REQUEST/);
+  // A report older than the window before a request is not paired with it.
+  env.request('touch f.txt');
+  assert.doesNotMatch(env.lines.at(-1), /ORDER/);
+  // Two requests waiting: the report goes to the oldest whose window it falls in.
+  env.clock.t += 60e3;
+  env.request('touch g.txt');
+  env.clock.t += 10;
+  env.request('touch h.txt');
+  env.clock.t += 10;
+  env.report('touch g.txt');
+  assert.match(env.lines.at(-1), /request #7: its hook report came 20 ms AFTER it/);
+  env.report('touch h.txt');
+  assert.match(env.lines.at(-1), /request #8: its hook report came 10 ms AFTER it/);
   // A refused report says why, as the server would.
-  ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Monitor', command: 'x' });
-  assert.match(lines.at(-1), /REFUSED as the server would refuse it: tool_name must be Bash/);
+  env.ch.onReport({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Monitor', command: 'x' });
+  assert.match(env.lines.at(-1), /REFUSED as the server would refuse it: tool_name must be Bash/);
   // The raw log keeps no session id, only that one was there.
-  assert.ok(raws.filter(r => r.kind === 'report').every(r => r.body.session_id === 'present'));
+  assert.ok(env.raws.filter(r => r.kind === 'report').every(r => r.body.session_id === 'present'));
   assert.equal(shown('a\u00e9\u202e'), '"a\\u00e9\\u202e"');
 });
 
@@ -117,7 +169,11 @@ test('the stand-in channel, for real: started as Claude Code starts it, it answe
     assert.ok(await until(() => existsSync(socketPath)), 'the scratch socket');
     // The hook, exactly as the scratch settings hold it, run by a shell.
     const hook = JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8')).hooks.PermissionRequest[0].hooks[0].command;
-    const two = 'cat notes.txt\necho second-line';
+    const two = 'touch t2.txt\ntouch t3.txt';
+    const results = join(dir, 'results.txt');
+    // The relay first, then the hook, as Claude Code 2.1.323 does them.
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'd', input_preview: JSON.stringify({ command: two }) } }) + '\n');
+    assert.ok(await until(async () => (await readFile(results, 'utf8')).includes('permission request #1')));
     const run = await new Promise(resolveRun => {
       const h = spawn('/bin/sh', ['-c', hook], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent' } });
       let out = '';
@@ -127,12 +183,9 @@ test('the stand-in channel, for real: started as Claude Code starts it, it answe
       h.stdin.end(JSON.stringify({ session_id: 's1', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: two, description: 'x' } }));
     });
     assert.deepEqual(run, { code: 0, out: '' });
-    const results = join(dir, 'results.txt');
-    assert.ok(await until(async () => (await readFile(results, 'utf8')).includes('hook report: Bash')), 'the report landed');
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'd', input_preview: JSON.stringify({ command: foldWhitespace(two) }) } }) + '\n');
-    assert.ok(await until(async () => (await readFile(results, 'utf8')).includes('exact text on the card')));
+    assert.ok(await until(async () => (await readFile(results, 'utf8')).includes('exact text on the card')), 'the report landed and was paired');
     const text = await readFile(results, 'utf8');
-    assert.match(text, /ORDER PASS/);
+    assert.match(text, /request #1: its hook report came \d+ ms AFTER it: ORDER AFTER/);
     assert.match(text, /EQUALS/);
     assert.match(text, /exact text on the card: yes/);
     assert.equal(stdout.trim().split('\n').length, 1, 'nothing on stdout but the one answer');

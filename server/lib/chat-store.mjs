@@ -325,7 +325,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (p.state === 'open' && at - p.relayedAt >= p.windowMs) endPermission(p, 'timeout');
       else if (p.state === 'open' && gone) endPermission(p, 'channel');
       // A closed request drops its exact command at the next look (any read prunes).
-      if (p.state !== 'open') { p.exact = null; p.exactWas = null; }
+      if (p.state !== 'open') { p.exact = null; p.exactWas = null; p.exactGained = false; }
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
       if (at - p.openedAt >= 7 * DAY) forget(uid, p);
     }
@@ -446,13 +446,15 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     if (p.state !== 'open') return { ok: false, status: 409, error: `already ${p.state}${p.answeredBy ? ` by ${p.answeredBy}` : ''}` };
     if (behavior !== 'allow' && behavior !== 'deny') return { ok: false, status: 400, error: 'behavior must be allow or deny' };
     const hash = shownHash(p.tool, p.description, p.inputPreview, p.exact);
-    // A tap made on the card as it was before the gate took a disputed exact text off it
-    // (`exactWas`, lib/approvals.mjs): a Deny counts (Ultron's L2: Deny always works); an
-    // Allow is refused as `changed`, with the request, so the route sends the page the
-    // card as it is now and doesn't count the tap as a refusal (L1). Any other hash is a
-    // plain refusal.
+    // A tap made on the card as it was before the gate changed its exact text: it took a
+    // disputed text off (`exactWas`), or the hook's report came after the card opened and
+    // gave it one (`exactGained`: the card was drawn with no exact text; lib/approvals.mjs).
+    // A Deny counts (Ultron's L2: Deny always works); an Allow is refused as `changed`,
+    // with the request, so the route sends the page the card as it is now and doesn't
+    // count the tap as a refusal (L1). Any other hash is a plain refusal.
     if ((requireShown || shown !== null) && shown !== hash) {
-      const was = typeof p.exactWas === 'string' ? shownHash(p.tool, p.description, p.inputPreview, p.exactWas) : null;
+      const was = typeof p.exactWas === 'string' ? shownHash(p.tool, p.description, p.inputPreview, p.exactWas)
+        : p.exactGained === true ? shownHash(p.tool, p.description, p.inputPreview, null) : null;
       if (was === null || shown !== was) return { ok: false, status: 409, error: 'the request changed; reload' };
       if (behavior !== 'deny') return { ok: false, status: 409, error: 'the request changed; reload', changed: true, request: p };
     }
@@ -469,10 +471,12 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   const openPermissions = () => { prunePermissions(); return [...permissions.values()].filter(p => p.state === 'open'); };
-  // The gate changed an open card (an exact-command mark, lib/approvals.mjs): every page
-  // gets it again. A request that is not open, or not this store's, sends nothing.
+  // The gate changed an open card (an exact-command mark, or an exact text that came
+  // after it opened; lib/approvals.mjs): every page gets it again. A request that is not
+  // open, or not this store's, sends nothing; nor does one whose own first send is still
+  // to come (no message yet: that send carries the change).
   const redrawPermission = p => {
-    if (!p || p.state !== 'open' || findPermission(p.requestId) !== p) return false;
+    if (!p || p.state !== 'open' || findPermission(p.requestId) !== p || p.messageId === null) return false;
     emit({ type: 'permission', request: p });
     return true;
   };

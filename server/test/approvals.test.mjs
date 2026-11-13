@@ -4,6 +4,7 @@
 // servers. Every name, path and id is invented; nothing touches :8322 or data/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CONSOLE_1113 } from './fixtures/console-1113.mjs';
 import { createServer, request } from 'node:http';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, chmod, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync, readFileSync, readdirSync } from 'node:fs';
@@ -1338,8 +1339,8 @@ test('parity with "exact" over the routes: a rival after the card drew a text ma
   const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
   try {
     await env.mark('phone', true);
-    const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
-    const folded = 'ls /home/owner/Projects/app # look rm -rf /home/owner/Projects/app';
+    const real = 'ls /home/owner/Projects/app  # look\nrm -rf /home/owner/Projects/app';
+    const folded = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
     env.approvals.noteExact({ sessionId: 'lead', command: real });
     await env.open('ggggg', { command: folded });
     const old = env.shown('ggggg');
@@ -1365,7 +1366,7 @@ test('parity with "exact" over the routes: a rival after the card drew a text ma
   const first = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead', cards: null } });
   try {
     await first.mark('phone', true);
-    const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+    const real = 'ls /home/owner/Projects/app  # look\nrm -rf /home/owner/Projects/app';
     first.approvals.noteExact({ sessionId: 'lead', command: real });
     await first.open('ggggg', { command: foldWhitespace(real) });
     const old = first.shown('ggggg');
@@ -1378,7 +1379,7 @@ test('parity with "exact" over the routes: a rival after the card drew a text ma
 });
 
 test('a rival report marks open cards when it arrives, and the mark outlives it: nothing looks for 3 minutes, then a tap (Ultron\'s M1, 11-13)', async () => {
-  const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+  const real = 'ls /home/owner/Projects/app  # look\nrm -rf /home/owner/Projects/app';
   const folded = foldWhitespace(real);
   // Parity: the card loses its text at once and every page gets it again; 3 minutes on
   // (the rival long forgotten) an Allow made on the old card is refused as changed.
@@ -1432,7 +1433,7 @@ test('a rival report marks open cards when it arrives, and the mark outlives it:
 });
 
 test('a Deny made on a card that was marked but not yet redrawn counts; a changed card is no refused tap (Ultron\'s L1, L2)', async () => {
-  const real = 'ls /home/owner/Projects/app # look\nrm -rf /home/owner/Projects/app';
+  const real = 'ls /home/owner/Projects/app  # look\nrm -rf /home/owner/Projects/app';
   const env = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
   try {
     await env.mark('phone', true);
@@ -1466,6 +1467,86 @@ test('a Deny made on a card that was marked but not yet redrawn counts; a change
   } finally { await env.close(); }
 });
 
+test('the console test of 11-13, replayed over the routes: every report came after its relay, and every card ends with the exact text, redrawn, in both rule sets', async () => {
+  for (const rules of ['guarded', 'parity']) {
+    const env = await setup({ gate: { bash: 'exact', rules, isLeadSession: id => id === 'lead' } });
+    try {
+      await env.mark('phone', true);
+      const drawn = new Map();
+      env.store.subscribe(e => { if (e.type === 'permission') drawn.set(e.request.requestId, [...(drawn.get(e.request.requestId) ?? []), e.request.exact ?? null]); });
+      const start = env.clock.t;
+      for (const [i, r] of CONSOLE_1113.entries()) {
+        const id = `con${i}a`;
+        env.clock.t = start + r.at;
+        assert.equal((await env.open(id, { command: r.preview })).status, 200);
+        assert.equal(env.store.permission(id).exact, null, `${rules} ${i}: no text before the report`);
+        env.clock.t += r.after;
+        assert.equal(env.approvals.noteExact({ sessionId: 'lead', command: r.report }), 'kept');
+        const p = env.store.permission(id);
+        assert.equal(p.exact, r.report, `${rules} ${i}`);
+        assert.deepEqual(drawn.get(id), [null, r.report], `${rules} ${i}: drawn, then redrawn with the text`);
+        const st = await call({ port: env.port, path: '/api/chat/status', headers: { host: PAGE_HOST, cookie: env.phone } });
+        assert.equal(st.json.openPermission.requestId, id);
+        assert.equal(st.json.openPermission.exact, r.report, `${rules} ${i}: the page gets it`);
+        assert.equal(st.json.openPermission.canAllow, rules === 'parity', `${rules} ${i}`);
+        assert.equal((await env.tap(id, env.phone, 'deny')).status, 200);
+      }
+      assert.deepEqual(env.events.filter(e => e.kind === 'approvals-exact-conflict'), []);
+    } finally { await env.close(); }
+  }
+});
+
+test('a tap before the late report is judged on the card it was made on; after the report, an Allow on the old card is a changed 409 and a Deny on it counts', async () => {
+  const cmd = 'touch t1.txt';
+  // Parity: the folded card can be allowed before the text comes, as today.
+  const par = await setup({ gate: { bash: 'exact', rules: 'parity', isLeadSession: id => id === 'lead' } });
+  try {
+    await par.mark('phone', true);
+    await par.open('tapaa', { command: cmd });
+    assert.equal((await par.tap('tapaa', par.phone, 'allow')).status, 200);
+    // The report comes after the tap: nothing is left to change.
+    clock(par, 22);
+    par.approvals.noteExact({ sessionId: 'lead', command: cmd });
+    assert.equal(par.store.permission('tapaa').state, 'allowed');
+    // A tap made on the folded card that lands after the report.
+    clock(par, MIN);
+    await par.open('tapbb', { command: cmd });
+    const folded = par.shown('tapbb');
+    clock(par, 22);
+    par.approvals.noteExact({ sessionId: 'lead', command: cmd });
+    assert.notEqual(par.shown('tapbb'), folded);
+    for (let i = 0; i < 10; i++) {
+      const r = await par.tap('tapbb', par.phone, 'allow', { shown: folded });
+      assert.equal(r.status, 409, r.text);
+      assert.equal(r.json.changed, true);
+      assert.equal(r.json.request.exact, cmd, 'the page gets the card as it is now');
+      if (i % 5 === 4) clock(par, MIN);
+    }
+    assert.ok(!par.events.some(e => e.kind === 'approvals-lockout'), 'no lockout for a card that changed');
+    assert.equal((await par.tap('tapbb', par.phone, 'deny', { shown: folded })).status, 200, 'a Deny on the old card counts');
+    // On the new card an Allow goes through.
+    clock(par, MIN);
+    await par.open('tapcc', { command: cmd });
+    clock(par, 22);
+    par.approvals.noteExact({ sessionId: 'lead', command: cmd });
+    assert.equal((await par.tap('tapcc', par.phone, 'allow')).status, 200);
+  } finally { await par.close(); }
+  // Guarded: Deny-only until the text comes.
+  const g = await setup({ gate: { bash: 'exact', bashCommands: [cmd], isLeadSession: id => id === 'lead' } });
+  try {
+    await g.mark('phone', true);
+    await g.open('tapdd', { command: cmd });
+    const r = await g.tap('tapdd', g.phone, 'allow');
+    assert.equal(r.status, 403);
+    assert.match(r.json.error, /no exact copy of this command came from the hook/);
+    clock(g, 22);
+    g.approvals.noteExact({ sessionId: 'lead', command: cmd });
+    assert.deepEqual(g.store.permission('tapdd').denyOnly, []);
+    clock(g, MIN);
+    assert.equal((await g.tap('tapdd', g.phone, 'allow')).status, 200, 'a listed command, with its exact text');
+  } finally { await g.close(); }
+});
+
 test('the store redraws only an open card of its own', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'redraw-'));
   try {
@@ -1483,6 +1564,13 @@ test('the store redraws only an open card of its own', async () => {
     sent.length = 0;
     assert.equal(store.redrawPermission(p), false, 'closed');
     assert.deepEqual(sent, []);
+    // A card whose own first send is still to come (a report landed while it was being
+    // written down): no redraw; that first send carries the change.
+    const opening = store.openPermission({ requestId: 'sssss', tool: 'Bash', description: 'd', inputPreview: '{"command":"pwd"}' });
+    assert.equal(store.redrawPermission(store.permission('sssss')), false);
+    await opening;
+    assert.deepEqual(sent, ['message', 'permission'], 'sent once, when it opened');
+    assert.equal(store.redrawPermission(store.permission('sssss')), true);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -1505,10 +1593,10 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     assert.equal(env.store.publicPermission(env.store.permission('bbbbb')).exact, null);
     assert.equal((await env.tap('bbbbb', env.phone, 'allow')).status, 403);
     assert.equal((await env.tap('bbbbb', env.phone, 'deny')).status, 200);
-    // The listed two-liner, reported by the hook, relayed folded.
+    // The listed two-liner, reported by the hook; the relay keeps its line break.
     const real = 'cd /home/owner/Projects/app\nnpm test';
     assert.equal(env.approvals.noteExact({ sessionId: 'lead', command: real }), 'kept');
-    await env.open('ccccc', { command: 'cd /home/owner/Projects/app npm test' });
+    await env.open('ccccc', { command: real });
     const p = env.store.permission('ccccc');
     assert.equal(p.exact, real);
     const status = await call({ port: env.port, path: '/api/chat/status', headers: { host: PAGE_HOST, cookie: env.phone } });
@@ -1531,8 +1619,8 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     // A second, different report after the card opened: Allow refused, alerted.
     clock(env, MIN);
     env.approvals.noteExact({ sessionId: 'lead', command: real });
-    await env.open('ddddd', { command: 'cd /home/owner/Projects/app npm test' });
-    env.approvals.noteExact({ sessionId: 'lead', command: 'cd /home/owner/Projects/app npm test' });
+    await env.open('ddddd', { command: real });
+    env.approvals.noteExact({ sessionId: 'lead', command: 'cd /home/owner/Projects/app\nnpm  test' });
     const tied = await env.tap('ddddd', env.phone, 'allow');
     assert.equal(tied.status, 403, tied.text);
     assert.match(tied.json.error, /two different exact copies/);
@@ -1542,7 +1630,7 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     // against every card for its preview for as long as it is kept, window or not.)
     clock(env, 2 * MIN);
     env.approvals.noteExact({ sessionId: 'lead', command: real });
-    await env.open('eeeee', { command: 'cd /home/owner/Projects/app npm test' });
+    await env.open('eeeee', { command: real });
     assert.equal(env.store.permission('eeeee').exact, real);
     clock(env, PERMISSION_TTL_MS);
     assert.equal(env.store.permission('eeeee').state, 'expired');
@@ -1550,7 +1638,7 @@ test('the gate carries config\'s protected places, and the routes the exact comm
     // And so does a hello from a new channel process.
     clock(env, MIN);
     env.approvals.noteExact({ sessionId: 'lead', command: real });
-    await env.open('fffff', { command: 'cd /home/owner/Projects/app npm test' });
+    await env.open('fffff', { command: real });
     assert.equal(env.store.permission('fffff').exact, real);
     env.store.newPermissionSession();
     assert.equal(env.store.permission('fffff').state, 'expired');

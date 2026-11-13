@@ -1,18 +1,23 @@
 // The exact text of a Bash command, for approvals (docs/design/2026-11-11-jarvis-os-
-// approvals.md, section 0.2). Claude Code folds each run of whitespace in a relayed
-// preview to one space, so the preview alone can't say whether a command has one line or
-// two. A PermissionRequest hook (README "Approvals as buttons", report-only: it prints
-// nothing and decides nothing) posts the tool's real input to the loopback ingest just
-// before the prompt is relayed. This file checks such a report and keeps it, in memory
-// only, for two minutes; lib/approvals.mjs matches a relayed request to one by content.
-// Nothing here is logged or written to disk. Checked by test/exact-commands.test.mjs.
+// approvals.md, sections 0.2 and 9.2). Claude Code's relayed preview folds each run of
+// spaces to one (line breaks and tabs stay; Claude Code 2.1.323, the scratch test of
+// 2026-11-13), so the preview alone can't say how a command was spaced. A
+// PermissionRequest hook (README "Approvals as buttons", report-only: it prints nothing
+// and decides nothing) posts the tool's real input to the loopback ingest about 20-25 ms
+// after the prompt is relayed (same test). This file checks such a report and keeps it,
+// in memory only, for two minutes; lib/approvals.mjs matches a relayed request to one by
+// content, when the card opens and again when a report comes in after it. Nothing here
+// is logged or written to disk. Checked by test/exact-commands.test.mjs.
 
 // A report is forgotten after this.
 export const EXACT_TTL_MS = 2 * 60e3;
-// A report counts for a request when it arrived this long before the channel got the
-// prompt, or this little after (the hook runs first; the slack is for clocks).
-export const EXACT_WINDOW_BEFORE_MS = 30e3;
-export const EXACT_WINDOW_AFTER_MS = 5e3;
+// A report counts for a request when it arrived up to this long after the channel got
+// the prompt (the hook runs about 20-25 ms after the relay), or this little before (the
+// slack is for clocks and for the order the two posts reach the server in). A report from
+// well before the relay belongs to an earlier prompt, so it is never this card's text;
+// it still counts as a rival (below).
+export const EXACT_WINDOW_BEFORE_MS = 1e3;
+export const EXACT_WINDOW_AFTER_MS = 2e3;
 // Claude Code elides a preview field over 3,500 code points, and an elided preview is
 // Deny-only, so a longer command could never be allowed here anyway.
 export const EXACT_MAX_CHARS = 4000;
@@ -27,10 +32,11 @@ const SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/;
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const fail = error => ({ ok: false, error });
 
-// This server's own fold: each run of whitespace becomes one space, nothing trimmed.
-// It must give what Claude Code's relay gives for the same text, or nothing matches
-// (which is the safe side); design section 9.2's scratch test checks the two agree.
-export const foldWhitespace = s => String(s ?? '').replace(/\s+/gu, ' ');
+// This server's own fold, the relay's: each run of spaces becomes one space, nothing
+// trimmed, and nothing else touched (line breaks, tabs and other whitespace stay). It
+// must give what Claude Code's relay gives for the same text, or nothing matches (which
+// is the safe side); the scratch test (design 9.2, bin/exact-hook-check.mjs) checks.
+export const foldWhitespace = s => String(s ?? '').replace(/ {2,}/g, ' ');
 
 // Text the card can show in full: printable ASCII, line breaks and tabs, nothing else
 // (no carriage return, no other control, nothing a disk or a font could fold).

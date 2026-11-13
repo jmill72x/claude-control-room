@@ -36,8 +36,8 @@
 // the limits on taps, the hash of what the card showed, config's own Deny-only words,
 // and the marks on hidden characters, which keep a card Deny-only unless config says
 // `chat.approvalsHidden: "allow"`. The risk this accepts is the one Discord's buttons
-// already carry: the relay folds whitespace, so a command of several lines can read as
-// one. The default is "guarded": the rules above.
+// already carry: the relay folds runs of spaces, so a command's spacing can read
+// differently from what runs. The default is "guarded": the rules above.
 import { revealHiddenChars, hasHiddenChars } from './hidden-chars.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
@@ -392,9 +392,11 @@ export const coversProtected = (p, H, repoRoot = OWN_REPO) => p === '/' ||
 
 // ---- Bash ----
 
-// Claude Code folds each run of whitespace in a relayed preview to one space (channels
-// reference), so a two-line command can arrive looking like one: "cat a.txt" then
-// "rm -rf x" reads "cat a.txt rm -rf x" (Ultron H-a). Two answers, the first the default:
+// The channels reference said Claude Code folds each run of whitespace in a relayed
+// preview, so a two-line command could arrive looking like one (Ultron H-a). The scratch
+// test of 2026-11-13 (Claude Code 2.1.323) found it folds only runs of spaces (line
+// breaks and tabs stay), but a relay may change that, and spacing inside quotes is still
+// lost, so the rule stays. Two answers, the first the default:
 //   deny   Bash is never allowed from the page (config `chat.approvalsBash`, default).
 //   exact  the page may allow a Bash request only when the hook's report gave its exact
 //          text (lib/exact-commands.mjs; no report, or two that differ: Deny-only), and
@@ -749,7 +751,10 @@ export function verdictOriginProblem(headers, allowedHosts) {
 // every page again. A kept exact-command report rechecks each open Bash card that shows
 // an exact text (Ultron's M1, 11-13: reports live 2 minutes but cards up to 12 hours, so
 // a rival must mark the card when it arrives, not when someone next looks), and a card
-// the gate marks is redrawn at once (L1).
+// the gate marks is redrawn at once (L1). The hook reports about 20-25 ms after the relay
+// (the scratch test, 2026-11-13), so a card most often opens before its report: a report
+// that comes within EXACT_WINDOW_AFTER_MS of an open Bash card's relay and is its one
+// candidate gives the card its exact text, and the card is redrawn the same way.
 export function createApprovals({
   mode = 'off', killPath = null, patterns = [], home = homedir(), realpath = safeRealpath,
   now = () => Date.now(), onEvent = () => {}, exists = existsSync, isLead = () => true,
@@ -810,6 +815,30 @@ export function createApprovals({
   };
   const recent = (list, ms, at) => list.filter(t => at - t < ms);
 
+  const denyOnlyFor = (p, exact, exactProblem) => denyOnlyReasons(p, { home, realpath, patterns, writeFolders, writeProtected, bash: bashMode, exact, exactProblem, bashCommands, repoRoot, isExecutable, isLink, rules: parity ? 'parity' : 'guarded', hidden: hiddenMode });
+  // A Bash card's match against the kept reports ("exact" mode): { exact, exactProblem },
+  // and `p.exactSettled` set once a report in the window has spoken for it (a text, a
+  // conflict, or one that can't be shown). Only an unsettled card can still gain a text
+  // from a later report (a preview that hides part of the command never does). A
+  // conflict is alerted, and in parity marks the card.
+  function matchExact(p, at) {
+    const out = { exact: null, exactProblem: null };
+    if (markerReasons(p.inputPreview).length > 0) return { exact: null, exactProblem: 'part of the command is hidden in the preview, so its exact copy is not used' };
+    const cmd = previewCommand(p);
+    if (cmd === null) return out;
+    const c = exactReports.candidates(cmd, p.relayedAt ?? at);
+    if (c.conflict) {
+      out.exactProblem = c.evicted ? EXACT_EVICTED : EXACT_CONFLICT;
+      if (parity) p.exactNote = c.evicted ? EXACT_NOTE_EVICTED : EXACT_NOTE;
+      onEvent(conflictEvent(c.evicted));
+    }
+    else if (c.unusable) out.exactProblem = 'the exact command has characters outside plain ASCII, line breaks and tabs';
+    else if (c.texts.length === 1) out.exact = c.texts[0];
+    if (out.exact !== null || out.exactProblem !== null) p.exactSettled = true;
+    return out;
+  }
+  const redraw = p => { try { cards?.redrawPermission?.(p); } catch { /* the card is changed all the same */ } };
+
   // Why Allow is out now for this request: its own reasons plus the moment's.
   function reasonsNow(p, at = now()) {
     const out = [...(p.denyOnly ?? [])];
@@ -826,7 +855,7 @@ export function createApprovals({
         if (parity) { p.exactWas = p.exact; p.exact = null; p.exactNote = d === 'evicted' ? EXACT_NOTE_EVICTED : EXACT_NOTE; }
         else p.exactConflict = d;
         onEvent(conflictEvent(d === 'evicted'));
-        try { cards?.redrawPermission?.(p); } catch { /* the card is marked all the same */ }
+        redraw(p);
       }
     }
     if (p.exactConflict) out.push(p.exactConflict === 'evicted' ? EXACT_EVICTED : EXACT_CONFLICT);
@@ -877,21 +906,8 @@ export function createApprovals({
       // or not, or any report dropped by the cap: also an alert).
       let exact = null;
       let exactProblem = null;
-      if (bashMode === 'exact' && p?.tool === 'Bash') {
-        const cmd = previewCommand(p);
-        if (markerReasons(p.inputPreview).length > 0) exactProblem = 'part of the command is hidden in the preview, so its exact copy is not used';
-        else if (cmd !== null) {
-          const c = exactReports.candidates(cmd, p.relayedAt ?? at);
-          if (c.conflict) {
-            exactProblem = c.evicted ? EXACT_EVICTED : EXACT_CONFLICT;
-            if (parity) p.exactNote = c.evicted ? EXACT_NOTE_EVICTED : EXACT_NOTE;
-            onEvent(conflictEvent(c.evicted));
-          }
-          else if (c.unusable) exactProblem = 'the exact command has characters outside plain ASCII, line breaks and tabs';
-          else if (c.texts.length === 1) exact = c.texts[0];
-        }
-      }
-      const denyOnly = denyOnlyReasons(p, { home, realpath, patterns, writeFolders, writeProtected, bash: bashMode, exact, exactProblem, bashCommands, repoRoot, isExecutable, isLink, rules: parity ? 'parity' : 'guarded', hidden: hiddenMode });
+      if (bashMode === 'exact' && p?.tool === 'Bash') ({ exact, exactProblem } = matchExact(p, at));
+      const denyOnly = denyOnlyFor(p, exact, exactProblem);
       const why = lastBlock && at - lastBlock.at <= WHY_WINDOW_MS && lastBlock.tool === p.tool
         ? `Auto mode refused this ${lastBlock.tool} call${lastBlock.why ? ` (${lastBlock.why})` : ''}, so Claude Code is asking you`
         : null;
@@ -902,7 +918,12 @@ export function createApprovals({
     // "kept", "off" or "other". The text is never logged. A kept report rechecks, now,
     // every open Bash card that shows an exact text (M1, the header): one it disputes is
     // marked (parity) or made Deny-only (guarded) and redrawn, and stays so after the
-    // report itself is forgotten.
+    // report itself is forgotten. Then each open Bash card still waiting for its report
+    // (opened at most EXACT_WINDOW_AFTER_MS ago, nothing in its window yet) is matched
+    // again: one candidate gives it the exact text (its Deny-only reasons are worked out
+    // again over that text), a conflict marks it as at open, and either way it is redrawn.
+    // A tap made on the card before that is judged on the card as it was (the hash), and
+    // its Allow then gets the changed 409 (lib/chat-store.mjs, `exactGained`).
     noteExact({ sessionId, command } = {}) {
       if (bashMode !== 'exact' || serverMode() === 'off') return 'off';
       let lead = false;
@@ -912,6 +933,16 @@ export function createApprovals({
       let open = [];
       try { open = cards?.openPermissions?.() ?? []; } catch { open = []; }
       for (const p of open) if (p?.tool === 'Bash' && typeof p.exact === 'string') reasonsNow(p);
+      const at = now();
+      for (const p of open) {
+        if (p?.tool !== 'Bash' || typeof p.exact === 'string' || p.exactSettled === true) continue;
+        // (Only a report inside the card's window can match: candidates() counts no other.)
+        const m = matchExact(p, at);
+        if (p.exactSettled !== true) continue;
+        p.denyOnly = denyOnlyFor(p, m.exact, m.exactProblem);
+        if (m.exact !== null) { p.exact = m.exact; p.exactGained = true; }
+        redraw(p);
+      }
       return 'kept';
     },
     bashMode,

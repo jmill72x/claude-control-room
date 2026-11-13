@@ -2,9 +2,10 @@
 // The scratch test for exact Bash on approval cards (design 2026-11-11-jarvis-os-
 // approvals.md §9.2, A1-H with A1-F; board db310879 and 958ad493). It answers three
 // questions in a throwaway Claude Code session, without the Control Room, the real
-// channel, a plugin install, or Jeff's own settings:
-//   1. does the PermissionRequest hook report before the channel relays the prompt
-//      (in auto mode's fallback prompts too)?
+// channel, a plugin install, or the owner's own settings:
+//   1. does the PermissionRequest hook report inside the server's window around the
+//      relay (in auto mode's fallback prompts too), and how far before or after it? (On
+//      2026-11-13, Claude Code 2.1.323: always 22-26 ms after.)
 //   2. does the server's fold of the reported command equal the relayed preview's?
 //   3. what does a real two-line Bash command look like in `input_preview`?
 //
@@ -26,23 +27,24 @@
 // turns off the two channel plugins by name, in case user settings load after all
 // (Ultron's L4, 11-13; step 10 checks `/status` and `/hooks` too). The channel never
 // answers a prompt: every one is answered in the terminal. It writes what it saw to
-// <dir>/results.txt (for a person) and <dir>/events.jsonl (raw). Ask only for harmless
-// commands: the commands are written there in full. Checked by
-// server/test/exact-hook-check.test.mjs.
+// <dir>/results.txt (for a person) and <dir>/events.jsonl (raw). Each Bash request is
+// paired with the one hook report inside the server's window (up to 1 s before it or 2 s
+// after it), whichever comes second writes the comparison, and a request still alone when
+// its window closes says so. Ask only for harmless commands that need permission
+// (read-only ones like cat and echo run with no prompt at all): the commands are written
+// there in full. Checked by server/test/exact-hook-check.test.mjs.
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkExactReport, createExactCommands, foldWhitespace, EXACT_WINDOW_BEFORE_MS } from '../server/lib/exact-commands.mjs';
+import { checkExactReport, createExactCommands, foldWhitespace, EXACT_WINDOW_BEFORE_MS, EXACT_WINDOW_AFTER_MS } from '../server/lib/exact-commands.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 export const CHANNEL_NAME = 'exactcheck';
 // The real channels, off in the scratch session whatever else loads (L4).
 export const SCRATCH_PLUGINS_OFF = Object.freeze({ 'discord@claude-plugins-official': false, 'jarvis-channel@jarvis-local': false });
-// A report this long after a relay, with no report before it, is called late.
-const LATE_MS = 10e3;
 
 // README's PermissionRequest entry, parsed from the README itself.
 export function readmeHookEntry(readme) {
@@ -84,22 +86,47 @@ const previewCommand = preview => {
 
 // The stand-in channel: an MCP server on stdio that declares the channel and its
 // permission relay, plus the scratch ingest socket for the hook. `out` writes one MCP
-// message; `say` appends to results.txt.
-export function createChannel({ dir, now = () => Date.now(), out, say, raw }) {
-  const reports = []; // { at, command, tool }
+// message; `say` appends to results.txt; `later(ms, fn)` runs fn once the window after a
+// request has closed (a timer; tests pass their own).
+export function createChannel({ dir, now = () => Date.now(), out, say, raw, later = (ms, fn) => setTimeout(fn, ms).unref() }) {
   const store = createExactCommands({ now });
-  const relays = []; // { n, at, reportBefore }
+  const spare = [];   // reports no request has taken yet: { at, command }
+  const waiting = []; // Bash requests with no report yet: { n, at, cmd }
   let n = 0;
+  // A request and its report, in whichever order they came: the order and the gap, the
+  // fold, and what the server would draw (its window counted from the relay, as there).
+  const pair = (req, rep) => {
+    const gap = rep.at - req.at;
+    const lines = [gap >= 0
+      ? `        request #${req.n}: its hook report came ${gap} ms AFTER it: ORDER AFTER (+${gap} ms)`
+      : `        request #${req.n}: its hook report came ${-gap} ms BEFORE it: ORDER BEFORE (${gap} ms)`,
+    `        reported command: ${shown(rep.command)}`];
+    if (req.cmd !== null) {
+      const fold = foldWhitespace(rep.command);
+      lines.push(rep.command === req.cmd && fold !== req.cmd
+        ? '        the report EQUALS the preview\'s command as it is: this preview was NOT folded'
+        : `        the server's fold of the report ${fold === req.cmd ? 'EQUALS' : 'DIFFERS FROM'} the preview's command`);
+      const c = store.candidates(req.cmd, req.at);
+      const exact = !c.conflict && !c.unusable && c.texts.length === 1;
+      lines.push(`        exact text on the card: ${exact ? 'yes' : 'no'}${exact ? '' : c.conflict ? ' (two different reports)' : c.unusable ? ' (characters outside plain ASCII, line breaks and tabs)' : ' (no report matched)'}`);
+    }
+    say(lines.join('\n'));
+  };
   const onReport = body => {
     const at = now();
     raw({ at, kind: 'report', body: { hook_event_name: body?.hook_event_name, tool_name: body?.tool_name, session_id: typeof body?.session_id === 'string' ? 'present' : body?.session_id, command: body?.command } });
     const c = checkExactReport(body);
     if (!c.ok) { say(`${clock(at)}  hook report REFUSED as the server would refuse it: ${c.error}`); return; }
-    reports.push({ at, command: c.value.command });
     store.note(c.value.command);
     say(`${clock(at)}  hook report: Bash, ${c.value.command.length} characters`);
-    const last = relays.at(-1);
-    if (last && !last.reportBefore && at - last.at <= LATE_MS) say(`        this report came ${at - last.at} ms AFTER permission request #${last.n}: ORDER FAIL`);
+    const rep = { at, command: c.value.command };
+    // The oldest request still waiting whose window this report falls in.
+    const i = waiting.findIndex(r => at - r.at <= EXACT_WINDOW_AFTER_MS);
+    if (i >= 0) { pair(waiting.splice(i, 1)[0], rep); return; }
+    spare.push(rep);
+    later(EXACT_WINDOW_BEFORE_MS + 1, () => {
+      if (spare.includes(rep)) say(`        the hook report of ${clock(at)} met no Bash request from ${EXACT_WINDOW_AFTER_MS / 1000} s before it to ${EXACT_WINDOW_BEFORE_MS / 1000} s after it: NO REQUEST (the relay did not reach the channel, or came too late)`);
+    });
   };
   const onPermission = params => {
     const at = now();
@@ -109,30 +136,25 @@ export function createChannel({ dir, now = () => Date.now(), out, say, raw }) {
     const preview = params?.input_preview;
     const lines = [`${clock(at)}  permission request #${n}: ${typeof tool === 'string' ? tool : '?'}`,
       `        input_preview, raw: ${shown(preview)}`];
-    // The newest report inside the server's window before the relay (30 s).
-    const before = reports.filter(r => r.at <= at && at - r.at <= EXACT_WINDOW_BEFORE_MS).at(-1);
-    relays.push({ n, at, reportBefore: Boolean(before) });
     if (tool !== 'Bash') {
       lines.push('        (not Bash: no hook report is expected)');
-    } else {
-      const cmd = previewCommand(preview);
-      lines.push(`        preview's command: ${cmd === null ? '(the preview is not JSON with a command)' : shown(cmd)}`);
-      if (!before) lines.push('        no hook report has come in the 30 s before it: ORDER FAIL (or the hook did not run)');
-      else {
-        lines.push(`        newest hook report: ${at - before.at} ms BEFORE this request: ORDER PASS`,
-          `        reported command: ${shown(before.command)}`);
-        if (cmd !== null) {
-          const fold = foldWhitespace(before.command);
-          lines.push(before.command === cmd && fold !== cmd
-            ? '        the report EQUALS the preview\'s command as it is: this preview was NOT folded'
-            : `        the server's fold of the report ${fold === cmd ? 'EQUALS' : 'DIFFERS FROM'} the preview's command`);
-          const c = store.candidates(cmd, at);
-          const exact = !c.conflict && !c.unusable && c.texts.length === 1;
-          lines.push(`        exact text on the card: ${exact ? 'yes' : 'no'}${exact ? '' : c.conflict ? ' (two different reports)' : c.unusable ? ' (characters outside plain ASCII, line breaks and tabs)' : ' (no report matched)'}`);
-        }
-      }
+      say(lines.join('\n'));
+      return;
     }
+    const cmd = previewCommand(preview);
+    lines.push(`        preview's command: ${cmd === null ? '(the preview is not JSON with a command)' : shown(cmd)}`);
     say(lines.join('\n'));
+    const req = { n, at, cmd };
+    // The newest report not yet taken, from inside the window before the request.
+    while (spare.length && at - spare[0].at > EXACT_WINDOW_BEFORE_MS) spare.shift();
+    if (spare.length) { pair(req, spare.pop()); return; }
+    waiting.push(req);
+    later(EXACT_WINDOW_AFTER_MS + 1, () => {
+      const i = waiting.indexOf(req);
+      if (i < 0) return;
+      waiting.splice(i, 1);
+      say(`        request #${req.n}: no hook report from ${EXACT_WINDOW_BEFORE_MS / 1000} s before it to ${EXACT_WINDOW_AFTER_MS / 1000} s after it: NO REPORT (the hook did not run, or came too late)`);
+    });
   };
   const handle = msg => {
     if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) return;

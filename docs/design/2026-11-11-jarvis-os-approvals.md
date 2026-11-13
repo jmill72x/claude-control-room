@@ -685,6 +685,19 @@ scratch Control Room. Add (it must not load the Discord plugin, which would take
 - A1-H. *(2026-11-13: run it with the kit `bin/exact-hook-check.mjs` and the steps in
   NEXT.md §10, exact Bash step 10, which replace the harness steps below: the hook now
   posts to the ingest socket, not a port, and `--permission-mode default` is now `manual`.)*
+  *Results, 2026-11-13 (Claude Code 2.1.323, manual mode; `cat` and `echo` run without a
+  prompt, so the commands became `touch` and `printf`):* the hook reports **22-26 ms after**
+  the relay, every time, so the "before" this step asks for does not hold, and the design
+  changed to fit: a report counts from 1 s before the relay to 2 s after it, and a card
+  that opened with no exact text gains it when its one candidate lands in that window,
+  redrawn on every page (a tap made before then is judged on the folded card; an Allow
+  made on it afterwards is a `changed` 409, a Deny counts). The relay keeps `\n` and `\t`
+  in `input_preview` (A1-F's answer: the line break survives as the JSON escape; a Write's
+  `content` too) and folds each run of spaces to one, leading and trailing ones included,
+  so the server's fold is now spaces only. Steps 3 and 4 below therefore pass on
+  `ORDER AFTER` or `ORDER BEFORE` with the gap, and step 4's commands are now ones that
+  need permission (NEXT.md §10 step 10 has the current list); (c), the carriage return,
+  is no longer asked. Auto mode's fallback (step 5) is still to be seen.
   **Does the exact-command hook report before the relay, and do the two folds
   agree?** (board 320ecc71; hard requirement 9 of 0.2. Run once, by Jeff or by Jarvis's
   hands at a terminal, never in Jarvis's session, before `chat.approvalsBash` is ever set to

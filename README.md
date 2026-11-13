@@ -1154,8 +1154,9 @@ page offer Allow and Deny whenever the channel's relay does:
   emoji built with a joiner or a variation selector, or a no-break space, in a Write's
   text also keeps its card Deny-only.
 - **The risk this accepts** is the one Discord's buttons already carry. The relay folds
-  each run of whitespace in the preview to one space, so a command of several lines reads
-  as one line on the card, exactly as in Discord; a field over 3,500 code points arrives
+  each run of spaces in the preview to one (line breaks and tabs stay, as of Claude Code
+  2.1.323), so a command's spacing, inside quotes too, can read differently on the card
+  from what runs, exactly as in Discord; a field over 3,500 code points arrives
   elided, and the card (which says so) can still be allowed; and a tap on a paired
   approver device now grants what only the terminal or Discord could grant before, so a
   stolen unlocked phone, or a script that ran on this origin, is worth more. The exact
@@ -1223,9 +1224,10 @@ can Deny anything. Allow may be offered only when none of these holds:
   so such a name can't be judged here. File content and search text are not paths and stay
   free.
 - **Bash,** by default (config `chat.approvalsBash`, `"deny"` unless set). Claude Code folds
-  each run of whitespace in a relayed preview to one space, so a two-line command can
-  arrive looking like one plain command, and no rule over the text alone can tell
-  `cat a b` from `cat a` then `b`. With `"exact"` the page may allow a Bash request only
+  runs of whitespace in a relayed preview (the scratch test of 2026-11-13, on 2.1.323,
+  found runs of spaces only: line breaks and tabs stay), so the preview alone is not the
+  exact command, and a relay that folded line breaks again would make a two-line command
+  look like one. With `"exact"` the page may allow a Bash request only
   when the exact-command hook (below) reported its real text and the server matched the
   two; with no report, or two reports that differ, the card is Deny-only. Then two tiers:
   - *Tier 1, one plain line.* The exact text has no line break and no tab and passes the
@@ -1367,12 +1369,18 @@ what became of it (`exact-command: a Bash report, from the lead's session, kept 
 minutes`), never the command or the session.
 
 When a Bash request then arrives over the relay, the server matches by content, not by
-any id (the relay carries none): among the reports received from 30 seconds before the
-channel got the prompt to 5 seconds after, it takes those whose text, with each run of
-whitespace folded to one space by the server's own rule (`foldWhitespace`), equals the
-preview's command character for character (or equals it outright, for a relay that did
-not fold). Exactly one distinct text is the match: the card shows it and the `shown` hash
-covers it. Two that differ are Deny-only with an alert (`approvals-exact-conflict`): the
+any id (the relay carries none): among the reports received from 1 second before the
+channel got the prompt to 2 seconds after, it takes those whose text, with each run of
+spaces folded to one by the server's own rule (`foldWhitespace`, the relay's: line breaks
+and tabs untouched), equals the preview's command character for character (or equals it
+outright, for a relay that did not fold). Exactly one distinct text is the match: the
+card shows it and the `shown` hash covers it. The hook reports about 20-25 ms after the
+relay (measured 2026-11-13), so the card usually opens first, with no exact text; the
+report, when it comes inside the window and is the card's one candidate, gives the card
+its text, and the card is sent to every page again. A tap made before that is judged on
+the card it was made on: in guarded mode that card is Deny-only (no exact text yet); in
+parity it can be allowed as relayed, and an Allow made on it after the text arrived gets
+the `changed` 409 below, a Deny counts. Two that differ are Deny-only with an alert (`approvals-exact-conflict`): the
 rival counts while it is kept (2 minutes), inside the window or outside it, and also when
 it arrives after the card opened: each kept report rechecks every open Bash card that
 shows an exact text at once, so the mark outlives the report (cards live up to 12 hours),
@@ -1387,8 +1395,8 @@ it was before gets a 409 with `changed: true` and the card as it is now, which t
 draws (not counted toward the device lockout), while a Deny tapped on it counts. A text with anything but printable ASCII, line breaks and tabs is never shown
 as exact (a carriage return included), and a preview with an elision or a `[REDACTED]`
 mask gets none. What the design leans on, and the scratch test (NEXT.md §10, exact Bash
-step 10, with the kit `bin/exact-hook-check.mjs`) checks before `"exact"` is turned on: that the hook's post lands before the relayed
-request (in auto mode's fallback prompts too), and that Claude Code's fold and the
+step 10, with the kit `bin/exact-hook-check.mjs`) checks before `"exact"` is turned on: that the hook's post lands within the window of the
+relayed request (in auto mode's fallback prompts too), and that Claude Code's fold and the
 server's agree. If either fails, nothing matches and Bash stays Deny-only: the hook's
 absence is never an Allow.
 
