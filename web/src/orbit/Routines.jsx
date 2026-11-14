@@ -1,20 +1,14 @@
-import { envelopeOf } from '../lib/format.js';
-import { routinesView, routinesSummary } from '../lib/orbit/routines.js';
 import { unavailable } from '../lib/orbit/page.js';
 import { Note } from './Note.jsx';
 
 // Today's routines (docs/design/2026-11-10-jarvis-os-home.md, §5.4): the calendar
-// jobs due today with their verdicts, then the next one. The logic is in
+// jobs due today with their verdicts, then the next one. Since 2026-11-14 (board
+// f74ca819) it is the top of the Today's schedule card (Overview.jsx), which draws the
+// heading and the summary; this draws the list. The logic is in
 // src/lib/orbit/routines.js; the data is the crons panel the Scheduled lane draws.
-export function Routines({ payload, now }) {
-  const crons = envelopeOf(payload?.crons);
-  const view = routinesView({ crons: crons.data, jobs: payload?.config?.data?.jobs ?? {}, now });
+export function RoutinesList({ crons, view }) {
   return (
-    <section aria-labelledby="o-routines" className="o-panel o-routines">
-      <div className="o-panel-head">
-        <h2 id="o-routines" className="o-h2 o-h2-day">Today's routines</h2>
-        <span className="o-sub">{crons.status === 'unavailable' ? '' : routinesSummary(view)}</span>
-      </div>
+    <>
       {crons.status === 'unavailable' ? <Note>Scheduled jobs: {unavailable(crons)}</Note> : (
         <ol className="o-routine-list" aria-label="Today's scheduled jobs">
           {view.rows.map(r => (
@@ -30,6 +24,6 @@ export function Routines({ payload, now }) {
         </ol>
       )}
       {crons.status === 'stale' && <Note>From an earlier reading: {crons.error ?? 'the last poll failed'}.</Note>}
-    </section>
+    </>
   );
 }

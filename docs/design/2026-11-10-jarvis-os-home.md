@@ -95,6 +95,12 @@ on the iPhone and iPad (Playwright has no WebKit here).
 
 ## 4. What Jeff sees
 
+**Superseded in part by the home merge (board f74ca819, built 2026-11-14 on
+`jos/home-merge`):** the Overview below the band is now five sections, Needs you, an Agents
+card (tabs Now, Today, Recent), Usage beside Today's schedule, and Loops while one is open;
+the More fold of §5.5 is gone. README, "The Orbit page", and NEXT.md §10 have it. The
+mockups here show the 11-10 plan.
+
 ### 4.1 Phone (390 px), the Overview tab
 
 ```

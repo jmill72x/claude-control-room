@@ -236,7 +236,6 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 
 /* ---- Today's routines ---- */
 
-.o-row > .o-routines { flex: 1 1 360px; }
 .o-routine-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
 .o-routine {
   display: grid; grid-template-columns: 18px 68px minmax(0, 1fr) auto; align-items: center; gap: 10px;
@@ -288,12 +287,33 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   .o-loop-week { grid-template-columns: minmax(0, 1fr) auto; }
 }
 
-/* ---- the phone's More fold ---- */
+/* ---- the merged home (board f74ca819): the Agents card's tabs and the two folds ---- */
 
-.o-more-fold { display: flex; flex-direction: column; gap: 24px; }
-.o-more-toggle { align-self: stretch; justify-content: flex-start; background: var(--card); font-size: 13.5px; text-align: left; }
-.o-more-toggle .o-turned { transform: rotate(180deg); }
-.o-more-panels { display: flex; flex-direction: column; gap: 24px; }
+/* The tabs: a segmented control, every tab 44 px tall, sharing the width on a phone. */
+.o-atabs { display: flex; gap: 4px; width: 100%; max-width: 420px; padding: 4px; border-radius: 999px; background: var(--lane); }
+.o-atab {
+  flex: 1 1 0; min-width: 0; min-height: 44px; margin: 0; padding: 0 10px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--sub); font-size: 13.5px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.o-atab[aria-selected='true'] { background: var(--navy); color: var(--paper); }
+.o-apanel { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+/* A block inside a card: the work map (dark) and the week's heat map (light). */
+.o-inset { min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: clamp(14px, 2vw, 22px); border-radius: 14px; }
+/* A fold's button: the whole width, a line of words and a turning chevron. */
+.o-fold-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; margin: 0; padding: 6px 14px;
+  border: 1px solid var(--rule-strong); border-radius: 12px; background: transparent; color: var(--heading);
+  font-size: 13.5px; font-weight: 600; text-align: left; overflow-wrap: anywhere;
+}
+.o-fold-toggle svg { flex: none; }
+.o-fold-toggle .o-turned { transform: rotate(180deg); }
+.o-fold-night { border-color: rgba(248, 247, 243, 0.22); color: var(--paper); }
+.o-fold-tag { flex: none; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sub); }
+.o-usage-more { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; }
+.o-usage-more > .o-heat { background: var(--card); }
+.o-next { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.o-loops-fold { display: flex; flex-direction: column; gap: 12px; }
+.o-loops-detail { display: flex; flex-direction: column; gap: 12px; }
 
 /* ---- panels ---- */
 
@@ -355,7 +375,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-event-you .o-event-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 
 /* Burn */
-.o-burn { flex: 1 1 340px; }
+.o-burn { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .o-burn-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
 .o-burn-big { font-size: 56px; font-weight: 800; line-height: 1; letter-spacing: -0.04em; color: var(--paper); }
 .o-bars { display: flex; align-items: flex-end; gap: 3px; height: 110px; }
@@ -448,11 +468,11 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 
 /* ---- the agent views ---- */
 
-/* Usage limits and Today's routines share a row, each at least 360 px for the
-   routines and 520 px for the rings, so they stack on a phone. The work map has
-   a row of its own and keeps its square box centred. */
+/* Usage and Today's schedule share a row, at least 520 px for the rings and 360 px
+   for the schedule, so they stack on a phone and on an iPad held upright. The work
+   map keeps its square box centred in the Today tab. */
 .o-row > .o-limits { flex: 1 1 520px; }
-.o-row > .o-map { flex: 1 1 520px; }
+.o-row > .o-schedule { flex: 1 1 360px; }
 .o-panel-head-base { align-items: baseline; }
 
 /* The agent work map: the lead at the centre, the others round an orbit. The
@@ -523,7 +543,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 
 /* Live agents (war room slice 1): one row per run going now. Every line wraps
    rather than widening the page at phone width. */
-.o-live { gap: 10px; }
+.o-live { display: flex; flex-direction: column; gap: 10px; }
 .o-live-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); column-gap: 28px; }
 .o-live-row { min-width: 0; display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
 .o-live-body { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }

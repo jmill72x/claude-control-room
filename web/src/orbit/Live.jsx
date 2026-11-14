@@ -1,18 +1,20 @@
-// Live agents, on the Overview under Usage limits (war room): the agent runs going
-// right now, from the `liveAgents` block in the sessions panel. Slice 2 adds a Stop
+// Live agents, the Now tab of the Agents card on the Overview (war room; a panel of
+// its own until 2026-11-14): the agent runs going right now, from the `liveAgents`
+// block in the sessions panel. The card (Agents.jsx) draws the heading and the
+// "3 running · each minute" line; this draws the rows. Slice 2 adds a Stop
 // button on the lead's background agents, for an approver device only: a confirm
 // sheet, then Face ID, then the server asks Jarvis to stop the run (server
 // lib/agent-stop.mjs). The logic is in src/lib/orbit/live.js and stop.js.
 import { useEffect, useState } from 'react';
 import { envelopeOf } from '../lib/format.js';
-import { liveRows, liveSummary } from '../lib/orbit/live.js';
+import { liveRows } from '../lib/orbit/live.js';
 import { stopQuestion, faceIdError } from '../lib/orbit/stop.js';
 import { unavailable, PARTIAL } from '../lib/orbit/page.js';
 import { stepUpStatus, setUpFaceId, stopRun } from './stopApi.js';
 import { Avatar } from './Avatar.jsx';
 import { Note } from './Note.jsx';
 
-export function LiveAgents({ payload, now, roster }) {
+export function LiveList({ payload, now, roster }) {
   const env = envelopeOf(payload?.sessions);
   const live = env.data?.liveAgents ?? null;
   const partial = (env.data?.unreadablePaths?.length ?? 0) > 0;
@@ -35,11 +37,7 @@ export function LiveAgents({ payload, now, roster }) {
   else if (!env.data) note = 'Nothing to show yet.';
   else if (rows.length === 0) note = 'No agents running.';
   return (
-    <section aria-labelledby="o-live" className="o-panel o-live">
-      <div className="o-panel-head o-panel-head-base">
-        <h2 id="o-live" className="o-h2 o-h2-day">Live agents</h2>
-        {live && <span className="o-sub">{liveSummary(live)} · each minute</span>}
-      </div>
+    <div className="o-live">
       {note ? <Note>{note}</Note> : (
         <ul className="o-live-list">
           {rows.map(r => (
@@ -66,7 +64,7 @@ export function LiveAgents({ payload, now, roster }) {
       )}
       {live && partial && <Note>{PARTIAL}</Note>}
       {sheet && <StopSheet row={sheet} step={step} onStep={setStep} onClose={() => setSheet(null)} />}
-    </section>
+    </div>
   );
 }
 

@@ -415,7 +415,9 @@ test('a POST with no Origin and no by is recorded as local, never as the owner',
 
 test('an alert with no since takes at most 24 hours over the route too', async () => {
   const d = deps();
-  d.cache.set('crons', [{ ...failedCron, lastRunAt: undefined }]);
+  // The route stamps acks with the real clock, so the next run is placed from it too: a
+  // fixed NEXT made this test fail in the day before NEXT (found 2026-11-14).
+  d.cache.set('crons', [{ ...failedCron, lastRunAt: undefined, nextRunAt: Date.now() + 3 * DAY }]);
   const h = createHandler(d);
   const week = await call(h, 'POST', '/api/acks', { key: KEY, until: Date.now() + 7 * DAY });
   assert.equal(week.statusCode, 400);

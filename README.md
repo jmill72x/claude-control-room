@@ -268,12 +268,16 @@ A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 describes elsewhere is at **`/classic.html`** (`web/classic.html`) until it is deleted a
 week later. `/orbit.html`, its address before the flip, has no file of its own: the
 server's single-page fallback answers it with the same page, so saved links and
-`#board/<id>` addresses keep working. Its Overview runs in the Jarvis OS order
-(`docs/design/2026-11-10-jarvis-os-home.md`, §4): Needs you, Usage limits beside Today's
-routines, Live agents (war room slice 1, built 2026-11-13), then the agent work map, Today agent by agent, Latest runs, Next 24 hours, and
-Burn beside the week's heat map; on a phone (700 px and under) those last six sit under
-one "More" disclosure that remembers its state per viewer. Phases 1 to 4 of the Orbit
-plan and Phase 1b of the Jarvis OS plan give it:
+`#board/<id>` addresses keep working. Since the home merge (board f74ca819, built
+2026-11-14 on `jos/home-merge`) its Overview has five sections where it had eleven
+(`web/src/lib/orbit/home.js`, tested by `web/test/orbit-home.test.js`): **Needs you**;
+**Agents**, one card with tabs Now (the live agents and their Stop buttons), Today (Today
+agent by agent over the agent work map) and Recent (Latest runs); **Usage**, the limits
+up front with Burn and the week's heat map behind a fold, beside **Today's schedule**,
+Today's routines over Next 24 hours with the loops' line at its foot; and **Loops**, only
+while a loop is open. Nothing folds by width any more (the phone's "More" disclosure is
+gone). Each panel below keeps its own content and rules inside its new place. Phases 1
+to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
 
 - **A navy header:** the date, four tabs (Overview, Board, Chat, Feed; Feed since
   2026-11-11, see "The Feed" below) and "Updated N s ago",
@@ -320,7 +324,15 @@ plan and Phase 1b of the Jarvis OS plan give it:
   board say what to do instead) and one for every session waiting on a person (`needsYou`,
   below), which reads who waits, on what and since when, with an "Answer in Discord" link;
   acknowledged alerts count in the tile's label ("Alerts 4 · 1 acked"), not as cards.
-- **Today's routines (Jarvis OS 1b),** beside Usage limits: each calendar job due today,
+- **Today's schedule (the home merge):** Today's routines, then Next 24 hours, then (while
+  no loop is open) one line for the loops, all in one card. Its summary line joins the
+  routines' ("2 ran · 2 due") to the timeline's count ("5 in the next 24 h"). The loops'
+  line reads the status chip and summary ("Heals on · nothing open · 2 healed this
+  week") and opens the Loops panel's whole view in place, so the kill switch, quiet jobs
+  and the week's heals are a tap away when the section itself is hidden. That fold, like
+  Usage's, remembers its state per viewer (`ccr.orbit.loops-more`, `ccr.orbit.usage-more`
+  in the browser's storage, read closed when storage is missing or throws).
+- **Today's routines (Jarvis OS 1b),** at the top of Today's schedule: each calendar job due today,
   with its time, its name from config's `jobs` and its verdict from the same data the
   Scheduled lane draws (ran, due, missed when job-status says failed, acked, "no run yet"
   when the time has passed but the job isn't failed, or scheduled when no run time is
@@ -347,13 +359,21 @@ plan and Phase 1b of the Jarvis OS plan give it:
 - **Usage limits:** three rings (the session, the week and the model-scoped week) round
   the countdown to the session reset, each with a faint arc where its last window ended
   (`lastWindowPct`, below). The cloud-credit grants and the plan tier with its days left
-  are chips.
-- **Agent work map (Phase 3):** the roster's first agent (the lead) at the centre and the
+  are chips. Under the rings, a fold (closed, it reads "Burn: 48K tokens in the last hour
+  · hour by hour") opens Burn and This week, hour by hour inside the same card; the heat
+  map sits on a light inset there, so its shades read as they did.
+- **The Agents card (the home merge):** three tabs in the WAI-ARIA pattern (one tab stop;
+  the arrows move and select, wrapping; Home and End), each with a count when the page
+  has one ("Now · 3" running, "Today · 6" runs; a count with no source is left off). Only
+  the chosen tab's view is drawn, so Today's lanes open scrolled to now and Now asks once
+  whether the device may stop, as the panels did. The page keeps the chosen tab across a
+  trip to the Board; a new load opens on Now.
+- **Agent work map (Phase 3; the Today tab, under the lanes, since the home merge):** the roster's first agent (the lead) at the centre and the
   others evenly round it, clockwise from the top. A node's area follows the agent's tokens
   over 7 days, with a floor so an idle agent still shows; its badge is its runs today,
   and the lead's counts every run today. An agent with a request in the last hour gets a
   pulse, and dots run along its line (none with Reduce Motion on).
-- **Today, agent by agent (Phase 3):** a lane for the lead's helpers, one for each other
+- **Today, agent by agent (Phase 3; the Today tab since the home merge):** a lane for the lead's helpers, one for each other
   agent, and one for Scheduled, on today's midnight-to-midnight axis with a line at now.
   Each run is a dot at its start, sized by its tokens against the day's largest run, and
   its tooltip holds its time, task and tokens. An agent with no run today says so, with its
@@ -361,8 +381,8 @@ plan and Phase 1b of the Jarvis OS plan give it:
   today: filled once its log has been written since (it ran), hollow until then, and as
   plain marks when job-status hasn't answered. On a phone the lanes
   scroll sideways inside the panel, with the names pinned, and open with now in view.
-- **Live agents (war room slice 1, board 83daafe7; built 2026-11-13, not live):** the
-  agent runs going right now, outside "More" so a phone shows it. Each row: the agent (a
+- **Live agents (war room slice 1, board 83daafe7; the Now tab since the home merge):** the
+  agent runs going right now, in the tab the Agents card opens on. Each row: the agent (a
   roster agent's name and picture, or a subagent's type such as general-purpose), the
   brief's one-line description (never the prompt), how long it has run, its model family,
   its new tokens so far, and the session that started it (its `claude -n` name, "unnamed
@@ -389,17 +409,17 @@ plan and Phase 1b of the Jarvis OS plan give it:
   <CODE>` (at a terminal only: it shows the device and asks for its name typed back); passkeys live in `server/data/chat/passkeys.json` (0600) and go with a
   device's revoke or its approver mark. Routes, checks and what is unverified:
   `docs/design/2026-11-13-war-room-stop.md` ("Built").
-- **Latest runs (Phase 3):** the 10 most recent runs, each with its time (and weekday
+- **Latest runs (Phase 3; the Recent tab since the home merge):** the 10 most recent runs, each with its time (and weekday
   when it wasn't today), the agent, its task and its tokens.
-- **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any
+- **Next 24 hours (under Today's routines since the home merge):** the next run of each calendar job within the next 24 hours, and any
   limit reset, on a timeline. A job that runs every few minutes (launchd's
   `StartInterval`) has no fixed next run, so it never appears. Names come from config's
   `jobs` block. An item that waits on you shows as "You: <title>" (a filled dot, in the
   accent) when its `due` date at its ask's `time` falls within the 24 hours, in the
   viewer's local time.
-- **Burn:** the tokens of the last 60 minutes, and the last 24 clock hours as bars stacked
+- **Burn (behind Usage's fold since the home merge):** the tokens of the last 60 minutes, and the last 24 clock hours as bars stacked
   by model family (Opus, Fable, Sonnet, Haiku and Other), with each family's share.
-- **This week, hour by hour:** today and the six days before it, by local clock hour.
+- **This week, hour by hour (behind Usage's fold since the home merge):** today and the six days before it, by local clock hour.
   The shades step at the same fractions of the week's busiest hour that the design's fixed
   steps were of its own (25, 75 and 150 against a peak of 332), and that hour is ringed.
 - **The Board tab:** the open count, a priority bar and owner chips (tap one to see only
@@ -413,7 +433,7 @@ plan and Phase 1b of the Jarvis OS plan give it:
 Every token figure is new tokens, each request counted once, as everywhere else here. A
 panel whose source is missing says so. Against a server from before Phase 1, Burn and the
 heat map say that it doesn't send hourly figures yet; against one from before Phase 3,
-the three agent panels say the same of agent runs; with no roster in config they say
+the Agents card's Today and Recent tabs say the same of agent runs; with no roster in config they say
 that no run has anyone to belong to; against a server from before Phase 2 there is
 no health strip; and against one from before Phase 4, To push reads "—" and, when picked,
 says the server doesn't check the repos yet. A count that isn't known is never a zero.
@@ -1849,8 +1869,9 @@ verb floors, catalog loader, config, readings, ledger lines and the page's view)
   and next reading, the quiet jobs, the held ones, the last 7 days' closed loops in words,
   and healed counts per class per week over 4 weeks. Names come from config's `jobs` (else
   the label's last part, as the health strip does); no label, path or reading is sent. The
-  Loops panel on the Overview shows it, with no buttons; it moves up under Usage limits
-  while a loop is open, and otherwise leads the rest (under More on a phone). The Jobs chip
+  Loops panel on the Overview shows it, with no buttons, as the last section while a loop
+  is open; with none open it is one line at the foot of Today's schedule that opens the
+  same view in place. The Jobs chip
   counts quiet jobs in grey ("all OK · 1 quiet"), and Today's routines reads a quiet job's
   covered due times as "ran, log old".
 - **Off by default.** Nothing runs unless config's `heal.enabled` is `true` and

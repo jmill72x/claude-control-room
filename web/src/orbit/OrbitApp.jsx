@@ -86,6 +86,9 @@ export function OrbitApp() {
   // Waiting on you's picked tile, opened card and "Show all", kept here so Back
   // from the board finds the panel as it was.
   const [waiting, setWaiting] = useState({ filter: null, open: null, all: false });
+  // The Agents card's tab (Now, Today, Recent), kept here for the same reason; a new
+  // load opens on Now, where the Stop buttons are.
+  const [agentsTab, setAgentsTab] = useState('now');
   // The health chip whose details are open, if any. Escape closes them.
   const [chip, setChip] = useState(null);
   useEffect(() => {
@@ -169,7 +172,7 @@ export function OrbitApp() {
       {isBoard && <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
             onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />}
       {isOverview && <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
-            onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} />}
+            onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} agentsTab={agentsTab} setAgentsTab={setAgentsTab} />}
     </div>
   );
 }

@@ -1,11 +1,17 @@
-// The agent views on the Overview: the agent work map, Today agent by agent and
-// Latest runs, from the `agentWork` block in the sessions panel. The logic is
-// in src/lib/orbit/agents.js.
+// The Agents card on the Overview (board f74ca819, 2026-11-14): one card with three
+// tabs where four panels were. Now holds the live agents and their Stop buttons
+// (Live.jsx, unchanged inside); Today holds Today agent by agent and the agent work
+// map; Recent holds Latest runs. Each view is drawn as it was, from the `agentWork`
+// and `liveAgents` blocks in the sessions panel; the logic is in
+// src/lib/orbit/agents.js, live.js and home.js (the tabs).
 import { useEffect, useRef } from 'react';
 import { envelopeOf } from '../lib/format.js';
 import { mapView, todayView, latestRuns, MAP } from '../lib/orbit/agents.js';
+import { liveSummary } from '../lib/orbit/live.js';
+import { AGENT_TABS, agentTab, agentTabLabels, tabAfterKey } from '../lib/orbit/home.js';
 import { Avatar } from './Avatar.jsx';
 import { Note } from './Note.jsx';
+import { LiveList } from './Live.jsx';
 import { unavailable, PARTIAL } from '../lib/orbit/page.js';
 import { useReducedMotion } from './useReducedMotion.js';
 
@@ -30,8 +36,10 @@ const listOf = names => (names.length <= 1 ? names.join('') : `${names.slice(0, 
 
 // ---- the agent work map ----
 
-export function AgentMap({ payload, now, roster }) {
-  const { env, work, partial } = workOf(payload);
+// In the Today tab under the lanes, whose note already says when some transcripts
+// couldn't be read, so the map doesn't say it twice.
+function AgentMap({ payload, now, roster }) {
+  const { env, work } = workOf(payload);
   const view = mapView({ work, roster, now });
   const reduced = useReducedMotion();
   const label = view && [
@@ -43,9 +51,9 @@ export function AgentMap({ payload, now, roster }) {
   const active = view ? view.nodes.filter(n => n.active) : [];
 
   return (
-    <section aria-labelledby="o-map" className="o-panel o-panel-dark o-map">
+    <div className="o-inset o-panel-dark o-map">
       <div className="o-panel-head">
-        <h2 id="o-map" className="o-h2">Agent work map</h2>
+        <h3 className="o-h2">Agent work map</h3>
         <div className="o-map-legend">
           <span><span className="o-legend-dot" style={{ background: REQUEST }} aria-hidden="true" />request</span>
           <span><span className="o-legend-dot" style={{ background: RESULT }} aria-hidden="true" />checked result</span>
@@ -94,10 +102,9 @@ export function AgentMap({ payload, now, roster }) {
             </div>
           </div>
           <span className="o-map-caption">size = tokens, 7 days · badge = runs today</span>
-          {partial && <Note dark>{PARTIAL}</Note>}
         </>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -114,9 +121,7 @@ const laneLabel = l => {
   return `${l.name}: ${what}${l.marks.length ? `: ${l.marks.map(m => m.title).join('; ')}` : ''}${l.note ? `. ${l.note}` : ''}`;
 };
 
-export function TodayByAgent({ payload, now, roster }) {
-  const { env, work, partial } = workOf(payload);
-  const view = todayView({ work, roster, crons: envelopeOf(payload?.crons).data, jobs: payload?.config?.data?.jobs ?? {}, now });
+function TodayByAgent({ view, env, work, partial, roster }) {
   // Where the lanes scroll sideways (a phone), they open with "now" three
   // quarters of the way across, since that is where today's runs are. Once,
   // when they first appear, so it never fights the viewer's own scrolling.
@@ -132,11 +137,7 @@ export function TodayByAgent({ payload, now, roster }) {
     el.scrollLeft = Math.max(0, (parseFloat(nowLeft) / 100) * track - 0.75 * (el.clientWidth - names));
   }, [nowLeft]);
   return (
-    <section aria-labelledby="o-day" className="o-panel">
-      <div className="o-panel-head o-panel-head-base">
-        <h2 id="o-day" className="o-h2 o-h2-day">Today, agent by agent</h2>
-        {view && <span className="o-sub">{view.total} run{view.total === 1 ? '' : 's'} · dot size = tokens · now {view.nowLabel}</span>}
-      </div>
+    <>
       {!view ? <Note>{whyNot(env, work, roster)}</Note> : (
         <div className="o-scroll-x" ref={scroller}>
           <div className="o-today">
@@ -167,22 +168,18 @@ export function TodayByAgent({ payload, now, roster }) {
         </div>
       )}
       {view && partial && <Note>{PARTIAL}</Note>}
-    </section>
+    </>
   );
 }
 
 // ---- Latest runs ----
 
-export function LatestRuns({ payload, now, roster }) {
+function LatestRuns({ payload, now, roster }) {
   const { env, work, partial } = workOf(payload);
   const ok = Boolean(work && work.lead && roster?.agents?.length > 0);
   const rows = ok ? latestRuns({ work, roster, now }) : [];
   return (
-    <section aria-labelledby="o-latest" className="o-panel">
-      <div className="o-panel-head o-panel-head-base">
-        <h2 id="o-latest" className="o-h2 o-h2-day">Latest runs</h2>
-        <span className="o-sub">the 10 most recent · tokens per run</span>
-      </div>
+    <>
       {!ok ? <Note>{whyNot(env, work, roster)}</Note> : rows.length === 0 ? <Note>No runs in the last 7 days.</Note> : (
         <ol className="o-latest">
           {rows.map(r => (
@@ -198,6 +195,65 @@ export function LatestRuns({ payload, now, roster }) {
         </ol>
       )}
       {ok && partial && <Note>{PARTIAL}</Note>}
+    </>
+  );
+}
+
+// ---- the card ----
+
+// The tabs follow the WAI-ARIA pattern: one tab stop, the arrows move between tabs and
+// select them, and only the chosen tab's view is drawn. Drawing it fresh is what lets
+// Today's lanes open scrolled to "now" (their first paint measures the box), and lets
+// Now ask once whether this device may stop, as the Live agents panel did. The chosen
+// tab is kept by the page (OrbitApp), so Back from the board finds it; a new load
+// opens on Now, where the Stop buttons are.
+export function AgentsCard({ payload, now, roster, tab: picked, onTab }) {
+  const tab = agentTab(picked);
+  const { env, work, partial } = workOf(payload);
+  const live = env.data?.liveAgents ?? null;
+  const day = todayView({ work, roster, crons: envelopeOf(payload?.crons).data, jobs: payload?.config?.data?.jobs ?? {}, now });
+  const labels = agentTabLabels({ live, todayTotal: day ? day.total : null });
+  const tabRefs = useRef({});
+  const onKeyDown = e => {
+    const next = tabAfterKey(tab, e.key);
+    if (!next) return;
+    e.preventDefault();
+    onTab(next);
+    tabRefs.current[next]?.focus();
+  };
+  const sub = tab === 'now'
+    ? (live ? `${liveSummary(live)} · each minute` : null)
+    : tab === 'today'
+      ? (day ? `${day.total} run${day.total === 1 ? '' : 's'} · dot size = tokens · now ${day.nowLabel}` : null)
+      : 'the 10 most recent · tokens per run';
+  return (
+    <section aria-labelledby="o-agents" className="o-panel o-agents">
+      <div className="o-panel-head o-panel-head-base">
+        <h2 id="o-agents" className="o-h2 o-h2-day">Agents</h2>
+        {sub && <span className="o-sub">{sub}</span>}
+      </div>
+      <div className="o-atabs" role="tablist" aria-label="Agents" onKeyDown={onKeyDown}>
+        {labels.map(t => (
+          <button key={t.key} type="button" role="tab" id={`o-atab-${t.key}`} className="o-atab"
+            ref={el => { tabRefs.current[t.key] = el; }}
+            aria-selected={tab === t.key} aria-controls={`o-apanel-${t.key}`} tabIndex={tab === t.key ? 0 : -1}
+            onClick={() => onTab(t.key)}>
+            {t.text}
+          </button>
+        ))}
+      </div>
+      {AGENT_TABS.filter(t => t.key === tab).map(t => (
+        <div key={t.key} role="tabpanel" id={`o-apanel-${t.key}`} aria-labelledby={`o-atab-${t.key}`} className="o-apanel">
+          {t.key === 'now' && <LiveList payload={payload} now={now} roster={roster} />}
+          {t.key === 'today' && (
+            <>
+              <TodayByAgent view={day} env={env} work={work} partial={partial} roster={roster} />
+              <AgentMap payload={payload} now={now} roster={roster} />
+            </>
+          )}
+          {t.key === 'recent' && <LatestRuns payload={payload} now={now} roster={roster} />}
+        </div>
+      ))}
     </section>
   );
 }

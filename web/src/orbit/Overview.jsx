@@ -5,26 +5,22 @@ import { agentOf } from '../lib/orbit/board.js';
 import {
   ringView, sessionCountdown, next24, burnBars, burnShares, heatRows, SHADES
 } from '../lib/orbit/overview.js';
+import { routinesView } from '../lib/orbit/routines.js';
+import { homeSections, usageFoldLabel, scheduleSub, loopsLine, FOLD_KEYS } from '../lib/orbit/home.js';
 import { Note } from './Note.jsx';
-import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
+import { AgentsCard } from './Agents.jsx';
 import { Waiting } from './Waiting.jsx';
-import { Routines } from './Routines.jsx';
-import { Loops } from './Loops.jsx';
-import { LiveAgents } from './Live.jsx';
-import { hasOpen } from '../lib/orbit/loops.js';
+import { RoutinesList } from './Routines.jsx';
+import { Loops, LoopsFold } from './Loops.jsx';
 import { youEvents } from '../lib/orbit/waiting.js';
-import { useMediaQuery } from '../hooks/useMediaQuery.js';
-import { useMore } from './useMore.js';
-
-// Below this the Overview is a phone: the lower panels fold under "More".
-export const PHONE_QUERY = '(max-width: 700px)';
+import { useFold } from './useFold.js';
 
 const DAY = 24 * 3600 * 1000;
 const money = v => (Number.isFinite(v) ? `$${Number.isInteger(v) ? v : v.toFixed(2)}` : null);
 
-// ---- Usage limits ----
+// ---- Usage: the limits up front, Burn and the week's heat map behind a fold ----
 
-function UsageLimits({ payload, now }) {
+function Usage({ payload, now }) {
   const env = envelopeOf(payload?.usage);
   const limits = Array.isArray(env.data?.limits) ? env.data.limits : [];
   const rings = ringView(limits, now);
@@ -43,11 +39,13 @@ function UsageLimits({ payload, now }) {
   const renews = Date.parse(`${payload?.config?.data?.plan?.nextRenewal ?? ''}T00:00:00`);
   const daysLeft = Number.isFinite(renews) ? Math.max(0, Math.ceil((renews - now) / DAY)) : null;
   const described = rings.map(r => `${r.label} ${r.pctLabel}${r.ghostLabel ? `, ${r.ghostLabel}` : ''}`).join('; ');
+  const [more, setMore] = useFold(FOLD_KEYS.usage);
+  const { hourly } = hourlyOf(payload);
 
   return (
     <section aria-labelledby="o-limits" className="o-panel o-panel-dark o-limits">
       <div className="o-panel-head">
-        <h2 id="o-limits" className="o-h2">Usage limits</h2>
+        <h2 id="o-limits" className="o-h2">Usage</h2>
         <div className="o-chips">
           {grants.map(g => money(g.remaining) && (
             <span key={g.id ?? g.label} className="o-chip-night" title={g.expiresAt ? `expires ${new Date(g.expiresAt).toLocaleDateString()}` : undefined}>
@@ -90,18 +88,46 @@ function UsageLimits({ payload, now }) {
         </div>
       )}
       {env.status === 'stale' && <Note dark>These figures are from an earlier reading: {env.error ?? 'the last poll failed'}.</Note>}
+      <button type="button" className="o-fold-toggle o-fold-night" aria-expanded={more} aria-controls="o-usage-more" onClick={() => setMore(!more)}>
+        <svg className={`o-wcard-turn${more ? ' o-turned' : ''}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        <span>{usageFoldLabel(more, hourly)}</span>
+      </button>
+      {more && (
+        <div id="o-usage-more" className="o-usage-more">
+          <Burn payload={payload} />
+          <HeatMap payload={payload} />
+        </div>
+      )}
     </section>
   );
 }
 
-// ---- Next 24 hours ----
+// ---- Today's schedule: Today's routines over Next 24 hours, and the loops' line ----
 
-function NextDay({ payload, now, roster, items }) {
+function Schedule({ payload, now, roster, items }) {
   const crons = envelopeOf(payload?.crons);
   const usage = envelopeOf(payload?.usage);
+  const routines = routinesView({ crons: crons.data, jobs: payload?.config?.data?.jobs ?? {}, now });
   const { events, ticks } = next24({
     crons: crons.data, limits: usage.data?.limits, jobs: payload?.config?.data?.jobs ?? {}, now, extra: youEvents(items, now)
   });
+  const [loopsOpen, setLoopsOpen] = useFold(FOLD_KEYS.loops);
+  return (
+    <section aria-labelledby="o-schedule" className="o-panel o-schedule">
+      <div className="o-panel-head">
+        <h2 id="o-schedule" className="o-h2 o-h2-day">Today's schedule</h2>
+        <span className="o-sub">{scheduleSub({ routines, events, cronsUnavailable: crons.status === 'unavailable' })}</span>
+      </div>
+      <RoutinesList crons={crons} view={routines} />
+      <NextDay events={events} ticks={ticks} roster={roster} />
+      <LoopsFold payload={payload} now={now} line={loopsLine(payload?.loops, now)} open={loopsOpen} onToggle={setLoopsOpen} />
+    </section>
+  );
+}
+
+// Next 24 hours, under the routines: the timeline, as its own panel drew it.
+// (The routines above already say when the scheduled jobs can't be read.)
+function NextDay({ events, ticks, roster }) {
   const yours = events.filter(e => e.kind === 'you').length;
   const colorOf = e => {
     if (e.kind === 'reset' || e.kind === 'you') return '#C2410C';
@@ -109,14 +135,13 @@ function NextDay({ payload, now, roster, items }) {
     return agent ? agentColors(agent.index).day : '#4E5872';
   };
   return (
-    <section aria-labelledby="o-next" className="o-panel">
+    <div className="o-next">
       <div className="o-panel-head">
-        <h2 id="o-next" className="o-h2 o-h2-day">Next 24 hours</h2>
+        <h3 className="o-mono o-loop-h3">Next 24 hours</h3>
         <span className="o-sub">
           {events.length} thing{events.length === 1 ? '' : 's'}{yours > 0 ? ` · ${yours} of them ${yours === 1 ? 'is' : 'are'} you` : ''}
         </span>
       </div>
-      {crons.status === 'unavailable' && <Note>Scheduled jobs: {unavailable(crons)}</Note>}
       {events.length === 0 ? <Note>Nothing is scheduled in the next 24 hours.</Note> : (
         <div className="o-scroll-x">
           <div className="o-timeline" role="list" aria-label="The next 24 hours, from now">
@@ -135,11 +160,11 @@ function NextDay({ payload, now, roster, items }) {
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
-// ---- Burn and the heat map ----
+// ---- Burn and the heat map, inside Usage's fold ----
 
 // The hourly series arrive with the server change in this phase; a server that
 // predates it says nothing about them, which is said here rather than drawn as
@@ -155,10 +180,10 @@ function Burn({ payload }) {
   const bars = burnBars(hourly?.last24h);
   const shares = burnShares(hourly?.last24h);
   return (
-    <section aria-labelledby="o-burn" className="o-panel o-panel-dark o-burn">
+    <div className="o-burn">
       <div className="o-panel-head o-panel-head-icon">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF8A5B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" /></svg>
-        <h2 id="o-burn" className="o-h2">Burn</h2>
+        <h3 className="o-h2">Burn</h3>
       </div>
       {!hourly ? <Note dark>{env.status === 'unavailable' ? unavailable(env) : NOT_SENT}</Note> : (
         <>
@@ -190,7 +215,7 @@ function Burn({ payload }) {
           {partial && <Note dark>{PARTIAL}</Note>}
         </>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -200,9 +225,9 @@ function HeatMap({ payload }) {
   const { env, hourly, partial } = hourlyOf(payload);
   const heat = hourly ? heatRows(hourly.week) : null;
   return (
-    <section aria-labelledby="o-heat" className="o-panel o-heat">
+    <div className="o-inset o-heat">
       <div className="o-panel-head">
-        <h2 id="o-heat" className="o-h2 o-h2-day">This week, hour by hour</h2>
+        <h3 className="o-h2 o-h2-day">This week, hour by hour</h3>
         {heat && <span className="o-sub"><b className="o-strong">{compactTokens(heat.total)}</b> tokens{heat.peakLabel ? ` · peak ${heat.peakLabel}` : ''}</span>}
       </div>
       {!heat ? <Note>{env.status === 'unavailable' ? unavailable(env) : NOT_SENT}</Note> : (
@@ -229,54 +254,31 @@ function HeatMap({ payload }) {
         </div>
       )}
       {heat && partial && <Note>{PARTIAL}</Note>}
-    </section>
+    </div>
   );
 }
 
-// The Jarvis OS order (docs/design/2026-11-10-jarvis-os-home.md, §4): Needs you,
-// then Usage limits beside Today's routines, then Live agents (war room slice 1,
-// outside "More" so a phone sees it), then the rest in the round 4 order:
-// the agent work map, Today agent by agent, Latest runs, Next 24 hours, Burn beside
-// the week's heat map. On a phone the rest sits under one "More" disclosure that
-// remembers its state per viewer, so the first two screens are what Jeff came for.
-// The Loops panel (self-healing loops, §6) leads the rest, and moves up under Usage
-// limits while a loop is open, so a phone shows it without opening More.
-export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged }) {
-  const phone = useMediaQuery(PHONE_QUERY);
-  const [more, setMore] = useMore();
-  const loopsOpen = hasOpen(payload?.loops);
-  const loops = <Loops payload={payload} now={now} />;
-  const rest = (
-    <>
-      {!loopsOpen && loops}
-      <AgentMap payload={payload} now={now} roster={roster} />
-      <TodayByAgent payload={payload} now={now} roster={roster} />
-      <LatestRuns payload={payload} now={now} roster={roster} />
-      <NextDay payload={payload} now={now} roster={roster} items={board.todos} />
-      <div className="o-row">
-        <Burn payload={payload} />
-        <HeatMap payload={payload} />
+// The home screen since 2026-11-14 (board f74ca819): eleven sections became five, in
+// the order lib/orbit/home.js gives (homeSections). Needs you; Usage, the limits up
+// front with Burn and the week's heat map behind a fold; Today's schedule, the routines
+// over Next 24 hours with the loops' line at its foot; one Agents card with tabs Now
+// (the live agents and their Stop buttons), Today (the lanes and the work map) and
+// Recent (the latest runs); and Loops, only while a loop is open. On an iPad
+// Usage and Today's schedule share a row, as Usage limits and Today's routines did.
+// Nothing folds by width any more: the tabs and the two folds keep a phone's first
+// screens short, and each fold remembers its state per viewer.
+export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged, agentsTab, setAgentsTab }) {
+  const parts = {
+    waiting: <Waiting key="waiting" board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} onChanged={onChanged} />,
+    agents: <AgentsCard key="agents" payload={payload} now={now} roster={roster} tab={agentsTab} onTab={setAgentsTab} />,
+    usage: (
+      <div key="usage" className="o-row">
+        <Usage payload={payload} now={now} />
+        <Schedule payload={payload} now={now} roster={roster} items={board.todos} />
       </div>
-    </>
-  );
-  return (
-    <main className="o-wrap o-main">
-      <Waiting board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} onChanged={onChanged} />
-      <div className="o-row">
-        <UsageLimits payload={payload} now={now} />
-        <Routines payload={payload} now={now} />
-      </div>
-      <LiveAgents payload={payload} now={now} roster={roster} />
-      {loopsOpen && loops}
-      {!phone ? rest : (
-        <section className="o-more-fold" aria-label="More panels">
-          <button type="button" className="o-btn o-more-toggle" aria-expanded={more} aria-controls="o-more-panels" onClick={() => setMore(!more)}>
-            <svg className={`o-wcard-turn${more ? ' o-turned' : ''}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-            {more ? 'Less' : `More: ${loopsOpen || !payload?.loops ? '' : 'loops, '}agents, latest runs, next 24 hours, burn, this week`}
-          </button>
-          {more && <div id="o-more-panels" className="o-more-panels">{rest}</div>}
-        </section>
-      )}
-    </main>
-  );
+    ),
+    schedule: null, // drawn in Usage's row
+    loops: <Loops key="loops" payload={payload} now={now} />
+  };
+  return <main className="o-wrap o-main">{homeSections(payload?.loops).map(k => parts[k])}</main>;
 }

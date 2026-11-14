@@ -417,6 +417,40 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**Home merge (board f74ca819): eleven Overview sections become five, built 2026-11-14
+overnight on `jos/home-merge` (worktree `~/Projects/.worktrees/ccr-home-merge`, from main
+09facae); Jeff picked Usage before Agents 11-14 ("I think usage before agents").** Jeff
+11-14: "Feels like we've got some duplicate sections now." The order
+(`web/src/lib/orbit/home.js`): Needs you; Usage (rings up front, Burn and the heat map
+behind a fold) beside Today's schedule (Today's routines over Next 24 hours, the loops'
+line at its foot); Agents (tabs Now = Live agents with Stop, Today = Today agent by agent
+over the work map, Recent = Latest runs); Loops only while a loop is open. Page only, no server change; README "The
+Orbit page" has the details. Where each old section went:
+Usage limits → Usage; Today's routines and Next 24 hours → Today's schedule; Live agents →
+Agents/Now; agent work map and Today agent by agent → Agents/Today; Latest runs →
+Agents/Recent; Burn and This week → Usage's fold; Loops → its own section while open, else
+the line in Today's schedule; the phone's More fold is gone. Checked: web 243/243 and
+server 1195/1195 in two TZs (server under umask 022, below); 27/27 mutants on the new
+tests; headless Chromium 78/78 (tabs, keys, Stop sheet from the Now tab, the Board round
+trip keeps the tab, both folds and their memory, 44 px buttons, no sideways scroll at
+320/390/820/1180, an older server's missing blocks); screenshots before and after in
+`~/.local/state/jarvis/outbox/home-merge/`. Open:
+- Jeff's look and his call on the order: the board item's order puts Agents above Usage,
+  against his 10-19 rule (usage in the first two blocks on a phone). Swapping is one line
+  in `homeSections` plus its test.
+- A loop open now sits last, where before it moved up under Usage limits on a phone.
+- On an iPad held sideways (1180) Next 24 hours sits in the narrower right column and
+  scrolls sideways; its label collisions for events close together (4:30 PM You item and
+  a 5:34 PM reset) are as on main.
+- The Overview stays light-only in dark mode, as on main (dark tokens cover Chat and Feed).
+- Safari and real devices unverified (Chromium headless only).
+- Go-live: Jeff's OK on the layout, C&P, then a web build (page only; no restart is
+  needed for this branch, but a build is a live deploy, so build after the C&P).
+- Found on the way: `acks.test.mjs` "an alert with no since" was a date bomb (a fixed
+  `nextRunAt` against the real clock; failing about 11-13 08:54Z to 11-14 06:53Z), fixed
+  in this branch's test only. "the store reads an absent file…" fails under umask 077 (the
+  agent sandbox's), passes under 022: an environment fact, not a bug.
+
 **War room slice 2 (board 83daafe7): Stop with Face ID, option B, built and staged
 2026-11-13 on `jos/war-room-2` (from main a4946a5, worktree
 `~/Projects/.worktrees/ccr-war-room-2`) and, in Jarvis's repo, `jos/war-room-stop` (from
@@ -432,7 +466,7 @@ section. Open:
 - Unverified until that first stop: TaskStop taking the id from `agent-<id>.jsonl`, and
   whether it ends a running Bash child; Safari and real Face ID; whether Jarvis's Bash
   prompts for `node .../stop-match.mjs` (an allow rule is Jarvis's and Jeff's call).
-- `acks.test.mjs` "an alert with no since" still fails on main a4946a5 (not this work).
+- `acks.test.mjs` "an alert with no since" was a date bomb, fixed on `jos/home-merge` (above).
 
 **War room slice 1 (board 83daafe7): the Live agents panel, merged 2026-11-13 (main
 a4946a5), not live.** Read-only: the agent runs going now, under Usage limits on the Overview

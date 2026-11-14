@@ -7,6 +7,11 @@ import { Note } from './Note.jsx';
 // it has no buttons, and the kill switch is a file the page can't touch. The logic is in
 // src/lib/orbit/loops.js. A server from before the loops sends nothing, and then there is
 // no panel.
+//
+// Since 2026-11-14 (board f74ca819) the section shows only while a loop is open
+// (lib/orbit/home.js, homeSections). With none open, the same view sits behind one line
+// at the foot of Today's schedule (LoopsFold), so the kill switch, the quiet jobs and
+// the week's heals are still a tap away.
 export function Loops({ payload, now }) {
   const v = loopsView(payload?.loops, now);
   if (!v) return null;
@@ -17,6 +22,31 @@ export function Loops({ payload, now }) {
         <span className="o-sub">{v.sub}</span>
         <span className={`o-loop-chip o-tone-${v.chip.tone}`} title={v.chip.why ?? undefined}>{v.chip.label}</span>
       </div>
+      <LoopsDetail v={v} />
+    </section>
+  );
+}
+
+// The line at the foot of Today's schedule while no loop is open: the chip's words and
+// the summary on a button that opens the rest in place.
+export function LoopsFold({ payload, now, line, open, onToggle }) {
+  const v = loopsView(payload?.loops, now);
+  if (!v || !line) return null;
+  return (
+    <div className="o-loops-fold">
+      <button type="button" className="o-fold-toggle" aria-expanded={open} aria-controls="o-loops-detail" onClick={() => onToggle(!open)}>
+        <svg className={`o-wcard-turn${open ? ' o-turned' : ''}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        <span className="o-mono o-fold-tag">Loops</span>
+        <span>{line}</span>
+      </button>
+      {open && <div id="o-loops-detail" className="o-loops-detail"><LoopsDetail v={v} /></div>}
+    </div>
+  );
+}
+
+function LoopsDetail({ v }) {
+  return (
+    <>
       {v.chip.why && v.chip.tone !== 'ok' && <Note>{v.chip.label}: {v.chip.why}.</Note>}
       {v.empty && <Note>Nothing has needed a heal this week.</Note>}
       {v.open.length > 0 && (
@@ -77,6 +107,6 @@ export function Loops({ payload, now }) {
           </ul>
         </>
       )}
-    </section>
+    </>
   );
 }
