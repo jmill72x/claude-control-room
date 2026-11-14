@@ -417,6 +417,23 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
+**War room slice 1 (board 83daafe7): the Live agents panel, built and staged 2026-11-13 on
+`jos/war-room` (from main 08244d2, worktree `~/Projects/.worktrees/ccr-war-room`), not
+committed.** Read-only: the agent runs going now, under Usage limits on the Overview
+(README, "Live agents"). Shuri's pick 3 assumed the server "already polls `claude agents
+--json`": it doesn't, since 2026-10-30, and the panel doesn't bring it back; it reads the
+transcripts the sessions collector already reads (subagent meta files plus a new
+run-ended signal in the parser). Live after C&P and a restart (Needs Jeff; a web build is
+a live deploy, so build only with the restart). Open:
+- Stop buttons, slice 2: designed only, `docs/design/2026-11-13-war-room-stop.md` (Stop
+  asks Jarvis through the chat, Jarvis calls `TaskStop`; confirm sheet, no Face ID).
+  Waits on Jeff's pick and two checks in Jarvis's session.
+- Not verified on real devices or in Safari (Chromium headless only, 360-1440 px).
+- A run stopped from outside (a TaskStop, a closed session) stays "live" until its
+  15-minute window passes, marked "quiet" after 2 minutes.
+- Unrelated, found while testing: `server/test/acks.test.mjs` "an alert with no since
+  takes at most 24 hours over the route too" fails on main 08244d2 as well (1 of 1173).
+
 **Exact Bash on approval cards (board 320ecc71 and 8ecf3ca9): Ultron's two conditions and
 his 11-13 re-read fixes are merged (main e59ba37); the console test (step 10) ran 11-13 and
 reworked the match (main 5cf038e), and Jeff's re-test of that passed 11-13 (the hook 18-23

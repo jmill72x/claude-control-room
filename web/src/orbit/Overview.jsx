@@ -10,6 +10,7 @@ import { AgentMap, TodayByAgent, LatestRuns } from './Agents.jsx';
 import { Waiting } from './Waiting.jsx';
 import { Routines } from './Routines.jsx';
 import { Loops } from './Loops.jsx';
+import { LiveAgents } from './Live.jsx';
 import { hasOpen } from '../lib/orbit/loops.js';
 import { youEvents } from '../lib/orbit/waiting.js';
 import { useMediaQuery } from '../hooks/useMediaQuery.js';
@@ -233,7 +234,8 @@ function HeatMap({ payload }) {
 }
 
 // The Jarvis OS order (docs/design/2026-11-10-jarvis-os-home.md, §4): Needs you,
-// then Usage limits beside Today's routines, then the rest in the round 4 order:
+// then Usage limits beside Today's routines, then Live agents (war room slice 1,
+// outside "More" so a phone sees it), then the rest in the round 4 order:
 // the agent work map, Today agent by agent, Latest runs, Next 24 hours, Burn beside
 // the week's heat map. On a phone the rest sits under one "More" disclosure that
 // remembers its state per viewer, so the first two screens are what Jeff came for.
@@ -264,6 +266,7 @@ export function Overview({ payload, now, roster, board, waiting, setWaiting, onO
         <UsageLimits payload={payload} now={now} />
         <Routines payload={payload} now={now} />
       </div>
+      <LiveAgents payload={payload} now={now} roster={roster} />
       {loopsOpen && loops}
       {!phone ? rest : (
         <section className="o-more-fold" aria-label="More panels">

@@ -270,7 +270,7 @@ week later. `/orbit.html`, its address before the flip, has no file of its own: 
 server's single-page fallback answers it with the same page, so saved links and
 `#board/<id>` addresses keep working. Its Overview runs in the Jarvis OS order
 (`docs/design/2026-11-10-jarvis-os-home.md`, §4): Needs you, Usage limits beside Today's
-routines, then the agent work map, Today agent by agent, Latest runs, Next 24 hours, and
+routines, Live agents (war room slice 1, built 2026-11-13), then the agent work map, Today agent by agent, Latest runs, Next 24 hours, and
 Burn beside the week's heat map; on a phone (700 px and under) those last six sit under
 one "More" disclosure that remembers its state per viewer. Phases 1 to 4 of the Orbit
 plan and Phase 1b of the Jarvis OS plan give it:
@@ -361,6 +361,23 @@ plan and Phase 1b of the Jarvis OS plan give it:
   today: filled once its log has been written since (it ran), hollow until then, and as
   plain marks when job-status hasn't answered. On a phone the lanes
   scroll sideways inside the panel, with the names pinned, and open with now in view.
+- **Live agents (war room slice 1, board 83daafe7; built 2026-11-13, not live):** the
+  agent runs going right now, outside "More" so a phone shows it. Each row: the agent (a
+  roster agent's name and picture, or a subagent's type such as general-purpose), the
+  brief's one-line description (never the prompt), how long it has run, its model family,
+  its new tokens so far, and the session that started it (its `claude -n` name, "unnamed
+  session", or "direct run" for `claude -p --agent`). A run silent for 2 minutes or more
+  is marked "quiet N min" (a long tool call, or a run stopped from outside). Read-only: no
+  button, no new route. The server builds it as `liveAgents` in the sessions panel
+  (`server/lib/live-agents.mjs`, each minute, from the transcripts it already reads; no
+  `claude` is started): a subagent with a meta file, or a `--agent` run on the roster,
+  is live until its latest assistant line ends it (a final answer, or a `SubagentHandback`
+  call; `endsRun` in `lib/parse-transcript.mjs`) and while it wrote a line within 15
+  minutes. It sends no path, session id or prompt text; `id` is a hash of the transcript's
+  path. Top-level sessions (the lead's own, `/usage` polls, other terminals) are not
+  listed. A run that ends shows for up to about 90 s more (the minute's collector pass
+  plus the page's 30 s poll). Stop buttons are designed, not built:
+  `docs/design/2026-11-13-war-room-stop.md`.
 - **Latest runs (Phase 3):** the 10 most recent runs, each with its time (and weekday
   when it wasn't today), the agent, its task and its tokens.
 - **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any

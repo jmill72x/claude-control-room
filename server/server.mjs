@@ -59,6 +59,7 @@ import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
 import { buildAgentWork } from './lib/agent-work.mjs';
+import { buildLiveAgents } from './lib/live-agents.mjs';
 import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 
@@ -208,6 +209,8 @@ registry.register('sessions', async () => {
     // a routine's runs; before the first crons pass they are not read yet, and
     // those runs go unnamed for that minute.
     agentWork: buildAgentWork({ transcripts, sessionNames, roster, crons: cache.get('crons', now).data, now }),
+    // The live agents panel on the Overview (lib/live-agents.mjs): runs going now.
+    liveAgents: buildLiveAgents({ transcripts, sessionNames, roster, now }),
     unavailableRoots,
     unreadablePaths,
     projects: buildProjects({

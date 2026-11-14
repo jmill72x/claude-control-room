@@ -50,6 +50,17 @@ export function requestKey(entry) {
   return JSON.stringify([requestId, messageId]);
 }
 
+// Whether an assistant line ends its run: the model stopped on its own (a final
+// answer), or it called SubagentHandback, the tool an agent of Jarvis's ends its
+// run with (its result line follows, and nothing after it). A line that stopped
+// to call any other tool, or has no stop reason yet, leaves the run going.
+const FINAL_STOPS = new Set(['end_turn', 'stop_sequence', 'refusal']);
+export function endsRun(message) {
+  const content = Array.isArray(message?.content) ? message.content : [];
+  if (content.some(c => c?.type === 'tool_use' && c.name === 'SubagentHandback')) return true;
+  return FINAL_STOPS.has(message?.stop_reason);
+}
+
 // One transcript's parser, fed a line at a time, so that no transcript has to be
 // held whole. A long session's file outgrows what one string can hold: Node stops
 // at about 512 MiB, and Jarvis's transcript was 145 MB after 31 hours on
@@ -66,6 +77,10 @@ export function createTranscriptParser(surface) {
   // agent; a session started as `claude -n <name>` writes `agent-name` lines,
   // again whenever it is renamed, so the latest one is its name now.
   let agentSetting = null, agentName = null;
+  // Whether the run is still going, for the live agents panel (lib/live-agents.mjs):
+  // the latest time on any line (a request being sent, a tool's result), and whether
+  // the latest assistant line ended the run (see endsRun).
+  let lastLineTs = null, ended = false;
 
   return {
     line(line) {
@@ -75,6 +90,10 @@ export function createTranscriptParser(surface) {
       // A line that holds JSON's null, or any other non-object, carries nothing
       // to read. Reading a field off null used to throw and fail the whole pass.
       if (d === null || typeof d !== 'object') return;
+
+      const lineTs = Date.parse(d.timestamp ?? '');
+      if (Number.isFinite(lineTs) && (lastLineTs === null || lineTs > lastLineTs)) lastLineTs = lineTs;
+      if (d.type === 'assistant' && d.message && typeof d.message === 'object') ended = endsRun(d.message);
 
       if (d.sessionId && !sessionId) sessionId = d.sessionId;
       if (d.type === 'ai-title' && d.aiTitle) { title = d.aiTitle; return; }
@@ -121,7 +140,7 @@ export function createTranscriptParser(surface) {
         if (tokens <= 0 && cacheRead <= 0) continue;
         records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
       }
-      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records };
+      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended };
     }
   };
 }
