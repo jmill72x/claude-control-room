@@ -678,3 +678,38 @@ test('L-b: a coalesced event the store refuses leaves no dedupe key; the next pa
     assert.equal((await env.events.fromAlerts([cronAlert('com.example.backup'), cronAlert('com.example.sync')], env.ctx)).made, 1);
   } finally { await env.done(); }
 });
+
+// War room slice 2 (lib/agent-stop.mjs): a stop line goes only to a channel that said
+// `stop` at hello, only within STOP_DELIVER_MS of the tap, and is marked undelivered otherwise.
+test('stop lines: only to a channel that declared stop, only while fresh, else marked undelivered', async () => {
+  const env = await setup();
+  const sock = createSocketRouter({ store: env.store, events: env.events, now: () => env.clock.t, log: () => {}, pingMs: 60e3 });
+  const srv = await listen(sock.handler, env.dir, 's.sock');
+  const streams = [];
+  const stop = start => ({ from: 'jeff', kind: 'stop', text: 'Stop asked', device: 'iPhone', meta: { stop: { row: 'a1b2c3d4e5f60718', agent: 'pepper', start } } });
+  try {
+    const hello = (body, token) => call({ socketPath: srv.socketPath, method: 'POST', path: '/v1/hello', headers: token ? { [SESSION_HEADER]: token } : {}, body });
+    const old = await hello({ pid: 1, version: '0.4.6', capabilities: [EVENTS_CAPABILITY] });
+    assert.equal(sock.stopsOk(), false, 'a channel that did not say stop takes none');
+    const s1 = await env.store.append(stop(env.clock.t - MIN));
+    const q = await env.store.append({ from: 'jeff', kind: 'chat', text: 'marker' });
+    const a = openStream(srv.socketPath, '/v1/inbound?after=0', { [SESSION_HEADER]: old.json.token });
+    streams.push(a);
+    await until(() => a.lines().some(l => l.id === q.id), 'the marker');
+    await until(() => env.store.get(s1.id).state === 'undelivered', 'the undelivered mark');
+    assert.equal(a.lines().some(l => l.type === 'stop'), false);
+    const now = await hello({ pid: 1, version: '0.4.7', capabilities: [EVENTS_CAPABILITY, 'stop'] }, old.json.token);
+    assert.equal(sock.stopsOk(), true);
+    const late = await env.store.append(stop(env.clock.t - MIN));
+    env.clock.t += 2 * MIN + 1;
+    const fresh = await env.store.append(stop(env.clock.t - MIN));
+    const b = openStream(srv.socketPath, `/v1/inbound?after=${q.seq}`, { [SESSION_HEADER]: now.json.token });
+    streams.push(b);
+    await until(() => b.lines().some(l => l.type === 'stop'), 'the stop line');
+    await until(() => env.store.get(late.id).state === 'undelivered', 'a stale stop marked');
+    assert.deepEqual(b.lines().filter(l => l.type === 'stop').map(l => l.id), [fresh.id]);
+    assert.deepEqual(Object.keys(b.lines().find(l => l.type === 'stop')).sort(), ['agent', 'at', 'id', 'row', 'seq', 'start', 'type']);
+    await assert.rejects(env.store.append({ from: 'jarvis', kind: 'stop', text: 'x', device: 'iPhone' }), /only a paired device makes stops/);
+    await assert.rejects(env.store.append({ from: 'jeff', kind: 'stop', text: 'x' }), /only a paired device makes stops/);
+  } finally { for (const s of streams) await s.close(); await srv.close(); await env.done(); }
+});

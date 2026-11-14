@@ -40,7 +40,9 @@ export function oneLine(s, max = LINE_MAX) {
 export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced', 'channel-silent', 'paired', 'revoked', 'pairing-failed', 'verdict', 'pairing-started', 'push-forbidden',
   'approver-changed', 'approvals-mode', 'approvals-relay', 'approvals-test-channel', 'approvals-kill', 'approvals-lockout', 'approvals-anonymous', 'approvals-burst', 'approvals-flood', 'approvals-exact-conflict',
   // Shortcut keys (lib/shortcut-keys.mjs, lib/shortcut-routes.mjs): a key can send as the owner, so its whole life is reported.
-  'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused', 'shortcut-expired']);
+  'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused', 'shortcut-expired',
+  // Stops and the Face ID behind them (lib/agent-stop.mjs, lib/stepup.mjs): a stop ends work, and a passkey is what lets one through.
+  'stop-asked', 'passkey-pending', 'passkey-added', 'passkey-failed']);
 
 // The words for one event, made safe for one line.
 export function chatEventLine(event) {
@@ -85,6 +87,10 @@ export function chatEventLine(event) {
     'shortcut-over-limit': `the Shortcut key ${event.key?.name ?? '?'} went over its ${event.what === 'presence' ? 'presence' : event.what === 'files' ? 'daily file' : event.what === 'uploads' ? 'shares-at-once' : event.what === 'conversions' ? 'photo conversion' : 'message'} limit and is being refused`,
     'shortcut-pair-refused': `${event.count ?? 'several'} Shortcut pairing tries were refused in 10 minutes (a wrong code, or no code waiting)`,
     // At most once a day per key (lib/shortcut-routes.mjs), however often the key is tried.
+    'stop-asked': `a stop was asked from ${event.device ?? 'a device'} for a ${event.agent ?? 'background'} run (Face ID passed); Jarvis answers in the chat`,
+    'passkey-pending': `${event.device?.name ?? 'a device'} made a Face ID passkey for stops; it counts only once its code is confirmed with chat-pair on the machine`,
+    'passkey-added': `a Face ID passkey for stops was confirmed for ${event.device?.name ?? '?'} (by ${event.by ?? '?'})`,
+    'passkey-failed': 'a Face ID set-up for stops failed on three wrong codes',
     'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;

@@ -417,17 +417,31 @@ OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside J
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
 half (the classic page's deletion, about 11-17) is still open.
 
-**War room slice 1 (board 83daafe7): the Live agents panel, built and staged 2026-11-13 on
-`jos/war-room` (from main 08244d2, worktree `~/Projects/.worktrees/ccr-war-room`), not
-committed.** Read-only: the agent runs going now, under Usage limits on the Overview
+**War room slice 2 (board 83daafe7): Stop with Face ID, option B, built and staged
+2026-11-13 on `jos/war-room-2` (from main a4946a5, worktree
+`~/Projects/.worktrees/ccr-war-room-2`) and, in Jarvis's repo, `jos/war-room-stop` (from
+build/v1 c7de21e, worktree `~/Projects/.worktrees/jarvis-war-room-stop`; channel 0.4.7),
+not committed.** Jeff picked B with Face ID over Ultron's A. Design, the answers to
+Ultron's two objections, C1-C6, tests and the go-live order: the design doc's "Built"
+section. Open:
+- Ultron's review 11-13: ship with fixes (1 medium, 9 low), all folded in and re-staged
+  (design doc, "Ultron's review fixes"); his re-read of the fixes is next.
+- Go-live: C&P both, restart the Control Room, release channel 0.4.7 and restart Jarvis
+  through `jarvis-start`, set up Face ID on each approver device (`bin/chat-pair passkey
+  <CODE>` at the mini), then one stop on a scratch background agent running `sleep 300`.
+- Unverified until that first stop: TaskStop taking the id from `agent-<id>.jsonl`, and
+  whether it ends a running Bash child; Safari and real Face ID; whether Jarvis's Bash
+  prompts for `node .../stop-match.mjs` (an allow rule is Jarvis's and Jeff's call).
+- `acks.test.mjs` "an alert with no since" still fails on main a4946a5 (not this work).
+
+**War room slice 1 (board 83daafe7): the Live agents panel, merged 2026-11-13 (main
+a4946a5), not live.** Read-only: the agent runs going now, under Usage limits on the Overview
 (README, "Live agents"). Shuri's pick 3 assumed the server "already polls `claude agents
 --json`": it doesn't, since 2026-10-30, and the panel doesn't bring it back; it reads the
 transcripts the sessions collector already reads (subagent meta files plus a new
-run-ended signal in the parser). Live after C&P and a restart (Needs Jeff; a web build is
-a live deploy, so build only with the restart). Open:
-- Stop buttons, slice 2: designed only, `docs/design/2026-11-13-war-room-stop.md` (Stop
-  asks Jarvis through the chat, Jarvis calls `TaskStop`; confirm sheet, no Face ID).
-  Waits on Jeff's pick and two checks in Jarvis's session.
+run-ended signal in the parser). Live after a restart (Needs Jeff; a web build is a live
+deploy, so build only with the restart). Open:
+- Stop buttons: slice 2, above.
 - Not verified on real devices or in Safari (Chromium headless only, 360-1440 px).
 - A run stopped from outside (a TaskStop, a closed session) stays "live" until its
   15-minute window passes, marked "quiet" after 2 minutes.

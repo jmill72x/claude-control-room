@@ -71,7 +71,8 @@ export async function readSubagentMeta(file) {
   }
   const d = JSON.parse(text);
   if (d === null || typeof d !== 'object' || Array.isArray(d)) throw new Error(`${path} is not an object`);
-  return { agentType: field(d.agentType, 200), description: field(d.description, 1000) };
+  // requestShape: "background" or not; only a background run can be stopped (lib/live-agents.mjs).
+  return { agentType: field(d.agentType, 200), description: field(d.description, 1000), requestShape: field(d.requestShape, 40) };
 }
 
 // Each transcript is read as a stream, a line at a time (parseTranscriptFile),

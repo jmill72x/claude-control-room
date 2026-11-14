@@ -21,7 +21,9 @@ import { secretShapes } from './secret-shape.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 // `event` (lib/events.mjs): a templated line from `system` for the lead's session.
-export const CHAT_KINDS = new Set(['chat', 'permission', 'verdict', 'notice', 'event']);
+// `stop` is a stop request from a paired approver device (lib/agent-stop.mjs): typed
+// fields in meta, fixed words in text, and only the owner's side makes one.
+export const CHAT_KINDS = new Set(['chat', 'permission', 'verdict', 'notice', 'event', 'stop']);
 export const CHAT_FROM = new Set(['jeff', 'jarvis', 'system']);
 export const MAX_TEXT = 32000;
 export const MAX_PAGE_TEXT = 8000;
@@ -193,6 +195,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (!CHAT_FROM.has(from)) throw new Error('from must be jeff, jarvis or system');
       if (!CHAT_KINDS.has(kind)) throw new Error('kind is not one of the chat kinds');
       if (kind === 'event' && from !== 'system') throw new Error('only system makes events');
+      if (kind === 'stop' && (from !== 'jeff' || typeof device !== 'string' || !device)) throw new Error('only a paired device makes stops');
       if (typeof text !== 'string' || text.length > MAX_TEXT) throw new Error(`text must be a string of at most ${MAX_TEXT} characters`);
       if (replyTo !== null && !isMessageId(replyTo)) throw new Error('replyTo must be a message id');
       if (clientId !== null && !isClientId(clientId)) throw new Error('clientId must be an id of at most 80 characters');

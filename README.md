@@ -367,8 +367,7 @@ plan and Phase 1b of the Jarvis OS plan give it:
   brief's one-line description (never the prompt), how long it has run, its model family,
   its new tokens so far, and the session that started it (its `claude -n` name, "unnamed
   session", or "direct run" for `claude -p --agent`). A run silent for 2 minutes or more
-  is marked "quiet N min" (a long tool call, or a run stopped from outside). Read-only: no
-  button, no new route. The server builds it as `liveAgents` in the sessions panel
+  is marked "quiet N min" (a long tool call, or a run stopped from outside). The server builds it as `liveAgents` in the sessions panel
   (`server/lib/live-agents.mjs`, each minute, from the transcripts it already reads; no
   `claude` is started): a subagent with a meta file, or a `--agent` run on the roster,
   is live until its latest assistant line ends it (a final answer, or a `SubagentHandback`
@@ -376,8 +375,20 @@ plan and Phase 1b of the Jarvis OS plan give it:
   minutes. It sends no path, session id or prompt text; `id` is a hash of the transcript's
   path. Top-level sessions (the lead's own, `/usage` polls, other terminals) are not
   listed. A run that ends shows for up to about 90 s more (the minute's collector pass
-  plus the page's 30 s poll). Stop buttons are designed, not built:
-  `docs/design/2026-11-13-war-room-stop.md`.
+  plus the page's 30 s poll).
+  **Stop (slice 2, option B with Face ID; built 2026-11-13, not live):** a row the server
+  marks `stoppable` (a background subagent of a roster agent, in the session named as
+  the lead's) shows **Stop** on an approver device. Stop opens a confirm sheet, then the
+  browser's Face ID sheet; the server checks the passkey's answer and puts a typed stop
+  line (row id, roster key, start time; no text) on the channel stream, and Jarvis, on
+  channel 0.4.7 or later, matches the row against its own session's runs
+  (`jarvis-local/plugins/jarvis-channel/stop-match.mjs` in Jarvis's repo), calls
+  `TaskStop`, and answers in the chat. One stop per row a minute; a stop is never an OK
+  for anything else, and a Shortcut key can't send one. Face ID is set up once per
+  device from the same sheet and confirmed at the mini with `bin/chat-pair passkey
+  <CODE>` (at a terminal only: it shows the device and asks for its name typed back); passkeys live in `server/data/chat/passkeys.json` (0600) and go with a
+  device's revoke or its approver mark. Routes, checks and what is unverified:
+  `docs/design/2026-11-13-war-room-stop.md` ("Built").
 - **Latest runs (Phase 3):** the 10 most recent runs, each with its time (and weekday
   when it wasn't today), the agent, its task and its tokens.
 - **Next 24 hours:** the next run of each calendar job within the next 24 hours, and any
@@ -1334,7 +1345,8 @@ After a classifier block in the lead's session, every card is Deny-only for 15 m
 **Approvers.** Every paired device sees cards and may Deny; only a device with the
 approver mark may Allow. The mark is set only on the Serve host, over the admin socket:
 `bin/chat-pair approver "<device name or id>" on|off` (`--devices` shows it); each change
-is alerted, and a revoke clears it.
+is alerted, and a revoke clears it. The same mark lets a device stop a live agent
+(Live agents, "Stop"), after Face ID set up with `bin/chat-pair passkey <CODE>`.
 
 **Who can answer.** The relay reaches only the session that loaded the channel, the lead's.
 Its prompts can be answered at the terminal, in the Discord DM, through Remote Control

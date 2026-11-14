@@ -1,6 +1,6 @@
 // The live agents panel on the Overview (war room slice 1): plain functions over
 // the `liveAgents` block the server builds from the transcripts
-// (server/lib/live-agents.mjs), checked by web/test/orbit-live.test.js. Read-only.
+// (server/lib/live-agents.mjs), checked by web/test/orbit-live.test.js.
 import { compactTokens } from './page.js';
 import { agentOf } from './board.js';
 import { DIRECT_RUN, NO_BRIEF } from './agents.js';
@@ -30,6 +30,9 @@ export function liveRows({ live, roster, now }) {
     const quietFor = now - last;
     return {
       key: r.id ?? `${r.type}-${r.start}-${i}`,
+      // A Stop button may show (war room slice 2): the lead's background agent, by the server's mark.
+      id: typeof r.id === 'string' ? r.id : null,
+      stoppable: r.stoppable === true && typeof r.id === 'string',
       agent,
       name: agent.name,
       task: r.task ?? (r.direct ? DIRECT_RUN : NO_BRIEF),

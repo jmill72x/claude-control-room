@@ -230,6 +230,10 @@ function Row({ m, list, lead, chat, onReply, onView }) {
   if (m.kind === 'permission') {
     return <li className="o-chat-notice"><span>Jarvis asked for a permission{m.meta?.tool ? ` (${m.meta.tool})` : ''}: {m.text}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
   }
+  // A stop asked from the war room (server lib/agent-stop.mjs): fixed words; Jarvis answers in the thread.
+  if (m.kind === 'stop') {
+    return <li className="o-chat-notice"><span>{m.text}{m.device ? ` (from ${m.device})` : ''}{m.state === 'undelivered' ? '. Not delivered: Jarvis\'s channel did not take it in time' : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+  }
   if (m.kind === 'verdict') {
     const word = m.meta?.behavior === 'allow' || m.text === 'allow' ? 'Allowed' : 'Denied';
     return <li className="o-chat-notice"><span>{word}{m.device ? ` from ${m.device}` : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;

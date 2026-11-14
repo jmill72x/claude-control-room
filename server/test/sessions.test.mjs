@@ -393,7 +393,7 @@ test("a subagent's meta file comes with its transcript, and a top-level transcri
   await sessionWithSubagents(root);
   const out = await collectSessions({ roots: [{ root, surface: 'Code' }] });
   const byName = Object.fromEntries(out.transcripts.map(t => [t.filePath.split('/').pop(), t]));
-  assert.deepEqual(byName['agent-a1.jsonl'].meta, { agentType: 'builder', description: 'Build the thing' });
+  assert.deepEqual(byName['agent-a1.jsonl'].meta, { agentType: 'builder', description: 'Build the thing', requestShape: null });
   assert.equal(byName['agent-a1.jsonl'].subagent, true);
   assert.equal(byName['agent-a2.jsonl'].meta, null, 'no meta file is no meta, not a failure');
   assert.equal(byName['agent-a2.jsonl'].subagent, true);

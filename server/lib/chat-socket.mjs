@@ -62,6 +62,15 @@ export const REPLAY_PAGE = 100;
 export const SESSION_HEADER = 'x-session-token';
 // What a channel names in hello's `capabilities` to be sent events.
 export const EVENTS_CAPABILITY = 'events';
+// What a channel names in hello's `capabilities` to be sent stop requests (war room
+// slice 2, docs/design/2026-11-13-war-room-stop.md): one that doesn't is never sent
+// one, and the stop route refuses while it holds the socket (an older channel acks a
+// line type it doesn't know, which would swallow the stop: Ultron's L4 for events).
+export const STOP_CAPABILITY = 'stop';
+// A stop goes down the stream only this soon after the tap: one replayed after a
+// channel restart, later than this, is never delivered (marked undelivered instead),
+// so a stop can't land on a run started since.
+export const STOP_DELIVER_MS = 2 * 60e3;
 export const UNDELIVERED = 'undelivered';
 // What a stream may hold unsent before it is cut: a stalled holder's ceiling.
 export const INBOUND_BUFFER_MAX = 4 * 1024 * 1024;
@@ -96,11 +105,18 @@ const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 // its alert is still live. One that fails any of these is skipped, failing closed, and
 // marked `undelivered` in the store so the page says so (Ultron's L3). Its line carries the template's words and typed fields,
 // never an alert key or a label beyond what the words say (README, "Events").
-export function toInbound(m, { eventOk = () => false } = {}) {
+export function toInbound(m, { eventOk = () => false, stopOk = () => false } = {}) {
   if (m.kind === 'event') {
     if (m.from !== 'system' || !eventOk(m)) return null;
     const ev = m.meta?.event ?? {};
     return { type: 'event', seq: m.seq, id: m.id, at: m.at, source: typeof ev.source === 'string' ? ev.source : 'unknown', event: typeof ev.type === 'string' ? ev.type : 'unknown', text: m.text, count: Number.isInteger(ev.count) ? ev.count : 1, ids: [m.id] };
+  }
+  // A stop request (lib/agent-stop.mjs): only from the owner's side, only typed fields,
+  // never text. The channel builds its own fixed words from them (C1).
+  if (m.kind === 'stop') {
+    const st = m.meta?.stop;
+    if (m.from !== 'jeff' || !isStopMeta(st) || !stopOk(m)) return null;
+    return { type: 'stop', seq: m.seq, id: m.id, at: m.at, row: st.row, agent: st.agent, start: st.start };
   }
   if (m.from === 'jeff' && m.kind === 'chat') {
     return { type: 'message', seq: m.seq, id: m.id, at: m.at, text: m.text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
@@ -113,6 +129,12 @@ export function toInbound(m, { eventOk = () => false } = {}) {
     return { type: 'verdict', seq: m.seq, requestId: m.meta.requestId, behavior, answeredAt: Number.isSafeInteger(m.meta.answeredAt) ? m.meta.answeredAt : null, device: m.device ?? null };
   }
   return null;
+}
+// The fields a stop carries, each in the one shape the channel accepts.
+export const STOP_ROW_RE = /^[a-f0-9]{16}$/;
+export const STOP_AGENT_RE = /^[a-z][a-z0-9-]{0,39}$/;
+export function isStopMeta(st) {
+  return isObject(st) && typeof st.row === 'string' && STOP_ROW_RE.test(st.row) && typeof st.agent === 'string' && STOP_AGENT_RE.test(st.agent) && Number.isSafeInteger(st.start) && st.start > 0;
 }
 // The name the tests and older callers know.
 export const inboundEvent = toInbound;
@@ -250,7 +272,8 @@ export function createSocketRouter({
         // `capabilities`: what this channel handles beyond messages and verdicts; only
         // `events` means anything yet. Absent or malformed, it handles none.
         const events = Array.isArray(body.capabilities) && body.capabilities.includes(EVENTS_CAPABILITY);
-        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null, events };
+        const stops = Array.isArray(body.capabilities) && body.capabilities.includes(STOP_CAPABILITY);
+        client = { pid, version: typeof body.version === 'string' ? body.version.slice(0, 40) : null, startedAt: Number.isFinite(body.startedAt) ? body.startedAt : null, helloAt: at, lastHeartbeatAt: at, token: newToken(), sentSeq: store.deliveredSeq, streamClosedAt: null, events, stops };
         const { token } = client;
         endInbound(holder ? 'superseded' : 'replaced');
         // A new channel process: the requests the old one relayed can't be answered
@@ -379,16 +402,18 @@ export function createSocketRouter({
           return send(line);
         };
         const sessionEventOk = x => session.events === true && eventOk(x);
-        // An event this stream passes over unsent: marked so the page shows it (never
-        // an owner's or lead's message; never one already `off`).
+        const sessionStopOk = x => session.stops === true && now() - x.at <= STOP_DELIVER_MS;
+        // An event or a stop this stream passes over unsent: marked so the page shows it (never
+        // an owner's chat or a lead's message; never one already `off`).
         const skipped = m => {
-          if (m.kind !== 'event' || m.from !== 'system' || m.state === 'off' || m.state === UNDELIVERED) return;
+          const ours = (m.kind === 'event' && m.from === 'system') || (m.kind === 'stop' && m.from === 'jeff');
+          if (!ours || m.state === 'off' || m.state === UNDELIVERED) return;
           store.setState?.(m.id, UNDELIVERED)?.catch?.(err => log(`chat: an event's undelivered mark failed (${err?.message ?? err})`));
         };
         const deliver = m => {
           if (m.seq <= done) return true;
           done = m.seq;
-          const ev = toInbound(m, { eventOk: sessionEventOk });
+          const ev = toInbound(m, { eventOk: sessionEventOk, stopOk: sessionStopOk });
           if (!ev) skipped(m);
           let ok = true;
           if (ev?.type === 'event' && catchingUp) gathered.push(ev);
@@ -517,5 +542,7 @@ export function createSocketRouter({
     }
   }
 
-  return { handler, status, isAttachmentId };
+  // Whether a stop can go now: a fresh channel that said at hello it takes stops.
+  const stopsOk = () => fresh(now()) && client?.stops === true;
+  return { handler, status, stopsOk, isAttachmentId };
 }

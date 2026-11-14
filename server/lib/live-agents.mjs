@@ -15,7 +15,16 @@
 // the agent's type, the brief's one-line description (never the prompt), when the
 // run started and last wrote, its model family, its new tokens, and the name of
 // the session that started it. No path, session id or prompt text. `id` is a hash
-// of the transcript's path, a stable key for the page's list and nothing more.
+// of the transcript's path, a stable key for the page's list and the one handle a
+// stop names (war room slice 2, lib/agent-stop.mjs): the lead hashes its own
+// subagent paths the same way to find the run (C2).
+//
+// `stoppable` marks the rows a Stop button may show on: a background subagent (its
+// meta says `requestShape: "background"`; a foreground one can't be stopped, its
+// parent takes no turn until it returns) of an agent on the roster, in a session
+// named as the lead's. The name is only what the page offers: anyone can name a
+// session so (Ultron's L4). What a stop can reach is decided by the lead itself,
+// which matches the id against its own session's files and stops only its own tasks.
 import { createHash } from 'node:crypto';
 import { familyOf } from './hourly.mjs';
 import { taskLine } from './agent-work.mjs';
@@ -47,6 +56,8 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
     byWord.set(fold(a.name), a);
   }
   const rosterAgent = word => byWord.get(fold(word)) ?? null;
+  const lead = agents[0] ?? null;
+  const isLeadName = name => lead !== null && name !== null && name !== undefined && (fold(name) === fold(lead.name) || fold(name) === fold(lead.key));
   // The session a subagent belongs to, by its `claude -n` name: the roster's
   // spelling when it is an agent's, else the name itself; null when unnamed.
   const sessionOf = id => {
@@ -64,11 +75,12 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
     if (t.subagent) {
       if (!t.meta) continue;
       const agent = rosterAgent(t.meta.agentType);
-      row = { agent: agent?.key ?? null, type: label(t.meta.agentType), direct: false, task: taskLine(t.meta.description), session: sessionOf(t.sessionId) };
+      const stoppable = agent !== null && agent !== lead && t.meta.requestShape === 'background' && isLeadName(sessionNames?.get?.(t.sessionId));
+      row = { agent: agent?.key ?? null, type: label(t.meta.agentType), direct: false, task: taskLine(t.meta.description), session: sessionOf(t.sessionId), stoppable };
     } else {
       const agent = typeof t.agentSetting === 'string' ? agents.find(a => a.key === t.agentSetting) : null;
       if (!agent) continue;
-      row = { agent: agent.key, type: agent.key, direct: true, task: null, session: null };
+      row = { agent: agent.key, type: agent.key, direct: true, task: null, session: null, stoppable: false };
     }
 
     let start = Infinity, last = -Infinity, tokens = 0, latest = null;

@@ -14,6 +14,15 @@
 //                                             letters and digits, 22 at most. Refused
 //                                             while the kill file exists
 //                                             (~/.local/state/jarvis-os/shortcuts-off)
+//   bin/chat-pair passkey <CODE>              confirm the Face ID passkey an approver
+//                                             device just made for stops (the page
+//                                             shows the code; 10 minutes, 3 tries).
+//                                             Only at a terminal: it refuses without
+//                                             a TTY, shows the device and when it was
+//                                             set up, and asks for the device's name
+//                                             typed back (any process of this user
+//                                             can reach the admin socket, so a person
+//                                             must read what is confirmed)
 //   bin/chat-pair shortcuts                   list the Shortcut keys
 //   bin/chat-pair shortcut-revoke <key>       revoke a Shortcut key, by its name or id
 //
@@ -27,11 +36,19 @@ import { join } from 'node:path';
 const socketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(homedir(), '.local', 'state', 'jarvis-os', 'admin.sock');
 const arg = process.argv[2];
 if (!arg || arg === '-h' || arg === '--help') {
-  console.error('usage: chat-pair <CODE> | --devices | approver <device> on|off | shortcut-code <name> | shortcuts | shortcut-revoke <key>');
+  console.error('usage: chat-pair <CODE> | --devices | approver <device> on|off | passkey <CODE> | shortcut-code <name> | shortcuts | shortcut-revoke <key>');
   process.exit(2);
 }
 if ((arg === 'shortcut-code' || arg === 'shortcut-revoke') && process.argv.length !== 4) {
   console.error(arg === 'shortcut-code' ? 'usage: chat-pair shortcut-code <name for the key>' : 'usage: chat-pair shortcut-revoke <key name or id>');
+  process.exit(2);
+}
+if (arg === 'passkey' && process.argv.length !== 4) {
+  console.error('usage: chat-pair passkey <CODE the page shows>');
+  process.exit(2);
+}
+if (arg === 'passkey' && !(process.stdin.isTTY && process.stdout.isTTY)) {
+  console.error('chat-pair passkey runs only at a terminal (an interactive TTY): Jeff types it himself, never a script or an agent');
   process.exit(2);
 }
 if (arg === 'approver' && (process.argv.length !== 5 || !['on', 'off'].includes(process.argv[4]))) {
@@ -76,6 +93,19 @@ try {
     const { status, body } = await call('POST', '/admin/shortcut/revoke', { key: process.argv[3] });
     if (status !== 200) { console.error(status === 404 && body.error === 'not found' ? 'Shortcut keys are off on this server (config chat.shortcuts)' : body.error ?? `HTTP ${status}`); process.exit(1); }
     console.log(`revoked: the Shortcut key ${body.key.name}`);
+  } else if (arg === 'passkey') {
+    const seen = await call('GET', '/admin/passkey');
+    if (seen.status !== 200) { console.error(seen.status === 404 ? 'this server has no Face ID for stops (an older build)' : seen.body.error ?? `HTTP ${seen.status}`); process.exit(1); }
+    const p = seen.body.pending;
+    if (!p) { console.error('no Face ID set-up is waiting'); process.exit(1); }
+    console.log(`Face ID set-up waiting: device "${String(p.name).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')}", made ${new Date(p.at).toISOString()}, expires ${new Date(p.expiresAt).toISOString()}`);
+    const { createInterface } = await import('node:readline/promises');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const typed = await rl.question('Type that device name to confirm (anything else cancels): ');
+    rl.close();
+    const { status, body } = await call('POST', '/admin/passkey', { code: String(process.argv[3]).trim().toUpperCase(), name: typed });
+    if (status !== 200) { console.error(status === 404 && body.error === 'not found' ? 'this server has no Face ID for stops (an older build)' : body.error ?? `HTTP ${status}`); process.exit(1); }
+    console.log(`confirmed: ${body.name} can now stop the lead's background agents with Face ID`);
   } else if (arg === 'approver') {
     const on = process.argv[4] === 'on';
     const { status, body } = await call('POST', '/admin/approver', { device: process.argv[3], on });

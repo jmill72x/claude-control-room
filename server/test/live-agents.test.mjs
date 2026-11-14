@@ -24,7 +24,7 @@ test('a running subagent shows its agent, brief line, start, model, tokens and s
   assert.equal(out.runs.length, 1);
   const { id, ...rest } = out.runs[0];
   assert.match(id, /^[0-9a-f]{16}$/);
-  assert.deepEqual(rest, { agent: 'forge', type: 'forge', direct: false, task: 'Build the widget', session: 'Atlas', start: NOW - 20 * MIN, last: NOW - MIN, tokens: 1500, model: 'opus' });
+  assert.deepEqual(rest, { agent: 'forge', type: 'forge', direct: false, task: 'Build the widget', session: 'Atlas', stoppable: false, start: NOW - 20 * MIN, last: NOW - MIN, tokens: 1500, model: 'opus' });
 });
 
 test('the page gets no path, session id, cwd or prompt text', () => {

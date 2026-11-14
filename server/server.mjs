@@ -60,6 +60,8 @@ import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
 import { buildAgentWork } from './lib/agent-work.mjs';
 import { buildLiveAgents } from './lib/live-agents.mjs';
+import { createStepUp, deviceEvent } from './lib/stepup.mjs';
+import { createAgentStop } from './lib/agent-stop.mjs';
 import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 
@@ -384,15 +386,20 @@ if (chatSettings.on && socketsReady) {
   // A revoked device takes the Shortcut keys it made with it (set below, once the
   // keys exist; lib/shortcut-keys.mjs, revokeMadeBy).
   let onDeviceRevoked = null;
+  // Face ID for stops (lib/stepup.mjs): a device's passkey goes with its revoke or its approver mark.
+  const stepUp = createStepUp({ path: join(chatDir, 'passkeys.json'), onEvent: event => chatEvents(event) });
   const chatDevices = createDeviceStore({
     path: join(chatDir, 'devices.json'),
     onEvent: event => {
       const logged = chatEvents(event);
       if (event?.kind === 'revoked') onDeviceRevoked?.(event.device);
+      deviceEvent(stepUp, event)?.catch(err => console.error(`stop: a device's passkey could not be removed (${err?.code ?? err?.name ?? 'error'})`));
       return logged;
     }
   });
   await chatDevices.load();
+  const passkeys = await stepUp.load();
+  console.log(`stop: ${passkeys} Face ID passkey${passkeys === 1 ? '' : 's'} on file for stops`);
   chatDevicesForFeed = chatDevices;
   events = createEvents({ store: chatStore, ledgerPath: join(HERE, 'data', 'events.json'), killSwitchPath: eventsOffPath, sources: eventsSettings.sources, triagePerDay: eventsSettings.triagePerDay });
   await events.load();
@@ -443,7 +450,10 @@ if (chatSettings.on && socketsReady) {
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
   const shortcutSettings = readShortcutsConfig(config);
   for (const problem of shortcutSettings.problems) console.error(`config: ${problem}`);
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, shortcutKeys: shortcutSettings.on });
+  // Stop buttons (war room slice 2, lib/agent-stop.mjs): the rows come from the
+  // sessions panel's latest pass, so a stop names only a run live this minute.
+  const agentStop = createAgentStop({ stepUp, socket: socketRouter, store: chatStore, onEvent: chatEvents, liveRuns: () => cache.get('sessions', Date.now())?.data?.liveAgents?.runs ?? [] });
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
@@ -459,7 +469,7 @@ if (chatSettings.on && socketsReady) {
   // kill file beside the sockets refuses every send at once, with no restart. Guarded
   // by a source test (test/shortcuts.test.mjs): the routes get the chat's own store,
   // devices, events and login.
-  const adminRouter = createAdminRouter({ devices: chatDevices, onEvent: chatEvents });
+  const adminRouter = createAdminRouter({ devices: chatDevices, onEvent: chatEvents, stepUp });
   let adminHandler = adminRouter;
   if (shortcutSettings.on) {
     const shortcutsOffPath = join(stateDir, 'shortcuts-off');

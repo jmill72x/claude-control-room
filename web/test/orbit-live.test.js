@@ -20,7 +20,7 @@ test('duration reads as seconds, minutes, then hours and minutes', () => {
 test('a roster agent shows its name, brief line, time running, model, tokens and session', () => {
   const [row] = liveRows({ live: { runs: [run()] }, roster, now: NOW });
   assert.deepEqual({ ...row, agent: row.agent.key }, {
-    key: 'abc', agent: 'forge', name: 'Forge', task: 'Build the widget', running: '12 min',
+    key: 'abc', id: 'abc', stoppable: false, agent: 'forge', name: 'Forge', task: 'Build the widget', running: '12 min',
     model: 'Opus', tokens: '58K tokens', session: 'in Atlas', quiet: null
   });
 });
