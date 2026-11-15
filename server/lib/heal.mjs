@@ -2,8 +2,9 @@
 // docs/design/2026-11-12-self-healing-loops.md. Loop 1 is built here and in
 // lib/heal-runner.mjs: a job whose only fault is an old log (job-status's log-age
 // rule) is marked "quiet, ran clean" when launchd's own run counter rose between two
-// readings and its last exit was 0 at both. The shared parts the later loops use are
-// here too: the tiers, the verb floors, the catalog and its loader, the config block,
+// readings and its last exit was 0 at both. Loop 2 (a run missed during a restart, T2)
+// is in lib/heal-missed.mjs, with its taps in lib/heal-routes.mjs. The shared parts
+// are here: the tiers, the verb floors, the catalog and its loader, the config block,
 // the ledger's lines and the page's view.
 //
 // Guardrails this file holds (design §4):
@@ -11,6 +12,10 @@
 //   loader refuses a catalog that undercuts it, or that names a verb it doesn't know.
 // - An action is handed only the tools for the verbs it declares (toolsFor), so its
 //   verb list can't understate what it does.
+// - An entry that runs a program names it in `program` (a fixed file and fixed
+//   arguments with only {uid} and {label} filled in), and the loader checks it against
+//   its one launchctl write verb's reviewed argument list (PROGRAM_ARGS), exactly. So
+//   the act and the verb list can't disagree (design §8).
 // - Targets come from config's `heal.targets` only, looked up by own keys.
 import { LAUNCHD_LABEL, jobDisplayName } from './health.mjs';
 import { sameSince } from './acks.mjs';
@@ -79,6 +84,14 @@ export const CALENDAR_GRACE_MS = 2 * MIN;
 export const PER_TARGET_DAY = 3;
 export const PER_DAY = 20;
 export const COMEBACK_MS = HOUR;
+// Loop 2's proposals (design §5.5): a card waits 2 hours after its push for a tap,
+// and between 22:00 and 07:00 (the server's own time) it waits without a push.
+export const PROPOSAL_MS = 2 * HOUR;
+export const QUIET_FROM_HOUR = 22;
+export const QUIET_UNTIL_HOUR = 7;
+
+// The one program a catalog entry may run today: launchctl, at its fixed path.
+export const LAUNCHCTL = '/bin/launchctl';
 
 // The reviewed catalog. Code, so changing an entry is a commit through C&P, and
 // Ultron reviews each new one. Loop 2 and loop 3 add theirs here.
@@ -90,8 +103,67 @@ export const CATALOG = Object.freeze([
     targetKind: 'job',
     verbs: Object.freeze(['launchctl:print', 'alert:mark-quiet']),
     settleMs: SETTLE_MAX_MS
+  }),
+  // Loop 2, on the owner's tap only: run a job whose scheduled run was missed during a
+  // restart, once. `kickstart` without `-k`, so a run that is going is never killed.
+  // Verified by launchd's run counter and last exit within the settle time.
+  Object.freeze({
+    id: 'rerun-job',
+    class: 'missed-run',
+    tier: 'T2',
+    targetKind: 'job',
+    verbs: Object.freeze(['launchctl:print', 'launchctl:kickstart']),
+    program: Object.freeze({ file: LAUNCHCTL, args: Object.freeze(['kickstart', 'gui/{uid}/{label}']) }),
+    settleMs: SETTLE_MAX_MS
+  }),
+  // Loop 2, on the owner's tap only: acknowledge the missed run's instance until the job's
+  // next run plus 2 hours (lib/acks.mjs's default), by "heal". An ack silences, so T2.
+  Object.freeze({
+    id: 'ack-until-next-run',
+    class: 'missed-run',
+    tier: 'T2',
+    targetKind: 'job',
+    verbs: Object.freeze(['alert:ack']),
+    settleMs: SETTLE_MAX_MS
   })
 ]);
+
+// The reviewed argument list for each launchctl write a catalog entry may run (L1,
+// Ultron 11-14), compared exactly: no flag, no extra word, no other blank. Loop 3's
+// restart of this server will add its own verb, `launchctl:kickstart-kill`, with its
+// own list here (['kickstart', '-k', 'gui/{uid}/{label}']), reviewed then.
+export const PROGRAM_ARGS = Object.freeze({
+  'launchctl:kickstart': Object.freeze(['kickstart', 'gui/{uid}/{label}'])
+});
+const PLACEHOLDER = /\{(uid|label)\}/g;
+const isLaunchctlWrite = v => v.startsWith('launchctl:') && v !== 'launchctl:print' && v !== 'launchctl:list';
+
+// An entry's program, checked against its verbs (design §8): the file is launchctl, the
+// entry declares exactly one launchctl write, and the arguments are that verb's
+// reviewed list in PROGRAM_ARGS, exactly. An entry that declares a launchctl write must
+// name its program. Throws on a fault.
+function checkProgram(e) {
+  const writes = e.verbs.filter(isLaunchctlWrite);
+  if (e.program === undefined) {
+    if (writes.length) throw new Error(`${e.id}: declares ${writes[0]} but names no program`);
+    return;
+  }
+  const p = e.program;
+  if (!isObject(p) || p.file !== LAUNCHCTL || !Array.isArray(p.args)) throw new Error(`${e.id}: its program must be ${LAUNCHCTL} with a list of arguments`);
+  if (writes.length !== 1) throw new Error(`${e.id}: an entry with a program declares exactly one launchctl write`);
+  const want = Object.hasOwn(PROGRAM_ARGS, writes[0]) ? PROGRAM_ARGS[writes[0]] : null;
+  if (!want) throw new Error(`${e.id}: no argument list is reviewed for ${writes[0]}`);
+  if (p.args.length !== want.length || p.args.some((a, i) => a !== want[i])) throw new Error(`${e.id}: its arguments are not the reviewed list for ${writes[0]}`);
+}
+
+// The argument list an entry's program gets for one target: the template with {uid}
+// and {label} filled in. The label must be a launchd label (config is checked at
+// start; this checks again at the moment of use).
+export function programArgs(entry, { uid, label }) {
+  if (!Number.isSafeInteger(uid) || uid < 0) throw new Error('no usable uid');
+  if (typeof label !== 'string' || !LAUNCHD_LABEL.test(label)) throw new Error('not a launchd label');
+  return entry.program.args.map(a => a.replace(PLACEHOLDER, (_, k) => (k === 'uid' ? String(uid) : label)));
+}
 
 const ACTION_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const CLASS_ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -118,7 +190,9 @@ export function loadCatalog(entries) {
     if (floor === null) throw new Error(`${e.id}: declares a verb the floor table doesn't know`);
     if (rank(e.tier) < rank(floor)) throw new Error(`${e.id}: tier ${e.tier} is below its verbs' floor of ${floor}`);
     if (!Number.isInteger(e.settleMs) || e.settleMs <= 0 || e.settleMs > SETTLE_MAX_MS) throw new Error(`${e.id}: settle time must be 1 ms to 10 minutes`);
-    byId.set(e.id, Object.freeze({ ...e, verbs: Object.freeze([...e.verbs]), floor }));
+    checkProgram(e);
+    const program = e.program ? Object.freeze({ file: e.program.file, args: Object.freeze([...e.program.args]) }) : undefined;
+    byId.set(e.id, Object.freeze({ ...e, verbs: Object.freeze([...e.verbs]), ...(program ? { program } : {}), floor }));
   }
   return byId;
 }
@@ -144,16 +218,24 @@ const TARGET_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 //
 //   "heal": {
 //     "enabled": true,
-//     "targets": { "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } },
+//     "targets": {
+//       "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] },
+//       "friday": { "label": "com.example.friday", "actions": ["rerun-job", "ack-until-next-run"] }
+//     },
+//     "missedRuns": "/path/to/missed-runs",
 //     "off": []
 //   }
 //
 // Off unless `enabled` is exactly true. A target names one launchd label and the
-// catalog actions it allows; nothing heals a job that isn't listed. `off` turns single
-// catalog entries off. A bad entry is left out and described in `problems`.
+// catalog actions it allows; nothing heals a job that isn't listed. For loop 2 the
+// list is the job's catch-up rule: with `rerun-job` its card offers Run it now, and
+// with only `ack-until-next-run` it offers the ack alone (a late run of yesterday's
+// brief is no use). `missedRuns` is the read-only missed-runs program (an absolute
+// path; checked at start like job-status). `off` turns single catalog entries off. A
+// bad entry is left out and described in `problems`.
 export function readHealConfig(config, catalog = loadCatalog(CATALOG)) {
   const problems = [];
-  const out = { enabled: false, targets: new Map(), off: new Set(), problems };
+  const out = { enabled: false, targets: new Map(), off: new Set(), missedRuns: null, problems };
   const raw = config?.heal;
   if (raw === undefined) return out;
   if (!isObject(raw)) {
@@ -162,6 +244,10 @@ export function readHealConfig(config, catalog = loadCatalog(CATALOG)) {
   }
   if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') problems.push('heal.enabled must be true or false');
   out.enabled = raw.enabled === true;
+  if (raw.missedRuns !== undefined) {
+    if (typeof raw.missedRuns === 'string' && raw.missedRuns.startsWith('/') && raw.missedRuns.length <= 1024) out.missedRuns = raw.missedRuns;
+    else problems.push('heal.missedRuns must be an absolute path');
+  }
   if (raw.off !== undefined) {
     if (!Array.isArray(raw.off)) problems.push('heal.off is not a list');
     else for (const id of raw.off) {
@@ -223,7 +309,11 @@ export function judgeReadings(a, b) {
 
 export const LEDGER_KEEP_MS = 30 * DAY;
 export const LEDGER_MAX = 2000;
-export const OUTCOMES = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared']);
+// `proposed` (a card was pushed) and `tapped` (Run it now started a run) are marks on
+// the way, kept so a restart neither pushes a card twice nor runs a job twice; every
+// other outcome closes its loop.
+export const OUTCOMES = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared', 'proposed', 'tapped', 'declined', 'expired', 'acked']);
+export const CLOSING = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared', 'declined', 'expired', 'acked']);
 
 // Why a loop closed as it did, in fixed words. A ledger line holds the key; the page
 // gets the words.
@@ -238,7 +328,19 @@ export const WHY_WORDS = Object.freeze({
   'cap-day': `the day's ${PER_DAY} heals are used`,
   'came-back': 'it came back within an hour of a heal',
   ledger: "the heal ledger couldn't be written",
-  'log-written': 'its log was written again'
+  'log-written': 'its log was written again',
+  // Loop 2.
+  restart: 'the mini was off or waiting for login',
+  gap: 'the mini was asleep or paused',
+  'ran-since': 'it has run since',
+  'not-now': 'Not now was tapped',
+  'no-tap': 'no tap within 2 hours of the card',
+  'start-failed': "launchd wouldn't start it",
+  'still-running': 'it was still running 10 minutes on',
+  unverified: 'the Control Room restarted before the run was checked',
+  'ack-failed': "the acknowledgement couldn't be saved",
+  tapped: 'Run it now was tapped',
+  acked: 'Ack until its next run was tapped'
 });
 
 const isLine = l => isObject(l) && Number.isFinite(l.at) && typeof l.target === 'string' && OUTCOMES.includes(l.outcome) &&
@@ -282,13 +384,22 @@ export function capStop(lines, target, now, endedAt = null, since = null) {
 
 export const RECENT_MS = 7 * DAY;
 export const RECENT_MAX = 20;
-export const CLASS_WORDS = Object.freeze({ 'stale-log': 'stale log' });
+export const CLASS_WORDS = Object.freeze({ 'stale-log': 'stale log', 'missed-run': 'missed run' });
 export const OUTCOME_WORDS = Object.freeze({
   healed: 'quiet, ran clean',
   escalated: 'left as it was',
   relapsed: 'quiet lifted',
-  cleared: 'cleared on its own'
+  cleared: 'cleared on its own',
+  declined: 'not now',
+  expired: 'card expired',
+  acked: 'acked until its next run'
 });
+// An outcome's words for one action, where they differ from OUTCOME_WORDS.
+export const ACTION_OUTCOME_WORDS = Object.freeze({
+  'rerun-job': Object.freeze({ healed: 'ran it again, clean', escalated: 'ran it again: it needs a look' })
+});
+export const outcomeWords = (action, outcome) =>
+  (Object.hasOwn(ACTION_OUTCOME_WORDS, action) && Object.hasOwn(ACTION_OUTCOME_WORDS[action], outcome) ? ACTION_OUTCOME_WORDS[action][outcome] : OUTCOME_WORDS[outcome]);
 export const STATUS_WHY = Object.freeze({
   unset: 'heal.enabled is not true in config.json',
   killed: 'the kill switch is on (the heal-off file is there)',
@@ -315,17 +426,18 @@ export function weeklyCounts(lines, now, weeks = 4) {
   return [...out].map(([cls, counts]) => ({ class: cls, label: CLASS_WORDS[cls] ?? cls, counts }));
 }
 
-// Built field by field: no label, path or reading leaves this function.
+// Built field by field: no label, path or reading leaves this function. The marks on
+// the way (`proposed`, `tapped`) are not listed: only closed loops are.
 export function buildLoopsView({ status, why = null, open = [], quiet = [], held = [], lines = [], settings, jobNames = {}, now }) {
   const name = id => targetName(id, settings, jobNames);
-  const recent = lines.filter(l => now - l.at <= RECENT_MS).sort((a, b) => b.at - a.at).slice(0, RECENT_MAX).map(l => ({
+  const recent = lines.filter(l => CLOSING.includes(l.outcome) && now - l.at <= RECENT_MS).sort((a, b) => b.at - a.at).slice(0, RECENT_MAX).map(l => ({
     name: name(l.target),
     class: l.class,
     classLabel: CLASS_WORDS[l.class] ?? l.class,
     action: l.action,
     tier: l.tier,
     outcome: l.outcome,
-    words: OUTCOME_WORDS[l.outcome],
+    words: outcomeWords(l.action, l.outcome),
     why: typeof l.why === 'string' && Object.hasOwn(WHY_WORDS, l.why) ? WHY_WORDS[l.why] : null,
     at: l.at
   }));
@@ -334,7 +446,8 @@ export function buildLoopsView({ status, why = null, open = [], quiet = [], held
     why,
     open: open.map(o => ({
       name: name(o.target), class: o.class, classLabel: CLASS_WORDS[o.class] ?? o.class, action: o.action, tier: o.tier,
-      step: o.step, detectedAt: o.detectedAt, nextCheckAt: o.nextCheckAt, holdUntil: o.holdUntil
+      step: o.step, detectedAt: o.detectedAt, nextCheckAt: o.nextCheckAt, holdUntil: o.holdUntil,
+      ...(o.waiting === true ? { waiting: true } : {}), ...(Number.isFinite(o.checkBy) ? { checkBy: o.checkBy } : {})
     })),
     quiet: quiet.map(q => ({ name: name(q.target), since: q.since, checkedAt: q.checkedAt, tier: q.tier })),
     held: held.map(h => ({ name: name(h.target), why: h.why })),
@@ -342,4 +455,12 @@ export function buildLoopsView({ status, why = null, open = [], quiet = [], held
     weeks: weeklyCounts(lines, now),
     generatedAt: now
   };
+}
+
+// Loop 2's part of the view (lib/heal-missed.mjs, view): its open loops join loop 1's,
+// and its cards come as `proposals`. Proposals show whatever the status, with their
+// buttons off unless it is `on` (design §4.7: the kill switch leaves them showing).
+export function withMissedRuns(view, part) {
+  if (!part) return { ...view, proposals: [] };
+  return { ...view, open: [...view.open, ...(part.open ?? [])], proposals: part.proposals ?? [] };
 }

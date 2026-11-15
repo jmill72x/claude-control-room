@@ -192,6 +192,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-alerts-tag { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--navy); }
 /* The Alerts tile and its cards. */
 .o-wtile-alerts { --t-icon: var(--accent-deep); --t-icon-fg: #FFFFFF; }
+.o-wtile-heals { --t-icon: var(--navy); --t-icon-fg: var(--paper); }
 .o-wtile-sub { letter-spacing: 0.04em; text-transform: none; }
 .o-wcard-alert { --w-bg: var(--card); --w-border: var(--accent); --w-chip-bg: var(--accent); --w-chip-fg: #FFFFFF; }
 /* The acknowledge form inside a paper card, instead of on the red strip. */
@@ -458,6 +459,13 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-wcard-h { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--w-sub); }
 .o-wcard-col p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--w-ink); overflow-wrap: anywhere; }
 .o-wcard-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+/* A heal card's buttons (loop 2): its actions and Not now, wrapping on a phone. */
+.o-heal-actions { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }
+.o-heal-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.o-heal-buttons .o-btn:disabled { opacity: 0.55; }
+.o-heal-buttons .o-btn-accent:disabled { opacity: 1; }
+.o-heal-note { margin: 0; font-size: 13px; color: var(--sub); }
+.o-heal-note-bad { color: var(--accent-ink); font-weight: 600; }
 .o-wcard-who { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; font-size: 13px; color: var(--w-sub); }
 .o-wcard-who b { font-weight: 600; color: var(--w-ink); }
 .o-wcard .o-wcard-board { padding: 0 18px; border-color: var(--w-btn); color: var(--w-ink); font-size: 14px; }

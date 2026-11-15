@@ -366,6 +366,10 @@ const dashboard = async handler => JSON.parse((await call(handler, 'GET', '/api/
 
 test('POST /api/acks acks a live alert, which then leaves alerts for acked and marks its cron, job and service', async () => {
   const d = deps();
+  // The route stamps acks with the real clock, so the next run is placed from it (a
+  // fixed NEXT went past on 2026-11-14 and the default fell back to 24 hours).
+  const next = Date.now() + 3 * DAY;
+  d.cache.set('crons', [{ ...failedCron, nextRunAt: next }, { name: 'daily', label: 'com.example.daily', ok: true, state: 'ok' }]);
   const h = createHandler(d);
   const before = await dashboard(h);
   assert.deepEqual(before.alerts.map(a => a.key).sort(), ['cron:launchd:com.example.friday', 'limit:Weekly', 'service:launchd:Tunnel']);
@@ -377,7 +381,7 @@ test('POST /api/acks acks a live alert, which then leaves alerts for acked and m
   const list = JSON.parse(res.body);
   assert.equal(list.length, 1);
   assert.equal(list[0].since, SINCE, 'since comes from the cron, not the caller');
-  assert.equal(list[0].until, NEXT + ACK_AFTER_NEXT_MS);
+  assert.equal(list[0].until, next + ACK_AFTER_NEXT_MS);
   assert.equal(list[0].by, 'jeff', 'the page (an Origin header) is the owner');
   assert.equal(d.logged.length, 1);
   assert.match(d.logged[0], /^ack: cron by jeff until /);
@@ -448,7 +452,8 @@ test('a new failure of an acked job is red again, and an expired ack lapses', as
 });
 
 test('GET /api/acks lists the active acks; DELETE /api/acks/<key> un-acks and answers the list', async () => {
-  const d = deps(memoryStore([ack(), ack({ key: 'cron:launchd:com.example.old', until: Date.now() - 1 })]));
+  // Live by the real clock: the route reads the store at Date.now().
+  const d = deps(memoryStore([ack({ until: Date.now() + DAY }), ack({ key: 'cron:launchd:com.example.old', until: Date.now() - 1 })]));
   const h = createHandler(d);
   const got = JSON.parse((await call(h, 'GET', '/api/acks')).body);
   assert.deepEqual(got.map(a => a.key), [KEY]);

@@ -1806,18 +1806,22 @@ or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the o
 post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
 leaves the chat up.
 
-### Self-healing loops (Jarvis OS 6; loop 1 built, off by default)
+### Self-healing loops (Jarvis OS 6; loops 1 and 2 built, off by default)
 
 A loop is detect, diagnose, act, verify, then close or escalate, for one failure instance
 (the alert's key plus its `since`, the pair an ack uses). The design, with the tiers (T0
 heal silently, T1 heal then tell, T2 wait for a tap, T3 page and never act) and the
 guardrails, is `docs/design/2026-11-12-self-healing-loops.md`. Built so far: **loop 1**,
-and the shared parts the later loops use. The code is `server/lib/heal.mjs` (the tiers,
-verb floors, catalog loader, config, readings, ledger lines and the page's view),
-`server/lib/heal-runner.mjs` (the runner), `server/lib/heal-ledger.mjs`, the hold in
-`server/collectors/notifier.mjs`, and `web/src/orbit/Loops.jsx` with
+**loop 2**, and the shared parts the later loops use. The code is `server/lib/heal.mjs`
+(the tiers, verb floors, catalog loader with its program check, config, readings, ledger
+lines and the page's view), `server/lib/heal-runner.mjs` (loop 1's runner and the shared
+status), `server/lib/heal-missed.mjs` (loop 2), `server/lib/heal-routes.mjs` (loop 2's
+taps), `server/lib/heal-programs.mjs` (the two programs loop 2 runs),
+`server/lib/heal-ledger.mjs`, the hold in `server/collectors/notifier.mjs`, and
+`web/src/orbit/Loops.jsx`, the Heals cards in `web/src/orbit/Waiting.jsx` and
 `web/src/lib/orbit/loops.js`; tests in `server/test/heal.test.mjs`,
-`server/test/heal-runner.test.mjs` and `web/test/orbit-loops.test.js`.
+`server/test/heal-runner.test.mjs`, `server/test/heal-missed.test.mjs`,
+`server/test/heal-routes.test.mjs` and `web/test/orbit-loops.test.js`.
 
 - **Loop 1, a stale log's false "overdue" (T1).** job-status calls a job failed when its
   log is older than its schedule allows, which can't tell a dead job from one that logs
@@ -1861,24 +1865,86 @@ verb floors, catalog loader, config, readings, ledger lines and the page's view)
   read keeps heals off for the run and is never written over.
 - **The kill switch.** While `~/.local/state/jarvis-os/heal-off` exists, nothing is read or
   marked, every quiet mark is lifted at once (the alert goes red and pushes as it always
-  has), and the targets show as held. It is checked at each pass and again before each
+  has), the targets show as held, and loop 2's cards stay with their buttons off (a tap
+  answers 503). It is checked at each pass and again before each
   reading and before a heal's ledger line; no restart is needed either way. After the file
   goes, each instance is checked again from the start.
 - **The page.** `GET /api/loops` (read-only, `no-store`) and `loops` in `/api/dashboard`:
   the status (`on`, `killed`, `off`, `unset`) and why, the loops open now with their step
   and next reading, the quiet jobs, the held ones, the last 7 days' closed loops in words,
-  and healed counts per class per week over 4 weeks. Names come from config's `jobs` (else
-  the label's last part, as the health strip does); no label, path or reading is sent. The
+  and healed counts per class per week over 4 weeks, and (loop 2) `proposals`: each card's
+  one-time id, name, missed time and why, its actions, whether its buttons work now and
+  why not. Names come from config's `jobs` (else the label's last part, as the health
+  strip does); no label, path or reading is sent. The
   Loops panel on the Overview shows it, with no buttons, as the last section while a loop
   is open; with none open it is one line at the foot of Today's schedule that opens the
   same view in place. The Jobs chip
   counts quiet jobs in grey ("all OK · 1 quiet"), and Today's routines reads a quiet job's
   covered due times as "ran, log old".
+- **Loop 2, a run missed during a restart (T2: only a tap acts).** the machine's read-only
+  `missed-runs --since boot --json` (config's `heal.missedRuns`, checked at start like
+  job-status, run as `/usr/bin/python3 -I <path> --since boot --json` in the short
+  environment) runs at the first crons pass after a start, then once a day (10 minutes
+  after a failed read). A job it flags in `needs_look` whose latest missed fire fell in a
+  restart, or in a sleep gap it is sure of, and that has not run since, is one instance
+  (config's target plus the fire's time), when config lists it with `rerun-job` or
+  `ack-until-next-run`. One `launchctl print` (read-only) keeps its run counter; a job
+  launchd can't be read for gets no card until it can. The card sits in Needs you (a
+  fifth tile, **Heals**, shows while one waits) and in the Loops panel as waiting on you:
+  the job's name from config, when it missed and why ("the mini was off or waiting for
+  login"), and its buttons. **Run it now** is offered only when the target lists
+  `rerun-job` (its catch-up rule: a late run of yesterday's brief is no use, so a target
+  can list only the ack); **Ack until its next run** when it lists
+  `ack-until-next-run`; **Not now** always. A card is pushed once, counted and never
+  named ("1 scheduled run missed during a restart waits for your tap: …"), except from
+  22:00 to 07:00, when it waits for the morning; it closes 2 hours after its push
+  (`expired`), as soon as the job runs (the counter moved: `cleared`), or on a tap.
+- **What a tap does.** `POST /api/loops/<id>/approve` with `{ "action": … }`, or
+  `/decline`, served by the chat's router behind its rules: same origin and JSON, no
+  `Authorization` header (a Shortcut key never acts), a paired device's cookie and the
+  login header, the page's own https Origin, an approver device (`bin/chat-pair
+  approver`), and at most 6 taps a minute in all, refused ones included. With the chat
+  off, the route answers 403. The id is the card's one-time id (32 hex characters, made
+  by the server, spent on the tap: a second tap, from any device, finds nothing); the
+  body names an action and nothing else. **Run it now** reads launchd again (the counter
+  must not have moved and the job must not be running; unreadable means no run and a
+  page), writes a `tapped` ledger line, then runs the catalog's fixed program,
+  `/bin/launchctl kickstart gui/<uid>/<label>` (no `-k`, no shell, the label from
+  config), and checks the run within 10 minutes: the counter rose and the job ended with
+  exit 0 is `healed`; an exit that isn't 0, a run still going, no run at all or a counter
+  that went back is T3, a high-priority push ("A missed-run heal needs a look…").
+  **Ack until its next run** writes its line, then an ack by `heal` on the instance
+  (`cron:launchd:<label>` with the crons panel's `lastRunAt`) until the next run plus 2
+  hours (lib/acks.mjs's default), logged and noticed like any ack; when the crons panel
+  has no `lastRunAt` or `nextRunAt` for the job, the tap is refused (409, "its next run
+  isn't known; ack it from the alert") and the card stays. Every accepted tap is logged
+  (one line, whatever the device is called) and alerted like an approval's verdict
+  (`heal-tap`: the device and the job's name); a tap refused for a Shortcut key or a
+  device not marked approver is alerted too (`heal-tap-refused`, at most one push per 10
+  minutes, the rest counted). Limits: at most 3 T2 actions per
+  target and 20 in all in 24 hours, and for a run, loop 1's heal caps too (a heal of the
+  same target within the hour stops it). The instance is marked in flight before the
+  program runs (in the runs being checked, and by its `tapped` line), so a pass during
+  the run makes no second card. A `tapped` line survives a restart: the new process
+  checks the run if its 10 minutes aren't up, else pages (`unverified`), and never offers
+  that instance again; a `proposed` line keeps a restart from pushing a card
+  twice. While heals are off (the kill switch, or config), nothing is read and no tap
+  acts; the cards stay with their buttons off and the reason.
+- **The catalog's programs.** An entry that runs a program names it (`program`: the file
+  and its arguments, with only `{uid}` and `{label}` to fill in), and the loader checks it
+  against its verbs: the file is `/bin/launchctl`, the entry declares exactly one launchctl
+  write, and the arguments equal that verb's reviewed list in `PROGRAM_ARGS`
+  (`launchctl:kickstart` → `['kickstart', 'gui/{uid}/{label}']`), exactly. An entry that
+  declares a launchctl write must name its program. So the verb list and the act can't
+  disagree; a new write (loop 3's `launchctl:kickstart-kill`, with `-k`) comes in as its
+  own verb with its own list. The uid filled in is the process's own, checked again when
+  the program runs (`lib/heal-programs.mjs`), and the label is config's target's.
 - **Off by default.** Nothing runs unless config's `heal.enabled` is `true` and
-  `heal.targets` lists the job (Configuration, "Self-healing loops"). The service log says
-  `heal: on|off|killed|unset (…), N targets` at start, and one `heal:` line per closed loop.
-- **Not built yet:** the T2 proposals and their approve and decline routes (loops 2 and 3),
-  a `heal-done` event for the lead (an event wakes the lead's session, and the released
+  `heal.targets` lists the job (Configuration, "Self-healing loops"); loop 2 also needs
+  `heal.missedRuns`. The service log says `heal: on|off|killed|unset (…), N targets;
+  missed-runs set|not set` at start, and one `heal:` line per card, tap and closed loop.
+- **Not built yet:** loop 3 (the restart due after a merge), the `heal-done` and
+  `heal-proposed` events for the lead (an event wakes the lead's session, and the released
   channel names only the event types it knows), the "3 in 14 days" fix-item event, and a
   loop count on the health strip. The morning brief reads job-status itself, so it still
   calls a quiet job overdue.
@@ -2435,7 +2501,8 @@ launcher's) are left out of the Jobs list. None of this block reaches the page.
 | Field | Type | Meaning |
 |---|---|---|
 | `heal.enabled` | `true` or `false` | Off unless exactly `true`. |
-| `heal.targets` | object | The jobs a loop may heal, by an id of your choosing (lower case, digits and `-`, at most 40): `{ "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } }`. `label` is the job's launchd label; `actions` lists the catalog actions allowed for it (today only `mark-quiet`). A job not listed is never read or healed. |
+| `heal.targets` | object | The jobs a loop may heal, by an id of your choosing (lower case, digits and `-`, at most 40): `{ "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } }`. `label` is the job's launchd label; `actions` lists the catalog actions allowed for it: `mark-quiet` (loop 1), and for loop 2 `rerun-job` (the card offers Run it now) and `ack-until-next-run` (the card offers the ack). A job not listed is never read or healed. |
+| `heal.missedRuns` | absolute path | The machine's `missed-runs` (loop 2's detector). Checked at start like job-status (owned by this user, nobody else can write it or a folder above it); a path that fails is left out and logged, and loop 2 makes no cards. |
 | `heal.off` | list | Catalog actions turned off, each by id. |
 
 A bad entry is left out and named once in the service log at startup. The ids and labels
@@ -2559,6 +2626,7 @@ quoted:**
 | `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
 | `cron` | **counted, never quoted** — `1 job failed — open the dashboard for detail`. A launchd job's verdict is job-status's when it answers (`crons[]` above) |
 | `service` | **counted, never quoted** — `1 service is down — open the dashboard for detail`. Raised once the lead's session or a KeepAlive job has been down for five minutes, so a restart never pushes. Never for the NAS, whose watch pages on every change itself, and never for this server |
+| heal card (loop 2) | **counted, never quoted** — `1 scheduled run missed during a restart waits for your tap: Needs you on the Control Room.`; its page after a failed run says only that one needs a look (ntfy priority `high`). Sent by the heal runner, not the notifier |
 | anything else | **counted, never quoted** — e.g. `1 item needs attention — open the dashboard for detail` |
 
 Each counted kind goes out as its own message, so a new failure of one kind doesn't

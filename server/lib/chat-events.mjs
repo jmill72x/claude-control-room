@@ -42,7 +42,12 @@ export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced',
   // Shortcut keys (lib/shortcut-keys.mjs, lib/shortcut-routes.mjs): a key can send as the owner, so its whole life is reported.
   'shortcut-code-made', 'shortcut-paired', 'shortcut-revoked', 'shortcut-pairing-failed', 'shortcut-new-address', 'shortcut-refused', 'shortcut-over-limit', 'shortcut-pair-refused', 'shortcut-expired',
   // Stops and the Face ID behind them (lib/agent-stop.mjs, lib/stepup.mjs): a stop ends work, and a passkey is what lets one through.
-  'stop-asked', 'passkey-pending', 'passkey-added', 'passkey-failed']);
+  'stop-asked', 'passkey-pending', 'passkey-added', 'passkey-failed',
+  // A tap on a heal card (lib/heal-routes.mjs): it runs a job or silences an alert, so it is reported like a verdict.
+  'heal-tap', 'heal-tap-refused']);
+
+// What a heal tap did, in the words its buttons use.
+export const HEAL_TAP_WORDS = Object.freeze({ 'rerun-job': 'Run it now', 'ack-until-next-run': 'Ack until its next run', 'not-now': 'Not now' });
 
 // The words for one event, made safe for one line.
 export function chatEventLine(event) {
@@ -91,6 +96,10 @@ export function chatEventLine(event) {
     'passkey-pending': `${event.device?.name ?? 'a device'} made a Face ID passkey for stops; it counts only once its code is confirmed with chat-pair on the machine`,
     'passkey-added': `a Face ID passkey for stops was confirmed for ${event.device?.name ?? '?'} (by ${event.by ?? '?'})`,
     'passkey-failed': 'a Face ID set-up for stops failed on three wrong codes',
+    'heal-tap-refused': event.why === 'key'
+      ? 'a tap on a heal card carried a Shortcut key and was refused'
+      : `a tap on a heal card from ${event.device ?? 'a device'} was refused: that device is not marked approver`,
+    'heal-tap': `a missed-run card was answered from ${event.device ?? 'a device'}: ${HEAL_TAP_WORDS[event.action] ?? 'an action'} (${event.name ?? 'a job'})`,
     'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;

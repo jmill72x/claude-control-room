@@ -1,21 +1,25 @@
 import { useState } from 'react';
 import { localToday } from '../lib/due.js';
 import { waitingCards, waitingView } from '../lib/orbit/waiting.js';
+import { tapDone } from '../lib/orbit/loops.js';
 import { Avatar } from './Avatar.jsx';
 import { AckForm } from './Acks.jsx';
+import { approveHeal, declineHeal } from './healApi.js';
 
 // Needs you, at the top of the Overview (Orbit plan, Phase 4 as Waiting on you;
 // Jarvis OS Phase 1b widened it): the count, four tiles that each show only their
 // cards, and cards that open in place. Items come from the board (their `ask`), To
 // push from the server's `toPush` panel, and Alerts from its `alerts`, `acked` and
 // `needsYou`. `state` lives in OrbitApp, so Back from the board finds the panel as
-// it was left.
+// it was left. Since loop 2 (self-healing), a fifth tile, Heals, holds the cards for
+// runs missed during a restart, with their buttons, while any wait.
 
 const ICONS = {
   due: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
   decide: <><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7" /><path d="M18 10.5c0 4-6 3.5-11 5.5" /></>,
   push: <><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></>,
-  alerts: <><path d="M12 3 2 20h20L12 3z" /><path d="M12 10v4" /><path d="M12 17.5v.5" /></>
+  alerts: <><path d="M12 3 2 20h20L12 3z" /><path d="M12 10v4" /><path d="M12 17.5v.5" /></>,
+  heals: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 4v5h-5" /></>
 };
 
 const domId = key => `o-wait-${String(key).replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -25,6 +29,49 @@ function AckAction({ alert, now, onChanged }) {
   const [open, setOpen] = useState(false);
   if (!open) return <button type="button" className="o-btn o-btn-accent" onClick={() => setOpen(true)}>Acknowledge</button>;
   return <AckForm alert={alert} now={now} variant="card" onCancel={() => setOpen(false)} onDone={() => { setOpen(false); onChanged?.(); }} />;
+}
+
+// A heal card's buttons (server/lib/heal-routes.mjs): its offered actions and Not now.
+// One tap at a time; the server's answer, or its refusal, shows under them. After a
+// tap that worked, the page reloads its data a moment later (the card then goes, and a
+// run shows on the Loops panel), so the answer can be read first. Off, with the
+// reason, while heals are off.
+const HEAL_RELOAD_MS = 2500;
+function HealActions({ heal, onChanged }) {
+  const [busy, setBusy] = useState(null);
+  const [said, setSaid] = useState(null);
+  const tap = async (action, run) => {
+    setBusy(action);
+    setSaid(null);
+    try {
+      const answer = await run();
+      setSaid({ ok: true, text: tapDone(action, answer, Date.now()) });
+      setTimeout(() => onChanged?.(), HEAL_RELOAD_MS);
+    } catch (err) {
+      setSaid({ ok: false, text: `Not done: ${err.message}` });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const off = !heal.canAct || busy !== null || said?.ok === true;
+  return (
+    <div className="o-heal-actions">
+      <div className="o-heal-buttons" role="group" aria-label={`Answer the card for ${heal.name}`}>
+        {heal.actions.map((a, i) => (
+          <button key={a.action} type="button" className={`o-btn ${i === 0 ? 'o-btn-accent' : 'o-btn-solid'}`} disabled={off}
+            onClick={() => tap(a.action, () => approveHeal(heal.id, a.action))}>
+            {busy === a.action ? 'Sending…' : a.label}
+          </button>
+        ))}
+        <button type="button" className="o-btn" disabled={off} onClick={() => tap('not-now', () => declineHeal(heal.id))}>
+          {busy === 'not-now' ? 'Sending…' : 'Not now'}
+        </button>
+      </div>
+      {!heal.canAct && <p className="o-heal-note">Buttons off: {heal.blocked}.</p>}
+      {said && <p className={`o-heal-note${said.ok ? '' : ' o-heal-note-bad'}`} role="status">{said.text}</p>}
+      {heal.canAct && !said && <p className="o-heal-note">Taps count only from a device marked approver.</p>}
+    </div>
+  );
 }
 
 function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
@@ -56,10 +103,11 @@ function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
               </div>
             )}
           </div>
+          {card.heal && <HealActions heal={card.heal} onChanged={onChanged} />}
           <div className="o-wcard-foot">
             <span className="o-wcard-who">
               <Avatar agent={card.owner} fallback={card.fallback} size={22} tone={tone} />
-              <b>{card.owner?.name ?? (card.group === 'alerts' ? 'Control Room' : 'No owner')}</b>
+              <b>{card.owner?.name ?? (card.group === 'alerts' || card.group === 'heals' ? 'Control Room' : 'No owner')}</b>
               <span>{card.meta}</span>
             </span>
             {card.alert && <AckAction alert={card.alert} now={now} onChanged={onChanged} />}
@@ -85,7 +133,7 @@ function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
 export function Waiting({ board, payload, roster, now, state, setState, onOpenItem, onChanged }) {
   const cards = waitingCards({
     items: board.todos, today: localToday(new Date(now)), roster, toPushEnv: payload?.toPush,
-    alerts: payload?.alerts, acked: payload?.acked, needsYou: payload?.needsYou, now
+    alerts: payload?.alerts, acked: payload?.acked, needsYou: payload?.needsYou, loops: payload?.loops, now
   });
   const view = waitingView(cards, { filter: state.filter, all: state.all });
   const loading = !board.loaded;

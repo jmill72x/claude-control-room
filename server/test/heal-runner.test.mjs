@@ -584,18 +584,23 @@ test('the runner reads launchd only through `launchctl print`, and server.mjs wi
   assert.ok(/export const runLaunchctlPrint = label =>\s*exec\('\/bin\/launchctl', \['print', `gui\/\$\{process\.getuid\(\)\}\/\$\{label\}`\]/.test(healthSrc), 'runLaunchctlPrint runs launchctl print and nothing else');
   const server = (await readFile(join(HERE, '..', 'server.mjs'), 'utf8')).replace(/^\s*\/\/.*$/gm, '');
   const wired = [
-    [/createHealRunner\(\{\s*settings: healSettings,\s*ledger: createHealLedger\(\{[^}]*\}\),\s*launchctlPrint: runLaunchctlPrint,/, 'the runner gets runLaunchctlPrint'],
+    [/const healLedger = createHealLedger\(\{ path: join\(HERE, 'data', 'heals\.json'\) \}\);/, 'one ledger, in data/'],
+    [/createHealRunner\(\{\s*settings: healSettings,\s*ledger: healLedger,\s*launchctlPrint: runLaunchctlPrint,/, 'the runner gets runLaunchctlPrint'],
     [/killed:\s*\(\)\s*=>\s*existsSync\(healOffPath\)/, 'the kill switch is the file'],
     [/const healOffPath = join\(homedir\(\), '\.local', 'state', 'jarvis-os', 'heal-off'\)/, 'the kill switch path'],
-    [/return await heal\.pass\(overlaid,/, 'the crons pass goes through the runner'],
-    [/loops:\s*\(\)\s*=>\s*heal\.view\(\)/, 'the routes get the view'],
+    [/out = await heal\.pass\(overlaid,/, 'the crons pass goes through the runner'],
+    [/return out;\s*\}, 60 \* 1000\);/, 'and the panel goes out as the runner left it'],
+    [/loops:\s*\(\)\s*=>\s*withMissedRuns\(heal\.view\(\), missed\.view\(\)\)/, 'the routes get the view'],
     [/quietOf:\s*\(label, since\)\s*=>\s*heal\.quietOf\(label, since\)/, 'the Jobs list gets the quiet marks']
   ];
   for (const [re, what] of wired) assert.ok(re.test(server), what);
-  for (const f of ['heal.mjs', 'heal-runner.mjs', 'heal-ledger.mjs']) {
+  for (const f of ['heal.mjs', 'heal-runner.mjs', 'heal-ledger.mjs', 'heal-missed.mjs', 'heal-routes.mjs']) {
     const src = await readFile(join(HERE, '..', 'lib', f), 'utf8');
     assert.ok(!/child_process|execFile|spawn\(/.test(src), `${f} runs no program itself`);
-    assert.ok(!/kickstart|bootstrap|bootout|launchctl (load|unload)/.test(src.replace(/^\s*\/\/.*$/gm, '').replace(/'launchctl:[a-z]+'/g, '')), `${f} names no launchctl write outside the floor table`);
+    // heal.mjs's one launchctl write is `kickstart gui/{uid}/{label}`: the reviewed list in
+    // PROGRAM_ARGS and the catalog's rerun-job program, which must equal it.
+    const code = src.replace(/^\s*\/\/.*$/gm, '').replace(/'launchctl:[a-z]+'/g, '').replaceAll("Object.freeze(['kickstart', 'gui/{uid}/{label}'])", '');
+    assert.ok(!/kickstart|bootstrap|bootout|launchctl (load|unload)/.test(code), `${f} names no launchctl write outside the floor table and the catalog's program`);
   }
 });
 

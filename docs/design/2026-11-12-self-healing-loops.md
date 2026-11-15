@@ -350,7 +350,10 @@ built.
   minutes it compares, and if commits since then touch `server/`, it opens a loop.
 - **Action:** a card, **Restart the Control Room (2 merges)**. On the tap, the runner writes
   a `verifying` ledger line with the expected commit, then runs `launchctl kickstart -k` on
-  its own label from config.
+  its own label from config. Per Ultron's loop 2 review (2026-11-14), `-k` comes in as its
+  own verb, `launchctl:kickstart-kill` (T2), with its own exact argument list,
+  `['kickstart', '-k', 'gui/{uid}/{label}']`, in the loader's reviewed table
+  (`PROGRAM_ARGS` in `server/lib/heal.mjs`), never as a flag allowed on `launchctl:kickstart`.
 - **Verify:** the new process reads that line at start. It closes the loop as healed once
   its `HEAD` matches and its first collector pass is clean, and otherwise pages (T3). If it
   never comes back, the channel's silent alert and the NAS box's page check catch it.
@@ -378,6 +381,14 @@ built.
 - The self-restart in loop 3, and what happens when the new process fails to start.
 - The `quiet` downgrade in loop 1: can a broken job fake a rising run counter? A job that
   crash-loops does raise it, so the last exit code must be 0 at both readings.
+
+**Ultron's answers on loop 2 (2026-11-14; ship with fixes, all made on `jos/loop2`):** no
+Face ID for Run it now (an approver device, as the design has it); the rate numbers stand
+(one attempt per instance, 3 T2 actions per target and 20 in all a day, 6 taps a minute);
+each program write verb has one exact, reviewed argument list, and loop 3's `-k` is a
+separate verb with its own list (above). Pinning `missed-runs` by hash (his L6) was put to
+Jeff, who accepted the risk on 2026-11-15: it runs unpinned from the machine-setup tree,
+with the start-up ownership check only.
 
 ## 9. Questions for Jeff
 

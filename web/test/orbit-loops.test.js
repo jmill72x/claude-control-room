@@ -68,3 +68,93 @@ test('quiet and held rows, and the closed ones of the week with their outcome an
   assert.equal(v.empty, false);
   assert.equal(loopsView(view(), NOW).empty, true);
 });
+
+// ---- loop 2: its open loops, its closed ones, and its cards for Needs you ----
+
+import { healCards, tapDone, HEAL_ACTIONS } from '../src/lib/orbit/loops.js';
+import { waitingCards, waitingView } from '../src/lib/orbit/waiting.js';
+
+const proposal = (extra = {}) => ({
+  id: 'ab'.repeat(16), name: 'Friday alert', class: 'missed-run', classLabel: 'missed run', tier: 'T2', missedAt: at(6, 16, 45), missedCount: 1,
+  why: 'restart', fingerprint: 'the mini was off or waiting for login', actions: ['rerun-job', 'ack-until-next-run'], state: 'waiting',
+  proposedAt: at(11, 23, 0), expiresAt: at(12, 1, 0), nextRunAt: at(13, 16, 45), canAct: true, blocked: null, ...extra
+});
+
+test("loop 2's open loops: waiting on Jeff, then the run a tap started", () => {
+  const v = loopsView(view({ open: [
+    { name: 'Friday alert', class: 'missed-run', classLabel: 'missed run', tier: 'T2', step: 'acting', waiting: true, detectedAt: NOW - MIN },
+    { name: 'Token reminder', class: 'missed-run', classLabel: 'missed run', tier: 'T2', step: 'verifying', checkBy: NOW + 9 * MIN, detectedAt: NOW - 5 * MIN }
+  ] }), NOW);
+  assert.deepEqual(v.open.map(o => [o.name, o.when, o.steps.map(s => s.mark).join(' ')]), [
+    ['Friday alert', 'waiting on you (Needs you)', 'done done now ahead'],
+    ['Token reminder', 'run started, checked by 11:39 PM', 'done done done now']
+  ]);
+});
+
+test("loop 2's closed loops: a tap's own outcome carries no repeated why; a page is red", () => {
+  const r = loopsView(view({ recent: [
+    { name: 'A', classLabel: 'missed run', tier: 'T2', outcome: 'healed', words: 'ran it again, clean', why: 'x', at: NOW - MIN },
+    { name: 'B', classLabel: 'missed run', tier: 'T3', outcome: 'escalated', words: 'ran it again: it needs a look', why: 'its last exit was not 0', at: NOW - 2 * MIN },
+    { name: 'C', classLabel: 'missed run', tier: 'T2', outcome: 'acked', words: 'acked until its next run', why: 'Ack until its next run was tapped', at: NOW - 3 * MIN },
+    { name: 'D', classLabel: 'missed run', tier: 'T2', outcome: 'declined', words: 'not now', why: 'Not now was tapped', at: NOW - 4 * MIN },
+    { name: 'E', classLabel: 'missed run', tier: 'T2', outcome: 'expired', words: 'card expired', why: 'no tap within 2 hours of the card', at: NOW - 5 * MIN }
+  ] }), NOW).recent;
+  assert.deepEqual(r.map(x => [x.tone, x.mark, x.line]), [
+    ['ok', '✓', 'missed run: ran it again, clean'],
+    ['bad', '✕', 'missed run: ran it again: it needs a look (its last exit was not 0)'],
+    ['idle', '·', 'missed run: acked until its next run'],
+    ['idle', '·', 'missed run: not now'],
+    ['idle', '·', 'missed run: card expired (no tap within 2 hours of the card)']
+  ]);
+});
+
+test('a heal card: what was missed, why, its buttons in a fixed order, and when it closes', () => {
+  const [c] = healCards({ proposals: [proposal()] }, NOW);
+  assert.deepEqual([c.key, c.group, c.chip, c.title], [`heal:${'ab'.repeat(16)}`, 'heals', 'Missed run', 'Friday alert: missed Fri 4:45 PM']);
+  assert.equal(c.why, "The mini was off or waiting for login when it was due, and it hasn't run since.");
+  assert.match(c.what, /^Run it now starts it once/);
+  assert.match(c.what, /Its next run is Fri 4:45 PM\.$/);
+  assert.equal(c.meta, 'T2 · card open until 1:00 AM');
+  assert.deepEqual(c.heal, { id: 'ab'.repeat(16), name: 'Friday alert', actions: HEAL_ACTIONS, canAct: true, blocked: null });
+  assert.deepEqual(HEAL_ACTIONS.map(a => a.label), ['Run it now', 'Ack until its next run']);
+  // Only the ack, for a job whose late run is no use; actions come in the page's order.
+  const [ack] = healCards({ proposals: [proposal({ actions: ['ack-until-next-run'], missedCount: 3, expiresAt: null })] }, NOW);
+  assert.deepEqual(ack.heal.actions.map(a => a.action), ['ack-until-next-run']);
+  assert.match(ack.what, /offers no run/);
+  assert.equal(ack.title, 'Friday alert: missed Fri 4:45 PM (2 more before it)');
+  assert.equal(ack.meta, 'T2 · no push at night: it waits for the morning');
+  const [both] = healCards({ proposals: [proposal({ actions: ['ack-until-next-run', 'rerun-job', 'restart-everything'] })] }, NOW);
+  assert.deepEqual(both.heal.actions.map(a => a.action), ['rerun-job', 'ack-until-next-run'], 'an action the page does not know is no button');
+  // Off: the reason, or a plain one.
+  assert.deepEqual(healCards({ proposals: [proposal({ canAct: false, blocked: 'the kill switch is on (the heal-off file is there)' })] }, NOW)[0].heal.blocked, 'the kill switch is on (the heal-off file is there)');
+  assert.equal(healCards({ proposals: [proposal({ canAct: false, blocked: null })] }, NOW)[0].heal.blocked, 'heals are off');
+  assert.equal(healCards({ proposals: [proposal({ canAct: 'yes' })] }, NOW)[0].heal.canAct, false, 'only true is on');
+  // A server from before loop 2, or a card with no id, gives none.
+  assert.deepEqual(healCards({ status: 'on' }, NOW), []);
+  assert.deepEqual(healCards(undefined, NOW), []);
+  assert.deepEqual(healCards({ proposals: [{ name: 'x' }, null] }, NOW), []);
+});
+
+test("a tap's answer in words", () => {
+  assert.equal(tapDone('rerun-job', { checkBy: NOW + 10 * MIN }, NOW), 'Started. The Loops panel shows the check, done by 11:40 PM.');
+  assert.equal(tapDone('ack-until-next-run', { until: at(13, 18, 45) }, NOW), 'Acked until Fri 6:45 PM.');
+  assert.equal(tapDone('not-now', {}, NOW), 'Left as it is.');
+});
+
+test('Needs you: the Heals tile shows only while a card waits, its cards go first, and they count', () => {
+  const base = { items: [], today: '2026-11-11', roster: { agents: [] }, toPushEnv: { data: { configured: true, repos: [] }, status: 'ok' }, now: NOW };
+  const none = waitingView(waitingCards({ ...base, loops: view() }));
+  assert.deepEqual(none.tiles.map(t => t.id), ['due', 'decide', 'push', 'alerts'], 'four tiles, as before');
+  const due = { id: 'd1', text: 'Pay the bill. Online.', lane: 'idea', tag: 'Home', due: '2026-11-11', ask: { what: 'Pay it.', kind: 'do' } };
+  const cards = waitingCards({ ...base, items: [due], loops: view({ proposals: [proposal()] }), alerts: [{ key: 'limit:Weekly', kind: 'limit', text: 'Weekly at 90%' }] });
+  const v = waitingView(cards);
+  assert.deepEqual(v.tiles.map(t => [t.id, t.n]), [['heals', 1], ['due', 1], ['decide', 0], ['push', 0], ['alerts', 1]]);
+  assert.equal(v.total, 3);
+  assert.deepEqual(v.shown.map(c => c.group), ['heals', 'due', 'alerts'], 'a heal card first: it expires 2 hours after its push');
+  const only = waitingView(cards, { filter: 'heals' });
+  assert.deepEqual(only.shown.map(c => c.group), ['heals']);
+  assert.equal(only.showing, 'Showing 1 to answer. Tap the tile again for all 3.');
+  // Picked, then the card went: the tile stays so it can be tapped off, and says so.
+  const gone = waitingView(waitingCards({ ...base, loops: view() }), { filter: 'heals' });
+  assert.deepEqual([gone.tiles[0].id, gone.tiles[0].n, gone.empty], ['heals', 0, 'No heal card is waiting on you.']);
+});

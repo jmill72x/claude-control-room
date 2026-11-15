@@ -112,8 +112,9 @@ export function runPoster(file, args, { input }) {
 // `ntfyMessage`, when given, is what ntfy gets in place of `message`: ntfy shows on a
 // lock screen, so the chat's alerts send it generic words and keep the details for
 // #pepper (approvals, Ultron L10).
-export async function sendAlert({ topic, title, message, ntfyMessage = null, ntfy = publish, discord = publishDiscord }) {
-  const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message });
+// `priority` is ntfy's (a heal's page is 'high'); #pepper has no such thing.
+export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', ntfy = publish, discord = publishDiscord }) {
+  const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message, priority });
   const viaDiscord = await discord({ title, message });
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
 }

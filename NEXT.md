@@ -545,23 +545,22 @@ fields; the page's redraw of a gained text and the disarm on redraw in a real br
 arm's logic is unit-tested, the component wiring is not).
 
 **Jarvis OS 6, self-healing loops (board b384cd92): designed 2026-11-12
-(`docs/design/2026-11-12-self-healing-loops.md`); loop 1 (board ea709def) built and staged
-2026-11-12 on `jos/loop1` (from main ec4a9f0, worktree `~/Projects/.worktrees/ccr-loop1`),
-not committed, not live.** The branch carries the design doc byte for byte as committed on
-`jos/self-healing-design` (ea2241e), and this paragraph replaces that commit's 4-line
-pointer here, so merge `jos/loop1` in its place (merging both conflicts only on this
-paragraph; take this one). Loop 1 marks a job "quiet, ran clean" (grey, no push, no event)
+(`docs/design/2026-11-12-self-healing-loops.md`). Loop 1 (board ea709def) is merged (main
+f8cd1b1) and its code runs, with config's `heal` block unset (the Loops panel says "Not set
+up", per Jarvis's 11-15 brief). Loop 2 (board 6af6f55e) is built and staged 2026-11-14 on
+`jos/loop2` (from main 800b70a, worktree `~/Projects/.worktrees/ccr-loop2`), not committed,
+not live; its part is the second half of this paragraph.** Loop 1 marks a job "quiet, ran
+clean" (grey, no push, no event)
 when job-status calls it overdue for its log's age alone and two read-only `launchctl print`
 readings show the run counter rose with exit 0 at both. It also lays the shared parts: the
 catalog loader with its verb-floor check, the runner, the ledger (`server/data/heals.json`),
 the kill switch (`~/.local/state/jarvis-os/heal-off`), `GET /api/loops` and a read-only
 Loops panel. README, "Self-healing loops", has the mechanism and the config block.
-- **Go-live, in this order:** C&P; `cd web && npm run build` (the live bundle shows a quiet
-  job as a red "failed" row under a green "all OK" chip: checked headless against the new
-  server, so the build goes before heals are on); the service restart; then Jarvis adds the
-  `heal` block to config.json (`enabled: true`, the NAS mount job as the one target with
-  `["mark-quiet"]`) and the service restarts again (config is read at start). With no block
-  it logs `heal: unset` and changes nothing.
+- **Loop 1's go-live (what is left):** Jarvis adds the `heal` block to config.json
+  (`enabled: true`, the NAS mount job as the one target with `["mark-quiet"]`) and the
+  service restarts (config is read at start). With no block it logs `heal: unset` and
+  changes nothing. (The C&P, build and first restart were done after f8cd1b1: the live
+  panel says "Not set up".)
 - **Undo:** `touch ~/.local/state/jarvis-os/heal-off` lifts every quiet mark within a minute
   with no restart, or `heal.enabled: false` with a restart.
 - **Departures from the design, to defend:** (1) a calendar job is checked by the counter
@@ -586,13 +585,88 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
   `(never exited)`, `run interval = 180 seconds`, and `last terminating signal` in place of
   an exit after a signal. **Unverified:** the counter's behaviour across sleep and wake and
   for a job running at the moment of a reading (fixtures only); Safari.
-- **Not built (later loops, or follow-ups):** loops 2 and 3 and the T2 proposals with their
-  approve and decline routes; the "3 in 14 days" fix-item event; the loop count on the
+- **Not built (later loops, or follow-ups):** loop 3 (loop 2 is below); the "3 in 14 days" fix-item event; the loop count on the
   health strip; the morning brief still reads job-status directly, so it still calls a quiet
   job overdue (a Jarvis-side change: read `/api/loops`, or teach job-status the counter).
   Board 20620d37 (an acked job red after a restart) is next door but untouched: the runner
   runs after the crons pass's `whenAsked()` wait, so a first pass without job-status's
   answer has no `staleLog` entry and opens no loop.
+- **Loop 2, a run missed during a restart (T2), staged 2026-11-14 on `jos/loop2`; Ultron
+  reviewed it the same day: ship with fixes (1 medium, 7 low), all made and restaged.** Vision's
+  read-only `missed-runs --since boot --json` runs at the first crons pass after a start and
+  daily; a heal target it flags as missed in a restart (or a sure sleep gap) and not run
+  since gets a card in Needs you (a fifth tile, Heals, only while one waits) with **Run it
+  now** (targets listing `rerun-job`), **Ack until its next run** (`ack-until-next-run`) and
+  **Not now**. Only a tap from an approver device on the page acts; Run it now ends in the
+  catalog's fixed `/bin/launchctl kickstart gui/<uid>/<label>` (no `-k`), verified by the
+  run counter and exit 0 within 10 minutes, else a T3 page. README, "Self-healing loops",
+  has the mechanism; the files are `lib/heal-missed.mjs`, `lib/heal-routes.mjs`,
+  `lib/heal-programs.mjs`, the catalog and program check in `lib/heal.mjs`, the Heals cards
+  in `web/src/orbit/Waiting.jsx` and `web/src/lib/orbit/loops.js`.
+  - **Ultron's review (11-14) and the fixes:** M1, a pass during the program's run could
+    make a second card for the same instance: the instance is now in flight (`verifying`)
+    before the program runs, a `tapped` line makes it spent, and the pass skips a card a
+    tap took while it read launchd (each guard tested apart). L1: one exact, reviewed
+    argument list per launchctl write verb (`PROGRAM_ARGS`). L2: no ack without the job's
+    `lastRunAt` and `nextRunAt` (409). L3: tap log lines and the runner's `by` go through
+    `oneLine`. L4: no uid-0 fallback; the uid must be the process's own at use. L5: an
+    alerted, capped `heal-tap-refused` for a Shortcut key or a non-approver device. L7:
+    the card reads and runs config's target label. His answers: no Face ID, the rate
+    numbers stand, loop 3's `-k` is its own verb `launchctl:kickstart-kill` with its own
+    list (design doc, loop 3 and §8).
+  - **Accepted risk (Jeff, 2026-11-15, Ultron's L6):** `missed-runs` is not pinned by hash;
+    it runs from the machine-setup tree, checked at start for ownership and write bits
+    only. A change to that file (Vision's, through C&P) takes effect at the next run.
+  - **Go-live, in this order (each a gated step):** (1) Ultron's re-read of the fixes, if
+    he wants one; (2) Jeff's C&P, and the merge's `cd web && npm
+    run build` (page-only, safe before the restart: the old server sends no `proposals`,
+    so no Heals tile shows); (3) Jarvis adds to config.json's `heal` block: `"enabled":
+    true`, `"missedRuns": "/Users/<user>/Projects/machine-setup/bin/missed-runs"`, and
+    targets, e.g. the Friday alert job with `["rerun-job", "ack-until-next-run"]` and the
+    morning brief with `["ack-until-next-run"]` only (a late brief is no use); a backup of
+    config.json first; (4) the service restart (Vision's LaunchAgent; Jeff runs it); the
+    start line should read `heal: on, N targets; missed-runs set` with no `config:` line
+    about `heal.missedRuns`; (5) the live check from the design: Vision makes a harmless
+    test job miss its fire (unloaded over its fire time, with Jeff's OK), the server is
+    restarted or the daily scan comes round, and Jeff taps Run it now on the iPhone; the
+    log shows `heal: rerun-job started … by <device>`, then `healed`.
+  - **Undo:** `touch ~/.local/state/jarvis-os/heal-off` turns every button off at once
+    (no restart), or drop the targets' `rerun-job` (only the ack is offered), or
+    `heal.enabled: false` with a restart; `git revert` + build takes the page part back.
+  - **Departures from the design (Ultron accepted (3) with L2's condition, 11-14; the rest were noted, not reviewed):** (1) `catchUp: "offer" | "skip"` is the
+    target's `actions` list, not a second key (one place to say what a card offers);
+    (2) cards open only for a fire missed in a restart or a sure sleep gap, not every
+    `needs_look` job: a job not loaded, a stale interval job or "no run since" with no
+    outage is another class, and a kickstart can't fix the first; (3) the ack goes in
+    without a live alert (the route's rule is "only a live alert"), because the missed
+    run's log-age alert comes days later on the same instance (`lastRunAt`); it is still
+    T2, made from config's label and the crons panel's times, never from the request;
+    (4) the 2-hour expiry runs from the push, so a card made at night lasts until 09:00;
+    (5) no `heal-proposed` event: same reason as loop 1's `heal-done` (the released channel
+    names only the event types it knows, and an event wakes the lead); the card's push and
+    the per-tap `heal-tap` alert carry it; (6) no Face ID on the tap (Stop has it): an
+    approver device's Allow can already do more than run one configured job once
+    (Ultron agreed).
+  - **Checked (after Ultron's fixes):** server 1238 tests (43 new: 33 in
+    `heal-missed.test.mjs`, 10 in `heal-routes.test.mjs` with the program-check, notify
+    and server.mjs wiring checks), web 248 (5 new), each in local time and
+    `TZ=Asia/Tokyo`; 96 mutants over the loop 2 code, its routes, the catalog's program
+    check, the alert cap and the page logic: 95 caught, one equivalent (an element compare
+    after the lengths already matched), two no-op baselines pass. The two
+    `acks.test.mjs` route tests that failed on main from 11-14 (a fixed NEXT went past)
+    were fixed in the test. Headless Chromium on a
+    scratch server (port 8411, scratch data, a fake launchd and program runner) at 390 and
+    1180, light and dark, four modes (card with a tap through an https shim, card over
+    plain http, killed, no cards): 106 checks: the Heals tile first only while a card
+    waits, buttons 44 px, no sideways scroll, no CSP violation, the tap runs the program
+    once with the catalog's arguments, the card goes and the Loops panel shows the check,
+    then healed; over plain http the Origin rule refuses and the card says so; killed,
+    the buttons are off with the reason. Screenshots: `~/.local/state/jarvis/outbox/loop2/`.
+  - **Unverified:** a real `launchctl kickstart` (never run; tests use a fake runner); a
+    real `missed-runs` run by the server (its JSON shape read from the source, not from a
+    live run); a tap from Safari on the iPhone (Chromium only; the https Origin path is
+    covered by the route tests and the shim); how long real jobs take against the
+    10-minute check (a long brief would page as `still-running`).
 
 **The drain's scope (Ultron's L1 on ec4a9f0, board 7be15fee): staged 2026-11-13 on
 `jos/shortcut-drain-scope` (from main ec4a9f0, worktree

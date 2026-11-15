@@ -7,6 +7,7 @@ import { dayNumber } from '../due.js';
 import { PRIORITIES, rank, cardTitle, ownerOf, agentOf } from './board.js';
 import { clock, ago, unavailable } from './page.js';
 import { canAck } from './acks.js';
+import { healCards } from './loops.js';
 
 export const WAIT_SHOWN = 9;
 export const DUE_SOON_DAYS = 7;
@@ -202,8 +203,9 @@ function itemCard(t, order, roster, soon) {
 // Every card, by tile. Due soon: the soonest first (an overdue item before
 // all), then by the ask's time and priority. Decide or do: by priority, the
 // ones in Doing first. To push: by repo name. Alerts: the sessions waiting, then
-// the alerts raised now.
-export function waitingCards({ items, today, roster, toPushEnv, alerts = [], acked = [], needsYou = [], now = Date.now() }) {
+// the alerts raised now. Heals: loop 2's cards (the server's `loops.proposals`),
+// the oldest miss first.
+export function waitingCards({ items, today, roster, toPushEnv, alerts = [], acked = [], needsYou = [], loops = null, now = Date.now() }) {
   const due = [];
   const decide = [];
   (Array.isArray(items) ? items : []).forEach((t, order) => {
@@ -215,20 +217,24 @@ export function waitingCards({ items, today, roster, toPushEnv, alerts = [], ack
   decide.sort((a, b) => a.sort.rank - b.sort.rank || a.sort.lane - b.sort.lane || a.sort.order - b.sort.order);
   const push = pushView(toPushEnv, roster);
   const a = alertCards({ alerts, acked, needsYou, now });
-  return { due, decide, push: push.cards, pushKnown: push.known, pushNotes: push.notes, alerts: a.cards, ackedCount: a.acked };
+  return { due, decide, push: push.cards, pushKnown: push.known, pushNotes: push.notes, alerts: a.cards, ackedCount: a.acked, heals: healCards(loops, now) };
 }
 
-const TILE_WORDS = { due: 'due soon', decide: 'to decide or do', push: 'to push', alerts: 'alerts and waits' };
+const TILE_WORDS = { due: 'due soon', decide: 'to decide or do', push: 'to push', alerts: 'alerts and waits', heals: 'to answer' };
 
 // What the panel shows: the count, the tiles, and the cards of the picked tile
-// (or all of them: due soon, then alerts and waits, then to push, then decide or
-// do), the first 9 unless all are asked for.
+// (or all of them: heal cards, due soon, then alerts and waits, then to push, then
+// decide or do), the first 9 unless all are asked for. The Heals tile shows only
+// while a heal card waits (or while it is the picked tile), so the four tiles keep
+// their grid on a phone the rest of the time; a heal card goes first because it
+// expires 2 hours after its push.
 export function waitingView(cards, { filter = null, all = false } = {}) {
   const alertsList = cards.alerts ?? [];
+  const heals = cards.heals ?? [];
   const ackedCount = cards.ackedCount ?? 0;
-  const total = cards.due.length + cards.decide.length + cards.push.length + alertsList.length;
+  const total = cards.due.length + cards.decide.length + cards.push.length + alertsList.length + heals.length;
   const list = filter === 'due' ? cards.due : filter === 'decide' ? cards.decide : filter === 'push' ? cards.push
-    : filter === 'alerts' ? alertsList : [...cards.due, ...alertsList, ...cards.push, ...cards.decide];
+    : filter === 'alerts' ? alertsList : filter === 'heals' ? heals : [...heals, ...cards.due, ...alertsList, ...cards.push, ...cards.decide];
   const shown = all ? list : list.slice(0, WAIT_SHOWN);
   const capped = shown.length < list.length;
   // Without a To push reading its count is unknown, never a zero: the tile
@@ -241,6 +247,7 @@ export function waitingView(cards, { filter = null, all = false } = {}) {
   return {
     total,
     tiles: [
+      ...(heals.length > 0 || filter === 'heals' ? [{ id: 'heals', label: 'Heals', n: heals.length }] : []),
       { id: 'due', label: 'Due soon', n: cards.due.length },
       { id: 'decide', label: 'Decide or do', n: cards.decide.length },
       { id: 'push', label: 'To push', n: cards.pushKnown ? cards.push.length : null },
@@ -260,7 +267,8 @@ const EMPTY = {
   due: 'Nothing that waits on you is due in the next 7 days.',
   decide: 'No decision or task is waiting on you.',
   push: 'Nothing is staged to commit, and nothing is waiting to be pushed.',
-  alerts: 'No alert is raised, and no session is waiting on you.'
+  alerts: 'No alert is raised, and no session is waiting on you.',
+  heals: 'No heal card is waiting on you.'
 };
 
 // ---- Next 24 hours ----

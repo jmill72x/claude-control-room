@@ -410,6 +410,11 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
       // The self-healing loops (docs/design/2026-11-12-self-healing-loops.md, §6): what
       // is open, quiet, held and recently closed. Read-only; names only, no labels.
       if (req.method === 'GET' && path === '/api/loops') return json(res, 200, loopsView(), { 'Cache-Control': 'no-store' });
+      // A tap on a heal card is the chat's (lib/heal-routes.mjs: it needs a paired approver
+      // device). It reaches this handler only while the chat is off.
+      if (req.method === 'POST' && /^\/api\/loops\/[^/]+\/(approve|decline)$/.test(path)) {
+        throw new HttpError(403, "a heal card's buttons need the chat's paired devices, and the chat is off on this server");
+      }
 
       // Acknowledging a known miss (docs/design/2026-11-10-jarvis-os-home.md, §6).
       // Anyone who reaches the page may ack: the tailnet, which is the owner's own

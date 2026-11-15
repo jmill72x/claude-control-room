@@ -107,16 +107,25 @@ export async function checkProgram(path, { uid = process.getuid(), fs = { realpa
   return problem ? { real: null, problem } : { real: launcher.real, problem: null };
 }
 
+// A script that stands alone (it imports only the standard library, as the
+// machine's missed-runs does): the same rule for the file itself, with no package beside it.
+export async function checkScript(path, { uid = process.getuid(), fs = { realpath, stat, readdir } } = {}) {
+  let found;
+  try { found = await inspect(path, 'file', { uid, fs }); } catch (err) { return { real: null, problem: notChecked(err) }; }
+  return found.problem ? { real: null, problem: found.problem } : { real: found.real, problem: null };
+}
+
 // Checked once, at startup. Each entry is [its name in config.json, the settings
-// object, the key holding the path]. A path that passes is replaced by its real
-// path, so every later run starts exactly the file that was checked; one that
-// fails is set to null, which leaves that feature "not set up" like any bad entry,
-// and what was wrong comes back as a line for the service log.
+// object, the key holding the path, and optionally { standalone: true } for a script
+// with no package]. A path that passes is replaced by its real path, so every later
+// run starts exactly the file that was checked; one that fails is set to null, which
+// leaves that feature "not set up" like any bad entry, and what was wrong comes back
+// as a line for the service log.
 export async function vetPrograms(entries, options) {
   const problems = [];
-  for (const [name, settings, key] of entries) {
+  for (const [name, settings, key, how] of entries) {
     if (typeof settings?.[key] !== 'string') continue;
-    const { real, problem } = await checkProgram(settings[key], options);
+    const { real, problem } = await (how?.standalone === true ? checkScript : checkProgram)(settings[key], options);
     if (problem) {
       problems.push(`${name} ${problem}, so it is left out`);
       settings[key] = null;

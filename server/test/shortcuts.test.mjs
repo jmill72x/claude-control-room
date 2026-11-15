@@ -2714,7 +2714,7 @@ test('server.mjs: the Shortcut routes exist only when config says so, share the 
   assert.match(src, /let shortcuts = null;/);
   const block = src.slice(src.indexOf('const shortcutSettings = readShortcutsConfig(config);'), src.indexOf("await listenUnix(channelSocketPath"));
   // The chat's status answer tells the page whether to show the keys at all.
-  assert.match(block, /chat = createChatRoutes\(\{[^}]*shortcutKeys: shortcutSettings\.on \}\);/);
+  assert.match(block, /chat = createChatRoutes\(\{[^}]*shortcutKeys: shortcutSettings\.on[, a-zA-Z]* \}\);/);
   assert.ok(block.length > 0);
   assert.match(block, /if \(shortcutSettings\.on\) \{/);
   const made = /shortcuts = createShortcutRoutes\(\{([^}]*)\}/.exec(block)?.[1] ?? '';

@@ -43,7 +43,7 @@ const entry = (extra = {}) => ({ id: 'try-it', class: 'stale-log', tier: 'T1', t
 
 test('the shipped catalog loads, with mark-quiet at T1 and its floor worked out', () => {
   const c = loadCatalog(CATALOG);
-  assert.deepEqual([...c.keys()], ['mark-quiet']);
+  assert.deepEqual([...c.keys()], ['mark-quiet', 'rerun-job', 'ack-until-next-run']);
   const q = c.get('mark-quiet');
   assert.equal(q.tier, 'T1');
   assert.equal(q.floor, 'T1');
@@ -56,7 +56,7 @@ test('the loader refuses a T0 entry that declares launchctl:kickstart, and any t
   assert.throws(() => loadCatalog([entry({ tier: 'T1', verbs: ['launchctl:kickstart'] })]), /tier T1 is below its verbs' floor of T2/);
   assert.throws(() => loadCatalog([entry({ tier: 'T0', verbs: ['alert:mark-quiet'] })]), /tier T0 is below its verbs' floor of T1/);
   // At or above the floor is fine: a heal may sit higher than it must.
-  assert.equal(loadCatalog([entry({ tier: 'T2', verbs: ['launchctl:kickstart'] })]).get('try-it').tier, 'T2');
+  assert.equal(loadCatalog([entry({ tier: 'T2', verbs: ['launchctl:kickstart'], program: { file: '/bin/launchctl', args: ['kickstart', 'gui/{uid}/{label}'] } })]).get('try-it').tier, 'T2');
   assert.equal(loadCatalog([entry({ tier: 'T2', verbs: ['launchctl:print'] })]).get('try-it').floor, 'T0');
   // One bad entry refuses the whole catalog.
   assert.throws(() => loadCatalog([...CATALOG, entry({ tier: 'T0', verbs: ['launchctl:kickstart'] })]), /below its verbs' floor/);
@@ -121,13 +121,13 @@ test('bad targets are left out and said, and inherited names never count', () =>
         spaced: { label: 'com.example.a b', actions: ['mark-quiet'] },
         twice: { label: 'com.example.good', actions: ['mark-quiet'] },
         noactions: { label: 'com.example.y' },
-        strange: { label: 'com.example.z', actions: ['rerun-job', 'constructor', 'mark-quiet'] }
+        strange: { label: 'com.example.z', actions: ['rerun-job', 'constructor', 'mark-quiet', 'restart-everything'] }
       },
       off: ['nothing-like-it']
     }
   });
   assert.deepEqual([...s.targets.keys()], ['com.example.good', 'com.example.z']);
-  assert.deepEqual([...s.targets.get('com.example.z').actions], ['mark-quiet']);
+  assert.deepEqual([...s.targets.get('com.example.z').actions], ['rerun-job', 'mark-quiet']);
   assert.equal(s.problems.length, 8);
   assert.equal(s.off.size, 0);
   assert.equal(readHealConfig({ heal: { targets: Object.create({ inherited: { label: 'com.example.i', actions: ['mark-quiet'] } }) } }).targets.size, 0);

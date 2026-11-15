@@ -14,10 +14,13 @@ import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { createHealth, JOB_STATUS_TIMEOUT_MS, runLaunchctlPrint } from './collectors/health.mjs';
-import { readHealConfig } from './lib/heal.mjs';
+import { readHealConfig, withMissedRuns } from './lib/heal.mjs';
 import { createHealLedger } from './lib/heal-ledger.mjs';
 import { createHealRunner } from './lib/heal-runner.mjs';
-import { matchingAck } from './lib/acks.mjs';
+import { createMissedRunLoops } from './lib/heal-missed.mjs';
+import { runCatalogProgram, runMissedRuns } from './lib/heal-programs.mjs';
+import { createHealTaps } from './lib/heal-routes.mjs';
+import { matchingAck, ackLogLine, ackNotice } from './lib/acks.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readHealthConfig } from './lib/health.mjs';
 import { createToPush } from './collectors/to-push.mjs';
@@ -26,7 +29,7 @@ import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier } from './collectors/notifier.mjs';
 import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
-import { createChatEventHandler, NTFY_WORDS } from './lib/chat-events.mjs';
+import { createChatEventHandler, NTFY_WORDS, oneLine } from './lib/chat-events.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
 import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
@@ -134,19 +137,45 @@ registry.register('usage', async () => {
 // Its only launchd call is `launchctl print`, the same read-only call the health strip makes.
 const healSettings = readHealConfig(config);
 for (const problem of healSettings.problems) console.error(`config: ${problem}`);
+// Loop 2's detector, the machine's read-only missed-runs, runs on a timer like job-status, so
+// it must pass the same ownership rule (a script with no package beside it).
+for (const problem of await vetPrograms([['heal.missedRuns', healSettings, 'missedRuns', { standalone: true }]])) console.error(`config: ${problem}`);
 const healOffPath = join(homedir(), '.local', 'state', 'jarvis-os', 'heal-off');
+// One ledger for every loop: the caps count across them.
+const healLedger = createHealLedger({ path: join(HERE, 'data', 'heals.json') });
 const heal = createHealRunner({
   settings: healSettings,
-  ledger: createHealLedger({ path: join(HERE, 'data', 'heals.json') }),
+  ledger: healLedger,
   launchctlPrint: runLaunchctlPrint,
   killed: () => existsSync(healOffPath),
   jobNames: roster.jobs
 });
+// Loop 2 (lib/heal-missed.mjs): a run missed during a restart gets a card in Needs you,
+// and only a tap on it acts (lib/heal-routes.mjs, through the chat's device rules). Its
+// one launchctl write is the catalog's `kickstart gui/<uid>/<label>` (no -k), the label
+// from config; its ack goes in by "heal" and is noticed like any other. It shares loop
+// 1's switch (`heal.status()`: config, the ledger, the kill switch).
+const missed = createMissedRunLoops({
+  settings: healSettings,
+  ledger: healLedger,
+  status: () => heal.status(),
+  launchctlPrint: runLaunchctlPrint,
+  runProgram: (entry, target) => runCatalogProgram(entry, target),
+  missedRuns: healSettings.missedRuns ? () => runMissedRuns(healSettings.missedRuns) : null,
+  addAck: (ack, now) => ackStore.add(ack, now),
+  jobNames: roster.jobs,
+  notify: async (message, { priority = 'default' } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, priority }),
+  onAck: stored => {
+    console.log(ackLogLine(stored));
+    ackNotices.notice(stored.key, ackNotice(stored, Date.now()));
+  }
+});
+if (missed.catalogProblem()) console.error(`heal: loop 2's catalog entries were refused (${missed.catalogProblem()}); no missed-run cards`);
 await heal.load();
 if (heal.catalogProblem()) console.error(`heal: the catalog was refused (${heal.catalogProblem()}); heals stay off`);
 {
   const { status, why } = heal.status();
-  console.log(`heal: ${status}${why ? ` (${why})` : ''}, ${healSettings.targets.size} target${healSettings.targets.size === 1 ? '' : 's'}`);
+  console.log(`heal: ${status}${why ? ` (${why})` : ''}, ${healSettings.targets.size} target${healSettings.targets.size === 1 ? '' : 's'}; missed-runs ${healSettings.missedRuns ? 'set' : 'not set, so no missed-run cards'}`);
 }
 const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT, quietOf: (label, since) => heal.quietOf(label, since) });
 // The first crons pass waits for job-status's first answer (whenAsked), or its
@@ -160,14 +189,21 @@ registry.register('crons', async () => {
   let acks = [];
   try { acks = await ackStore.read(now); } catch { acks = []; }
   // A fault in the runner never costs the crons panel: the panel goes out as overlaid.
+  let out = overlaid;
   try {
-    return await heal.pass(overlaid, {
+    out = await heal.pass(overlaid, {
       acked: c => Boolean(matchingAck({ kind: 'cron', key: `cron:launchd:${c.label}`, since: c.lastRunAt }, acks, now))
     });
   } catch (err) {
     console.error(`heal: the pass failed (${err?.message ?? err})`);
-    return overlaid;
   }
+  // Loop 2's cards and the runs its taps started; it reads the panel and never changes it.
+  try {
+    await missed.pass(out);
+  } catch (err) {
+    console.error(`heal: the missed-run pass failed (${err?.message ?? err})`);
+  }
+  return out;
 }, 60 * 1000);
 registry.register('health', () => health.collect(), 60 * 1000);
 // Waiting on you's To push tile (collectors/to-push.mjs): git-read on each repo
@@ -298,8 +334,8 @@ const api = createHandler({
   // every key and 12 a local day (lib/ack-notice-limit.mjs). Guarded by a source test
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
   onAckNotice: (notice, key) => ackNotices.notice(key, notice),
-  // GET /api/loops and the dashboard's `loops` (lib/heal-runner.mjs, view).
-  loops: () => heal.view()
+  // GET /api/loops and the dashboard's `loops` (lib/heal-runner.mjs and lib/heal-missed.mjs, view).
+  loops: () => withMissedRuns(heal.view(), missed.view())
 });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
@@ -453,7 +489,9 @@ if (chatSettings.on && socketsReady) {
   // Stop buttons (war room slice 2, lib/agent-stop.mjs): the rows come from the
   // sessions panel's latest pass, so a stop names only a run live this minute.
   const agentStop = createAgentStop({ stepUp, socket: socketRouter, store: chatStore, onEvent: chatEvents, liveRuns: () => cache.get('sessions', Date.now())?.data?.liveAgents?.runs ?? [] });
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on });
+  // Taps on a heal card (lib/heal-routes.mjs): an approver device, the page's Origin.
+  const healTaps = createHealTaps({ loops: missed, onEvent: chatEvents, log: line => console.log(oneLine(line)) });
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, healTaps });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }

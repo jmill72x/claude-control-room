@@ -1,8 +1,10 @@
 // The Loops panel's logic (docs/design/2026-11-12-self-healing-loops.md, §6): the
-// server's `loops` view (server/lib/heal-runner.mjs) turned into words. Read-only: the
-// panel has no buttons until the T2 loops, and the kill switch is a file the page can't
+// server's `loops` view (server/lib/heal-runner.mjs, server/lib/heal-missed.mjs) turned
+// into words. The panel itself has no buttons: loop 2's cards, the only ones that act,
+// sit in Needs you (healCards, below), and the kill switch is a file the page can't
 // touch. Checked by web/test/orbit-loops.test.js.
 import { when } from './health.js';
+import { clock } from './page.js';
 
 export const STEPS = ['detect', 'diagnose', 'act', 'verify'];
 const STEP_INDEX = { detected: 0, diagnosing: 1, acting: 2, verifying: 3 };
@@ -25,7 +27,17 @@ export function stepMarks(step) {
   return STEPS.map((name, i) => ({ name, mark: i < at ? 'done' : i === at ? 'now' : 'ahead' }));
 }
 
-const RECENT_TONE = { healed: 'ok', escalated: 'bad', relapsed: 'bad', cleared: 'idle' };
+const RECENT_TONE = { healed: 'ok', escalated: 'bad', relapsed: 'bad', cleared: 'idle', declined: 'idle', expired: 'idle', acked: 'idle' };
+// Outcomes whose why only repeats what was tapped.
+const SAID_BY_TAP = new Set(['healed', 'acked', 'declined']);
+
+// An open loop's second line: loop 1's next reading, or loop 2's wait for a tap and its
+// check of the run a tap started.
+function openWhen(o, now) {
+  if (o.waiting === true) return 'waiting on you (Needs you)';
+  if (Number.isFinite(o.checkBy)) return `run started, checked by ${when(o.checkBy, now)}`;
+  return Number.isFinite(o.nextCheckAt) ? `second reading ${when(o.nextCheckAt, now)}` : 'checking';
+}
 
 // Whether a loop is open: the phone shows the panel above the fold only then.
 export const hasOpen = loops => list(loops?.open).length > 0;
@@ -39,7 +51,7 @@ export function loopsView(loops, now) {
     tier: o.tier,
     what: o.classLabel ?? o.class,
     steps: stepMarks(o.step),
-    when: Number.isFinite(o.nextCheckAt) ? `second reading ${when(o.nextCheckAt, now)}` : 'checking',
+    when: openWhen(o, now),
     held: Number.isFinite(o.holdUntil) && o.holdUntil > now ? `alert held until ${when(o.holdUntil, now)}` : null
   }));
   const quiet = list(loops.quiet).map(q => ({
@@ -54,8 +66,8 @@ export function loopsView(loops, now) {
     name: r.name,
     tier: r.tier,
     tone: RECENT_TONE[r.outcome] ?? 'idle',
-    mark: r.outcome === 'healed' ? '✓' : r.outcome === 'cleared' ? '·' : '✕',
-    line: `${r.classLabel ?? r.class}: ${r.words ?? r.outcome}${r.why && r.outcome !== 'healed' ? ` (${r.why})` : ''}`,
+    mark: r.outcome === 'healed' ? '✓' : RECENT_TONE[r.outcome] === 'bad' ? '✕' : '·',
+    line: `${r.classLabel ?? r.class}: ${r.words ?? r.outcome}${r.why && !SAID_BY_TAP.has(r.outcome) ? ` (${r.why})` : ''}`,
     when: when(r.at, now)
   }));
   const weeks = list(loops.weeks).map(w => ({ key: w.class, label: w.label ?? w.class, counts: list(w.counts) }));
@@ -66,4 +78,60 @@ export function loopsView(loops, now) {
     `${healedWeek} healed this week`
   ].filter(Boolean).join(' · ');
   return { chip: statusChip(loops), open, quiet, held, recent, weeks, sub, empty: !open.length && !quiet.length && !held.length && !recent.length };
+}
+
+// ---- loop 2's cards, for Needs you ----
+
+// The buttons' words, in the order the card shows them. Not now is always there.
+export const HEAL_ACTIONS = [
+  { action: 'rerun-job', label: 'Run it now' },
+  { action: 'ack-until-next-run', label: 'Ack until its next run' }
+];
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const dayTime = ts => `${WEEKDAYS[new Date(ts).getDay()]} ${clock(ts)}`;
+const capital = s => (typeof s === 'string' && s ? s[0].toUpperCase() + s.slice(1) : s);
+
+// One card per proposal (the server's `loops.proposals`): what was missed and why, the
+// buttons it offers, and whether they work now. A server from before loop 2 sends none.
+export function healCards(loops, now) {
+  return list(loops?.proposals).filter(p => typeof p?.id === 'string' && typeof p.name === 'string').map(p => {
+    const offered = HEAL_ACTIONS.filter(a => list(p.actions).includes(a.action));
+    const runs = offered.some(a => a.action === 'rerun-job');
+    const more = Number.isInteger(p.missedCount) && p.missedCount > 1 ? ` (${p.missedCount - 1} more before it)` : '';
+    const what = runs
+      ? 'Run it now starts it once, the way launchd would have; the card checks the run within 10 minutes. Ack until its next run keeps its alert quiet until then. Not now leaves it as it is.'
+      : "A late run of this one is no use, so the card offers no run. Ack until its next run keeps its alert quiet until then, or Not now leaves it as it is.";
+    const next = Number.isFinite(p.nextRunAt) ? ` Its next run is ${when(p.nextRunAt, now)}.` : '';
+    const meta = p.state === 'acting' ? 'answering…'
+      : Number.isFinite(p.expiresAt) ? `card open until ${clock(p.expiresAt)}`
+      : 'no push at night: it waits for the morning';
+    return {
+      key: `heal:${p.id}`,
+      group: 'heals',
+      look: 'alert',
+      chip: 'Missed run',
+      title: `${p.name}: missed ${Number.isFinite(p.missedAt) ? dayTime(p.missedAt) : 'a run'}${more}`,
+      what: `${what}${next}`,
+      why: p.fingerprint ? `${capital(p.fingerprint)} when it was due, and it hasn't run since.` : "It hasn't run since.",
+      owner: null,
+      fallback: '⟳',
+      meta: `${p.tier ?? 'T2'} · ${meta}`,
+      itemId: null,
+      alert: null,
+      heal: {
+        id: p.id,
+        name: p.name,
+        actions: offered,
+        canAct: p.canAct === true,
+        blocked: p.canAct === true ? null : (typeof p.blocked === 'string' && p.blocked ? p.blocked : 'heals are off')
+      }
+    };
+  });
+}
+
+// A tap's answer in words, for the line under the buttons.
+export function tapDone(action, answer, now) {
+  if (action === 'rerun-job') return Number.isFinite(answer?.checkBy) ? `Started. The Loops panel shows the check, done by ${when(answer.checkBy, now)}.` : 'Started.';
+  if (action === 'ack-until-next-run') return Number.isFinite(answer?.until) ? `Acked until ${when(answer.until, now)}.` : 'Acked.';
+  return 'Left as it is.';
 }

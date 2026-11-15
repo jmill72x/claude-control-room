@@ -54,8 +54,11 @@
   "heal": {
     "enabled": false,
     "targets": {
-      "nightly-backup": { "label": "com.example.nightly-backup", "actions": ["mark-quiet"] }
+      "nightly-backup": { "label": "com.example.nightly-backup", "actions": ["mark-quiet"] },
+      "weekly-report": { "label": "com.example.weekly-report", "actions": ["rerun-job", "ack-until-next-run"] },
+      "morning-note": { "label": "com.example.morning-note", "actions": ["ack-until-next-run"] }
     },
+    "missedRuns": "/absolute/path/to/missed-runs",
     "off": []
   },
   "toPush": {

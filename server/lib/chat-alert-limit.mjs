@@ -19,7 +19,9 @@ export const LIMITED_KINDS = Object.freeze({
   'shortcut-new-address': 'Shortcut key uses from a new address',
   'shortcut-refused': 'bursts of wrong Shortcut keys',
   'shortcut-over-limit': 'Shortcut keys over a limit',
-  'shortcut-pair-refused': 'bursts of refused Shortcut pairing tries'
+  'shortcut-pair-refused': 'bursts of refused Shortcut pairing tries',
+  // A refused heal tap (lib/heal-routes.mjs) can come in a loop too.
+  'heal-tap-refused': 'refused heal taps'
 });
 
 const minutes = ms => `${Math.round(ms / 60e3)} minutes`;
