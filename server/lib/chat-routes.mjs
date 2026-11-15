@@ -201,7 +201,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       // ---- stops and their Face ID (lib/agent-stop.mjs) ----
       if (agentStop?.owns(path)) return await agentStop.handle(req, res, path, { requireDevice, notifyHosts });
       // ---- taps on a heal card (lib/heal-routes.mjs): the same device and Origin rules ----
-      if (healTaps?.owns(path)) return await healTaps.handle(req, res, path, { requireDevice, notifyHosts });
+      if (healTaps?.owns(path)) return await healTaps.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
       // ---- pairing (§2.2) ----
       if (req.method === 'POST' && path === '/api/pair/start') {
         guardWrite(req);

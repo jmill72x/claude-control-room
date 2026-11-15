@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { localToday } from '../lib/due.js';
 import { waitingCards, waitingView } from '../lib/orbit/waiting.js';
-import { tapDone } from '../lib/orbit/loops.js';
+import { tapDone, RESTART_ACTION, RESTART_RELOAD_MS } from '../lib/orbit/loops.js';
 import { Avatar } from './Avatar.jsx';
 import { AckForm } from './Acks.jsx';
 import { approveHeal, declineHeal } from './healApi.js';
@@ -12,7 +12,8 @@ import { approveHeal, declineHeal } from './healApi.js';
 // push from the server's `toPush` panel, and Alerts from its `alerts`, `acked` and
 // `needsYou`. `state` lives in OrbitApp, so Back from the board finds the panel as
 // it was left. Since loop 2 (self-healing), a fifth tile, Heals, holds the cards for
-// runs missed during a restart, with their buttons, while any wait.
+// runs missed during a restart, and since loop 3 the Restart card, with their buttons,
+// while any wait.
 
 const ICONS = {
   due: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
@@ -34,8 +35,8 @@ function AckAction({ alert, now, onChanged }) {
 // A heal card's buttons (server/lib/heal-routes.mjs): its offered actions and Not now.
 // One tap at a time; the server's answer, or its refusal, shows under them. After a
 // tap that worked, the page reloads its data a moment later (the card then goes, and a
-// run shows on the Loops panel), so the answer can be read first. Off, with the
-// reason, while heals are off.
+// run shows on the Loops panel), so the answer can be read first; after Restart it waits
+// longer, past the seconds the server is gone. Off, with the reason, while heals are off.
 const HEAL_RELOAD_MS = 2500;
 function HealActions({ heal, onChanged }) {
   const [busy, setBusy] = useState(null);
@@ -46,7 +47,7 @@ function HealActions({ heal, onChanged }) {
     try {
       const answer = await run();
       setSaid({ ok: true, text: tapDone(action, answer, Date.now()) });
-      setTimeout(() => onChanged?.(), HEAL_RELOAD_MS);
+      setTimeout(() => onChanged?.(), action === RESTART_ACTION.action ? RESTART_RELOAD_MS : HEAL_RELOAD_MS);
     } catch (err) {
       setSaid({ ok: false, text: `Not done: ${err.message}` });
     } finally {
@@ -54,6 +55,9 @@ function HealActions({ heal, onChanged }) {
     }
   };
   const off = !heal.canAct || busy !== null || said?.ok === true;
+  // Not now has its own switch on a restart card (a blocked one can still be dismissed);
+  // loop 2's cards keep one switch for every button.
+  const declineOff = !(heal.canDecline ?? heal.canAct) || busy !== null || said?.ok === true;
   return (
     <div className="o-heal-actions">
       <div className="o-heal-buttons" role="group" aria-label={`Answer the card for ${heal.name}`}>
@@ -63,11 +67,11 @@ function HealActions({ heal, onChanged }) {
             {busy === a.action ? 'Sending…' : a.label}
           </button>
         ))}
-        <button type="button" className="o-btn" disabled={off} onClick={() => tap('not-now', () => declineHeal(heal.id))}>
+        <button type="button" className="o-btn" disabled={declineOff} onClick={() => tap('not-now', () => declineHeal(heal.id))}>
           {busy === 'not-now' ? 'Sending…' : 'Not now'}
         </button>
       </div>
-      {!heal.canAct && <p className="o-heal-note">Buttons off: {heal.blocked}.</p>}
+      {!heal.canAct && <p className="o-heal-note">{(heal.canDecline ?? heal.canAct) ? 'Restart off' : 'Buttons off'}: {heal.blocked}.</p>}
       {said && <p className={`o-heal-note${said.ok ? '' : ' o-heal-note-bad'}`} role="status">{said.text}</p>}
       {heal.canAct && !said && <p className="o-heal-note">Taps count only from a device marked approver.</p>}
     </div>

@@ -33,12 +33,14 @@ const failure = (message, extra) => Object.assign(new Error(message), extra);
 // xcrun's shim) reaches python3, git-read or git. python3 would report a missing
 // script as its exit code 2, git-read's own word for a refusal, so the path is
 // looked at first and a missing or unreadable one fails as such (ENOENT, EACCES).
-export async function runGitRead(gitRead, repo, { timeout = GIT_READ_TIMEOUT_MS, maxBytes = MAX_OUTPUT_BYTES, env = programEnv() } = {}) {
+// `args` is what git-read is asked after the repo: `status` here; self-healing loop 3
+// asks it for `rev-list` and `diff --name-only` (lib/heal-programs.mjs, readCheckout).
+export async function runGitRead(gitRead, repo, { timeout = GIT_READ_TIMEOUT_MS, maxBytes = MAX_OUTPUT_BYTES, env = programEnv(), args = STATUS_ARGS } = {}) {
   await access(gitRead, constants.R_OK);
   return new Promise((resolvePromise, rejectPromise) => {
     let child;
     try {
-      child = spawn(PYTHON, pythonArgs(gitRead, [repo, ...STATUS_ARGS]), { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+      child = spawn(PYTHON, pythonArgs(gitRead, [repo, ...args]), { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
     } catch (err) {
       rejectPromise(err);
       return;

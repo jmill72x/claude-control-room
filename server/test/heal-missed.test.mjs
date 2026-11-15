@@ -176,7 +176,10 @@ test("the catalog's program is checked against its verbs, and fills in only the 
   assert.equal(loadCatalog(CATALOG).get('ack-until-next-run').tier, 'T2');
   const entry = (extra = {}) => ({ id: 'x', class: 'missed-run', tier: 'T2', targetKind: 'job', verbs: ['launchctl:print', 'launchctl:kickstart'], settleMs: 60e3, program: { file: '/bin/launchctl', args: ['kickstart', 'gui/{uid}/{label}'] }, ...extra });
   assert.equal(loadCatalog([entry()]).get('x').program.args.length, 2);
-  assert.deepEqual(PROGRAM_ARGS, { 'launchctl:kickstart': ['kickstart', 'gui/{uid}/{label}'] }, 'one reviewed list; loop 3 adds launchctl:kickstart-kill when it is reviewed');
+  assert.deepEqual(PROGRAM_ARGS, {
+    'launchctl:kickstart': ['kickstart', 'gui/{uid}/{label}'],
+    'launchctl:kickstart-kill': ['kickstart', '-k', 'gui/{uid}/{label}']
+  }, 'one reviewed list per write verb; -k is only ever its own verb (loop 3)');
   assert.throws(() => loadCatalog([entry({ program: undefined })]), /declares launchctl:kickstart but names no program/);
   assert.throws(() => loadCatalog([entry({ program: { file: '/bin/sh', args: ['kickstart', 'gui/{uid}/{label}'] } })]), /must be \/bin\/launchctl/);
   assert.throws(() => loadCatalog([entry({ program: { file: '/bin/launchctl', args: 'kickstart gui/{uid}/{label}' } })]), /list of arguments/);
@@ -593,6 +596,12 @@ test('rate limits: 3 T2 actions per target and 20 in all in 24 hours, and no run
   assert.equal((await old.runner.approve(old.card().id, RERUN, 'iPhone')).status, 202, 'a day on, the count is clear');
   const day = await seed(Array.from({ length: 20 }, (_, i) => line(`t${i}`, i % 20, { at: NOW - (i + 1) * 30 * MIN, outcome: i % 2 ? 'acked' : 'tapped' })));
   assert.match((await day.runner.approve(day.card().id, ACK, 'iPhone')).error, /20 heals are used/);
+  // One count of the day's T2 actions for every loop (L11): loop 3's restarts count here too,
+  // but only this loop's lines count toward a target's 3.
+  const restarts = await seed(Array.from({ length: 20 }, (_, i) => line('control-room', i % 20, { at: NOW - (i + 1) * 30 * MIN, class: 'restart-due', action: 'restart-control-room', outcome: 'verifying', ref: String(i).padStart(16, '0') })));
+  assert.match((await restarts.runner.approve(restarts.card().id, ACK, 'iPhone')).error, /20 heals are used/);
+  const others = await seed([0, 1, 2].map(i => line('friday', i, { class: 'restart-due', action: 'restart-control-room', outcome: 'verifying', ref: String(i).padStart(16, '0') })));
+  assert.equal((await others.runner.approve(others.card().id, ACK, 'iPhone')).status, 200, "another loop's lines aren't this target's 3");
   const back = await seed([line('friday', 0, { at: NOW - 30 * MIN, outcome: 'healed', class: 'stale-log', action: 'mark-quiet', tier: 'T1' })]);
   assert.match((await back.runner.approve(back.card().id, RERUN, 'iPhone')).error, /came back within an hour/);
   assert.equal((await back.runner.approve(back.card().id, ACK, 'iPhone')).status, 200, 'the ack is no heal');

@@ -1806,22 +1806,25 @@ or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the o
 post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
 leaves the chat up.
 
-### Self-healing loops (Jarvis OS 6; loops 1 and 2 built, off by default)
+### Self-healing loops (Jarvis OS 6; loops 1 to 3 built, off by default)
 
 A loop is detect, diagnose, act, verify, then close or escalate, for one failure instance
 (the alert's key plus its `since`, the pair an ack uses). The design, with the tiers (T0
 heal silently, T1 heal then tell, T2 wait for a tap, T3 page and never act) and the
 guardrails, is `docs/design/2026-11-12-self-healing-loops.md`. Built so far: **loop 1**,
-**loop 2**, and the shared parts the later loops use. The code is `server/lib/heal.mjs`
+**loop 2**, **loop 3**, and the shared parts they use. The code is `server/lib/heal.mjs`
 (the tiers, verb floors, catalog loader with its program check, config, readings, ledger
 lines and the page's view), `server/lib/heal-runner.mjs` (loop 1's runner and the shared
-status), `server/lib/heal-missed.mjs` (loop 2), `server/lib/heal-routes.mjs` (loop 2's
-taps), `server/lib/heal-programs.mjs` (the two programs loop 2 runs),
+status), `server/lib/heal-missed.mjs` (loop 2), `server/lib/heal-restart.mjs` (loop 3),
+`server/lib/heal-routes.mjs` (the taps), `server/lib/heal-programs.mjs` (the programs the
+T2 loops run, and loop 3's checkout reader), the first pass in
+`server/collectors/registry.mjs`,
 `server/lib/heal-ledger.mjs`, the hold in `server/collectors/notifier.mjs`, and
 `web/src/orbit/Loops.jsx`, the Heals cards in `web/src/orbit/Waiting.jsx` and
 `web/src/lib/orbit/loops.js`; tests in `server/test/heal.test.mjs`,
 `server/test/heal-runner.test.mjs`, `server/test/heal-missed.test.mjs`,
-`server/test/heal-routes.test.mjs` and `web/test/orbit-loops.test.js`.
+`server/test/heal-routes.test.mjs`, `server/test/heal-restart.test.mjs` and
+`web/test/orbit-loops.test.js`.
 
 - **Loop 1, a stale log's false "overdue" (T1).** job-status calls a job failed when its
   log is older than its schedule allows, which can't tell a dead job from one that logs
@@ -1903,7 +1906,10 @@ taps), `server/lib/heal-programs.mjs` (the two programs loop 2 runs),
   `/decline`, served by the chat's router behind its rules: same origin and JSON, no
   `Authorization` header (a Shortcut key never acts), a paired device's cookie and the
   login header, the page's own https Origin, an approver device (`bin/chat-pair
-  approver`), and at most 6 taps a minute in all, refused ones included. With the chat
+  approver`), and at most 6 taps a minute in all, refused ones included. A request with
+  an `Authorization` header is refused before the device is looked at, and alerted only
+  once the owner's login header has passed, so a caller that isn't the owner can't raise
+  pushes with it. The routes refuse to run without that login check. With the chat
   off, the route answers 403. The id is the card's one-time id (32 hex characters, made
   by the server, spent on the tap: a second tap, from any device, finds nothing); the
   body names an action and nothing else. **Run it now** reads launchd again (the counter
@@ -1934,16 +1940,67 @@ taps), `server/lib/heal-programs.mjs` (the two programs loop 2 runs),
   and its arguments, with only `{uid}` and `{label}` to fill in), and the loader checks it
   against its verbs: the file is `/bin/launchctl`, the entry declares exactly one launchctl
   write, and the arguments equal that verb's reviewed list in `PROGRAM_ARGS`
-  (`launchctl:kickstart` → `['kickstart', 'gui/{uid}/{label}']`), exactly. An entry that
-  declares a launchctl write must name its program. So the verb list and the act can't
-  disagree; a new write (loop 3's `launchctl:kickstart-kill`, with `-k`) comes in as its
-  own verb with its own list. The uid filled in is the process's own, checked again when
-  the program runs (`lib/heal-programs.mjs`), and the label is config's target's.
+  (`launchctl:kickstart` → `['kickstart', 'gui/{uid}/{label}']`;
+  `launchctl:kickstart-kill` → `['kickstart', '-k', 'gui/{uid}/{label}']`), exactly. An
+  entry that declares a launchctl write must name its program. So the verb list and the
+  act can't disagree, and `-k` exists only as its own verb, never as a flag on
+  `launchctl:kickstart`. The uid filled in is the process's own, checked again when the
+  program runs (`lib/heal-programs.mjs`), and the label is config's target's.
+- **Loop 3, a restart of this server due after a merge (T2: only a tap acts).** At start
+  the server reads its checkout's HEAD (the folder above `server/`) through git-read
+  (config's `toPush.gitRead`, already vetted at start; `rev-list --max-count=1 HEAD`):
+  the commit this process runs. Every 5 minutes it reads the checkout again (`status
+  --porcelain=v2 --branch --untracked-files=no`: HEAD, the branch, tracked changes), and
+  when `diff --name-only <start> <HEAD> -- server` lists files, a restart is due: one card
+  in Needs you, **Restart the Control Room (N merges)** (N = `rev-list --first-parent
+  --count <start>..<HEAD> -- server`), with **Restart it** and **Not now**. A merge that
+  touches only `web/` or `docs/` opens nothing (the page is read from disk on every
+  request). **Fit to run:** a restart is offered only when the checkout is on `main`, has
+  no changed, staged or unmerged tracked file (untracked files don't count; output
+  git-read cut short does), and HEAD descends from the running commit (`rev-list --count
+  <HEAD>..<start>` is 0). Otherwise (a feature branch, a rebase, a conflicted merge, a
+  reset) the card shows with its buttons off and the reason, and isn't pushed. A
+  tappable card is pushed once, counted, never from 22:00 to 07:00, and at most 1 an hour
+  and 3 a day across cards (counted by `proposed` marks in the ledger, so a restart
+  doesn't reset them); it doesn't expire; it closes when HEAD is back on the start commit
+  or the change under `server/` is gone; Not now parks it until HEAD moves. It needs
+  config's `self` target (Configuration, "Self-healing loops"), git-read, and this process
+  to be that target's launchd job: `XPC_SERVICE_NAME` equal to its label, and launchd
+  (pid 1) as the parent; otherwise the start line says why and no card is made. **What a
+  tap does:** the same route and gate as loop 2's; the card is taken before anything
+  waits; the checkout is read again (unfit: 409 with the reason; HEAD moved since the card
+  was drawn: 409 "it moved", the card brought up to date); `launchctl print
+  gui/<uid>/<label>` (read-only) must give this process's pid; a `verifying` ledger line
+  is written (the expected commit, the start commit, a one-time `ref`, the device, and
+  the collectors failing at that moment); the tap is answered (202); and 3 s later (so
+  the answer, its log line and its alert go out first) the checkout is read once more
+  (moved or unfit: no restart, the tap closes as `cleared`, and the card comes back), then
+  the catalog's `/bin/launchctl kickstart -k gui/<uid>/<label>` runs in its own process
+  group (launchd ends a dead job's whole group), in the short environment, the label
+  checked against `XPC_SERVICE_NAME` again at use. **The check, in the new process:** at
+  start it finds the open `verifying` line and closes it as healed ("restarted on the new
+  commit", the old and new short hashes on the Loops panel) when its HEAD is the expected
+  commit, the checkout is fit, and the registry's first pass (every collector's first
+  run, `whenFirstPass`) brought no failure that wasn't already there at the tap, within 10
+  minutes of the tap. Another commit, an unfit checkout, a new failure, a first pass that
+  isn't a list, no first pass in time, more than 10 minutes, an unreadable HEAD, or heals
+  that are unset or refused in the new process is T3: the lines, then one high-priority
+  push for all of them ("A Control Room restart needs a look…"). The failed collectors'
+  names are on the Loops panel. The old process pages too if launchctl fails, or if it is
+  still running a minute after launchctl said yes or timed out (a timeout leaves the tap
+  open; nothing in the server catches SIGTERM, which a test pins). **Limits:** one attempt
+  per HEAD; at most 3 restarts in 24 hours, and the day's 20 T2 actions across the loops
+  (one count, `t2ActsToday` in `lib/heal.mjs`); no card while a restart is being checked;
+  only a tap ever restarts, so a HEAD that keeps moving costs cards, never restarts. The
+  check runs while the kill switch is on (it reports on a restart already made); a tap
+  does not, and a kill in the 3 s before the restart cancels it. Restarts are left out of
+  the weekly "keeps happening" counts.
 - **Off by default.** Nothing runs unless config's `heal.enabled` is `true` and
   `heal.targets` lists the job (Configuration, "Self-healing loops"); loop 2 also needs
-  `heal.missedRuns`. The service log says `heal: on|off|killed|unset (…), N targets;
+  `heal.missedRuns`, and loop 3 a `self` target and `toPush.gitRead`. The service log says `heal: on|off|killed|unset (…), N targets;
   missed-runs set|not set` at start, and one `heal:` line per card, tap and closed loop.
-- **Not built yet:** loop 3 (the restart due after a merge), the `heal-done` and
+- **Not built yet:** web builds and channel releases after a merge (loop 3 restarts the
+  server only), the `heal-done` and
   `heal-proposed` events for the lead (an event wakes the lead's session, and the released
   channel names only the event types it knows), the "3 in 14 days" fix-item event, and a
   loop count on the health strip. The morning brief reads job-status itself, so it still
@@ -2501,9 +2558,9 @@ launcher's) are left out of the Jobs list. None of this block reaches the page.
 | Field | Type | Meaning |
 |---|---|---|
 | `heal.enabled` | `true` or `false` | Off unless exactly `true`. |
-| `heal.targets` | object | The jobs a loop may heal, by an id of your choosing (lower case, digits and `-`, at most 40): `{ "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } }`. `label` is the job's launchd label; `actions` lists the catalog actions allowed for it: `mark-quiet` (loop 1), and for loop 2 `rerun-job` (the card offers Run it now) and `ack-until-next-run` (the card offers the ack). A job not listed is never read or healed. |
+| `heal.targets` | object | The jobs a loop may heal, by an id of your choosing (lower case, digits and `-`, at most 40): `{ "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] } }`. `label` is the job's launchd label; `actions` lists the catalog actions allowed for it: `mark-quiet` (loop 1), and for loop 2 `rerun-job` (the card offers Run it now) and `ack-until-next-run` (the card offers the ack). A job not listed is never read or healed. A target listing `restart-control-room` (loop 3: Restart it, `launchctl kickstart -k`) is this server's own job, a `self` target: `{ "control-room": { "label": "com.example.control-room", "actions": ["restart-control-room"] } }`. It may list no other action, only one target may be one, and its label must be the one launchd runs this server as (`XPC_SERVICE_NAME`), or no card is made. |
 | `heal.missedRuns` | absolute path | The machine's `missed-runs` (loop 2's detector). Checked at start like job-status (owned by this user, nobody else can write it or a folder above it); a path that fails is left out and logged, and loop 2 makes no cards. |
-| `heal.off` | list | Catalog actions turned off, each by id. |
+| `heal.off` | list | Catalog actions turned off, each by id (`mark-quiet`, `rerun-job`, `ack-until-next-run`, `restart-control-room`). |
 
 A bad entry is left out and named once in the service log at startup. The ids and labels
 never reach the page; the page names a target by config's `jobs` name for its label. The

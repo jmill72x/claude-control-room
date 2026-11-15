@@ -247,6 +247,12 @@ export function parseLaunchctlPrint(raw) {
   };
 }
 
+// launchd's pid for a running job ("\tpid = 4242", top level only), or null.
+export function parseLaunchdPid(raw) {
+  const m = /^\tpid = (\d{1,9})\s*$/m.exec(String(raw ?? ''));
+  return m ? Number(m[1]) : null;
+}
+
 const SIGNALS = { 1: 'Hangup', 2: 'Interrupt', 3: 'Quit', 6: 'Abort', 9: 'Killed', 10: 'Bus error', 11: 'Segmentation fault', 13: 'Broken pipe', 15: 'Terminated' };
 
 // How the previous run of this server ended: a signal (a restart by hand sends

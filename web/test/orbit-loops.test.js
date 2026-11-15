@@ -158,3 +158,77 @@ test('Needs you: the Heals tile shows only while a card waits, its cards go firs
   const gone = waitingView(waitingCards({ ...base, loops: view() }), { filter: 'heals' });
   assert.deepEqual([gone.tiles[0].id, gone.tiles[0].n, gone.empty], ['heals', 0, 'No heal card is waiting on you.']);
 });
+
+// ---- loop 3: the Restart card ----
+
+import { RESTART_ACTION, RESTART_RELOAD_MS } from '../src/lib/orbit/loops.js';
+
+const restartProposal = (extra = {}) => ({
+  id: 'b'.repeat(32), name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', merges: 2, files: 3,
+  from: 'a1a1a1a', to: 'b2b2b2b', actions: ['restart-control-room'], state: 'waiting', proposedAt: NOW - MIN, announcedAt: at(11, 23, 0),
+  expiresAt: null, canAct: true, blocked: null, ...extra
+});
+
+test('the Restart card: its merges, the commits, one Restart button, and its state', () => {
+  const [c] = healCards({ proposals: [restartProposal()] }, NOW);
+  assert.deepEqual([c.key, c.group, c.chip, c.title], [`heal:${'b'.repeat(32)}`, 'heals', 'Restart due', 'Restart the Control Room (2 merges)']);
+  assert.match(c.what, /again on b2b2b2b\. The page drops/);
+  assert.match(c.why, /^2 merges since this server started \(on a1a1a1a\) change files under server\//);
+  assert.deepEqual(c.heal.actions, [RESTART_ACTION]);
+  assert.deepEqual(RESTART_ACTION, { action: 'restart-control-room', label: 'Restart it' });
+  assert.equal(c.meta, 'T2 · pushed 11:00 PM');
+  assert.equal(healCards({ proposals: [restartProposal({ merges: 1 })] }, NOW)[0].title, 'Restart the Control Room (1 merge)');
+  assert.equal(healCards({ proposals: [restartProposal({ merges: 0 })] }, NOW)[0].title, 'Restart the Control Room');
+  assert.equal(healCards({ proposals: [restartProposal({ announcedAt: null, pushWait: 'night' })] }, NOW)[0].meta, 'T2 · no push at night: it waits for the morning');
+  assert.equal(healCards({ proposals: [restartProposal({ announcedAt: null, pushWait: 'cap' })] }, NOW)[0].meta, 'T2 · not pushed: restart pushes are capped at 1 an hour and 3 a day');
+  assert.equal(healCards({ proposals: [restartProposal({ announcedAt: null, pushWait: 'blocked' })] }, NOW)[0].meta, "T2 · not pushed: it can't be restarted as the checkout stands");
+  assert.equal(healCards({ proposals: [restartProposal({ announcedAt: null, pushWait: 'toString' })] }, NOW)[0].meta, 'T2 · not pushed yet');
+  // A blocked card (Ultron's M1): the button off, with the reason the server gives.
+  const blocked = healCards({ proposals: [restartProposal({ canAct: false, blocked: "the checkout isn't on main (a feature branch, a rebase or a detached HEAD)" })] }, NOW)[0];
+  assert.deepEqual([blocked.heal.canAct, blocked.heal.blocked], [false, "the checkout isn't on main (a feature branch, a rebase or a detached HEAD)"]);
+  assert.equal(blocked.heal.canDecline, false, 'no canDecline from the server: Not now off');
+  assert.equal(healCards({ proposals: [restartProposal({ canAct: false, canDecline: true, blocked: 'x' })] }, NOW)[0].heal.canDecline, true, 'option b: Not now on while blocked');
+  const going = healCards({ proposals: [restartProposal({ state: 'restarting', canAct: false })] }, NOW)[0];
+  assert.deepEqual([going.meta, going.heal.canAct, going.heal.blocked], ['T2 · restarting…', false, 'it is restarting now']);
+  assert.equal(healCards({ proposals: [restartProposal({ canAct: false, blocked: 'the kill switch is on (the heal-off file is there)' })] }, NOW)[0].heal.blocked, 'the kill switch is on (the heal-off file is there)');
+  // A missed-run card never offers Restart, and a restart card offers nothing else.
+  const [mixed] = healCards({ proposals: [restartProposal({ actions: ['rerun-job', 'restart-control-room'] })] }, NOW);
+  assert.deepEqual(mixed.heal.actions, [RESTART_ACTION]);
+  assert.deepEqual(healCards({ proposals: [restartProposal({ actions: ['rerun-job'] })] }, NOW)[0].heal.actions, []);
+  const [job] = healCards({ proposals: [proposal({ actions: ['rerun-job', 'restart-control-room'] })] }, NOW);
+  assert.deepEqual(job.heal.actions.map(a => a.action), ['rerun-job']);
+  // Only 7 hex characters show as a commit.
+  const odd = healCards({ proposals: [restartProposal({ from: 'not-a-hash', to: 'b2b2b2b2b2' })] }, NOW)[0];
+  assert.match(odd.what, /again on the new commit\./);
+  assert.ok(!odd.why.includes('not-a-hash'));
+});
+
+test("loop 3 on the Loops panel: restarting, the new server's check, and the closed loop with both commits", () => {
+  const v = loopsView(view({
+    open: [
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', step: 'acting', restarting: true, detectedAt: NOW - MIN },
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', step: 'verifying', restarted: true, detectedAt: NOW - MIN, checkBy: NOW + 10 * MIN }
+    ],
+    recent: [
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', outcome: 'healed', words: 'restarted on the new commit', why: 'x', from: 'a1a1a1a', to: 'b2b2b2b', at: NOW - MIN },
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T3', outcome: 'escalated', words: 'restart: it needs a look', why: 'it came back on another commit than the one the tap expected', from: 'a1a1a1a', to: 'c3c3c3c', at: NOW - 2 * MIN },
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', outcome: 'cleared', words: 'not restarted', why: null, from: 'a1a1a1a', to: 'zzz', at: NOW - 3 * MIN },
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T3', outcome: 'escalated', words: 'restart: it needs a look', why: 'w', from: 'a1a1a1a', to: 'b2b2b2b', failed: ['usage', 'bad name', 7, 'crons'], at: NOW - 4 * MIN },
+      { name: 'Control Room', class: 'restart-due', classLabel: 'restart due', tier: 'T2', outcome: 'healed', words: 'restarted on the new commit', from: 'a1a1a1a', to: 'b2b2b2b', failed: 'usage', at: NOW - 5 * MIN }
+    ]
+  }), NOW);
+  assert.deepEqual(v.open.map(o => o.when), ['restarting now', 'restarted, checked by 11:40 PM']);
+  assert.deepEqual(v.recent.map(r => [r.line, r.tone]), [
+    ['restart due: restarted on the new commit, a1a1a1a → b2b2b2b', 'ok'],
+    ['restart due: restart: it needs a look, a1a1a1a → c3c3c3c (it came back on another commit than the one the tap expected)', 'bad'],
+    ['restart due: not restarted', 'idle'],
+    ['restart due: restart: it needs a look, a1a1a1a → b2b2b2b (w); failed: usage, crons', 'bad'],
+    ['restart due: restarted on the new commit, a1a1a1a → b2b2b2b', 'ok']
+  ]);
+});
+
+test("Restart's answer in words, and the page's longer wait before it reloads", () => {
+  assert.equal(tapDone('restart-control-room', { to: 'b2b2b2b' }, NOW), 'Restarting onto b2b2b2b. The page drops for a few seconds; the Loops panel then shows the check.');
+  assert.equal(tapDone('restart-control-room', { to: '<b>' }, NOW), 'Restarting. The page drops for a few seconds; the Loops panel then shows the check.');
+  assert.ok(RESTART_RELOAD_MS >= 8e3, 'past the 3 s before the restart and the seconds it takes');
+});

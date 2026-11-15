@@ -47,7 +47,7 @@ export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced',
   'heal-tap', 'heal-tap-refused']);
 
 // What a heal tap did, in the words its buttons use.
-export const HEAL_TAP_WORDS = Object.freeze({ 'rerun-job': 'Run it now', 'ack-until-next-run': 'Ack until its next run', 'not-now': 'Not now' });
+export const HEAL_TAP_WORDS = Object.freeze({ 'rerun-job': 'Run it now', 'ack-until-next-run': 'Ack until its next run', 'restart-control-room': 'Restart', 'not-now': 'Not now' });
 
 // The words for one event, made safe for one line.
 export function chatEventLine(event) {
@@ -99,7 +99,7 @@ export function chatEventLine(event) {
     'heal-tap-refused': event.why === 'key'
       ? 'a tap on a heal card carried a Shortcut key and was refused'
       : `a tap on a heal card from ${event.device ?? 'a device'} was refused: that device is not marked approver`,
-    'heal-tap': `a missed-run card was answered from ${event.device ?? 'a device'}: ${HEAL_TAP_WORDS[event.action] ?? 'an action'} (${event.name ?? 'a job'})`,
+    'heal-tap': `a ${event.card === 'restart-due' ? 'restart' : 'missed-run'} card was answered from ${event.device ?? 'a device'}: ${HEAL_TAP_WORDS[event.action] ?? 'an action'} (${event.name ?? 'a job'})`,
     'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
   };
   const line = words[event.kind] ?? `chat event ${event.kind}`;

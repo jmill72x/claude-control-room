@@ -108,7 +108,7 @@ test('the body names an action and nothing else; a bad id is no route; the loop 
   const env = await setup();
   try {
     const dev = await env.approver('iPhone');
-    for (const action of [undefined, 'mark-quiet', 'restart-control-room', ['rerun-job'], 'RERUN-JOB']) {
+    for (const action of [undefined, 'mark-quiet', 'kickstart-kill', ['rerun-job'], 'RERUN-JOB']) {
       assert.equal((await env.post(`/api/loops/${ID}/approve`, dev.cookie, { action })).status, 400, String(action));
     }
     // Bad bodies count toward the minute's taps too, so a loop of them is held.
@@ -191,7 +191,7 @@ test('server.mjs: loop 2 shares the ledger and the switch, runs the catalog prog
     [/missedRuns: healSettings\.missedRuns \? \(\) => runMissedRuns\(healSettings\.missedRuns\) : null,/, 'the vetted path only'],
     [/addAck: \(ack, now\) => ackStore\.add\(ack, now\),/, 'the real ack store'],
     [/await missed\.pass\(out\);/, 'each crons pass'],
-    [/const healTaps = createHealTaps\(\{ loops: missed, onEvent: chatEvents, log: line => console\.log\(oneLine\(line\)\) \}\);/, 'taps report through the chat events, one line each'],
+    [/const healTaps = createHealTaps\(\{ loops: \{ missed, restart: restartLoop \}, onEvent: chatEvents, log: line => console\.log\(oneLine\(line\)\) \}\);/, 'taps report through the chat events, one line each'],
     [/createChatRoutes\(\{[^}]*healTaps \}\);/, 'behind the chat router']
   ];
   for (const [re, what] of wired) assert.ok(re.test(src), what);
@@ -262,9 +262,83 @@ test('a tap\'s log line stays one line, whatever the device is called (L3)', asy
   const res = { status: 0, headers: {}, body: '', headersSent: false, writeHead(s, h) { this.status = s; this.headers = h; this.headersSent = true; }, end(b) { this.body = b ?? ''; } };
   const { Readable } = await import('node:stream');
   const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ action: 'rerun-job' }))]), { method: 'POST', url: `/api/loops/${ID}/approve`, headers: { host: HOST, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' } });
-  await taps.handle(req, res, `/api/loops/${ID}/approve`, { requireDevice: () => ({ name, approver: true }), notifyHosts: new Set([HOST]) });
+  await taps.handle(req, res, `/api/loops/${ID}/approve`, { requireDevice: () => ({ name, approver: true }), requireLogin: () => {}, notifyHosts: new Set([HOST]) });
   assert.equal(res.status, 202);
   assert.equal(lines.length, 1);
   assert.ok(!lines[0].includes(String.fromCodePoint(0x0a)), 'no line break reaches the log');
   assert.match(lines[0], /U\+000A/);
+});
+
+// ---- loop 3's taps (lib/heal-restart.mjs) and the key refusal's order (board fe4d2bfe) ----
+
+function fakeRestart(id) {
+  const asked = [];
+  return {
+    asked,
+    has: x => x === id,
+    async approve(x, action, by) { asked.push(['approve', x, action, by]); return { status: 202, ok: true, name: 'Control Room', action, card: 'restart-due', from: 'a1a1a1a', to: 'b2b2b2b', checkBy: 1 }; },
+    async decline(x, by) { asked.push(['decline', x, by]); return { status: 200, ok: true, name: 'Control Room', action: 'not-now', card: 'restart-due' }; }
+  };
+}
+
+test("Restart goes to loop 3, Not now to the loop whose card it is; the alert says it was a restart card", async () => {
+  const env = await makeChatEnv();
+  const RID = 'beef'.repeat(8);
+  const missed = fakeLoops();
+  const restart = fakeRestart(RID);
+  const healTaps = createHealTaps({ loops: { missed, restart }, now: env.now, onEvent: e => env.events.push(e), log: () => {} });
+  const routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [HOST] }, now: env.now, onEvent: e => env.events.push(e), log: () => {}, pingMs: 60e3, healTaps });
+  env.extra.push(async (req, res) => { await routes.handler(req, res); return true; });
+  try {
+    const d = await env.pair('iPhone');
+    await env.devices.setApprover(d.id, true);
+    const post = (path, body) => env.call({ method: 'POST', path, headers: { ...PAGE, cookie: d.cookie }, body });
+    const r = await post(`/api/loops/${RID}/approve`, { action: 'restart-control-room' });
+    assert.equal(r.status, 202, r.text);
+    assert.deepEqual(r.json, { ok: true, name: 'Control Room', action: 'restart-control-room', card: 'restart-due', from: 'a1a1a1a', to: 'b2b2b2b', checkBy: 1 });
+    assert.equal((await post(`/api/loops/${RID}/decline`, {})).status, 200);
+    assert.equal((await post(`/api/loops/${ID}/decline`, {})).status, 200);
+    assert.equal((await post(`/api/loops/${ID}/approve`, { action: 'rerun-job' })).status, 202);
+    assert.deepEqual(restart.asked, [['approve', RID, 'restart-control-room', 'iPhone'], ['decline', RID, 'iPhone']]);
+    assert.deepEqual(missed.asked, [['decline', ID, 'iPhone'], ['approve', ID, 'rerun-job', 'iPhone']]);
+    const taps = env.events.filter(e => e.kind === 'heal-tap');
+    assert.equal(chatEventLine(taps[0]), 'a restart card was answered from iPhone: Restart (Control Room)');
+    assert.equal(chatEventLine(taps[1]), 'a restart card was answered from iPhone: Not now (Control Room)');
+    assert.equal(chatEventLine(taps[2]), 'a missed-run card was answered from iPhone: Not now (Friday alert)');
+    // With no loop 3 on the server, Restart finds no card.
+    const only = createHealTaps({ loops: { missed }, onEvent: () => {}, log: () => {} });
+    const res = { status: 0, body: '', headersSent: false, writeHead(s) { this.status = s; this.headersSent = true; }, end(b) { this.body = b ?? ''; } };
+    const { Readable } = await import('node:stream');
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ action: 'restart-control-room' }))]), { method: 'POST', url: `/api/loops/${RID}/approve`, headers: { host: HOST, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' } });
+    await only.handle(req, res, `/api/loops/${RID}/approve`, { requireDevice: () => ({ name: 'iPhone', approver: true }), requireLogin: () => {}, notifyHosts: new Set([HOST]) });
+    assert.equal(res.status, 404);
+  } finally { await env.close(); }
+});
+
+test("a Shortcut key's refusal is alerted only from the owner's login (fe4d2bfe); anyone else is refused unalerted", async () => {
+  const env = await makeChatEnv();
+  const routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [HOST], chat: { login: 'owner@example.test' } }, now: env.now, onEvent: e => env.events.push(e), log: () => {}, pingMs: 60e3, healTaps: createHealTaps({ loops: fakeLoops(), now: env.now, onEvent: e => env.events.push(e), log: () => {} }) });
+  env.extra.push(async (req, res) => { await routes.handler(req, res); return true; });
+  try {
+    const path = `/api/loops/${ID}/approve`;
+    const call = headers => env.call({ method: 'POST', path, headers: { ...PAGE, authorization: 'Bearer abc', ...headers }, body: { action: 'rerun-job' } });
+    for (const login of [undefined, 'someone@example.test', '']) {
+      const r = await call(login === undefined ? {} : { 'tailscale-user-login': login });
+      assert.equal(r.status, 403, String(login));
+      assert.match(r.json.error, /owner through the tailnet/);
+    }
+    assert.deepEqual(env.events.filter(e => e.kind === 'heal-tap-refused'), [], 'no push for a caller that is not the owner');
+    const owner = await call({ 'tailscale-user-login': 'Owner@example.test' });
+    assert.equal(owner.status, 403);
+    assert.match(owner.json.error, /Shortcut key/);
+    assert.deepEqual(env.events.filter(e => e.kind === 'heal-tap-refused').map(e => e.why), ['key']);
+  } finally { await env.close(); }
+});
+
+test('L10: the heal routes refuse to run without the login check', async () => {
+  const taps = createHealTaps({ loops: fakeLoops(), onEvent: () => {}, log: () => {} });
+  const req = { method: 'POST', url: `/api/loops/${ID}/approve`, headers: { host: HOST, origin: ORIGIN, authorization: 'Bearer abc' } };
+  for (const requireLogin of [undefined, null, 'yes']) {
+    await assert.rejects(taps.handle(req, {}, `/api/loops/${ID}/approve`, { requireDevice: () => ({ name: 'x', approver: true }), requireLogin, notifyHosts: new Set([HOST]) }), /need the login check/);
+  }
 });

@@ -3,7 +3,8 @@
 // lib/heal-runner.mjs: a job whose only fault is an old log (job-status's log-age
 // rule) is marked "quiet, ran clean" when launchd's own run counter rose between two
 // readings and its last exit was 0 at both. Loop 2 (a run missed during a restart, T2)
-// is in lib/heal-missed.mjs, with its taps in lib/heal-routes.mjs. The shared parts
+// is in lib/heal-missed.mjs, with its taps in lib/heal-routes.mjs. Loop 3 (a restart of
+// this server due after a merge, T2) is in lib/heal-restart.mjs. The shared parts
 // are here: the tiers, the verb floors, the catalog and its loader, the config block,
 // the ledger's lines and the page's view.
 //
@@ -37,9 +38,15 @@ export const VERB_FLOORS = Object.freeze({
   'job-status:read': 'T0',
   'missed-runs:read': 'T0',
   'git:rev-parse': 'T0',
+  // Loop 3: the checkout's HEAD, and what changed under server/ since this process began
+  // (git-read's rev-list and diff --name-only: reads).
+  'git:read': 'T0',
   'log:read': 'T0',
   'alert:mark-quiet': 'T1',
   'launchctl:kickstart': 'T2',
+  // `kickstart -k`: kill the running instance, then start it. Its own verb (Ultron, loop 2
+  // review, 11-14), never a flag allowed on launchctl:kickstart.
+  'launchctl:kickstart-kill': 'T2',
   'launchctl:load': 'T2',
   'launchctl:unload': 'T2',
   'launchctl:bootstrap': 'T2',
@@ -84,6 +91,8 @@ export const CALENDAR_GRACE_MS = 2 * MIN;
 export const PER_TARGET_DAY = 3;
 export const PER_DAY = 20;
 export const COMEBACK_MS = HOUR;
+// Loop 3: at most this many restarts of this server by a tap in 24 hours.
+export const RESTARTS_PER_DAY = 3;
 // Loop 2's proposals (design §5.5): a card waits 2 hours after its push for a tap,
 // and between 22:00 and 07:00 (the server's own time) it waits without a push.
 export const PROPOSAL_MS = 2 * HOUR;
@@ -125,15 +134,29 @@ export const CATALOG = Object.freeze([
     targetKind: 'job',
     verbs: Object.freeze(['alert:ack']),
     settleMs: SETTLE_MAX_MS
+  }),
+  // Loop 3, on the owner's tap only: restart this server, so it runs the code a merge put
+  // under server/. `kickstart -k` on its own launchd label (config's `self` target, which
+  // must be the label launchd started this process as), once per tap. Verified by the new
+  // process: it came back on the commit the tap expected, and its first pass was clean.
+  Object.freeze({
+    id: 'restart-control-room',
+    class: 'restart-due',
+    tier: 'T2',
+    targetKind: 'self',
+    verbs: Object.freeze(['git:read', 'launchctl:print', 'launchctl:kickstart-kill']),
+    program: Object.freeze({ file: LAUNCHCTL, args: Object.freeze(['kickstart', '-k', 'gui/{uid}/{label}']) }),
+    settleMs: SETTLE_MAX_MS
   })
 ]);
 
 // The reviewed argument list for each launchctl write a catalog entry may run (L1,
 // Ultron 11-14), compared exactly: no flag, no extra word, no other blank. Loop 3's
-// restart of this server will add its own verb, `launchctl:kickstart-kill`, with its
-// own list here (['kickstart', '-k', 'gui/{uid}/{label}']), reviewed then.
+// restart of this server is its own verb with its own list: `-k` is never allowed on
+// launchctl:kickstart.
 export const PROGRAM_ARGS = Object.freeze({
-  'launchctl:kickstart': Object.freeze(['kickstart', 'gui/{uid}/{label}'])
+  'launchctl:kickstart': Object.freeze(['kickstart', 'gui/{uid}/{label}']),
+  'launchctl:kickstart-kill': Object.freeze(['kickstart', '-k', 'gui/{uid}/{label}'])
 });
 const PLACEHOLDER = /\{(uid|label)\}/g;
 const isLaunchctlWrite = v => v.startsWith('launchctl:') && v !== 'launchctl:print' && v !== 'launchctl:list';
@@ -167,7 +190,9 @@ export function programArgs(entry, { uid, label }) {
 
 const ACTION_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const CLASS_ID = /^[a-z][a-z0-9-]{0,39}$/;
-const TARGET_KINDS = new Set(['job']);
+// `job`: a launchd job config lists (loops 1 and 2). `self`: this server's own launchd
+// job (loop 3); config may name one such target.
+const TARGET_KINDS = new Set(['job', 'self']);
 
 // The catalog as the runner may use it, or a throw naming the first fault. A tier
 // below its verbs' floor, an unknown verb, a T3 entry (T3 never acts), a repeated id
@@ -220,7 +245,8 @@ const TARGET_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 //     "enabled": true,
 //     "targets": {
 //       "nas-mount": { "label": "com.example.nas-mount", "actions": ["mark-quiet"] },
-//       "friday": { "label": "com.example.friday", "actions": ["rerun-job", "ack-until-next-run"] }
+//       "friday": { "label": "com.example.friday", "actions": ["rerun-job", "ack-until-next-run"] },
+//       "control-room": { "label": "com.example.control-room", "actions": ["restart-control-room"] }
 //     },
 //     "missedRuns": "/path/to/missed-runs",
 //     "off": []
@@ -230,12 +256,16 @@ const TARGET_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 // catalog actions it allows; nothing heals a job that isn't listed. For loop 2 the
 // list is the job's catch-up rule: with `rerun-job` its card offers Run it now, and
 // with only `ack-until-next-run` it offers the ack alone (a late run of yesterday's
-// brief is no use). `missedRuns` is the read-only missed-runs program (an absolute
+// brief is no use). A target that lists `restart-control-room` (loop 3) is this server's
+// own job: it may list nothing else, only one target may, and its label must be the one
+// launchd started this process as (lib/heal-restart.mjs checks that at start and at the
+// tap). `missedRuns` is the read-only missed-runs program (an absolute
 // path; checked at start like job-status). `off` turns single catalog entries off. A
 // bad entry is left out and described in `problems`.
 export function readHealConfig(config, catalog = loadCatalog(CATALOG)) {
   const problems = [];
   const out = { enabled: false, targets: new Map(), off: new Set(), missedRuns: null, problems };
+  let selfTaken = false;
   const raw = config?.heal;
   if (raw === undefined) return out;
   if (!isObject(raw)) {
@@ -268,12 +298,16 @@ export function readHealConfig(config, catalog = loadCatalog(CATALOG)) {
     if (typeof t.label !== 'string' || !LAUNCHD_LABEL.test(t.label)) { problems.push(`${where}: label is not a launchd label`); continue; }
     if (out.targets.has(t.label)) { problems.push(`${where}: its label is listed for another target`); continue; }
     if (!Array.isArray(t.actions)) { problems.push(`${where}: actions must be a list of catalog actions`); continue; }
+    // One kind per target: a target that lists a `self` action is the server's own job.
+    const kind = t.actions.some(a => typeof a === 'string' && catalog.has(a) && catalog.get(a).targetKind === 'self') ? 'self' : 'job';
+    if (kind === 'self' && selfTaken) { problems.push(`${where}: only one target may be the Control Room itself`); continue; }
     const actions = new Set();
     for (const a of t.actions) {
-      if (typeof a === 'string' && catalog.has(a) && catalog.get(a).targetKind === 'job') actions.add(a);
-      else problems.push(`${where}: ${JSON.stringify(a)} is not a catalog action for a job`);
+      if (typeof a === 'string' && catalog.has(a) && catalog.get(a).targetKind === kind) actions.add(a);
+      else problems.push(`${where}: ${JSON.stringify(a)} is not a catalog action for ${kind === 'self' ? 'the Control Room itself' : 'a job'}`);
     }
-    out.targets.set(t.label, Object.freeze({ id, label: t.label, actions }));
+    if (kind === 'self') selfTaken = true;
+    out.targets.set(t.label, Object.freeze({ id, label: t.label, kind, actions }));
   }
   return out;
 }
@@ -309,10 +343,11 @@ export function judgeReadings(a, b) {
 
 export const LEDGER_KEEP_MS = 30 * DAY;
 export const LEDGER_MAX = 2000;
-// `proposed` (a card was pushed) and `tapped` (Run it now started a run) are marks on
-// the way, kept so a restart neither pushes a card twice nor runs a job twice; every
-// other outcome closes its loop.
-export const OUTCOMES = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared', 'proposed', 'tapped', 'declined', 'expired', 'acked']);
+// `proposed` (a card was pushed), `tapped` (Run it now started a run) and `verifying`
+// (loop 3: Restart was tapped, with the commit the new process must come back on) are
+// marks on the way, kept so a restart neither pushes a card twice nor runs a job twice,
+// and so the new process can check the restart; every other outcome closes its loop.
+export const OUTCOMES = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared', 'proposed', 'tapped', 'verifying', 'declined', 'expired', 'acked']);
 export const CLOSING = Object.freeze(['healed', 'escalated', 'relapsed', 'cleared', 'declined', 'expired', 'acked']);
 
 // Why a loop closed as it did, in fixed words. A ledger line holds the key; the page
@@ -340,7 +375,27 @@ export const WHY_WORDS = Object.freeze({
   unverified: 'the Control Room restarted before the run was checked',
   'ack-failed': "the acknowledgement couldn't be saved",
   tapped: 'Run it now was tapped',
-  acked: 'Ack until its next run was tapped'
+  acked: 'Ack until its next run was tapped',
+  // Loop 3.
+  restarted: 'it came back on the expected commit and its first pass was clean',
+  'wrong-commit': 'it came back on another commit than the one the tap expected',
+  'first-pass': "its first collector pass after the restart wasn't clean",
+  'slow-start': "its first collector pass didn't end within 10 minutes of the tap",
+  'not-checked': 'no new process checked the restart within 10 minutes of the tap',
+  'git-unreadable': "the checkout's commit couldn't be read",
+  'no-restart': 'launchctl answered, but the same process was still running a minute later',
+  'restart-failed': "launchctl wouldn't restart it",
+  'not-self': "this server isn't running as the target's launchd job",
+  'heals-off': 'heals were switched off before the restart ran',
+  'back-on-start': 'the checkout is back on the commit this server runs',
+  'no-server-change': 'the new commits change nothing under server/',
+  'cap-restarts': `it was already restarted ${RESTARTS_PER_DAY} times in 24 hours`,
+  'heals-off-unchecked': "heals were off or not set up when the server came back, so the restart wasn't checked",
+  'not-main': "the checkout isn't on main (a feature branch, a rebase or a detached HEAD)",
+  'dirty-tree': 'the checkout has changes not committed, or a merge with conflicts',
+  'not-ancestor': "HEAD isn't a descendant of the commit this server runs (a reset or a rewrite)",
+  moved: 'HEAD moved before the restart ran',
+  'not-own-pid': "launchd's record of the job doesn't name this process"
 });
 
 const isLine = l => isObject(l) && Number.isFinite(l.at) && typeof l.target === 'string' && OUTCOMES.includes(l.outcome) &&
@@ -352,6 +407,12 @@ export function keptLines(list, now) {
   if (!Array.isArray(list)) return [];
   return list.filter(l => isLine(l) && now - l.at <= LEDGER_KEEP_MS).sort((a, b) => a.at - b.at).slice(-LEDGER_MAX);
 }
+
+// The T2 actions of the last 24 hours across the loops (loop 2's runs and acks, loop 3's
+// restarts), for the day's PER_DAY (L11: one count for every loop).
+const T2_ACT_LINES = Object.freeze(['tapped', 'acked', 'verifying']);
+export const t2ActsToday = (lines, at) => lines.filter(l => T2_ACT_LINES.includes(l.outcome) && at - l.at < DAY);
+const isCollector = n => typeof n === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(n);
 
 // Healed lines, one per instance (target and since), the first of each: the same
 // instance checked again after a restart (the quiet marks live in memory) or after the
@@ -384,7 +445,7 @@ export function capStop(lines, target, now, endedAt = null, since = null) {
 
 export const RECENT_MS = 7 * DAY;
 export const RECENT_MAX = 20;
-export const CLASS_WORDS = Object.freeze({ 'stale-log': 'stale log', 'missed-run': 'missed run' });
+export const CLASS_WORDS = Object.freeze({ 'stale-log': 'stale log', 'missed-run': 'missed run', 'restart-due': 'restart due' });
 export const OUTCOME_WORDS = Object.freeze({
   healed: 'quiet, ran clean',
   escalated: 'left as it was',
@@ -396,8 +457,12 @@ export const OUTCOME_WORDS = Object.freeze({
 });
 // An outcome's words for one action, where they differ from OUTCOME_WORDS.
 export const ACTION_OUTCOME_WORDS = Object.freeze({
-  'rerun-job': Object.freeze({ healed: 'ran it again, clean', escalated: 'ran it again: it needs a look' })
+  'rerun-job': Object.freeze({ healed: 'ran it again, clean', escalated: 'ran it again: it needs a look' }),
+  'restart-control-room': Object.freeze({ healed: 'restarted on the new commit', escalated: 'restart: it needs a look', cleared: 'not restarted' })
 });
+// A commit as the page may show it: the first 7 of a full hash, else nothing.
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+export const shortCommit = c => (typeof c === 'string' && FULL_COMMIT.test(c) ? c.slice(0, 7) : null);
 export const outcomeWords = (action, outcome) =>
   (Object.hasOwn(ACTION_OUTCOME_WORDS, action) && Object.hasOwn(ACTION_OUTCOME_WORDS[action], outcome) ? ACTION_OUTCOME_WORDS[action][outcome] : OUTCOME_WORDS[outcome]);
 export const STATUS_WHY = Object.freeze({
@@ -409,15 +474,20 @@ export const STATUS_WHY = Object.freeze({
 
 // A target's name on the page: config's job name for its label, else the label's last
 // part, as the health strip names jobs. A target no longer in config goes by its id.
+// The server's own job (loop 3) is the Control Room.
 export function targetName(id, settings, jobNames = {}) {
-  for (const t of settings?.targets?.values?.() ?? []) if (t.id === id) return jobDisplayName(t.label, jobNames);
+  for (const t of settings?.targets?.values?.() ?? []) if (t.id === id) return t.kind === 'self' ? 'Control Room' : jobDisplayName(t.label, jobNames);
   return id;
 }
 
-// Healed loops per class, per week, oldest week first, the last of them ending now.
+// Healed loops per class, per week, oldest week first, the last of them ending now. A
+// restart after a merge (loop 3) is routine, not a failure that keeps happening, so it
+// isn't counted.
+const UNCOUNTED = new Set(['restart-due']);
 export function weeklyCounts(lines, now, weeks = 4) {
   const out = new Map();
   for (const l of distinctHeals(lines)) {
+    if (UNCOUNTED.has(l.class)) continue;
     const back = Math.floor((now - l.at) / (7 * DAY));
     if (back < 0 || back >= weeks) continue;
     if (!out.has(l.class)) out.set(l.class, new Array(weeks).fill(0));
@@ -439,6 +509,10 @@ export function buildLoopsView({ status, why = null, open = [], quiet = [], held
     outcome: l.outcome,
     words: outcomeWords(l.action, l.outcome),
     why: typeof l.why === 'string' && Object.hasOwn(WHY_WORDS, l.why) ? WHY_WORDS[l.why] : null,
+    // Loop 3: the commit it ran and the one it runs now (or was meant to), short.
+    ...(shortCommit(l.from) ? { from: shortCommit(l.from), to: shortCommit(l.got) ?? shortCommit(l.expected) } : {}),
+    // Loop 3: the collectors whose first run failed after the restart, by their code names.
+    ...(Array.isArray(l.failed) && l.failed.some(isCollector) ? { failed: l.failed.filter(isCollector).slice(0, 10) } : {}),
     at: l.at
   }));
   return {
@@ -461,6 +535,16 @@ export function buildLoopsView({ status, why = null, open = [], quiet = [], held
 // and its cards come as `proposals`. Proposals show whatever the status, with their
 // buttons off unless it is `on` (design §4.7: the kill switch leaves them showing).
 export function withMissedRuns(view, part) {
-  if (!part) return { ...view, proposals: [] };
-  return { ...view, open: [...view.open, ...(part.open ?? [])], proposals: part.proposals ?? [] };
+  return withLoopParts(view, [part]);
+}
+
+// Every T2 loop's part (loop 2's, loop 3's): their open loops after loop 1's, and their
+// cards, in the order given.
+export function withLoopParts(view, parts) {
+  const list = (Array.isArray(parts) ? parts : []).filter(Boolean);
+  return {
+    ...view,
+    open: [...view.open, ...list.flatMap(p => p.open ?? [])],
+    proposals: list.flatMap(p => p.proposals ?? [])
+  };
 }

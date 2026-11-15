@@ -14,11 +14,12 @@ import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
 import { createHealth, JOB_STATUS_TIMEOUT_MS, runLaunchctlPrint } from './collectors/health.mjs';
-import { readHealConfig, withMissedRuns } from './lib/heal.mjs';
+import { readHealConfig, withLoopParts } from './lib/heal.mjs';
 import { createHealLedger } from './lib/heal-ledger.mjs';
 import { createHealRunner } from './lib/heal-runner.mjs';
 import { createMissedRunLoops } from './lib/heal-missed.mjs';
-import { runCatalogProgram, runMissedRuns } from './lib/heal-programs.mjs';
+import { runCatalogProgram, runMissedRuns, runSelfRestart, createCheckoutReader } from './lib/heal-programs.mjs';
+import { createRestartLoop, CHECK_EVERY_MS as RESTART_CHECK_MS } from './lib/heal-restart.mjs';
 import { createHealTaps } from './lib/heal-routes.mjs';
 import { matchingAck, ackLogLine, ackNotice } from './lib/acks.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -171,7 +172,28 @@ const missed = createMissedRunLoops({
   }
 });
 if (missed.catalogProblem()) console.error(`heal: loop 2's catalog entries were refused (${missed.catalogProblem()}); no missed-run cards`);
+// Loop 3 (lib/heal-restart.mjs): a merge that changes server/ gets a Restart card, and only
+// a tap acts: the catalog's `kickstart -k` on config's self target, which must be the job
+// launchd started this process as. The checkout is read through git-read (toPush.gitRead,
+// vetted above), never git itself, and the new process checks the restart it comes from.
+const restartLoop = createRestartLoop({
+  settings: healSettings,
+  ledger: healLedger,
+  status: () => heal.status(),
+  git: toPushSettings.gitRead ? createCheckoutReader({ gitRead: toPushSettings.gitRead, repo: join(HERE, '..') }) : null,
+  launchctlPrint: runLaunchctlPrint,
+  runProgram: (entry, target) => runSelfRestart(entry, target),
+  self: { label: process.env.XPC_SERVICE_NAME ?? null, launchd: process.ppid === 1, pid: process.pid },
+  firstPass: () => registry.whenFirstPass(),
+  failingNow: () => Object.entries(cache.snapshot()).filter(([, v]) => v.error).map(([k]) => k),
+  startedAt: STARTED_AT,
+  notify: async (message, { priority = 'default' } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, priority })
+});
+if (restartLoop.catalogProblem()) console.error(`heal: loop 3's catalog entry was refused (${restartLoop.catalogProblem()}); no restart cards`);
 await heal.load();
+// Not awaited: checking a restart waits for the first collector pass, after listen.
+restartLoop.start().catch(err => console.error(`heal: the restart loop's start failed (${err?.message ?? err})`));
+setInterval(() => { restartLoop.pass().catch(err => console.error(`heal: the restart pass failed (${err?.message ?? err})`)); }, RESTART_CHECK_MS).unref();
 if (heal.catalogProblem()) console.error(`heal: the catalog was refused (${heal.catalogProblem()}); heals stay off`);
 {
   const { status, why } = heal.status();
@@ -335,7 +357,7 @@ const api = createHandler({
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
   onAckNotice: (notice, key) => ackNotices.notice(key, notice),
   // GET /api/loops and the dashboard's `loops` (lib/heal-runner.mjs and lib/heal-missed.mjs, view).
-  loops: () => withMissedRuns(heal.view(), missed.view())
+  loops: () => withLoopParts(heal.view(), [missed.view(), restartLoop.view()])
 });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the
@@ -490,7 +512,7 @@ if (chatSettings.on && socketsReady) {
   // sessions panel's latest pass, so a stop names only a run live this minute.
   const agentStop = createAgentStop({ stepUp, socket: socketRouter, store: chatStore, onEvent: chatEvents, liveRuns: () => cache.get('sessions', Date.now())?.data?.liveAgents?.runs ?? [] });
   // Taps on a heal card (lib/heal-routes.mjs): an approver device, the page's Origin.
-  const healTaps = createHealTaps({ loops: missed, onEvent: chatEvents, log: line => console.log(oneLine(line)) });
+  const healTaps = createHealTaps({ loops: { missed, restart: restartLoop }, onEvent: chatEvents, log: line => console.log(oneLine(line)) });
   chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, healTaps });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {

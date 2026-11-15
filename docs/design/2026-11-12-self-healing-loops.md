@@ -372,6 +372,19 @@ built.
   Web builds and channel releases stay out of this loop for now. A build is a deploy, and
   a channel release is a multi-step runbook (c76877b8).
 
+  **Built 2026-11-15 on `jos/loop3`, for Ultron's review.** As above, with these choices
+  (NEXT.md, "Jarvis OS 6", has the rest): git is read through git-read (`rev-list`,
+  `diff --name-only -- server`) under a new T0 verb `git:read`; "touches `server/`" is the
+  diff between the running commit and HEAD; the card doesn't expire; the tap is answered
+  3 s before `kickstart -k`, which runs in its own process group; the target must be the
+  label launchd runs the server as (`XPC_SERVICE_NAME`, parent pid 1); "first collector
+  pass clean" is every registered collector's first run without an error; the old process
+  pages if it is still alive a minute after launchctl said yes; at most 3 restarts a day,
+  one attempt per HEAD, and no restart without a tap. Ultron's review (11-15): ship with
+  fixes, all made. The main one (M1): a restart only onto a checkout fit to run (on
+  `main`, no tracked change or conflict, HEAD descended from the running commit),
+  checked at every step and by the new process; an unfit one shows the card blocked.
+
 ## 8. What Ultron should look at
 
 - The catalog loader's floor check, and whether a declared verb list can lie: the act

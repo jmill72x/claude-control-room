@@ -31,7 +31,7 @@ import { sameSince, makeAck } from './acks.mjs';
 import { oneLine } from './chat-events.mjs';
 import { parseLaunchctlPrint, LAUNCHD_LABEL } from './health.mjs';
 import {
-  CATALOG, loadCatalog, toolsFor, capStop, targetName, CLOSING, CLASS_WORDS, WHY_WORDS,
+  CATALOG, loadCatalog, toolsFor, capStop, targetName, CLOSING, CLASS_WORDS, WHY_WORDS, t2ActsToday,
   PROPOSAL_MS, QUIET_FROM_HOUR, QUIET_UNTIL_HOUR, PER_TARGET_DAY, PER_DAY
 } from './heal.mjs';
 
@@ -234,9 +234,10 @@ export function createMissedRunLoops({
   // a run, loop 1's heal caps (a heal of this target within the hour, the day's 20).
   function tapStop(p, action, at) {
     const lines = ledger.lines();
-    const acts = lines.filter(l => l.class === CLASS && (l.outcome === 'tapped' || l.outcome === 'acked') && at - l.at < DAY);
+    // The day's 20 count every loop's T2 actions (L11, the shared helper); the 3 per target, this loop's.
+    const acts = t2ActsToday(lines, at);
     if (acts.length >= PER_DAY) return 'cap-day';
-    if (acts.filter(l => l.target === p.target).length >= PER_TARGET_DAY) return 'cap-target';
+    if (acts.filter(l => l.class === CLASS && l.target === p.target).length >= PER_TARGET_DAY) return 'cap-target';
     return action === RERUN ? capStop(lines, p.target, at, null, p.missedAt) : null;
   }
 

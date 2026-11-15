@@ -545,11 +545,12 @@ fields; the page's redraw of a gained text and the disarm on redraw in a real br
 arm's logic is unit-tested, the component wiring is not).
 
 **Jarvis OS 6, self-healing loops (board b384cd92): designed 2026-11-12
-(`docs/design/2026-11-12-self-healing-loops.md`). Loop 1 (board ea709def) is merged (main
-f8cd1b1) and its code runs, with config's `heal` block unset (the Loops panel says "Not set
-up", per Jarvis's 11-15 brief). Loop 2 (board 6af6f55e) is built and staged 2026-11-14 on
-`jos/loop2` (from main 800b70a, worktree `~/Projects/.worktrees/ccr-loop2`), not committed,
-not live; its part is the second half of this paragraph.** Loop 1 marks a job "quiet, ran
+(`docs/design/2026-11-12-self-healing-loops.md`). Loops 1 (board ea709def) and 2 (board
+6af6f55e) are merged and live since 2026-11-15 (main 0b09e2d; config's `heal` block on,
+the start line reads `heal: on, 6 targets`). Loop 3 (board 4afe7968, a restart of this
+server after a merge) is built and staged 2026-11-15 on `jos/loop3` (from main 0b09e2d,
+worktree `~/Projects/.worktrees/ccr-loop3`), not committed, not live; its part is the
+last item of this paragraph.** Loop 1 marks a job "quiet, ran
 clean" (grey, no push, no event)
 when job-status calls it overdue for its log's age alone and two read-only `launchctl print`
 readings show the run counter rose with exit 0 at both. It also lays the shared parts: the
@@ -585,14 +586,14 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
   `(never exited)`, `run interval = 180 seconds`, and `last terminating signal` in place of
   an exit after a signal. **Unverified:** the counter's behaviour across sleep and wake and
   for a job running at the moment of a reading (fixtures only); Safari.
-- **Not built (later loops, or follow-ups):** loop 3 (loop 2 is below); the "3 in 14 days" fix-item event; the loop count on the
+- **Not built (later loops, or follow-ups):** the "3 in 14 days" fix-item event; the loop count on the
   health strip; the morning brief still reads job-status directly, so it still calls a quiet
   job overdue (a Jarvis-side change: read `/api/loops`, or teach job-status the counter).
   Board 20620d37 (an acked job red after a restart) is next door but untouched: the runner
   runs after the crons pass's `whenAsked()` wait, so a first pass without job-status's
   answer has no `staleLog` entry and opens no loop.
-- **Loop 2, a run missed during a restart (T2), staged 2026-11-14 on `jos/loop2`; Ultron
-  reviewed it the same day: ship with fixes (1 medium, 7 low), all made and restaged.** Vision's
+- **Loop 2, a run missed during a restart (T2), merged and live 2026-11-15 (main 0b09e2d);
+  Ultron reviewed it on 11-14: ship with fixes (1 medium, 7 low), all made.** Vision's
   read-only `missed-runs --since boot --json` runs at the first crons pass after a start and
   daily; a heal target it flags as missed in a restart (or a sure sleep gap) and not run
   since gets a card in Needs you (a fifth tile, Heals, only while one waits) with **Run it
@@ -617,7 +618,8 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
   - **Accepted risk (Jeff, 2026-11-15, Ultron's L6):** `missed-runs` is not pinned by hash;
     it runs from the machine-setup tree, checked at start for ownership and write bits
     only. A change to that file (Vision's, through C&P) takes effect at the next run.
-  - **Go-live, in this order (each a gated step):** (1) Ultron's re-read of the fixes, if
+  - **Go-live (done 2026-11-15 up to step 4; step 5, Vision's live miss test, is still to
+    do):** (1) Ultron's re-read of the fixes, if
     he wants one; (2) Jeff's C&P, and the merge's `cd web && npm
     run build` (page-only, safe before the restart: the old server sends no `proposals`,
     so no Heals tile shows); (3) Jarvis adds to config.json's `heal` block: `"enabled":
@@ -667,6 +669,109 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
     live run); a tap from Safari on the iPhone (Chromium only; the https Origin path is
     covered by the route tests and the shim); how long real jobs take against the
     10-minute check (a long brief would page as `still-running`).
+  - **Ultron's re-read low, N1 (board fe4d2bfe), fixed on `jos/loop3`:** a tap with an
+    `Authorization` header raised the `heal-tap-refused` alert before the login check, so
+    any caller that reached the port could spend ntfy's daily pushes. The alert now goes
+    out only after the owner's login header passes (`requireLogin`, handed to the heal
+    routes by the chat router); anyone else gets the login's 403, unalerted. The Shortcut
+    routes' `shortcut-refused` has the same posture and is not changed here.
+- **Loop 3, a restart of this server due after a merge (T2), staged 2026-11-15 on
+  `jos/loop3`; Ultron reviewed it the same day: ship with fixes (1 medium, 10 lows), all
+  made and restaged.** README, "Self-healing loops", has the mechanism. In short: at start
+  the server reads its checkout's HEAD through git-read (`toPush.gitRead`); every 5
+  minutes it reads the checkout (`status --porcelain=v2 --branch`) and, when `diff
+  --name-only <start> <HEAD> -- server` lists files, shows **Restart the Control Room (N
+  merges)** in Needs you. A web/- or docs/-only merge opens nothing. A tap answers 202,
+  then 3 s later runs `/bin/launchctl kickstart -k gui/<uid>/<label>` (config's `self`
+  target, which must be `XPC_SERVICE_NAME` with launchd as the parent) in its own process
+  group; the new process closes the `verifying` line as healed ("restarted on the new
+  commit, <old> → <new>") or pages once. Files: `lib/heal-restart.mjs`, the catalog
+  entry, verbs and `PROGRAM_ARGS` line and `t2ActsToday` in `lib/heal.mjs`,
+  `runSelfRestart` and `createCheckoutReader` in `lib/heal-programs.mjs`,
+  `parseLaunchdPid` in `lib/health.mjs`, `whenFirstPass` in `collectors/registry.mjs`,
+  the routes in `lib/heal-routes.mjs`, the card in `web/src/lib/orbit/loops.js`.
+  - **Ultron's review (11-15) and the fixes.** He agreed with all six picks (strict
+    commit match, a clean first pass, `XPC_SERVICE_NAME` + ppid 1, no expiry, answer then
+    the 3 s kick, `git:read` as T0). M1: a restart was offered on any HEAD change; now
+    only onto a checkout fit to run (on `main`, no changed, staged or unmerged tracked
+    file, cut output counted as changed, HEAD a descendant of the running commit by
+    `rev-list --count <HEAD>..<start>` = 0), checked in the pass, at the tap, at the
+    restart and by the new process before it calls it healed; an unfit one shows the
+    card with its buttons off, the reason, and no push. L1: the restart reads the
+    checkout again; moved or unfit means no restart (`cleared`, "moved" or the reason),
+    and the card comes back. L2: the first pass is judged on its raw list (not a list is
+    a failure); names are filtered for the ledger only. L3: the collectors failing at the
+    tap go in the `verifying` line, the new process pages only for new failures, and the
+    names show on the Loops panel. L4: an open line in a process whose heals are off,
+    unset or whose catalog was refused is closed with one page
+    (`heals-off-unchecked`). L5: a tap whose HEAD differs from the card's answers 409
+    "it moved" and brings the card up to date. L6: card pushes capped at 1 an hour and 3
+    a day, counted by `proposed` ledger marks. L7: one page for every line a start
+    closes. L8: a launchctl timeout leaves the tap open (the minute's check or the new
+    process decides), and a test pins that nothing in the server catches SIGTERM/SIGINT/
+    SIGHUP. L9: at the tap, `launchctl print gui/<uid>/<label>` (a T0 read, now in the
+    entry's verbs) must give this process's pid. L10: the heal routes throw without the
+    login check. L11: loops 2 and 3 count the day's 20 T2 actions with one helper.
+  - **The self-kill, thought through:** the answer, its log line and its `heal-tap`
+    alert go out before the restart (3 s delay); the ledger line is on disk (temp file +
+    rename) before the delay starts, so the new process can always check it; a tap whose
+    answer was lost and is retried finds no card in the new process (404); a HEAD that
+    keeps moving makes cards, never restarts: only a tap restarts, the new process never
+    restarts on its own and offers no card while it checks one, each HEAD gets one
+    attempt, and at most 3 restarts a day (`RESTARTS_PER_DAY`) plus the day's 20 T2
+    actions across the loops. Lines are written before pages, so a process that dies
+    between them never pages twice. If no process comes back at all, the channel's
+    silent alert and the NAS box's page check are what notice (design).
+  - **Go-live, in order (each gated):** (1) Ultron's re-read of the fixes, if he wants
+    one; (2) Jeff's C&P and `cd web && npm run build` (page-only: the old server sends no
+    restart card, so nothing shows until the restart); (3) Jarvis adds one target to
+    config.json's `heal.targets`, a backup first: `"control-room": { "label":
+    "net.milleradvisorypartners.control-room", "actions": ["restart-control-room"] }`;
+    (4) the service restart, by hand this one last time (Jeff, Vision's LaunchAgent); the
+    log should show `heal: restart-control-room watches the checkout from <hash>` and no
+    `config:` or `not running as the launchd job` line; (5) at the next merge that touches
+    server/ (the main checkout on main, clean), Jeff taps Restart it on the iPhone; the
+    log shows the tap, then from the new pid `back on <hash>` and `healed (restarted)`.
+  - **Undo:** `touch ~/.local/state/jarvis-os/heal-off` (no restart; a tap in its 3 s is
+    cancelled too), or `"off": ["restart-control-room"]`, or drop the target, with a
+    restart; `git revert` + build for the code.
+  - **Departures from the design, to defend (Ultron accepted them 11-15):** (1) no expiry
+    on the card: an expired card would leave the restart due with nothing offering it;
+    (2) "touches server/" is the diff between the running commit and HEAD, so a change
+    merged and taken back opens nothing; N counts first-parent commits touching server/;
+    (3) git is read through git-read (log, show, diff, status, ls-files, rev-list and
+    remote only), under a new T0 verb `git:read`; (4) a clean first pass means no
+    collector failing that wasn't failing at the tap; (5) the check runs while the kill
+    switch is on (it reports on a restart already made); (6) restart heals are left out of
+    the weekly "keeps happening" counts. While a card is blocked, Restart is off but Not now
+    stays on (Jeff, 2026-11-15: option b, the server's `canDecline`), so it can be
+    dismissed; it then stays parked until HEAD moves. Otherwise the card goes by itself
+    when the checkout is fit or HEAD moves back.
+  - **Checked (after Ultron's fixes):** server 1282 tests (44 new over main: 41 in
+    `heal-restart.test.mjs`, one on a real scratch git repo with `--no-ff` merges, a
+    feature branch, a detached HEAD, a conflicted merge, tracked and untracked changes
+    and a reset; 3 in `heal-routes.test.mjs`; loop 2's shared count in
+    `heal-missed.test.mjs`; git-read's arguments), web 251 (3 new over main), each in local
+    time and `TZ=Asia/Tokyo`. Mutants: 188 over the new and changed code (catalog,
+    config, reader, loop, programs, registry, routes, wiring, page, and 52 for the
+    review's fixes): 187 caught (one by timeout), one equivalent (the first pass's names
+    added before the runs), two no-op baselines pass. Headless Chromium on a scratch
+    server (`kickstart -k` faked as an exit, a stand-in for launchd's KeepAlive, a scratch
+    git repo) at 1180 and 390, light and dark, five modes: web-only merge (no card); card
+    with the tap and the restart (healed, both hashes on the Loops panel); a merge in the
+    3 s (no restart, "not restarted … (HEAD moved before the restart ran)", the card back
+    on the new HEAD); killed (buttons off, the reason); blocked (a feature branch:
+    buttons off with "isn't on main", not pushed; back on main, the button comes on). No
+    sideways scroll, buttons 44 px, no CSP violation. Screenshots:
+    `~/.local/state/jarvis/outbox/loop3/` (`blocked-*`, `card-*`, `killed-*`,
+    `mismatch-*` for the moved case, `webonly-*`).
+  - **Unverified:** a real `launchctl kickstart -k` (never run: whether launchd kills
+    the process before launchctl returns, and which signal; the code holds either way);
+    the `pid = N` line of a real `launchctl print` (from the health strip's fixture
+    modelled on the live output; a different format refuses every tap, never restarts);
+    that `XPC_SERVICE_NAME` is the label after a kickstart (seen on the live process,
+    read-only, 11-15); git-read against the live checkout with `rev-list`, `diff
+    --name-only` and `status` (the first two run read-only on 11-15); Safari.
 
 **The drain's scope (Ultron's L1 on ec4a9f0, board 7be15fee): staged 2026-11-13 on
 `jos/shortcut-drain-scope` (from main ec4a9f0, worktree

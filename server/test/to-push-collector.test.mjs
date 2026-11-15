@@ -230,3 +230,9 @@ test('an answer with no branch line is a failure for that repo, not the pass', a
   assert.equal(out.repos[2].why, 'gave no branch line');
   assert.equal(out.repos[0].state, 'ok');
 });
+
+test('git-read can be asked for another read (self-healing loop 3: rev-list and diff --name-only), after the repo', async () => {
+  const dir = fresh();
+  const out = await runGitRead(script(dir, ['import sys', 'print("\\n".join(sys.argv[1:]))']), '/home/example/projects/garden-app', { args: ['rev-list', '--max-count=1', 'HEAD'] });
+  assert.deepEqual(out.trim().split('\n'), ['/home/example/projects/garden-app', 'rev-list', '--max-count=1', 'HEAD']);
+});

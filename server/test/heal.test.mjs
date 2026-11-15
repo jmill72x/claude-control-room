@@ -43,7 +43,7 @@ const entry = (extra = {}) => ({ id: 'try-it', class: 'stale-log', tier: 'T1', t
 
 test('the shipped catalog loads, with mark-quiet at T1 and its floor worked out', () => {
   const c = loadCatalog(CATALOG);
-  assert.deepEqual([...c.keys()], ['mark-quiet', 'rerun-job', 'ack-until-next-run']);
+  assert.deepEqual([...c.keys()], ['mark-quiet', 'rerun-job', 'ack-until-next-run', 'restart-control-room']);
   const q = c.get('mark-quiet');
   assert.equal(q.tier, 'T1');
   assert.equal(q.floor, 'T1');
