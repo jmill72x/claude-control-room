@@ -19,6 +19,7 @@ import { checkSubscription } from './webpush.mjs';
 import { readAllowedHosts } from './host-guard.mjs';
 import { verdictOriginProblem } from './approvals.mjs';
 import { oneLine } from './chat-events.mjs';
+import { searchAnswer } from './chat-search.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -350,6 +351,12 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         streams.add(entry);
         req.on('close', () => { streams.delete(entry); entry.stop(); streamClosedAt.set(device.id, now()); });
         return undefined;
+      }
+
+      // ---- search (lib/chat-search.mjs): read-only, a paired device, never logged ----
+      if (req.method === 'GET' && path === '/api/chat/search') {
+        requireDevice(req);
+        return json(res, 200, searchAnswer(store, url.searchParams), NO_STORE);
       }
 
       // ---- notifications (§3) ----

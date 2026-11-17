@@ -19,7 +19,11 @@ test('an event\'s line is its text, as text: markup stays characters, whitespace
 test('the Chat tab renders events as text children, never as HTML', () => {
   const src = readFileSync(new URL('../src/orbit/Chat.jsx', import.meta.url), 'utf8');
   assert.ok(!/dangerouslySetInnerHTML|innerHTML|insertAdjacentHTML/.test(src), 'no HTML sinks anywhere in the tab');
-  assert.match(src, /if \(m\.kind === 'event'\) \{\s*const ev = eventLine\(m\);\s*return <li className="o-chat-notice o-chat-event"><span>\{ev\.text\}<\/span>/);
+  // The row also carries its id (data-mid, the target of a search jump) and the jump's mark.
+  assert.match(src, /if \(m\.kind === 'event'\) \{\s*const ev = eventLine\(m\);\s*return <li data-mid=\{mid\} className=\{`o-chat-notice o-chat-event\$\{foundClass\}`\}><span>\{ev\.text\}<\/span>/);
+  // The search sheet shows snippets (raw text cut anywhere) the same way: text children only.
+  const search = readFileSync(new URL('../src/orbit/ChatSearch.jsx', import.meta.url), 'utf8');
+  assert.ok(!/dangerouslySetInnerHTML|innerHTML|insertAdjacentHTML|<Markdown|Markdown\.jsx/.test(search), 'no HTML sink and no Markdown in the search sheet');
 });
 
 test('a reply of the lead\'s to an event does not mark the owner\'s message answered; a reply to the owner does', () => {

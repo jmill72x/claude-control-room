@@ -3,6 +3,7 @@ import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
 import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
+import { reachStep, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -174,11 +175,10 @@ export function useChat({ active }) {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') { closeStream(); return; }
       if (phase === 'paired') openStream();
-      // Looking at the chat clears the home-screen badge a notification set.
-      navigator.clearAppBadge?.().catch?.(() => {});
+      // The icon's badge (a notification's, or the page's own count) is cleared by
+      // useUnseen.js whenever the Chat tab is in view.
     };
     const onHide = () => closeStream();
-    if (document.visibilityState === 'visible') navigator.clearAppBadge?.().catch?.(() => {});
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onVisible);
     window.addEventListener('pageshow', onVisible);
@@ -209,6 +209,35 @@ export function useChat({ active }) {
       if (aliveRef.current) setLoadingOlder(false);
     }
   }, [loadingOlder, unpaired]);
+
+  // ---- reaching a message (a search result) ----
+  // Loads older history, 100 at a time and 20 pages at most, until the message with
+  // `target.id` is in the thread. The outcome is 'found', 'passed' or 'start' (the
+  // store no longer holds it), 'too-far', 'newer' (past what the thread holds: the
+  // stream has not brought it yet) or 'error'; lib/orbit/chat-search.js words each one.
+  const reach = useCallback(async target => {
+    const have = messagesRef.current;
+    if (have.some(m => m.id === target.id)) return 'found';
+    let before = oldestId(have);
+    if (!before || target.seq > lastSeq(have)) return 'newer';
+    for (let i = 0; i < REACH_PAGES_MAX; i++) {
+      let page;
+      try {
+        page = await api.messagesBefore(before, REACH_PAGE);
+      } catch (err) {
+        if (err?.status === 401) unpaired();
+        return 'error';
+      }
+      if (!aliveRef.current) return 'error';
+      const list = Array.isArray(page?.messages) ? page.messages : [];
+      setMessages(cur => mergeMessages(cur, list));
+      setHasOlder(list.length >= REACH_PAGE);
+      const step = reachStep(list, target, REACH_PAGE);
+      if (step !== 'more') return step;
+      before = list[0].id;
+    }
+    return 'too-far';
+  }, [unpaired]);
 
   // ---- sending ----
   const setPending = (clientId, patch) => setMessages(list => list.map(m => (m.clientId === clientId && !Number.isInteger(m.seq) ? { ...m, ...patch } : m)));
@@ -339,7 +368,7 @@ export function useChat({ active }) {
 
   return {
     phase, problem, device, status, messages, permissions, hasOlder, loadingOlder, stream,
-    reload: load, loadOlder, send, retry, discard, verdict, dismissPermission,
+    reload: load, loadOlder, reach, send, retry, discard, verdict, dismissPermission,
     pairing, startPairing, cancelPairing, pollPairing, devices, revoke, approve,
     shortcutsOn, shortcutKeys, newShortcutCode, revokeShortcutKey
   };

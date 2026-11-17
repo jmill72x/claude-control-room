@@ -982,3 +982,46 @@ ul.o-md-list { list-style-type: disc; }
 .o-feed-folded { max-height: 14em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 65%, transparent); mask-image: linear-gradient(#000 65%, transparent); }
 .o-feed-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .o-feed-empty { margin: 16px 0; color: var(--c-sub); }
+
+/* Read aloud, search and the ⋮ menu (2026-11-15). The speaker sits at the start of a
+   bubble's meta line, its 44 px target reaching into the bubble's padding so the line
+   keeps its height. */
+.o-chat-speakbtn {
+  flex: none; width: 44px; height: 44px; margin: -12px auto -12px -12px; padding: 0; border: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; background: transparent; color: inherit;
+}
+.o-chat-speakbtn svg { fill: currentColor; }
+.o-chat-speaking { color: var(--c-heading); }
+.o-chat-speakbtn:focus-visible { outline: 2px solid var(--c-focus); outline-offset: -4px; }
+.o-chat-menuwrap { position: relative; flex: none; display: inline-flex; }
+.o-chat-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; min-width: 200px; display: flex; flex-direction: column; padding: 6px;
+  border-radius: 14px; background: var(--c-card); border: 1px solid var(--c-rule); box-shadow: 0 8px 24px rgba(13, 32, 69, 0.18);
+}
+.o-chat-menuitem {
+  min-height: 44px; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: var(--c-heading);
+  font-size: 1.1em; font-weight: 600; text-align: left; white-space: nowrap;
+}
+.o-chat-menuitem:hover, .o-chat-menuitem:focus-visible { background: var(--c-quote); }
+.o-chat-jumpnote {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-top: 8px; padding: 0 0 0 12px;
+  border-radius: 12px; background: var(--c-quote); font-size: 0.85em; color: var(--c-sub);
+}
+.o-chat-jumpnote-problem { color: var(--c-ink); }
+.o-chat-found .o-chat-bubble, .o-chat-notice.o-chat-found { outline: 2px solid var(--c-focus); outline-offset: 2px; }
+.o-chat-notice.o-chat-found { border-radius: 10px; }
+/* The search sheet stands tall, so its box sits high on a phone, above the keyboard. */
+.o-chat-search { height: 88dvh; }
+@media (min-width: 700px) { .o-chat-search { height: min(88dvh, 640px); } }
+.o-chat-search form { display: flex; }
+.o-chat-search-input { flex: 1 1 auto; min-width: 0; }
+.o-chat-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.o-chat-result {
+  width: 100%; min-height: 44px; display: flex; flex-direction: column; gap: 4px; padding: 10px 4px; border: 0; border-top: 1px solid var(--c-rule);
+  background: transparent; color: var(--c-ink); font: inherit; text-align: left;
+}
+.o-chat-results li:first-child .o-chat-result { border-top: 0; }
+.o-chat-result:hover, .o-chat-result:focus-visible { background: var(--c-quote); }
+.o-chat-result-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 0.8em; color: var(--c-sub); }
+.o-chat-result-text { font-size: 0.95em; overflow-wrap: anywhere; }
+.o-chat-result mark { padding: 0 1px; border-radius: 3px; background: rgba(245, 200, 96, 0.5); color: inherit; }

@@ -2098,3 +2098,65 @@ tables is Deny-only on the page. **Follow-ups, not built:** the page's link-labe
 (`server/lib/text.mjs`, which lets U+2028/U+2029 through) could use the same set; the first
 needs a web build, the second a look at what the board's fields must allow (U+200D sits inside
 combined emoji, and the set marks it).
+
+**Read aloud, chat search and the icon badge, staged on `jos/read-search-badge` (from main
+82449f7, 2026-11-15, worktree `~/Projects/.worktrees/ccr-read-search-badge`), not committed,
+not live.** Jeff's yes to Shuri's scout items 1 and 2 ("Yes do 1&2", 11-15), plus his ask
+the same day: "can we get a chat notification badge on the icon?" README ("The chat with
+the lead agent": the routes bullet, the Chat tab bullet and "Read aloud and search in the
+Chat tab") has how each works. (1) **Read aloud:** a speaker button on each of the lead's
+chat bubbles uses the browser's `speechSynthesis`, on the page only, with no server change.
+It reads the words without Markdown: a code block is "Code block skipped.", a link is read
+by its label, and a bare address as "a link to <host>". The whole message is queued inside
+the tap. A second tap stops it, another message replaces it, and leaving the tab or hiding
+the page stops it. The button isn't drawn without `speechSynthesis`. (2) **Search:** a
+read-only `GET /api/chat/search?q=` (`server/lib/chat-search.mjs`; the route is 4 lines in
+`chat-routes.mjs`, plus `store.newest(n)`). It has `/api/feed`'s read rule (a paired
+device with the owner's login) and looks at message text only: chat messages and event
+lines, never attachments, approval requests, verdicts or notices. Limits: a query of 2 to
+100 characters and at most 8 words, 50 results at most (20 by default), the newest 20,000
+messages, and the query is never logged. There is no rate limit, because `/api/feed` has
+none either. It is reached from the banner's ⋮, which is now a menu (Search messages, Chat
+settings). A result is plain text with the matches marked. A tap loads older history (at
+most 2,000 messages back), scrolls to the message and outlines it, or says plainly that it
+is too far back or no longer there. (3) **Icon badge:** `useUnseen.js` now also polls while
+the page is hidden (every minute) and sets `navigator.setAppBadge(count)` whenever the Chat
+tab isn't in view. The Chat tab in view clears it; that clear moved here from `useChat.js`.
+Push still sets the badge when the page isn't running (`sw.js` unchanged, `app_badge: 1`).
+**The Mac app has no push subscription:** `devices.json` (read 11-15, names and the
+`push` flag only) has "Jeff's Mac Mini" paired 11-12 with `push: false`; the iPhone and
+iPad are on Apple's push service. So on the Mac the Dock badge shows only while the
+Chrome app is running. To get pushes (and a badge while it is closed), Jeff taps Chat
+settings, then Turn on notifications, in the Mac app. That is his tap, and macOS also has
+to allow Chrome's notifications. **Verified:** server 1294 tests in local time and Tokyo
+(11 new in `chat-search.test.mjs`), web 276 (25 new across speech, chat-search and unseen);
+94 mutations: all caught (two no-op baselines survive, as they should). Dead checks found
+by mutation were removed: an empty-text skip, a mark clip before the window, a mailto
+branch, a redundant guard and two clamps. Two mutants are equivalent and were dropped:
+cutting a sentence of exactly the limit at a space (the pieces are joined again), and the
+fold's identity shortcut. Lint is clean, and a build to a scratch `--outDir` works (the live
+`web/dist` was untouched). Headless Chromium (the 1223 shell) on a scratch server (the real
+chat routes, 2,300 seeded messages) at 390, 820 and 1440, light and dark: 43 of 43 each.
+Those cover the speaker on every lead bubble and none of the owner's, a 44 px target, the
+spoken text, toggling, one at a time, stop on hide and on leaving the tab, no button
+without `speechSynthesis`, the menu (focus, arrows, Escape, tap outside), settings still
+reachable, search marks with raw text as text, a hostile message as text, too far back,
+a jump of 1,300 rows with the outline, the icon count off the Chat tab and while hidden,
+the hidden Chat tab not counting as seen, the clear and the mark on looking, no CSP
+violations and no sideways scroll. A mutant where the Chat tab counts as seen while hidden
+fails 3 of them. **Faked in that check:** `speechSynthesis` (the shell has no voices),
+`setAppBadge`, and visibility. **Unverified (needs Jeff's devices):** iOS voices and speech
+in the home-screen app (whether the silent switch mutes it, whether a long message is cut,
+and whether `cancel()` then `speak()` in one tap works on WebKit); the badge on iOS (it
+needs notification permission; the page sets it only while it runs) and on the Chrome app
+on the Mac (Dock); Safari's layout of the menu and the search sheet with the keyboard up.
+**Go-live order:** Ultron reviews the route (`chat-search.mjs`, the route block and
+`store.newest`); C&P; restart the server (the loop 3 Restart card, or Vision); then `cd web &&
+npm run build`. A build before the restart is safe except that search answers "Couldn't
+search: not found" until the restart. **Device checks for Jeff:** on the iPhone, tap the
+speaker on one of Jarvis's replies; open ⋮, then Search messages, search a word from last
+week and tap the result; leave the app on the Board tab, and after Jarvis's next reply the
+icon shows a number. On the Mac, the Dock icon shows the count while the app sits on
+another tab or minimised (within a minute), and opening Chat clears it. Unrelated, and
+still open: the Shortcuts follow-up "Ask Jarvis speaking the answer" is the Shortcut
+speaking, not the page.

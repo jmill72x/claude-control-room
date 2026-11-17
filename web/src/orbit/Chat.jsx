@@ -7,6 +7,9 @@ import { attachmentUrl } from './chatApi.js';
 import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
 import { holdReload } from './buildWatch.js';
+import { ChatSearch } from './ChatSearch.jsx';
+import { getSpeaker, useSpeaking, useStopSpeechWhenAway } from './useSpeaker.js';
+import { reachProblem } from '../lib/orbit/chat-search.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
@@ -118,6 +121,18 @@ function Thread({ chat, now, lead, onSettings }) {
   const coarse = useMediaQuery('(pointer: coarse)');
   const [replyTo, setReplyTo] = useState(null);
   const [viewing, setViewing] = useState(null);
+  // The ⋮ menu (search, settings), the search sheet with its last query, and a jump
+  // to a search result: `target` waits for the message's row to render, `found` marks
+  // it for a moment, `jump` says the page is loading history or why it couldn't.
+  const [menu, setMenu] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [lastQuery, setLastQuery] = useState('');
+  const [target, setTarget] = useState(null);
+  const [found, setFound] = useState(null);
+  const [jump, setJump] = useState(null); // { busy: true } | { problem }
+  const menuBtnRef = useRef(null);
+  const speaking = useSpeaking();
+  useStopSpeechWhenAway();
   const { messages, hasOlder, loadingOlder } = chat;
   const topRef = useRef(null);
   const keep = useRef(null);        // scrollHeight before an older page, to hold the view
@@ -177,6 +192,35 @@ function Thread({ chat, now, lead, onSettings }) {
     return () => io.disconnect();
   }, [chat, hasOlder, loadingOlder, messages.length]);
 
+  // A search result picked: load older history until its message is on the page,
+  // then bring it into view.
+  const pick = async r => {
+    setSearching(false);
+    setJump({ busy: true });
+    const outcome = await chat.reach({ id: r.id, seq: r.seq });
+    const problem = reachProblem(outcome);
+    if (problem) { setJump({ problem }); return; }
+    setJump(null);
+    setTarget(r.id);
+  };
+  useEffect(() => {
+    if (!target) return;
+    const sel = `[data-mid="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(target) : target}"]`;
+    const el = document.querySelector(sel);
+    if (!el) return; // the render that holds it comes with `messages`
+    // Smooth only over a short way: a long glide (thousands of rows) takes seconds and
+    // shows nothing, and the mark would fade before it landed.
+    const far = Math.abs(el.getBoundingClientRect().top - window.innerHeight / 2) > 2 * window.innerHeight;
+    el.scrollIntoView({ block: 'center', behavior: reduced || far ? 'auto' : 'smooth' });
+    setFound(target);
+    setTarget(null);
+  }, [target, messages, reduced]);
+  useEffect(() => {
+    if (!found) return undefined;
+    const t = setTimeout(() => setFound(null), 2600);
+    return () => clearTimeout(t);
+  }, [found]);
+
   const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now);
   // Every card but a closed one past its time (lib/orbit/chat.js, cardGone): an
   // answered card stays to say what was sent, until dismissed.
@@ -192,10 +236,21 @@ function Thread({ chat, now, lead, onSettings }) {
           <span className="o-chat-banner-dot" aria-hidden="true" />
           <span className="o-chat-banner-text">{banner.text}</span>
           {chat.stream !== 'open' && <span className="o-chat-banner-sub">reconnecting…</span>}
-          <button type="button" className="o-chat-iconbtn" aria-label="Chat settings" onClick={onSettings}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.2" /><circle cx="10" cy="4" r="1.6" /><circle cx="10" cy="16" r="1.6" /></svg>
-          </button>
+          <span className="o-chat-menuwrap">
+            <button ref={menuBtnRef} type="button" className="o-chat-iconbtn o-chat-menubtn" aria-label="Chat menu" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(v => !v)}>
+              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.2" /><circle cx="10" cy="4" r="1.6" /><circle cx="10" cy="16" r="1.6" /></svg>
+            </button>
+            {menu && <ChatMenu anchorRef={menuBtnRef} onClose={() => setMenu(false)}
+              onSearch={() => { setMenu(false); setJump(null); setSearching(true); }}
+              onSettings={() => { setMenu(false); onSettings(); }} />}
+          </span>
         </div>
+        {jump && (
+          <div className={`o-chat-jumpnote${jump.problem ? ' o-chat-jumpnote-problem' : ''}`} role="status">
+            <span>{jump.busy ? 'Loading earlier messages to reach it…' : jump.problem}</span>
+            {jump.problem && <button type="button" className="o-chat-iconbtn" aria-label="Dismiss" onClick={() => setJump(null)}>×</button>}
+          </div>
+        )}
         <ol className="o-chat-list" aria-label="Messages">
           <li ref={topRef} className="o-chat-top" aria-hidden="true">
             {loadingOlder ? 'Loading earlier messages…' : hasOlder ? '' : messages.length ? 'The start of the conversation' : ''}
@@ -203,7 +258,7 @@ function Thread({ chat, now, lead, onSettings }) {
           {messages.length === 0 && <li className="o-chat-empty">No messages yet. Say hello.</li>}
           {rows.map(row => (row.type === 'day'
             ? <li key={row.key} className="o-chat-day"><span>{row.label}</span></li>
-            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} />))}
+            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} speaking={speaking} found={found === row.message.id} />))}
         </ol>
         <div className="o-chat-bottom">
           {cards.length > 0 && (
@@ -215,35 +270,82 @@ function Thread({ chat, now, lead, onSettings }) {
         </div>
       </div>
       {viewing && <ImageViewer attachment={viewing} onClose={() => setViewing(null)} />}
+      {searching && <ChatSearch initial={lastQuery} onQuery={setLastQuery} onPick={pick} onClose={() => { setSearching(false); menuBtnRef.current?.focus(); }} />}
     </div>
   );
 }
 
-function Row({ m, list, lead, chat, onReply, onView }) {
+// The ⋮ menu: two items. Arrow keys move between them, Escape or a tap outside closes
+// it and gives the focus back to the button.
+function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const items = () => [...(ref.current?.querySelectorAll('[role="menuitem"]') ?? [])];
+    items()[0]?.focus();
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); anchorRef.current?.focus(); return; }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const list = items();
+      const i = list.indexOf(document.activeElement);
+      e.preventDefault();
+      list[(i + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length]?.focus();
+    };
+    const onDown = e => { if (!ref.current?.contains(e.target) && !anchorRef.current?.contains(e.target)) onClose(); };
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onDown);
+    return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onDown); };
+  }, [anchorRef, onClose]);
+  return (
+    <div ref={ref} className="o-chat-menu" role="menu" aria-label="Chat menu">
+      <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSearch}>Search messages</button>
+      <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSettings}>Chat settings</button>
+    </div>
+  );
+}
+
+// Read aloud on one of the lead's bubbles (src/lib/orbit/speech.js). Shown only where
+// the browser has speechSynthesis; the tap itself starts the speech (mobile Safari
+// speaks from a user gesture only).
+function SpeakButton({ m, speaking }) {
+  const sp = getSpeaker();
+  if (!sp.supported) return null;
+  const on = speaking === m.id;
+  return (
+    <button type="button" className={`o-chat-speakbtn${on ? ' o-chat-speaking' : ''}`} aria-label="Read aloud" aria-pressed={on} onClick={() => sp.toggle(m.id, m.text)}>
+      {on
+        ? <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
+        : <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5h3l4-3.5v12l-4-3.5H3Z" /><path d="M13 7a4 4 0 0 1 0 6M15.2 5a7 7 0 0 1 0 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>}
+    </button>
+  );
+}
+
+function Row({ m, list, lead, chat, onReply, onView, speaking, found }) {
   // A notice carries its own time in its words ("… restarted 08:06").
-  if (m.kind === 'notice') return <li className="o-chat-notice"><span>{m.text}</span></li>;
+  const mid = m.id ?? undefined;
+  const foundClass = found ? ' o-chat-found' : '';
+  if (m.kind === 'notice') return <li data-mid={mid} className={`o-chat-notice${foundClass}`}><span>{m.text}</span></li>;
   // An event (server lib/events.mjs): a notice line, its words as plain text.
   if (m.kind === 'event') {
     const ev = eventLine(m);
-    return <li className="o-chat-notice o-chat-event"><span>{ev.text}</span>{ev.note && <span>{ev.note}</span>}<time className="o-mono">{hhmm(m.at)}</time></li>;
+    return <li data-mid={mid} className={`o-chat-notice o-chat-event${foundClass}`}><span>{ev.text}</span>{ev.note && <span>{ev.note}</span>}<time className="o-mono">{hhmm(m.at)}</time></li>;
   }
   if (m.kind === 'permission') {
-    return <li className="o-chat-notice"><span>Jarvis asked for a permission{m.meta?.tool ? ` (${m.meta.tool})` : ''}: {m.text}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+    return <li data-mid={mid} className={`o-chat-notice${foundClass}`}><span>Jarvis asked for a permission{m.meta?.tool ? ` (${m.meta.tool})` : ''}: {m.text}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
   }
   // A stop asked from the war room (server lib/agent-stop.mjs): fixed words; Jarvis answers in the thread.
   if (m.kind === 'stop') {
-    return <li className="o-chat-notice"><span>{m.text}{m.device ? ` (from ${m.device})` : ''}{m.state === 'undelivered' ? '. Not delivered: Jarvis\'s channel did not take it in time' : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+    return <li data-mid={mid} className={`o-chat-notice${foundClass}`}><span>{m.text}{m.device ? ` (from ${m.device})` : ''}{m.state === 'undelivered' ? '. Not delivered: Jarvis\'s channel did not take it in time' : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
   }
   if (m.kind === 'verdict') {
     const word = m.meta?.behavior === 'allow' || m.text === 'allow' ? 'Allowed' : 'Denied';
-    return <li className="o-chat-notice"><span>{word}{m.device ? ` from ${m.device}` : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
+    return <li data-mid={mid} className={`o-chat-notice${foundClass}`}><span>{word}{m.device ? ` from ${m.device}` : ''}</span><time className="o-mono">{hhmm(m.at)}</time></li>;
   }
   const mine = m.from === 'jeff';
   const tick = tickFor(m, list);
   const quote = m.replyTo ? quoted(list, m.replyTo) : null;
   const pending = !Number.isInteger(m.seq);
   return (
-    <li className={`o-chat-row ${mine ? 'o-chat-mine' : 'o-chat-theirs'}${m.failed ? ' o-chat-failed' : ''}${pending ? ' o-chat-pending' : ''}`}>
+    <li data-mid={pending ? undefined : mid} className={`o-chat-row ${mine ? 'o-chat-mine' : 'o-chat-theirs'}${m.failed ? ' o-chat-failed' : ''}${pending ? ' o-chat-pending' : ''}${foundClass}`}>
       {!mine && <span className="o-chat-avatar"><Avatar agent={lead} fallback="J" size={28} tone="day" /></span>}
       <div className="o-chat-bubble">
         {(m.replyTo || quote) && <blockquote className="o-chat-quote"><span className="o-chat-quote-who">{quoteWho(quote)}</span>{quoteLine(quote)}</blockquote>}
@@ -260,6 +362,7 @@ function Row({ m, list, lead, chat, onReply, onView }) {
         )}
         {m.text && <Markdown text={m.text} className="o-chat-text o-md" />}
         <div className="o-chat-meta">
+          {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} />}
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
           {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}

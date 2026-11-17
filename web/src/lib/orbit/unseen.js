@@ -62,3 +62,32 @@ export function chatTabLabel(count, more = false) {
   if (count > CAP || more) return `Chat, more than ${Math.min(count, CAP)} unread messages`;
   return `Chat, ${count} unread message${count === 1 ? '' : 's'}`;
 }
+
+// ---- the app icon's badge (navigator.setAppBadge) ----
+//
+// While the page runs, the icon (the Dock's on a Mac's installed app, the home
+// screen's on iOS) carries the same count as the Chat tab's badge whenever the Chat
+// tab isn't being looked at: another tab, or the page hidden. Looking at the Chat tab
+// clears it. When the page isn't running, a Web Push sets it instead (sw.js).
+export const POLL_MS = 30_000;
+// Hidden, the page asks once a minute (a hidden tab's timers run about that often in
+// Chrome anyway; iOS freezes a hidden page and pushes instead).
+export const HIDDEN_POLL_MS = 60_000;
+export const pollDelay = visible => (visible ? POLL_MS : HIDDEN_POLL_MS);
+
+export const appBadgeCount = ({ seenNow, count }) => (!seenNow && Number.isInteger(count) && count > 0 ? count : 0);
+
+// Set (n > 0) or clear (0) the icon's badge, every time it is asked, never skipped as
+// unchanged: a push may have set it while the page was looking elsewhere. Where the
+// API is missing it does nothing; a refusal (no notification permission on iOS) or a
+// throw is quiet. Returns what it did, for the tests.
+export function applyAppBadge(nav, n) {
+  if (typeof nav?.setAppBadge !== 'function') return 'none';
+  try {
+    const p = n > 0 ? nav.setAppBadge(n) : typeof nav.clearAppBadge === 'function' ? nav.clearAppBadge() : nav.setAppBadge(0);
+    p?.catch?.(() => {});
+  } catch {
+    return 'failed';
+  }
+  return n > 0 ? 'set' : 'clear';
+}

@@ -589,6 +589,8 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     get epoch() { return epoch; },
     get deliveredSeq() { return deliveredSeq; },
     get size() { return messages.length; },
+    // The newest `n` messages, oldest first, as a copy (the search, lib/chat-search.mjs).
+    newest: n => (Number.isInteger(n) && n > 0 ? messages.slice(-n) : []),
     // The page's "slow" state: an answer to an event is not an answer to the owner.
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),

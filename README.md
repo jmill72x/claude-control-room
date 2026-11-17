@@ -871,7 +871,17 @@ three pieces, each with its own router:
   device's name; its rules are under "Approvals as buttons" below) and `GET /api/chat/status` (§2.6: online, waiting on you, slow after 10
   minutes unanswered, offline after 45 s without a heartbeat, or 20 s once the channel's
   inbound stream has closed from its end; it also names the asking device, `device: {id,
-  name}`, for the settings sheet's "this device" mark).
+  name}`, for the settings sheet's "this device" mark). Search is `GET
+  /api/chat/search?q=<words>&limit=<n>` (`server/lib/chat-search.mjs`, tested by
+  `server/test/chat-search.test.mjs`): read-only, a paired device with the owner's login,
+  the same read rule as `/api/feed`. It looks only at the text of chat messages (both
+  sides) and event lines, never at attachments, approval requests, verdicts, notices or
+  stops. Every word must appear, in any case, with curly quotes read as straight ones.
+  The query is 2 to 100 characters and at most 8 words. It returns at most 50 results (20
+  unless asked), newest first, with `more`, and reads only the newest 20,000 messages
+  (`truncated` says so when there were more). Each result has a snippet of about 180
+  characters of the raw text with `marks` (the matched words' offsets). The query is never
+  logged. There is no rate limit, the same as `/api/feed`; the scan is over memory.
 - **The Chat tab** (`web/src/orbit/Chat.jsx`, `useChat.js`, `chatApi.js`, `photo.js`, and
   the pure logic in `web/src/lib/orbit/chat.js`, tested by `web/test/orbit-chat.test.js`):
   the third tab, at `#chat`. Off the tab, a badge on it counts the lead's messages and
@@ -880,8 +890,15 @@ three pieces, each with its own router:
   it. The mark is the highest seq shown, with the store's epoch, in this browser's
   `localStorage` (`jos.chat.seen`, per device; a new epoch or a lower seq starts it again
   from the store's seq), and the page polls `/api/pair/status`, then on a paired device
-  `/api/chat/messages?after=<mark>`, every 30 s while visible (`useUnseen.js`, logic in
-  `web/src/lib/orbit/unseen.js`, tested by `web/test/orbit-unseen.test.js`). An unpaired device (`/api/pair/status` says so) gets the
+  `/api/chat/messages?after=<mark>`, every 30 s while visible and every minute while
+  hidden (`useUnseen.js`, logic in `web/src/lib/orbit/unseen.js`, tested by
+  `web/test/orbit-unseen.test.js`). The same count goes on the app's icon
+  (`navigator.setAppBadge`: the Dock icon of an installed Chrome app on a Mac, the home
+  screen icon on iOS 16.4 and later, where it needs notification permission) whenever the
+  Chat tab isn't being looked at: another tab, or the page hidden on any tab. The Chat tab
+  in view clears both. Each poll sets the icon again, never skipping an unchanged
+  count, because a push may have set it in between. When the page isn't running (iOS
+  freezes a hidden one), only a Web Push sets the icon (`app_badge: 1`, `public/sw.js`). An unpaired device (`/api/pair/status` says so) gets the
   pairing screen: a name, the 6-letter code, a 2-second poll of `/api/pair/status`, and the
   two ways to approve (a paired device's settings sheet, or `bin/chat-pair <CODE>` on the
   machine); a pairing started before a reload resumes from its cookie. The thread puts the
@@ -955,6 +972,24 @@ three pieces, each with its own router:
   pending list lives in memory, so at start any file in `data/chat/files` that no message
   carries and that is over an hour old is deleted too (an upload left unsent at the last
   stop), with a `chat: removed N unsent uploads` line.
+- **Read aloud and search in the Chat tab** (2026-11-15). Each of the lead's chat bubbles
+  has a speaker button at the start of its time line. A tap reads the message with the
+  browser's `speechSynthesis` (page only, no server call). Markdown markers are dropped,
+  a link is read by its label, a bare address as "a link to <host>", and a code block as
+  "Code block skipped." (`web/src/lib/orbit/speech.js`, tested by
+  `web/test/orbit-speech.test.js`; `web/src/orbit/useSpeaker.js`). All of a message's
+  pieces (220 characters at most each) are queued inside the tap, because mobile Safari
+  speaks only from a gesture. A second tap stops it, a tap on another message replaces it,
+  and leaving the tab or hiding the page stops it. The button isn't drawn where the
+  browser has no `speechSynthesis`. The banner's ⋮ is now a menu with Search messages and
+  Chat settings. The search sheet (`web/src/orbit/ChatSearch.jsx`, logic in
+  `web/src/lib/orbit/chat-search.js`, tested by `web/test/orbit-chat-search.test.js`)
+  searches 300 ms after typing stops and keeps the last query. It shows each snippet as
+  plain text with `<mark>` around the matches, never as Markdown, since a snippet is cut
+  anywhere. A tap on a result loads older history 100 at a time, at most 20 pages
+  (`useChat`'s `reach`), scrolls the message to the middle and outlines it for 2.6 s. A
+  message further back says so in a note under the banner, as does one no longer in the
+  store.
 - **Notifications** (Web Push, the spec's §3; `server/lib/webpush.mjs`,
   `server/lib/chat-push.mjs`, `web/public/sw.js`, `web/src/orbit/pushApi.js`,
   `web/src/lib/orbit/push.js`): on only when `config.json` has `push.subject` (a `mailto:`

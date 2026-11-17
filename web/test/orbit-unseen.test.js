@@ -3,7 +3,7 @@
 // badge's text and label. Every message here is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countsAsUnseen, unseenAfter, parseSeen, reconcile, markSeen, badgeText, chatTabLabel, SEEN_KEY } from '../src/lib/orbit/unseen.js';
+import { countsAsUnseen, unseenAfter, parseSeen, reconcile, markSeen, badgeText, chatTabLabel, SEEN_KEY, appBadgeCount, applyAppBadge, pollDelay, POLL_MS, HIDDEN_POLL_MS } from '../src/lib/orbit/unseen.js';
 
 const msg = (seq, from, kind = 'chat') => ({ seq, id: `m_${seq}abcdef`, from, kind, text: 'x' });
 
@@ -95,4 +95,59 @@ test('the badge\'s text and the tab\'s accessible name', () => {
   assert.equal(chatTabLabel(3), 'Chat, 3 unread messages');
   assert.equal(chatTabLabel(40, true), 'Chat, more than 40 unread messages');
   assert.equal(chatTabLabel(120), 'Chat, more than 99 unread messages');
+});
+
+// ---- the app icon's badge (navigator.setAppBadge) ----
+
+test('the icon shows the unseen count unless the Chat tab is being looked at', () => {
+  assert.equal(appBadgeCount({ seenNow: false, count: 3 }), 3, 'another tab, or the page hidden');
+  assert.equal(appBadgeCount({ seenNow: true, count: 3 }), 0, 'the Chat tab, visible: cleared');
+  assert.equal(appBadgeCount({ seenNow: false, count: 0 }), 0);
+  assert.equal(appBadgeCount({ seenNow: false, count: 150 }), 150, 'the system draws its own cap');
+  assert.equal(appBadgeCount({ seenNow: false, count: -1 }), 0);
+  assert.equal(appBadgeCount({ seenNow: false, count: 2.5 }), 0);
+  assert.equal(appBadgeCount({ seenNow: false }), 0);
+});
+
+test('the poll: every 30 s while visible, every minute while hidden', () => {
+  assert.equal(POLL_MS, 30_000);
+  assert.equal(HIDDEN_POLL_MS, 60_000);
+  assert.equal(pollDelay(true), POLL_MS);
+  assert.equal(pollDelay(false), HIDDEN_POLL_MS);
+});
+
+function fakeNav({ clear = true, reject = false, throws = false } = {}) {
+  const calls = [];
+  const answer = () => (reject ? Promise.reject(new Error('no permission')) : Promise.resolve());
+  const nav = {
+    calls,
+    setAppBadge(n) { calls.push(['set', n]); if (throws) throw new Error('not allowed'); return answer(); }
+  };
+  if (clear) nav.clearAppBadge = () => { calls.push(['clear']); if (throws) throw new Error('not allowed'); return answer(); };
+  return nav;
+}
+
+test('applyAppBadge: a number sets it, zero clears it, every time (a push may have set it behind the page\'s back)', () => {
+  const nav = fakeNav();
+  assert.equal(applyAppBadge(nav, 4), 'set');
+  assert.equal(applyAppBadge(nav, 0), 'clear');
+  assert.equal(applyAppBadge(nav, 0), 'clear', 'cleared again, not skipped as unchanged');
+  assert.deepEqual(nav.calls, [['set', 4], ['clear'], ['clear']]);
+  const noClear = fakeNav({ clear: false });
+  assert.equal(applyAppBadge(noClear, 0), 'clear');
+  assert.deepEqual(noClear.calls, [['set', 0]], 'setAppBadge(0) clears where clearAppBadge is missing');
+});
+
+test('applyAppBadge: no API, a refusal or a throw is quiet', async () => {
+  assert.equal(applyAppBadge({}, 3), 'none');
+  assert.equal(applyAppBadge(null, 3), 'none');
+  assert.equal(applyAppBadge(undefined, 0), 'none');
+  const refused = fakeNav({ reject: true });
+  assert.equal(applyAppBadge(refused, 2), 'set');
+  assert.equal(applyAppBadge(refused, 0), 'clear');
+  const throws = fakeNav({ throws: true });
+  assert.equal(applyAppBadge(throws, 2), 'failed');
+  assert.equal(applyAppBadge(throws, 0), 'failed');
+  // An unhandled rejection would fail this file; give one a turn to surface.
+  await new Promise(r => setTimeout(r, 10));
 });
