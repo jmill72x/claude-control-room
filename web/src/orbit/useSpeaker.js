@@ -1,10 +1,12 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { createSpeaker, createVoiceStore, NO_VOICES } from '../lib/orbit/speech.js';
 
-// Read aloud (src/lib/orbit/speech.js): one speaker for the page, over the browser's
-// speechSynthesis, in an on-device voice only. The page shows no speaker button where
-// the browser has no speechSynthesis or lists no on-device voice (useCanSpeak). Which
-// voice is this device's choice, kept in its localStorage (Chat settings, useVoices).
+// Read aloud (src/lib/orbit/speech.js): one speaker for the page. It plays the Mac's
+// own voice as audio where the server offers it (useMiniVoice hands over what the chat
+// status says), and otherwise speaks through the browser's speechSynthesis, in an
+// on-device voice only. The page shows no speaker button where neither is there
+// (useCanSpeak). Which voice is this device's choice, kept in its localStorage (Chat
+// settings, useVoices).
 let speaker = null;
 export function getSpeaker() {
   if (speaker === null) {
@@ -13,7 +15,9 @@ export function getSpeaker() {
     const langs = w ? [w.document?.documentElement?.lang, ...(w.navigator?.languages ?? []), w.navigator?.language] : [];
     // Reading window.localStorage can itself throw (blocked site data): the store takes that.
     const store = createVoiceStore(() => w?.localStorage);
-    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null, langs, store });
+    // One <audio> element for the Mac's voice, made at the first tap that needs it.
+    const makeAudio = w && typeof w.Audio === 'function' ? () => new w.Audio() : null;
+    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null, langs, store, makeAudio });
   }
   return speaker;
 }
@@ -38,12 +42,28 @@ export function useSpeaking() {
   return useSyncExternalStore(sp.subscribe, sp.current, () => null);
 }
 
+// The id of the message whose audio from the Mac was asked for and has not started.
+export function useSpeechLoading() {
+  const sp = getSpeaker();
+  return useSyncExternalStore(sp.subscribe, sp.loading, () => null);
+}
+
+// What the chat status says of the Mac's voice (`speech`: the voice it reads in, or
+// null while the server offers none), handed to the speaker whenever it changes. Every
+// status carries it, so a voice downloaded on the Mac, or the server's off switch,
+// shows here within one status.
+export function useMiniVoice(speech) {
+  const key = JSON.stringify(speech ?? null);
+  useEffect(() => {
+    getSpeaker().setRemote(JSON.parse(key));
+  }, [key]);
+}
+
 // Speech stops when the thread goes (another tab, the pairing screen) and whenever the
 // page is hidden or left: nothing keeps talking from a page nobody is looking at.
 export function useStopSpeechWhenAway() {
   useEffect(() => {
     const sp = getSpeaker();
-    if (!sp.supported) return undefined;
     const onVisibility = () => { if (document.visibilityState !== 'visible') sp.stop(); };
     const onHide = () => sp.stop();
     document.addEventListener('visibilitychange', onVisibility);

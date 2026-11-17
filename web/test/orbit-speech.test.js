@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   speechText, speechChunks, createSpeaker, pickLocalVoice, CODE_WORDS, CHUNK_MAX,
-  voiceChoices, langLabel, createVoiceStore, VOICE_KEY, VOICE_URI_MAX, NO_VOICES, SAMPLE_ID, SAMPLE_WORDS
+  voiceChoices, langLabel, createVoiceStore, VOICE_KEY, VOICE_URI_MAX, NO_VOICES, SAMPLE_ID, SAMPLE_WORDS,
+  ENGINE_KEY, MINI, SPEECH_PATH, REMOTE_START_MS, REMOTE_RETRY_MS, speechUrl, shortVoiceName, miniVoice
 } from '../src/lib/orbit/speech.js';
 
 test('Markdown markers are dropped: emphasis, inline code and headings read as their words', () => {
@@ -526,14 +527,14 @@ test('the speaker: speaks in the saved voice, every piece', () => {
   for (const u of synth.queue) { assert.equal(u.voice, FR); assert.equal(u.lang, 'fr-FR'); }
   assert.deepEqual(sp.voices(), {
     choices: [{ uri: 'Samantha', name: 'Samantha', lang: 'en-US', mine: true }, { uri: 'Daniel', name: 'Daniel', lang: 'en-GB', mine: true }, { uri: 'Thomas', name: 'Thomas', lang: 'fr-FR', mine: false }],
-    saved: 'Thomas', picked: 'Thomas', auto: 'Samantha'
+    saved: 'Thomas', picked: 'Thomas', auto: 'Samantha', mini: null, engine: 'device'
   });
 });
 
 test('the speaker: no store, or nothing saved, is Automatic', () => {
   const synth = fakeSynth([FR, { ...GB, default: true }, US]);
   const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'] });
-  assert.deepEqual({ ...sp.voices(), choices: null }, { choices: null, saved: null, picked: null, auto: 'Daniel' });
+  assert.deepEqual({ ...sp.voices(), choices: null }, { choices: null, saved: null, picked: null, auto: 'Daniel', mini: null, engine: 'device' });
   sp.toggle('m_1', 'hello');
   assert.equal(synth.queue[0].voice.name, 'Daniel');
   // Even with no store a pick works, for the visit.
@@ -545,7 +546,7 @@ test('the speaker: no store, or nothing saved, is Automatic', () => {
   assert.equal(sp2.voices().auto, 'Samantha');
   // A choice saved on a browser that now lists no on-device voice at all.
   const sp3 = createSpeaker({ synth: fakeSynth([CLOUD]), Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore('Thomas') });
-  assert.deepEqual(sp3.voices(), { choices: [], saved: 'Thomas', picked: null, auto: null });
+  assert.deepEqual(sp3.voices(), { choices: [], saved: 'Thomas', picked: null, auto: null, mini: null, engine: 'device' });
   assert.equal(sp3.canSpeak(), false);
 });
 
@@ -635,7 +636,7 @@ test('the speaker: setVoice takes only a voice on the list', () => {
 });
 
 test('the speaker: voices() is the same object until something in it changes', () => {
-  assert.deepEqual(NO_VOICES, { choices: [], saved: null, picked: null, auto: null });
+  assert.deepEqual(NO_VOICES, { choices: [], saved: null, picked: null, auto: null, mini: null, engine: 'device' });
   const synth = fakeSynth([]);
   const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore(null) });
   let calls = 0;
@@ -669,7 +670,7 @@ test('the speaker: voices() is the same object until something in it changes', (
   assert.equal(sp.voices().auto, 'Thomas');
   // An on-device voice with no address: Automatic can use it, the list can't offer it.
   synth.changeVoices([{ name: 'Bare', lang: 'en-US', localService: true }]);
-  assert.deepEqual(sp.voices(), { choices: [], saved: null, picked: null, auto: 'Bare' });
+  assert.deepEqual(sp.voices(), { choices: [], saved: null, picked: null, auto: 'Bare', mini: null, engine: 'device' });
   assert.equal(sp.canSpeak(), true);
   synth.changeVoices([{ lang: 'en-US', localService: true }]);
   assert.equal(sp.voices().auto, 'an on-device voice', 'a voice with no name still gets words');
@@ -700,4 +701,429 @@ test('the speaker: the sample is one short sentence in the chosen voice, from th
   // With no on-device voice there is nothing to sample.
   const none = createSpeaker({ synth: fakeSynth([CLOUD]), Utterance: FakeUtterance });
   assert.equal(none.sample(), false);
+});
+
+// ---- the Mac's own voice ----
+
+// An <audio> element stand-in: records what was asked of it, and the test plays the
+// browser's part (starts, ends, fails, pauses).
+function fakeAudio({ rejectPlay = null, throwPlay = false } = {}) {
+  const a = {
+    src: null, preload: null, plays: 0, pauses: 0, loads: 0, srcs: [], pending: [],
+    onplaying: null, onended: null, onpause: null, onerror: null,
+    play() {
+      a.plays++;
+      a.srcs.push(a.src);
+      if (throwPlay) throw new Error('play is not allowed');
+      if (rejectPlay) return Promise.reject(rejectPlay);
+      return new Promise((resolve, reject) => { a.pending.push({ resolve, reject }); });
+    },
+    pause() { a.pauses++; },
+    removeAttribute(name) { if (name === 'src') a.src = null; },
+    load() { a.loads++; },
+    // The browser's side.
+    starts() { a.onplaying?.({ type: 'playing' }); },
+    ends() { a.onpause?.({ type: 'pause' }); a.onended?.({ type: 'ended' }); },
+    fails() { a.onerror?.({ type: 'error' }); },
+    systemPause() { a.onpause?.({ type: 'pause' }); }
+  };
+  return a;
+}
+// Timers the test fires by hand.
+function fakeTimers() {
+  const t = {
+    list: [], n: 0,
+    set(fn, ms) { const id = ++t.n; t.list.push({ id, fn, ms }); return id; },
+    clear(id) { t.list = t.list.filter(x => x.id !== id); },
+    fire() { const due = t.list; t.list = []; for (const x of due) x.fn(); }
+  };
+  return t;
+}
+const MINI_INFO = { voice: 'Evan (Enhanced)', wanted: 'Evan (Enhanced)', exact: true };
+const tick = () => new Promise(r => setImmediate(r));
+// A speaker with the Mac's voice on offer, an on-device voice behind it, and a clock.
+function miniSpeaker({ voices = [US, GB], storage = fakeStorage(), audioOpts = {}, info = MINI_INFO, synth = fakeSynth(voices), withSynth = true } = {}) {
+  const audios = [];
+  const timers = fakeTimers();
+  const clock = { t: 1000 };
+  const sp = createSpeaker({
+    ...(withSynth ? { synth, Utterance: FakeUtterance } : {}), langs: ['en-US'], store: createVoiceStore(() => storage),
+    makeAudio: () => { const a = fakeAudio(audioOpts); audios.push(a); return a; },
+    now: () => clock.t, setTimer: timers.set, clearTimer: timers.clear
+  });
+  let calls = 0;
+  sp.subscribe(() => { calls++; });
+  if (info) sp.setRemote(info);
+  return { sp, synth, audios, timers, clock, storage, calls: () => calls, audio: () => audios[0] };
+}
+
+test('where the Mac\'s audio is: a message by its id, the sample, and nothing for an id the server would not know', () => {
+  assert.equal(SPEECH_PATH, '/api/chat/speech/');
+  assert.equal(speechUrl('m_abc123def456'), '/api/chat/speech/m_abc123def456');
+  assert.equal(speechUrl(SAMPLE_ID), '/api/chat/speech/sample');
+  for (const id of [null, undefined, '', 7, 'local-1', 'm_', 'm_ABCDEF', 'm_abc', 'm_abcdef/../x', 'm_abcdef?x=1', 'sample', `m_${'a'.repeat(25)}`, ' m_abcdef']) {
+    assert.equal(speechUrl(id), null, JSON.stringify(id));
+  }
+  assert.equal(REMOTE_START_MS, 20e3);
+  assert.equal(REMOTE_RETRY_MS, 30e3);
+  assert.equal(MINI, ':mini');
+});
+
+test('what the status says of the Mac\'s voice is checked before it is shown', () => {
+  assert.deepEqual(miniVoice(MINI_INFO), { voice: 'Evan (Enhanced)', short: 'Evan', wanted: 'Evan (Enhanced)', exact: true });
+  assert.deepEqual(miniVoice({ voice: ' Samantha  (English (US)) ', wanted: 'Evan (Enhanced)', exact: false }), { voice: 'Samantha (English (US))', short: 'Samantha', wanted: 'Evan (Enhanced)', exact: false });
+  assert.deepEqual(miniVoice({ voice: 'Daniel' }), { voice: 'Daniel', short: 'Daniel', wanted: 'Daniel', exact: false });
+  assert.equal(miniVoice({ voice: 'Daniel', exact: 'yes' }).exact, false, 'only a real true');
+  assert.equal(miniVoice({ voice: 'x'.repeat(200) }).voice.length, 80);
+  assert.equal(miniVoice({ voice: 'Daniel', wanted: 'y'.repeat(200) }).wanted.length, 80);
+  for (const bad of [null, undefined, 'Evan', 7, [], {}, { voice: '' }, { voice: '   ' }, { voice: 7 }, { voice: ' (Enhanced)' }]) assert.equal(miniVoice(bad), null, JSON.stringify(bad));
+  assert.equal(shortVoiceName('Evan (Enhanced)'), 'Evan');
+  assert.equal(shortVoiceName('Samantha (English (US))'), 'Samantha');
+  assert.equal(shortVoiceName('Bad  News'), 'Bad News');
+  assert.equal(shortVoiceName(null), '');
+});
+
+test('the voice store: which side reads is kept under its own key, read once, and only "device" is ever written', () => {
+  assert.equal(ENGINE_KEY, 'jos.chat.voice.engine');
+  const st = fakeStorage({ [ENGINE_KEY]: 'device', [VOICE_KEY]: 'Thomas' });
+  const store = createVoiceStore(() => st);
+  assert.equal(store.engine(), 'device');
+  assert.equal(store.engine(), 'device');
+  assert.equal(st.gets, 1, 'read once');
+  assert.equal(store.setEngine(null), null);
+  assert.ok(!Object.hasOwn(st.data, ENGINE_KEY));
+  assert.equal(st.data[VOICE_KEY], 'Thomas', 'the on-device voice is left alone');
+  assert.equal(store.setEngine('device'), 'device');
+  assert.equal(st.data[ENGINE_KEY], 'device');
+  for (const odd of ['mini', '', 'DEVICE', 7, {}, undefined]) {
+    assert.equal(store.setEngine(odd), null, JSON.stringify(odd));
+    assert.ok(!Object.hasOwn(st.data, ENGINE_KEY));
+  }
+  for (const saved of ['mini', 'Device', '', 'x'.repeat(400)]) {
+    assert.equal(createVoiceStore(() => fakeStorage({ [ENGINE_KEY]: saved })).engine(), null, JSON.stringify(saved));
+  }
+  // Storage that throws or is missing: the default, and a choice still holds for the visit.
+  const broken = createVoiceStore(() => { throw new Error('blocked'); });
+  assert.equal(broken.engine(), null);
+  assert.equal(broken.setEngine('device'), 'device');
+  assert.equal(broken.engine(), 'device');
+  const none = createVoiceStore();
+  assert.equal(none.engine(), null);
+  assert.equal(none.setEngine('device'), 'device');
+  assert.equal(none.engine(), 'device');
+});
+
+test('the Mac\'s voice is the default where the server offers it: a tap asks for the audio inside the tap, by the message\'s id', () => {
+  const { sp, synth, audios, timers, calls } = miniSpeaker();
+  assert.deepEqual({ mini: sp.voices().mini, engine: sp.voices().engine }, { mini: { voice: 'Evan (Enhanced)', short: 'Evan', wanted: 'Evan (Enhanced)', exact: true }, engine: 'mini' });
+  assert.equal(sp.canSpeak(), true);
+  assert.equal(audios.length, 0, 'no audio element until the first tap');
+  const before = calls();
+  assert.equal(sp.toggle('m_abc123def456', '**Hello** there.'), true);
+  // All of it happened before toggle returned: that is "inside the tap".
+  assert.equal(audios.length, 1);
+  const a = audios[0];
+  assert.equal(a.plays, 1);
+  assert.deepEqual(a.srcs, ['/api/chat/speech/m_abc123def456']);
+  assert.equal(a.preload, 'auto');
+  assert.equal(synth.spoken.length, 0, 'the device\'s own voice says nothing');
+  assert.equal(sp.current(), 'm_abc123def456');
+  assert.equal(sp.loading(), 'm_abc123def456');
+  assert.equal(calls(), before + 1);
+  assert.deepEqual(timers.list.map(t => t.ms), [20e3]);
+  // It starts: no longer loading, the start timer gone.
+  a.starts();
+  assert.equal(sp.loading(), null);
+  assert.equal(sp.current(), 'm_abc123def456');
+  assert.equal(timers.list.length, 0);
+  assert.equal(calls(), before + 2);
+  a.starts();
+  assert.equal(calls(), before + 2, 'a second playing event (after a stall) changes nothing');
+  // It ends: idle, and the element let go.
+  a.ends();
+  assert.equal(sp.current(), null);
+  assert.equal(a.src, null);
+  assert.equal(calls(), before + 3);
+  // The next message reuses the one element.
+  sp.toggle('m_zzz999yyy888', 'Next.');
+  assert.equal(audios.length, 1);
+  assert.deepEqual(a.srcs, ['/api/chat/speech/m_abc123def456', '/api/chat/speech/m_zzz999yyy888']);
+});
+
+test('the Mac\'s voice: a second tap stops it, loading or playing; another message takes over; stop() is the hook\'s way out', () => {
+  const { sp, synth, audio, timers } = miniSpeaker();
+  sp.toggle('m_aaaaaa1', 'One.');
+  const a = audio();
+  assert.equal(sp.toggle('m_aaaaaa1', 'One.'), false, 'stopped while loading');
+  assert.equal(sp.current(), null);
+  assert.equal(sp.loading(), null);
+  assert.equal(a.pauses, 1);
+  assert.equal(a.src, null);
+  assert.equal(a.loads, 1, 'the download is dropped');
+  assert.equal(timers.list.length, 0);
+  assert.equal(a.onplaying, null);
+  assert.equal(synth.cancels, 0);
+  // The stopped request's play() promise rejects late: nothing happens.
+  sp.toggle('m_aaaaaa1', 'One.');
+  a.starts();
+  sp.toggle('m_bbbbbb2', 'Two.');
+  assert.equal(sp.current(), 'm_bbbbbb2');
+  assert.equal(sp.loading(), 'm_bbbbbb2');
+  assert.equal(a.src, '/api/chat/speech/m_bbbbbb2');
+  assert.equal(a.pauses, 2, 'the first was stopped before the second was asked for');
+  sp.stop();
+  assert.equal(sp.current(), null);
+  assert.equal(a.pauses, 3);
+  sp.stop();
+  assert.equal(a.pauses, 3, 'nothing to stop');
+  // A system pause (a headset, the lock screen) ends it too.
+  sp.toggle('m_cccccc3', 'Three.');
+  a.starts();
+  a.systemPause();
+  assert.equal(sp.current(), null);
+});
+
+test('the Mac\'s voice: a late event of a stopped or replaced message changes nothing', async () => {
+  const { sp, audio, synth } = miniSpeaker();
+  sp.toggle('m_aaaaaa1', 'One.');
+  const a = audio();
+  const first = { playing: a.onplaying, ended: a.onended, error: a.onerror, pending: a.pending[0] };
+  sp.toggle('m_bbbbbb2', 'Two.');
+  // The first request's promise rejects as its load is dropped, and its old handlers fire late.
+  first.pending.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  first.error?.({});
+  first.ended?.({});
+  first.playing?.({});
+  await tick();
+  assert.equal(sp.current(), 'm_bbbbbb2');
+  assert.equal(sp.loading(), 'm_bbbbbb2');
+  assert.equal(synth.spoken.length, 0, 'no fallback for a message the user moved on from');
+});
+
+test('the Mac can\'t: the device\'s own voice reads the same message, and keeps reading for a while', async () => {
+  for (const how of ['error', 'reject', 'timeout', 'throw']) {
+    const { sp, synth, audios, timers, clock, calls } = miniSpeaker({ audioOpts: how === 'reject' ? { rejectPlay: Object.assign(new Error('no'), { name: 'NotSupportedError' }) } : how === 'throw' ? { throwPlay: true } : {} });
+    const started = sp.toggle('m_aaaaaa1', 'Hello **there**. Second sentence.');
+    const a = audios[0];
+    if (how === 'error') a.fails();
+    if (how === 'timeout') timers.fire();
+    await tick();
+    assert.equal(started, true, how);
+    assert.deepEqual(synth.spoken, ['Hello there. Second sentence.'], `${how}: the same words, in the device's voice`);
+    assert.equal(synth.queue[0].voice, US);
+    assert.equal(sp.current(), 'm_aaaaaa1', how);
+    assert.equal(sp.loading(), null, how);
+    assert.equal(a.src, null, `${how}: the audio is let go`);
+    assert.equal(timers.list.length, 0, how);
+    // Both an error event and a rejected promise for one failure: read once.
+    a.fails();
+    await tick();
+    assert.equal(synth.spoken.length, 1, how);
+    const n = calls();
+    synth.finishOne();
+    assert.equal(sp.current(), null);
+    assert.equal(calls(), n + 1);
+    // For 30 s the next taps go straight to the device's voice (inside the tap)...
+    clock.t += 29999;
+    sp.toggle('m_bbbbbb2', 'Again.');
+    assert.equal(a.plays, 1, how);
+    assert.deepEqual(synth.spoken, ['Hello there. Second sentence.', 'Again.']);
+    synth.finishOne();
+    // ...then the Mac is asked again.
+    clock.t += 1;
+    sp.toggle('m_cccccc3', 'Later.');
+    assert.equal(a.plays, 2, how);
+    assert.equal(a.srcs[1], '/api/chat/speech/m_cccccc3');
+  }
+});
+
+test('the Mac\'s audio breaks off after it started: it stops, and is not started over in another voice', () => {
+  const { sp, synth, audio, clock } = miniSpeaker();
+  sp.toggle('m_aaaaaa1', 'Hello.');
+  const a = audio();
+  a.starts();
+  a.fails();
+  assert.equal(sp.current(), null);
+  assert.equal(synth.spoken.length, 0);
+  // And the Mac is still asked next time: that was no failure to start.
+  clock.t += 1;
+  sp.toggle('m_bbbbbb2', 'Next.');
+  assert.equal(a.plays, 2);
+});
+
+test('the Mac can\'t and the device has no voice of its own: the button goes idle, and the Mac is asked again at once', () => {
+  for (const withSynth of [true, false]) {
+    const { sp, synth, audio } = miniSpeaker({ voices: [CLOUD], withSynth });
+    assert.equal(sp.canSpeak(), true, 'the Mac\'s voice alone is enough for the button');
+    assert.equal(sp.voices().auto, null);
+    assert.equal(sp.toggle('m_aaaaaa1', 'Hello.'), true);
+    const a = audio();
+    a.fails();
+    assert.equal(sp.current(), null);
+    assert.equal(sp.loading(), null);
+    assert.equal(synth.spoken.length, 0);
+    sp.toggle('m_aaaaaa1', 'Hello.');
+    assert.equal(a.plays, 2, 'no 30 s of silence where nothing else can read');
+  }
+});
+
+test('the device\'s own voice reads when the server offers none, the id is not the server\'s, or there is nothing to say', () => {
+  const none = miniSpeaker({ info: null });
+  assert.equal(none.sp.voices().engine, 'device');
+  none.sp.toggle('m_aaaaaa1', 'Hello.');
+  assert.equal(none.audios.length, 0);
+  assert.deepEqual(none.synth.spoken, ['Hello.']);
+  // No audio element class in this browser: the offer is ignored.
+  const synth = fakeSynth([US]);
+  const noAudio = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'] });
+  noAudio.setRemote(MINI_INFO);
+  assert.equal(noAudio.voices().mini, null);
+  assert.equal(noAudio.voices().engine, 'device');
+  assert.equal(noAudio.setVoice(MINI), false);
+  noAudio.toggle('m_aaaaaa1', 'Hello.');
+  assert.deepEqual(synth.spoken, ['Hello.']);
+  // A message the server has no id for (not sent yet) is read here.
+  const local = miniSpeaker();
+  local.sp.toggle('local-17', 'Draft.');
+  assert.equal(local.audios.length, 0);
+  assert.deepEqual(local.synth.spoken, ['Draft.']);
+  // Nothing to say: nothing is asked of the Mac either.
+  const empty = miniSpeaker();
+  assert.equal(empty.sp.toggle('m_aaaaaa1', '   '), false);
+  assert.equal(empty.audios.length, 0);
+  assert.equal(empty.sp.current(), null);
+});
+
+test('the offer comes and goes with the status: the view follows, and what is playing is left to finish', () => {
+  const { sp, audio, calls, synth } = miniSpeaker({ info: null });
+  assert.equal(sp.voices().mini, null);
+  let n = calls();
+  sp.setRemote({ voice: 'Samantha (English (US))', wanted: 'Evan (Enhanced)', exact: false });
+  assert.deepEqual(sp.voices().mini, { voice: 'Samantha (English (US))', short: 'Samantha', wanted: 'Evan (Enhanced)', exact: false });
+  assert.equal(sp.voices().engine, 'mini');
+  assert.equal(calls(), n + 1);
+  const view = sp.voices();
+  sp.setRemote({ voice: 'Samantha (English (US))', wanted: 'Evan (Enhanced)', exact: false });
+  assert.equal(sp.voices(), view, 'the same answer again changes nothing');
+  assert.equal(calls(), n + 1);
+  // The voice is downloaded on the Mac: the next status names it.
+  sp.setRemote(MINI_INFO);
+  assert.equal(sp.voices().mini.short, 'Evan');
+  assert.equal(calls(), n + 2);
+  sp.toggle('m_aaaaaa1', 'Hello.');
+  audio().starts();
+  n = calls();
+  sp.setRemote(null);
+  assert.equal(sp.voices().mini, null);
+  assert.equal(sp.voices().engine, 'device');
+  assert.equal(sp.current(), 'm_aaaaaa1', 'still playing');
+  assert.equal(calls(), n + 1);
+  audio().ends();
+  sp.toggle('m_bbbbbb2', 'Next.');
+  assert.equal(audio().plays, 1);
+  assert.deepEqual(synth.spoken, ['Next.']);
+  sp.setRemote('nonsense');
+  assert.equal(sp.voices().mini, null);
+});
+
+test('the picker\'s choice: the Mac\'s voice or the device\'s own, kept apart from which on-device voice', () => {
+  const storage = fakeStorage({ [VOICE_KEY]: 'Daniel' });
+  const { sp, synth, audio, clock } = miniSpeaker({ storage });
+  // A voice picked before the Mac's was on offer stays the one that reads when the Mac can't.
+  assert.deepEqual({ engine: sp.voices().engine, saved: sp.voices().saved, picked: sp.voices().picked }, { engine: 'mini', saved: 'Daniel', picked: 'Daniel' });
+  sp.toggle('m_aaaaaa1', 'Hello.');
+  audio().fails();
+  assert.equal(synth.queue[0].voice, GB);
+  synth.finishOne();
+  // Picking an on-device voice while the Mac's is on offer says: the device reads.
+  sp.toggle('m_bbbbbb2', 'Playing.');
+  assert.equal(sp.setVoice('Samantha'), true);
+  assert.equal(sp.current(), null, 'a pick stops what is speaking');
+  assert.equal(storage.data[ENGINE_KEY], 'device');
+  assert.equal(storage.data[VOICE_KEY], 'Samantha');
+  assert.equal(sp.voices().engine, 'device');
+  clock.t += 60e3;
+  sp.toggle('m_cccccc3', 'Local.');
+  assert.equal(audio().plays, 1, 'the Mac is not asked');
+  assert.equal(synth.queue[0].voice, US);
+  synth.finishOne();
+  // Automatic on the device is a choice of the device too.
+  assert.equal(sp.setVoice(''), true);
+  assert.equal(storage.data[ENGINE_KEY], 'device');
+  assert.ok(!Object.hasOwn(storage.data, VOICE_KEY));
+  // Back to the Mac's voice: the on-device pick is kept, and a failure's wait is forgotten.
+  sp.setVoice('Daniel');
+  assert.equal(sp.setVoice(MINI), true);
+  assert.ok(!Object.hasOwn(storage.data, ENGINE_KEY));
+  assert.equal(storage.data[VOICE_KEY], 'Daniel');
+  assert.equal(sp.voices().engine, 'mini');
+  sp.toggle('m_dddddd4', 'Mac.');
+  audio().fails();
+  synth.finishOne();
+  assert.equal(sp.setVoice(MINI), true);
+  sp.toggle('m_eeeeee5', 'Mac again.');
+  assert.equal(audio().src, '/api/chat/speech/m_eeeeee5', 'asked at once after the pick');
+  sp.stop();
+  // Picking the Mac's voice stops what the device's own voice is saying.
+  sp.setVoice('');
+  sp.toggle('m_gggggg7', 'Said on the device.');
+  assert.equal(sp.current(), 'm_gggggg7');
+  assert.equal(sp.setVoice(MINI), true);
+  assert.equal(sp.current(), null);
+  assert.equal(synth.queue.length, 0);
+  // A device that chose its own voice keeps it across visits.
+  sp.setVoice('Samantha');
+  const next = miniSpeaker({ storage });
+  assert.equal(next.sp.voices().engine, 'device');
+  next.sp.toggle('m_ffffff6', 'Local.');
+  assert.equal(next.audios.length, 0);
+});
+
+test('a pick made while the server offers no Mac voice is not a choice against it', () => {
+  const storage = fakeStorage();
+  const { sp } = miniSpeaker({ storage, info: null });
+  assert.equal(sp.setVoice(MINI), false, 'nothing to pick');
+  assert.equal(sp.setVoice('Daniel'), true);
+  assert.ok(!Object.hasOwn(storage.data, ENGINE_KEY));
+  sp.setRemote(MINI_INFO);
+  assert.equal(sp.voices().engine, 'mini');
+  assert.equal(sp.voices().picked, 'Daniel');
+});
+
+test('the sample plays in the voice in use: the Mac\'s fixed sentence, or the device\'s own', () => {
+  const { sp, synth, audio } = miniSpeaker();
+  assert.equal(sp.sample(), true);
+  assert.equal(audio().src, '/api/chat/speech/sample');
+  assert.equal(sp.current(), SAMPLE_ID);
+  assert.equal(sp.loading(), SAMPLE_ID);
+  assert.equal(sp.sample(), false, 'a second tap stops it');
+  sp.sample();
+  audio().fails();
+  assert.deepEqual(synth.spoken, [SAMPLE_WORDS], 'the Mac can\'t: the same sentence here');
+});
+
+test('one at a time across both voices: the Mac\'s audio stops the device\'s voice and the other way round', () => {
+  const { sp, synth, audio, clock } = miniSpeaker();
+  sp.toggle('local-1', 'A draft read on the device.');
+  assert.equal(synth.queue.length, 1);
+  sp.toggle('m_aaaaaa1', 'From the Mac.');
+  assert.equal(synth.cancels, 1);
+  assert.equal(synth.queue.length, 0);
+  assert.equal(sp.current(), 'm_aaaaaa1');
+  audio().starts();
+  sp.toggle('local-2', 'Another draft.');
+  assert.equal(audio().src, null);
+  assert.equal(audio().pauses, 1);
+  assert.equal(sp.current(), 'local-2');
+  assert.equal(sp.loading(), null);
+  synth.finishOne();
+  // Something else on the page is speaking: it is cancelled before the Mac's audio starts.
+  synth.speak(new FakeUtterance('someone else'));
+  const cancels = synth.cancels;
+  clock.t += 1;
+  sp.toggle('m_bbbbbb2', 'Mac.');
+  assert.equal(synth.cancels, cancels + 1);
+  // Losing the last on-device voice does not stop the Mac's audio.
+  synth.changeVoices([CLOUD]);
+  assert.equal(sp.current(), 'm_bbbbbb2');
 });

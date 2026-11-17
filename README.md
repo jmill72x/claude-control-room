@@ -973,7 +973,8 @@ three pieces, each with its own router:
   carries and that is over an hour old is deleted too (an upload left unsent at the last
   stop), with a `chat: removed N unsent uploads` line.
 - **Read aloud and search in the Chat tab** (2026-11-15). Each of the lead's chat bubbles
-  has a speaker button at the start of its time line. A tap reads the message with the
+  has a speaker button at the start of its time line. A tap reads the message in the
+  Mac's own voice where the server offers it (the next bullet), and otherwise with the
   browser's `speechSynthesis` (page only, no server call), in an on-device voice only
   (`localService === true`, set on every utterance; since 2026-11-16), so the text never
   goes to a network voice such as Chrome's "Google US English". Which on-device voice is
@@ -997,7 +998,8 @@ three pieces, each with its own router:
   pieces (220 characters at most each) are queued inside the tap, because mobile Safari
   speaks only from a gesture. A second tap stops it, a tap on another message replaces it,
   and leaving the tab or hiding the page stops it. The button isn't drawn where the
-  browser has no `speechSynthesis` or lists no on-device voice. The banner's ⋮ is now a menu with Search messages and
+  browser has no `speechSynthesis` or lists no on-device voice, unless the Mac's voice is
+  on offer. The banner's ⋮ is now a menu with Search messages and
   Chat settings. The search sheet (`web/src/orbit/ChatSearch.jsx`, logic in
   `web/src/lib/orbit/chat-search.js`, tested by `web/test/orbit-chat-search.test.js`)
   searches 300 ms after typing stops and keeps the last query. It shows each snippet as
@@ -1009,6 +1011,115 @@ three pieces, each with its own router:
   skips its turn while a jump loads. A
   message further back says so in a note under the banner, as does one no longer in the
   store.
+- **Read aloud in the Mac's own voice** (2026-11-17; off unless config has `chat.speech`).
+  A web page on iPhone, iPad or Safari is offered only the voices that ship with the
+  system, never a downloaded Enhanced or Premium one, so the better voices are out of a
+  page's reach. With `"chat": { "speech": { "voice": "Evan (Enhanced)" } }` the words are
+  spoken on this machine by macOS's `/usr/bin/say` and the page plays the audio: `GET
+  /api/chat/speech/<message id>` (and `/api/chat/speech/sample`, one fixed sentence) answers
+  `audio/mp4` (AAC, mono, about 4 KB a second of speech) to a paired device. No cloud voice
+  and no network speech service is involved; the audio goes only from this machine to the
+  device, over the same origin as the chat. `server/lib/chat-speech.mjs`, tested by
+  `server/test/chat-speech.test.mjs`. **Two page files are server code because of this:**
+  `web/src/lib/orbit/speech.js` and the `web/src/lib/orbit/markdown.js` it imports run
+  inside the server once read aloud is on, so a change to either gets the review a
+  change under `server/` gets, and takes effect here only after a restart (the Restart
+  card watches `server/` alone and will not show for them). They may import each other
+  and nothing else; a test holds the import graph to exactly those two files.
+  `server.mjs` loads the module with `await import()` only when config has
+  `chat.speech`, inside a try/catch that logs one line (`speech: could not be loaded or
+  started (…)`), so a broken page file can cost read aloud but never the server's
+  start; with the key absent neither the module nor the two files are loaded at all.
+  What every start needs (the config rule, the cache's clean-up) is in
+  `server/lib/chat-speech-config.mjs`, which imports no page code. What the route holds
+  to:
+  - **The request names a message, nothing else.** No text, voice, format or path comes
+    from the client; the query string is ignored. Only one of the lead's own chat messages
+    is read (403 for the owner's, events, notices and verdicts; 404 for an unknown id).
+    The same device cookie and login header as every chat route, `GET` only (405), and a
+    browser's `Sec-Fetch-Site`, when sent, must be `same-origin` (403), so another site's
+    `<audio>` or link starts nothing (the cookie is `SameSite=Strict` besides). The
+    device is checked a second time just before the audio is sent: a render can wait
+    most of a minute behind others, and a device revoked meanwhile gets a 401.
+  - **The words** are the message without its Markdown, by the page's own function (the
+    server imports `speechText` from `web/src/lib/orbit/speech.js`, so both sides say the
+    same thing: a code block is "Code block skipped.", a link is its label). Then
+    `speakable()` takes the text apart into its compatibility form (NFKD), drops every
+    square and angle bracket, puts it together again (NFC), and drops control, invisible
+    and direction characters, because `say`
+    obeys commands written in its input: `[[slnc 60000]]` is a minute of silence,
+    `[[rate 60]]` slows the voice, and a tag does the same (`<break time="60s"/>`,
+    measured 2026-11-17 on both Evan and Samantha). Taken apart first means a bracket in
+    another spelling is the plain one by the time it is looked for: the fullwidth, small
+    and vertical forms, and the two signs that are a bracket with a stroke through it
+    (U+226E, U+226F), which the composed form would have made out of `<` and U+0338. A message with no letter, digit or emoji is a 422; one over 12,000
+    characters of speech (about eleven minutes) a 413.
+  - **One process, narrowly.** `say` by its absolute path through `execFile` (no shell), an
+    empty environment, a 45 s limit ending in SIGKILL. The words go in through a 0600 file
+    (`-f`), never the argument list. The arguments are fixed: `--voice=<name>`, `-o <file>`,
+    `--file-format=m4af`, `--data-format=aac`, `-f <file>`.
+  - **The voice comes from config and from the Mac's own list.** `say` does not fail on a
+    voice that isn't installed: it quietly reads in the system voice. So `say -v ?` is read
+    first (at start and again every 10 minutes, when asked), and only a name that list
+    printed is ever passed on. With the wanted voice missing, a stand-in is used:
+    `chat.speech.fallback` if set, then the wanted voice's plain name (Evan for "Evan
+    (Enhanced)"), then Samantha, then Daniel; with none of them installed the feature is
+    off. The chat status carries `speech: { voice, wanted, exact }` (or `null`), so the
+    picker names the voice in use and says when it is a stand-in, and a voice downloaded
+    later is picked up without a restart. One failed read of the list keeps the voice
+    that was known; two in a row and the voice counts as unknown (it may have been
+    removed), so the route answers 503 and the status says `null` until a read works
+    again. Two things `say` never tells: which voice it
+    really used, and that the Eloquence voices (Eddy, Flo and the like) can't write a file
+    and are replaced by their language's default. Check a new voice by ear, with Play a
+    sample.
+  - **One render at a time**, three more waiting, the rest answered 503 with `Retry-After`.
+    Each device may start 12 renders in 5 minutes, and all devices together 300 in a
+    local day (429 with `Retry-After`; the day's limit is logged once when first met). A
+    message already rendered, and a second ask for one being rendered, cost none of
+    these. A render that `say` failed (timeout, failure, too large) is remembered for 10
+    minutes, in memory, for at most 100 wordings: the same ask gets the same answer with
+    no process started.
+  - **The cache** is `~/.local/state/jarvis-os/speech-cache/` (0700, files 0600), one
+    `.m4a` per voice and wording, named by a SHA-256 of both, so an edited message is made
+    again and the same words in two messages are made once. A file goes 7 days after it
+    was last played, and the oldest go first past 400 files or 200 MB; the sweep runs
+    after every render and once an hour while read aloud is on. The work folder for
+    a render (`work-XXXXXX`, 0700) is removed whatever happened. The cache folder is
+    checked before every render as at start (a real folder, 0700, never a link) and made
+    again when it is gone, with a log line; one that goes missing under a render is
+    made again and the render tried once more. A folder that can't be made (a file or a
+    link in its place) is a 502 with no process started, not counted against the device
+    or the day and not remembered as a failed render. At a start with read
+    aloud off (the key removed, the chat off, or a problem loading it) the cache's own
+    files are removed and the folder with them, so turning the feature off leaves none of
+    the lead's replies behind as speech; the log says how many went. The audio is served
+    with `no-store`, `nosniff`, a sandboxing policy, `Cross-Origin-Resource-Policy:
+    same-origin` and byte ranges (Safari asks for `bytes=0-1` first and plays only what
+    answers 206).
+  - **The kill file** `~/.local/state/jarvis-os/speech-off`, checked on every request and
+    every status: while it exists the route answers 503, the status says `speech: null`,
+    and pages go back to the device's own voice within one status (20 s). No restart.
+  - **Logged:** one line per render (`speech: read 1840 characters in Evan (Enhanced) for
+    <device> (1650 ms, 430112 bytes)`) or failure (`timeout`, `failed`, `too large`), and
+    one per change of voice. Never the words.
+  - **Measured 2026-11-17 on the Mac mini, Evan (Enhanced):** 300 characters in 0.8 s,
+    1,000 in 1.2 s, 2,000 in 1.8 s, 4,000 in 2.9 s, 8,000 in 5.1 s, 12,000 (the limit) in
+    7.4 s; the built-in Samantha takes the same. So a whole message is rendered at the
+    first tap, with no splitting.
+
+  **On the page** (`web/src/lib/orbit/speech.js`, `web/src/orbit/useSpeaker.js`): where the
+  status offers it, the Mac's voice is the default, "Mac mini voice (<name>)" on top of
+  the Read-aloud voice list, with the device's own voices under it. A tap sets one
+  `<audio>` element's `src` to the message's address and calls `play()` inside the tap
+  (mobile Safari plays only from a gesture); the button pulses until the audio starts,
+  and a tap then stops it like any other. If the audio doesn't start (no answer, any
+  refusal, a format the browser can't play, 20 s gone by), the device's own voice reads
+  the same message, and for the next 30 s taps go straight to it, so they speak inside
+  the tap. Audio that breaks off after it started just stops. A device that picks one of
+  its own voices while the Mac's is on offer keeps to it (`jos.chat.voice.engine` =
+  `device` in that browser's `localStorage`); the on-device voice picked before stays
+  what reads when the Mac can't. A browser with no on-device voice still gets the button.
 - **Notifications** (Web Push, the spec's §3; `server/lib/webpush.mjs`,
   `server/lib/chat-push.mjs`, `web/public/sw.js`, `web/src/orbit/pushApi.js`,
   `web/src/lib/orbit/push.js`): on only when `config.json` has `push.subject` (a `mailto:`
@@ -2566,6 +2677,7 @@ and that must not reach every device on the tailnet.
 | `chat` | object, optional | Turns the chat on (see "The chat with the lead agent"), only with `chat.login` set and `hostCheck` `"enforce"`; otherwise a `config:` line and the chat stays off. `chat.login` is the owner's tailnet login, which every chat request's `Tailscale-User-Login` header (the pairing routes' too) must match. `chat.channelServer` is the absolute path of the released channel's `server.mjs` (`…/jarvis-local/plugins/jarvis-channel/server.mjs`), for the restart check; unset, a `config:` line, and every hello after a bye is refused. The approvals keys (`approvals`, `approvalsRules` `"guarded"` or `"parity"`, `approvalsHidden` `"deny"` or `"allow"`, `approvalsBash`, `approvalsBashCommands`, `approvalsWriteFolders`, `approvalsWriteProtected`, `approvalsDenyOnly`) are in "Approvals as buttons". |
 | `chat.shortcuts` | bool, default `false` | Turns on Shortcut keys (see "Shortcut keys"): the `/api/shortcut/*` routes and the section in the Chat tab's settings. Only with the chat on. Anything but `true` or `false` is a `config:` line, and off. |
 | `chat.shortcutHeic` | `"refuse"` (default) or `"convert"` | What happens to a HEIC photo shared through a Shortcut (see "Shortcut keys"): refused in words that say to share it as Most Compatible (the Shortcut's own Convert Image step is what normally makes a photo a JPEG), or made a JPEG on this machine with `/usr/bin/sips`, which runs an image decoder on outside bytes with no sandbox. Anything else is a `config:` line, and refuses. The start logs which: `shortcuts: a shared HEIC photo is …`. |
+| `chat.speech` | object, optional | Turns on read aloud in the Mac's own voice (see "Read aloud in the Mac's own voice"): `GET /api/chat/speech/<message id>`, rendered here by `/usr/bin/say`. `chat.speech.voice` is the voice's name as `say -v ?` lists it (default `"Evan (Enhanced)"`); `chat.speech.fallback` an optional stand-in while that one is not installed. Only with the chat on. Absent, `null` or `false` is off; anything else that isn't such an object, or a name with characters no voice has, is a `config:` line, and off. Off at a start, the audio cached by an earlier run (`~/.local/state/jarvis-os/speech-cache/`) is removed. The file `~/.local/state/jarvis-os/speech-off` turns it off without a restart (the cache then stays, and ages out). |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |

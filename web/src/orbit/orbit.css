@@ -1000,6 +1000,14 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-speakbtn svg { fill: currentColor; }
 .o-chat-speaking { color: var(--c-heading); }
 .o-chat-speakbtn:focus-visible { outline: 2px solid var(--c-focus); outline-offset: -4px; }
+/* The Mac's audio is on its way: the stop square pulses until the voice starts. */
+@media (prefers-reduced-motion: no-preference) {
+  .o-chat-speakloading svg { animation: o-chat-speakpulse 1s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .o-chat-speakloading svg { opacity: 0.55; }
+}
+@keyframes o-chat-speakpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .o-chat-menuwrap { position: relative; flex: none; display: inline-flex; }
 .o-chat-menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; min-width: 200px; display: flex; flex-direction: column; padding: 6px;

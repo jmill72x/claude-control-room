@@ -2265,9 +2265,8 @@ settings, Read-aloud voice: pick a voice, tap Play a sample, close the sheet, ta
 speaker on a reply; close and reopen the app and the pick is still there. Same on the
 iPhone, which keeps its own pick.
 
-**The hint under the voice list, corrected on `jos/voice-hint` (from main a751e1a,
-2026-11-17, worktree `~/Projects/.worktrees/ccr-voice-hint`), staged, not committed, page
-only.** The picker told Jeff that newly downloaded voices show up after the app is closed
+**The hint under the voice list, corrected 2026-11-17 (`jos/voice-hint`, merged as main
+ad91e42 and built the same morning, per Jarvis), page only.** The picker told Jeff that newly downloaded voices show up after the app is closed
 and reopened. On Apple devices they never do. **The WebKit finding:** WebKit offers a page
 only the voices the system ships with. `PlatformSpeechSynthesizer::appendVoices` in
 `Source/WebCore/platform/cocoa/PlatformSpeechSynthesizerCocoa.mm` (lines 341 to 347 on
@@ -2302,8 +2301,247 @@ and 1440; against the 11-16 build it fails exactly those two hint checks (60 of 
 360 px the hint wraps to four lines inside the sheet, with no sideways scroll. **Unverified:**
 the hint on Jeff's devices; whether Chrome on the Mac needs a restart to see a new voice;
 which voice WebKit lists first on the iPad and iPhone (what Automatic names there).
-**Still stale:** README's "Read aloud and search in the Chat tab" bullet says "a newly
-downloaded voice may need the app closed and reopened"; the 11-17 brief limited this change
-to the hint and this file, so that sentence is left for Jarvis's say. **Go-live:** C&P, then
-`cd web && npm run build` in the main checkout (no server change, no restart). The page
-reloads itself on the new build.
+README's "Read aloud and search in the Chat tab" bullet was corrected in the same commit.
+**Go-live:** done 11-17 (C&P, then `cd web && npm run build`; no server change, no
+restart). While the Mac's own voice is on offer (next paragraph) the hint has a second
+wording.
+
+**Read aloud in the Mac's own voice, on `jos/mini-voice` (from main ad91e42, 2026-11-17,
+worktree `~/Projects/.worktrees/ccr-mini-voice`), staged, not committed. Ultron read it
+11-17: go with fixes, one medium (M1) and seven lows (L1 to L7), all made the same day and
+listed under "Ultron's fixes" below; his reread of those is next, then C&P, a config key,
+a restart and a web build.** Jeff wants
+read aloud in a Premium or Enhanced Apple voice on the iPhone, the iPad and the Mac
+("Sure, start with Evan enhanced", 11-17). WebKit never offers a page a downloaded voice
+(the paragraph above), so the words are spoken on the mini by `/usr/bin/say` and the page
+plays the audio. His rule from 11-16 holds: no cloud or network speech; the mini is his
+own machine on his tailnet, which he accepted for this. README's "Read aloud in the
+Mac's own voice" bullet has how it works and every limit; this paragraph keeps the threat
+model for the review, the choices, what was checked and the go-live steps.
+**Built:** `server/lib/chat-speech.mjs` (the route `GET /api/chat/speech/<message id>` and
+`/sample`, the voice list and pick, the render, the cache, the limits) with
+`server/test/chat-speech.test.mjs`; `server/lib/chat-speech-config.mjs` (the config rule and
+the cache's clean-up when speech is off: what `server.mjs` needs at every start, with no
+page code behind it); `server/lib/chat-routes.mjs` hands the path
+to it and puts `speech: { voice, wanted, exact } | null` in every status;
+`server/server.mjs` loads it with `await import()` only when config has `chat.speech`,
+with the cache under the 0700 state folder and the kill file `speech-off`; on the page `web/src/lib/orbit/speech.js` (the
+speaker plays the Mac's audio through one `<audio>` element, falls back to
+`speechSynthesis`, and keeps which side reads under `jos.chat.voice.engine`),
+`web/src/orbit/useSpeaker.js`, `Chat.jsx` (the button's loading state, "Mac mini voice
+(Evan)" on top of the picker, a line naming the voice in use) and `orbit.css` (the pulse).
+**Threat model (for Ultron).** *Who can call it:* a paired device with the owner's login
+header, the same as every chat route (`requireDevice`), with `GET` only, and a
+`Sec-Fetch-Site` that is `same-origin` when a browser sends one; the device cookie is
+`SameSite=Strict`, so another site's `<audio src>` or link arrives without it. An unpaired
+caller gets 401 for every path under `/api/chat/speech`, known or not. *Inputs from the
+client:* the message id in the path, matched by `^/api/chat/speech/(sample|m_[a-z0-9]{6,24})$`,
+and a `Range` header parsed by one anchored pattern (one range; anything else sends the
+whole body). Nothing else is read: no body, and the query string is ignored (tested with
+`text=`, `voice=`, `o=`, `f=`). *What is rendered:* the text of one message from the chat
+store with `from: jarvis` and `kind: chat`, or the fixed sample sentence. That text is the
+lead's, and the lead quotes things from outside (mail, web pages, files), so it is treated
+as hostile to `say`: Markdown is dropped by the page's own `speechText`, then `speakable()`
+makes a lone surrogate well formed, takes the text apart into its compatibility form
+(NFKD), removes every `[`, `]`, `<` and `>`, puts it together again (NFC), and removes
+every control, format, separator, surrogate, private-use and unassigned character. Measured: `say` obeys `[[slnc 3000]]` and
+`[[rate 60]]` from a file, and it obeys a tag too, `<break time="5s"/>` giving the same
+five seconds of silence on Evan and on Samantha, so a quoted `[[slnc 9999999]]` or
+`<break time="9999s"/>` would have made a huge silent file. With the brackets gone only
+the words inside are read. Not obeyed, each measured: the same commands in fullwidth,
+small, vertical, single-guillemet, mathematical or CJK brackets, and a tag written as
+`&lt;…&gt;` or `&#60;…&#62;`; NFKD folds the first three spellings to the plain ones
+anyway, so the strip never depends on what a later macOS decides to obey. NFKD and not
+NFKC (Ultron's N2): NFKC composes `<` and U+0338 into U+226E, and `>` and U+0338 into
+U+226F, after which the strip no longer saw a bracket. Measured on Evan: `say` given
+U+226E raw reads it as words, and given a raw `<` + U+0338 … `>` it swallows the whole
+tag in silence without obeying it; after the strip both are a few words. At most 12,000
+characters reach `say`. *The process:* `/usr/bin/say` through
+`execFile`, never a shell, with `env: {}`, the work folder as its directory, 45 s then
+SIGKILL (tested on a real child that ignores SIGTERM), 64 KB of output kept. The argument
+list is fixed (`--voice=<name>`, `-o <out>`, `--file-format=m4af`, `--data-format=aac`,
+`-f <in>`); the two paths are the server's own, inside a fresh `mkdtemp` folder in the
+cache; the words are in the 0600 file, never an argument. *The voice:* config's
+`chat.speech.voice` and `fallback`, each checked against a name pattern that can't start
+with a dash, then used only if `say -v ?` itself printed that name (the request has no
+say in it). The second `say` call is that listing (`-v ?`, 10 s limit), at most once per
+10 minutes; one failed listing keeps the voice that was known, two in a row make it
+unknown (503, and `speech: null` in the status) until a listing works. A source test holds
+the module to those two calls and to no `shell`, `exec`, `spawn` or `process.env`, and
+holds the two page files it runs to the same and to no import but each other. *Page code
+in the server:* `web/src/lib/orbit/speech.js` and `markdown.js` run in the server process
+once speech is on. They are loaded only then, by a dynamic import inside a try/catch, so
+a syntax error or a new bad import in either turns read aloud off with one log line and
+never stops the Control Room's start; a test walks `server.mjs`'s static imports and
+finds nothing outside `server/`, and walks `chat-speech.mjs`'s and finds exactly those
+two files. **Both files are server code from here on: review them as such, and restart
+after a change to either** (the Restart card watches `server/` only). *The result:* must be a file that begins like MPEG-4 (`ftyp`),
+not empty, at most 16 MB, before it is moved into the cache; anything else is a 502, a
+timeout a 504, and the answer never carries a path, the words or `say`'s own output.
+*The cache:* `~/.local/state/jarvis-os/speech-cache/`, made 0700 and refused when the path
+is a link or not a folder; files 0600, named by a SHA-256 of the cache version, the voice
+and the words (no id or text in a name); swept after every render, at start and once an
+hour on an unref'd timer (7 days since last played, 400 files, 200 MB, oldest first; stale
+work folders after 10 minutes). At a start with speech off the cache's own files are
+removed, and the folder when that empties it (`clearSpeechCache`: same two name shapes, no
+link followed, a link in the folder's place left alone).
+The sweep removes only names of its own two shapes and never follows a link. It holds
+the lead's replies as speech, which is no more than `server/data/chat` already holds as
+text, in a folder as private. *Limits:* one `say` at a time, 3 waiting, then 503; 12
+render starts per device per 5 minutes, then 429; 300 render starts a local day across
+every device, then 429 until midnight, logged once (refusals aren't counted; cached audio
+and joins aren't either); a render `say` failed is remembered 10 minutes in memory (100
+wordings at most) and answered the same with no process; the status and the route check
+the kill file every time. The device is checked again just before the audio is sent, so
+one revoked during a render gets a 401. A render under way is looked for before the cache
+is read and again after, so the same words are never rendered twice at once. The audio
+carries `Cross-Origin-Resource-Policy: same-origin`.
+*Left open, on purpose:* a paired device can replay cached audio as often as it likes
+(the same holds for `/api/chat/attachments/<id>`); `say` and the system speech service
+parse the words, and that parser is Apple's; the remembered failures and the day's count
+are in memory, so a restart forgets both. *Not a boundary:* `say` gives no sign of the voice it used, so "the listed name
+was passed" is all the server can vouch for.
+**Choices to defend:** (1) the whole message is rendered at the first tap, not split:
+Evan (Enhanced) renders 2,000 characters in 1.8 s and the 12,000-character limit in 7.4 s
+(measured on the mini 11-17, best of two each; Samantha is the same within 0.2 s), and one
+file keeps the page to one `<audio>` and one request. (2) Over 12,000 characters the Mac
+refuses (413) and the device's own voice reads all of it, rather than the Mac reading a
+cut-off part. (3) The cache is keyed by voice and words, not message id and voice as the
+brief said: it covers edits, and two messages with the same words share a file. (4) The
+server imports `speechText` from `web/src` (one source for what is spoken); the server has
+never imported page code before, which makes those two files server code (above), and
+`mutate.py`-style copies of `server/` now need `web/src` and `web/package.json` beside
+them. (5) Off unless config has `chat.speech`. As first staged this was only half true:
+`server.mjs` imported the module at the top, so the two page files were loaded at every
+start and a broken one would have stopped the server with speech off (Ultron's M1). Now
+the module is loaded only with the key present, so merging and restarting without the key
+loads none of it, and the one thing a keyless start does that it did not before is remove
+an old speech cache if there is one. (6) The Mac's voice is the
+default on every device, even one that had picked an on-device voice before (that pick is
+kept as what reads when the Mac can't); a device opts out by picking one of its own voices
+while the Mac's is on offer. (7) After a failure the page reads in the device's voice for
+30 s, because a fallback that starts outside the tap may be refused by mobile Safari, and
+a second tap then speaks at once. (8) Audio that breaks off after it started is not
+started over in another voice. (9) `no-store` on the audio, like attachments: a revoked or
+lost device keeps no copy; a replay asks the mini again (cached there). (10) With the
+wanted voice missing the stand-in order is config's `fallback`, the voice's plain name,
+Samantha, Daniel, and never whatever else is installed (the novelty voices). (11) The hint
+under the list has a second wording while the Mac's voice is on offer ("…which is why the
+Mac mini reads by default"), since the 11-17 sentence said Enhanced voices "can't be used
+here" right under a picker that now defaults to one.
+**Found on the way (11-17, all measured on the mini):** `say` exits 0 and reads in the
+system voice when the voice name isn't installed, and when the text file is empty it
+exits 0 and writes no file. The Eloquence voices (Eddy, Flo and the like) are listed but
+can't write a file: `--voice='Eddy (English (UK))'` produced Daniel's audio byte for byte.
+A voice installed in two sizes is listed twice under one name with its language in
+brackets ("Samantha (English (US))"); during this build Samantha and Daniel went from one
+entry each to two (a compact one beside the super-compact), at about the time `say` was
+first run with them here and Jeff downloaded Evan in Manage Voices, so which of the two
+caused it is not known. `say` takes no AAC bit rate above about 32 kbit/s at the voices' 22,050 Hz
+(`--bit-rate=64000` gives the same file), so the format is the default. And the one the
+review's test request turned up: `say` obeys `<break time="…"/>` as well as `[[slnc …]]`,
+which the first staging did not strip.
+**Ultron's fixes (11-17, all eight made):** M1, the module and its two page files are
+loaded only when config has `chat.speech`, by `await import()` in a try/catch (one log
+line, speech off), with `readSpeechConfig` moved to `chat-speech-config.mjs`; tests for the
+import graph both ways and for what the page files may contain. L1, NFKC before the strip,
+and angle brackets stripped too (the tag finding above). L2, failed renders remembered 10
+minutes (100 at most). L3, an hourly unref'd sweep, the cache removed at a start with
+speech off, and the rollback below names the folder. L4, 300 renders a local day across
+devices. L5, the device checked again before the send. L6, the render under way looked
+for before the cache read and again after. L7, two failed voice listings in a row make
+the voice unknown, and the audio carries `Cross-Origin-Resource-Policy: same-origin`.
+**Ultron's reread (11-17): go, M1 and L1 to L7 closed, three new lows, all made.** N1,
+the running server never made the cache folder again (only `prepare()` did), so a hand
+`rm -r` or another server's keyless start meant 502 until a restart, each tap charged to
+the device and the day and remembered 10 minutes. Now the folder is checked before every
+render exactly as at start (`ensureFolder`: made 0700, a real folder, never a link) and
+made again when gone, with one log line; a path that goes missing under a render (the
+work folder, `say`'s own output) is put down to the folder, which is made again and the
+render tried once more; and any failure that is the server's own is neither remembered
+nor left charged (`uncharge` takes the start back off the device's window and the day).
+A file or a link where the folder should be fails each render with a plain 502 and no
+process. Not rechecked: a read of an already cached file goes by path alone. N2, NFKD,
+strip, NFC in place of NFKC (above). N3, the import reader in the tests takes `import (`
+with a space or a line break before the bracket, and has a test of its own.
+**Verified for N1 to N3:** server suite 1,334 tests (40 in `chat-speech.test.mjs`), once in
+local time and once in `TZ=Asia/Tokyo`; the 26 mutants on the changed lines (17 for N1, 6
+for N2, 1 for N3, and 2 of L2's rewritten for the new line beside them) all fail an
+assertion. Three of N1's first survived (a timeout with the folder gone, the whole window
+given back, a start no longer in the window), which bought two tests. The full mutant run
+before those tests (179 of the server side) had the same three, the two that no longer
+parsed, and the one equivalent named below. The web suite and the headless check were not
+rerun: nothing under `web/` changed. The paragraph below is the round before, as it stood.
+**Verified (after the eight fixes):** server suite 1,330 tests (main had 1,294; the 36
+new ones are `chat-speech.test.mjs`), passing in both time zones, three full runs. Web 316
+(301 before), both time zones; the page did not change in the fix round. Lint clean but
+for the old Lanes.jsx warning. One server test runs the real `/usr/bin/say`: a short reply
+comes back as an MPEG-4 file, and three asks for a minute of silence in it (`[[slnc
+60000]]`, the same in fullwidth brackets, `<break time="60s"/>`) add none (the file stays
+under 150 KB; one obeyed would add over 200 KB). Mutation, with the tool rebuilt to copy
+`web/src` too: 155 mutants of the server module, its config module and its wiring, 53 of
+them for the fixes: 151 fail an assertion, 3 hang the queue test until its time limit,
+and 1 is equivalent (counting a refusal against a day's limit that is already full). The
+first run after the fixes left 5 standing: both halves of L6 (a stress test did not
+catch them; planting a file under a running render's cache name, and two asks in one
+tick, do), a voice said lost that was never known (now tested), a dead line (removed),
+and the equivalent one. The 50 mutants of the page's speaker stand as before, none
+surviving. M1 was also run for real on a scratch copy with a `markdown.js` that no longer
+parses: the config module loads, the dynamic import fails with one `speech: could not be
+loaded or started (SyntaxError)` line, and the script goes on. A first staging run of the
+mutants had left 8 standing, which bought four assertions and the removal of three checks
+that only hid behind others.
+Headless Chromium (the 1223 shell) against scratch servers on port 8411 with the real
+routes, the real `say` and Evan (Enhanced), the page's own `<audio>` element really
+playing the server's file: 108 of 108. They cover: a tap plays the message's audio
+(same-origin, cookie sent, `Sec-Fetch-Dest: audio`, `Range: bytes=0-`), no word from the
+device's voice, idle at the end, a second tap stops, another message takes over, hiding
+the page stops, one render per message; a 1.5 s slow answer shows the loading state and
+the pulse, and a tap while loading stops with nothing playing late; a 500 hands the same
+words to the device's voice and the next tap goes straight there with no request; the
+kill switch takes the Mac's voice out of the picker within a status and puts it back;
+the picker at 390, 430, 820 and 1440 px, light and dark, with Evan installed and with a
+voice that isn't (the stand-in wording): the Mac's voice on top and selected, the line,
+nothing stored for the default, no sideways scroll, the sample (plays, Stop keeps its
+place), choosing the device's voice and back, surviving a reload; a browser with only a
+network voice and one with no speech engine at all (the button still shows and plays;
+when the Mac fails it goes idle); this page on a server without speech (as before); the
+page that is live now on this server (as before); no policy violation and no console
+error anywhere. 13 page-level mutants (builds with one thing broken) all fail that
+check. The headless run was repeated after the fixes (108 of 108). The live `web/dist`
+was never built by me (its 11-17 09:04 change is the hint's go-live).
+**Unverified:** anything on Jeff's devices: that Safari and the home-screen app play the
+`audio/mp4` (Chromium only here; the byte-range answers are what Safari is known to ask
+for, tested by hand-made `Range` headers, not by Safari); that `play()` with a slow first
+answer counts as started inside the tap on iOS; the silent switch; whether the fallback
+`speechSynthesis` call made after a failure, outside the tap, speaks on iOS (if not, the
+second tap does); a lock screen or a phone call mid-audio; the pulse and the picker's
+wording on the real screens. On the mini: `say` from the LaunchAgent's own session (every
+render here ran from my shell; the service's first `speech:` log lines after the restart
+will tell), and `server.mjs` beyond its source test (never started whole). The voice by
+ear: nobody has listened to a file yet.
+**Go-live, in this order:** (1) Ultron reads the route (this paragraph and
+`server/lib/chat-speech.mjs`). (2) C&P of `jos/mini-voice`, merged to main. (3) Jarvis adds
+`"speech": { "voice": "Evan (Enhanced)" }` inside the `chat` block of `server/config.json`
+(after a backup copy). (4) A restart of the service (Jeff, or loop 3's Restart card, which
+shows after a `server/` merge). The log then says `speech: on, asked for Evan (Enhanced)`
+and `speech: reading in Evan (Enhanced)`; `ls -ld ~/.local/state/jarvis-os/speech-cache`
+shows `drwx------`. (5) `cd web && npm run build` in the main checkout. Either order of 4
+and 5 is safe: the new page on the old server and the old page on the new server both read
+in the device's own voice (checked both ways). (6) Jeff's check on each device: tap a
+speaker (it pulses, then Evan reads), tap again (stops), Chat settings shows "Mac mini
+voice (Evan)" selected and Play a sample plays; the log shows one `speech: read … in Evan
+(Enhanced) for <device> (… ms, … bytes)` line per new message. **Rollback without a
+restart:** `touch ~/.local/state/jarvis-os/speech-off` (pages go back to their own voice
+within 20 s; the cached audio stays and ages out, or remove it by hand:
+`rm -r ~/.local/state/jarvis-os/speech-cache`; with the kill file there nothing is
+rendered, and once it goes the running server makes the folder again at the next render
+and logs `speech: the cache folder was gone; made it again`, with no restart). For good: remove the config key and restart; that start removes
+`~/.local/state/jarvis-os/speech-cache` itself and says so in the log (check with
+`ls ~/.local/state/jarvis-os/`, and remove the folder by hand if anything else was in
+it). **A suggestion for Vision, not done here:** leave `speech-cache` out of Time Machine
+(`tmutil addexclusion`), since it is a rebuildable cache of the lead's replies as audio
+and would otherwise be kept in backups past its 7 days. **Follow-ups, not built:** a
+play/pause and a position bar (the audio is a real file now); pre-rendering the newest
+reply when it arrives so the first tap is instant; splitting, only if a slower voice is
+ever picked; the Mac app's own check that Chrome plays it.

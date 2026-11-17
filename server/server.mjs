@@ -56,6 +56,7 @@ import { createFeedRoutes } from './lib/feed-routes.mjs';
 import { createShortcutKeys } from './lib/shortcut-keys.mjs';
 import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, SERVER_REQUEST_TIMEOUT_MS } from './lib/shortcut-routes.mjs';
 import { createHeicConverter, SIPS } from './lib/heic-convert.mjs';
+import { readSpeechConfig, clearSpeechCache, SAY } from './lib/chat-speech-config.mjs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { chmod } from 'node:fs/promises';
@@ -374,9 +375,12 @@ let chat = null;
 // config's `chat.shortcuts` is true. Null otherwise, and /api/shortcut/* is a 404.
 let shortcuts = null;
 let chatDevicesForFeed = null; // the Feed's reads take the chat's device cookie
+// Read aloud in the Mac's own voice (lib/chat-speech.mjs): set once it has started.
+let speech = null;
 const chatSettings = readChatConfig(config, hosts.mode);
 for (const problem of chatSettings.problems) console.error(`config: ${problem}`);
 const stateDir = join(homedir(), '.local', 'state', 'jarvis-os');
+const speechCachePath = join(stateDir, 'speech-cache');
 const channelSocketPath = process.env.JARVIS_OS_SOCKET || join(stateDir, 'channel.sock');
 const adminSocketPath = process.env.JARVIS_OS_ADMIN_SOCKET || join(stateDir, 'admin.sock');
 // The event socket (lib/event-socket.mjs) and the kill switch (lib/events.mjs).
@@ -513,7 +517,27 @@ if (chatSettings.on && socketsReady) {
   const agentStop = createAgentStop({ stepUp, socket: socketRouter, store: chatStore, onEvent: chatEvents, liveRuns: () => cache.get('sessions', Date.now())?.data?.liveAgents?.runs ?? [] });
   // Taps on a heal card (lib/heal-routes.mjs): an approver device, the page's Origin.
   const healTaps = createHealTaps({ loops: { missed, restart: restartLoop }, onEvent: chatEvents, log: line => console.log(oneLine(line)) });
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, healTaps });
+  // Read aloud in the Mac's own voice (lib/chat-speech.mjs): off unless config has a
+  // `chat.speech` block. The words are spoken here by macOS's `say` and the page plays
+  // the audio; the file `speech-off` beside the sockets turns it off without a restart.
+  // The module shares two files with the page (web/src/lib/orbit/speech.js and its
+  // markdown.js), so it is loaded here, and only when config turns it on: a broken page
+  // file then costs read aloud, never the server's start. Any problem leaves it off,
+  // and the page reads in the device's own voice as before.
+  const speechSettings = readSpeechConfig(config);
+  for (const problem of speechSettings.problems) console.error(`config: ${problem}`);
+  if (speechSettings.on && !existsSync(SAY)) console.error(`speech: ${SAY} is not there; read aloud on the Mac stays off`);
+  else if (speechSettings.on) {
+    const speechOffPath = join(stateDir, 'speech-off');
+    try {
+      const { createSpeech } = await import('./lib/chat-speech.mjs');
+      const made = createSpeech({ store: chatStore, dir: speechCachePath, voice: speechSettings.voice, fallback: speechSettings.fallback, killed: () => existsSync(speechOffPath) });
+      await made.start();
+      speech = made;
+      console.log(`speech: on, asked for ${speechSettings.voice}${existsSync(speechOffPath) ? ' (the kill file is there: the page reads in the device\'s own voice)' : ''}`);
+    } catch (err) { console.error(`speech: could not be loaded or started (${err?.code ?? err?.name ?? 'error'}); read aloud on the Mac stays off`); }
+  }
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, speech, healTaps });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }
@@ -565,6 +589,13 @@ if (chatSettings.on && socketsReady) {
     await listenUnix(eventSocketPath, createEventSocketRouter({ events, sources: eventsSettings.sources }), 'event')
       .catch(err => console.error(`events: the event socket did not start (${err?.code ?? err?.message ?? err})`));
   }
+}
+// Read aloud did not start (no `chat.speech`, the chat off, or a problem above): the
+// audio an earlier run cached goes, so turning it off leaves none of the lead's replies
+// behind as speech (lib/chat-speech-config.mjs; only the cache's own files).
+if (speech === null) {
+  const cleared = await clearSpeechCache(speechCachePath).catch(() => null);
+  if (cleared && (cleared.removed > 0 || cleared.left > 0)) console.log(`speech: off, so ${cleared.removed} cached audio file${cleared.removed === 1 ? '' : 's'} went${cleared.left > 0 ? `; ${cleared.left} other thing${cleared.left === 1 ? '' : 's'} in the cache folder stayed` : ''}`);
 }
 // The Feed (lib/feed.mjs, lib/feed-routes.mjs): what each agent posted to its Discord
 // feed, read from the copies the lead's discord-post keeps, for the roster's agents

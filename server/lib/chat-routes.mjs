@@ -120,7 +120,9 @@ export function notificationOrigin(raw, allowedHosts) {
 // `approvals` is the gate (lib/approvals.mjs); without one, every verdict is refused.
 // `shortcutKeys` says whether the Shortcut routes are on (lib/shortcut-routes.mjs): the
 // status answer carries it, so the page asks for the keys only when there are any.
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null }) {
+// `speech` is read aloud in the Mac's own voice (lib/chat-speech.mjs), or null while it
+// is off: its route, and the voice it reads in, which every status carries.
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null, speech = null }) {
   // Every log line here names a device, and a name read back from devices.json was
   // never cleaned, so each line is made one line (lib/chat-events.mjs).
   const log = line => logLine(oneLine(line));
@@ -176,7 +178,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // A request as the page gets it: the store's fields plus the gate's view (mode, the
   // reasons it is Deny-only now, whether Allow may be offered).
   const pubPermission = p => (approvals ? { ...store.publicPermission(p), ...approvals.view(p, now()) } : { ...store.publicPermission(p), mode: 'off', canAllow: false });
-  const state = () => chatState({ socket: socket.status(), store, now: now(), approvals });
+  const state = () => ({ ...chatState({ socket: socket.status(), store, now: now(), approvals }), speech: speech ? speech.info() : null });
   // Each request, as it opens: which paired devices had the chat open to draw its card
   // (board: "this approval never went to Jarvis OS", 2026-11-12, when nothing said
   // whether a page was there to show it). Names only; the push rule is chat-push.mjs's.
@@ -203,6 +205,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       if (agentStop?.owns(path)) return await agentStop.handle(req, res, path, { requireDevice, notifyHosts });
       // ---- taps on a heal card (lib/heal-routes.mjs): the same device and Origin rules ----
       if (healTaps?.owns(path)) return await healTaps.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
+      // ---- read aloud in the Mac's own voice (lib/chat-speech.mjs): a paired device ----
+      if (speech?.owns(path)) return await speech.handle(req, res, path, { requireDevice });
       // ---- pairing (§2.2) ----
       if (req.method === 'POST' && path === '/api/pair/start') {
         guardWrite(req);

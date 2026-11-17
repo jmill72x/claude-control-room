@@ -8,8 +8,8 @@ import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
 import { holdReload } from './buildWatch.js';
 import { ChatSearch } from './ChatSearch.jsx';
-import { getSpeaker, useCanSpeak, useSpeaking, useStopSpeechWhenAway, useVoices } from './useSpeaker.js';
-import { langLabel, SAMPLE_ID } from '../lib/orbit/speech.js';
+import { getSpeaker, useCanSpeak, useMiniVoice, useSpeaking, useSpeechLoading, useStopSpeechWhenAway, useVoices } from './useSpeaker.js';
+import { langLabel, MINI, SAMPLE_ID } from '../lib/orbit/speech.js';
 import { reachProblem } from '../lib/orbit/chat-search.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
@@ -133,7 +133,10 @@ function Thread({ chat, now, lead, onSettings }) {
   const [jump, setJump] = useState(null); // { busy: true } | { problem }
   const menuBtnRef = useRef(null);
   const speaking = useSpeaking();
+  const speechLoading = useSpeechLoading();
   const canSpeak = useCanSpeak();
+  // The Mac's own voice, where the server offers it (the status's `speech`).
+  useMiniVoice(chat.status?.speech ?? null);
   useStopSpeechWhenAway();
   const { messages, hasOlder, loadingOlder } = chat;
   const topRef = useRef(null);
@@ -262,7 +265,7 @@ function Thread({ chat, now, lead, onSettings }) {
           {messages.length === 0 && <li className="o-chat-empty">No messages yet. Say hello.</li>}
           {rows.map(row => (row.type === 'day'
             ? <li key={row.key} className="o-chat-day"><span>{row.label}</span></li>
-            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} speaking={speaking} canSpeak={canSpeak} found={found === row.message.id} />))}
+            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} speaking={speaking} speechLoading={speechLoading} canSpeak={canSpeak} found={found === row.message.id} />))}
         </ol>
         <div className="o-chat-bottom">
           {cards.length > 0 && (
@@ -308,14 +311,17 @@ function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
 }
 
 // Read aloud on one of the lead's bubbles (src/lib/orbit/speech.js). Shown only where
-// the browser has speechSynthesis and an on-device voice (`canSpeak`); the tap itself
-// starts the speech (mobile Safari speaks from a user gesture only).
-function SpeakButton({ m, speaking, canSpeak }) {
+// there is a voice to read in: the Mac's, or an on-device one of the browser's
+// (`canSpeak`). The tap itself starts the speech or the audio (mobile Safari does
+// either from a user gesture only). While the Mac's audio is on its way the button
+// pulses (`loading`); a tap then stops it like any other.
+function SpeakButton({ m, speaking, loading, canSpeak }) {
   const sp = getSpeaker();
   if (!canSpeak) return null;
   const on = speaking === m.id;
+  const busy = on && loading === m.id;
   return (
-    <button type="button" className={`o-chat-speakbtn${on ? ' o-chat-speaking' : ''}`} aria-label="Read aloud" aria-pressed={on} onClick={() => sp.toggle(m.id, m.text)}>
+    <button type="button" className={`o-chat-speakbtn${on ? ' o-chat-speaking' : ''}${busy ? ' o-chat-speakloading' : ''}`} aria-label={busy ? 'Read aloud, loading' : 'Read aloud'} aria-pressed={on} aria-busy={busy || undefined} onClick={() => sp.toggle(m.id, m.text)}>
       {on
         ? <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
         : <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5h3l4-3.5v12l-4-3.5H3Z" /><path d="M13 7a4 4 0 0 1 0 6M15.2 5a7 7 0 0 1 0 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>}
@@ -323,7 +329,7 @@ function SpeakButton({ m, speaking, canSpeak }) {
   );
 }
 
-function Row({ m, list, lead, chat, onReply, onView, speaking, canSpeak, found }) {
+function Row({ m, list, lead, chat, onReply, onView, speaking, speechLoading, canSpeak, found }) {
   // A notice carries its own time in its words ("… restarted 08:06").
   const mid = m.id ?? undefined;
   const foundClass = found ? ' o-chat-found' : '';
@@ -366,7 +372,7 @@ function Row({ m, list, lead, chat, onReply, onView, speaking, canSpeak, found }
         )}
         {m.text && <Markdown text={m.text} className="o-chat-text o-md" />}
         <div className="o-chat-meta">
-          {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} canSpeak={canSpeak} />}
+          {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} loading={speechLoading} canSpeak={canSpeak} />}
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
           {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}
@@ -854,37 +860,56 @@ function languageNames() {
   try { return new Intl.DisplayNames(navigator.languages?.length ? [...navigator.languages] : undefined, { type: 'language', languageDisplay: 'standard' }); } catch { return null; }
 }
 
-// Which on-device voice reads replies aloud here (src/lib/orbit/speech.js): the
-// browser's own list, this device's language first, with Automatic on top. The pick
-// is kept in this browser only. The sample speaks from its own tap (mobile Safari
-// speaks from a user gesture only) and stops with the sheet.
+// Which voice reads replies aloud here (src/lib/orbit/speech.js). On top, where the
+// server offers it, the Mac's own voice: the words are spoken on the Mac and played
+// here, and it is what a device uses until it chooses otherwise. Then the browser's
+// own on-device voices, this device's language first, with Automatic above them; the
+// one picked there also reads whenever the Mac can't. The pick is kept in this browser
+// only. The sample plays from its own tap (mobile Safari plays from a user gesture
+// only) and stops with the sheet.
 function VoicePicker() {
   const sp = getSpeaker();
   const view = useVoices();
   const sampling = useSpeaking() === SAMPLE_ID;
+  const sampleLoading = useSpeechLoading() === SAMPLE_ID;
+  const mini = view.mini;
+  const onMini = view.engine === 'mini';
   const names = useMemo(languageNames, []);
   useEffect(() => () => { if (sp.current() === SAMPLE_ID) sp.stop(); }, [sp]);
   const option = c => <option key={c.uri} value={c.uri}>{c.name}{c.lang ? ` · ${langLabel(c.lang, names)}` : ''}</option>;
   const mine = view.choices.filter(c => c.mine);
   const others = view.choices.filter(c => !c.mine);
+  // The on-device voice that reads when the Mac can't: the one picked here, else Automatic's.
+  const fallbackName = view.choices.find(c => c.uri === view.picked)?.name ?? view.auto;
   return (
     <div className="o-chat-voice" role="group" aria-labelledby="o-chat-voice-label">
       <h3 className="o-chat-label" id="o-chat-voice-label">Read-aloud voice</h3>
-      {view.auto === null
+      {view.auto === null && mini === null
         ? <p className="o-chat-sub">This browser offers no on-device voice, so read aloud is off here.</p>
         : (
           <>
             <div className="o-chat-voice-row">
-              <select className="o-input o-chat-input o-chat-voice-select" aria-labelledby="o-chat-voice-label" value={view.picked ?? ''} onChange={e => sp.setVoice(e.target.value)}>
-                <option value="">Automatic ({view.auto})</option>
+              <select className="o-input o-chat-input o-chat-voice-select" aria-labelledby="o-chat-voice-label" value={onMini ? MINI : view.picked ?? ''} onChange={e => sp.setVoice(e.target.value)}>
+                {mini !== null && <option value={MINI}>Mac mini voice ({mini.short})</option>}
+                {view.auto !== null && <option value="">{mini !== null ? `This device, automatic (${view.auto})` : `Automatic (${view.auto})`}</option>}
                 {mine.length > 0 && others.length > 0
                   ? <><optgroup label="Your language">{mine.map(option)}</optgroup><optgroup label="Other languages">{others.map(option)}</optgroup></>
                   : view.choices.map(option)}
               </select>
-              <button type="button" className="o-cbtn o-chat-voice-sample" aria-pressed={sampling} onClick={() => sp.sample()}>{sampling ? 'Stop' : 'Play a sample'}</button>
+              <button type="button" className="o-cbtn o-chat-voice-sample" aria-pressed={sampling} aria-busy={sampleLoading || undefined} onClick={() => sp.sample()}>{sampling ? 'Stop' : 'Play a sample'}</button>
             </div>
+            {onMini && (
+              <p className="o-chat-sub o-chat-voice-mini" role="status">
+                {mini.exact
+                  ? `Replies are read in ${mini.voice}, spoken on the Mac mini and played here.`
+                  : `${mini.wanted} is not installed on the Mac mini yet, so it reads in ${mini.short} for now.`}
+                {view.auto !== null ? ` If the mini can't be reached, this device reads in ${fallbackName}.` : ' This browser has no voice of its own to read when the mini can\'t be reached.'}
+              </p>
+            )}
             {view.saved !== null && view.picked === null && <p className="o-chat-sub" role="status">The voice chosen here before is not on this device now, so Automatic is used.</p>}
-            <p className="o-chat-sub">On iPhone and iPad, web apps are offered only Apple&apos;s built-in voices; downloaded Enhanced and Premium voices and Siri voices can&apos;t be used here. On the Mac, restart Chrome if a newly downloaded voice is missing.</p>
+            {mini !== null
+              ? <p className="o-chat-sub">On iPhone and iPad, a device&apos;s own list holds only Apple&apos;s built-in voices (no downloaded Enhanced, Premium or Siri voices), which is why the Mac mini reads by default. On the Mac, restart Chrome if a newly downloaded voice is missing.</p>
+              : <p className="o-chat-sub">On iPhone and iPad, web apps are offered only Apple&apos;s built-in voices; downloaded Enhanced and Premium voices and Siri voices can&apos;t be used here. On the Mac, restart Chrome if a newly downloaded voice is missing.</p>}
           </>
         )}
     </div>
