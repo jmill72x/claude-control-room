@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMediaQuery } from '../hooks/useMediaQuery.js';
 import { useReducedMotion } from './useReducedMotion.js';
 import { Avatar } from './Avatar.jsx';
@@ -8,7 +8,8 @@ import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
 import { holdReload } from './buildWatch.js';
 import { ChatSearch } from './ChatSearch.jsx';
-import { getSpeaker, useCanSpeak, useSpeaking, useStopSpeechWhenAway } from './useSpeaker.js';
+import { getSpeaker, useCanSpeak, useSpeaking, useStopSpeechWhenAway, useVoices } from './useSpeaker.js';
+import { langLabel, SAMPLE_ID } from '../lib/orbit/speech.js';
 import { reachProblem } from '../lib/orbit/chat-search.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
@@ -701,6 +702,7 @@ function SettingsSheet({ chat, now, onClose }) {
           </ul>
         )}
         <Notifications onChange={load} />
+        <VoicePicker />
         {chat.shortcutsOn && <ShortcutKeys chat={chat} when={when} />}
         <h3 className="o-chat-label">Approve another device</h3>
         <form className="o-chat-approve" onSubmit={approve}>
@@ -842,6 +844,50 @@ function Notifications({ onChange }) {
       )}
       {error && <p className="o-chat-card-error" role="alert">{error}</p>}
     </>
+  );
+}
+
+// ---- the read-aloud voice for this device ----
+
+// The browser's names for languages ("English (United States)"), or null where it has none.
+function languageNames() {
+  try { return new Intl.DisplayNames(navigator.languages?.length ? [...navigator.languages] : undefined, { type: 'language', languageDisplay: 'standard' }); } catch { return null; }
+}
+
+// Which on-device voice reads replies aloud here (src/lib/orbit/speech.js): the
+// browser's own list, this device's language first, with Automatic on top. The pick
+// is kept in this browser only. The sample speaks from its own tap (mobile Safari
+// speaks from a user gesture only) and stops with the sheet.
+function VoicePicker() {
+  const sp = getSpeaker();
+  const view = useVoices();
+  const sampling = useSpeaking() === SAMPLE_ID;
+  const names = useMemo(languageNames, []);
+  useEffect(() => () => { if (sp.current() === SAMPLE_ID) sp.stop(); }, [sp]);
+  const option = c => <option key={c.uri} value={c.uri}>{c.name}{c.lang ? ` · ${langLabel(c.lang, names)}` : ''}</option>;
+  const mine = view.choices.filter(c => c.mine);
+  const others = view.choices.filter(c => !c.mine);
+  return (
+    <div className="o-chat-voice" role="group" aria-labelledby="o-chat-voice-label">
+      <h3 className="o-chat-label" id="o-chat-voice-label">Read-aloud voice</h3>
+      {view.auto === null
+        ? <p className="o-chat-sub">This browser offers no on-device voice, so read aloud is off here.</p>
+        : (
+          <>
+            <div className="o-chat-voice-row">
+              <select className="o-input o-chat-input o-chat-voice-select" aria-labelledby="o-chat-voice-label" value={view.picked ?? ''} onChange={e => sp.setVoice(e.target.value)}>
+                <option value="">Automatic ({view.auto})</option>
+                {mine.length > 0 && others.length > 0
+                  ? <><optgroup label="Your language">{mine.map(option)}</optgroup><optgroup label="Other languages">{others.map(option)}</optgroup></>
+                  : view.choices.map(option)}
+              </select>
+              <button type="button" className="o-cbtn o-chat-voice-sample" aria-pressed={sampling} onClick={() => sp.sample()}>{sampling ? 'Stop' : 'Play a sample'}</button>
+            </div>
+            {view.saved !== null && view.picked === null && <p className="o-chat-sub" role="status">The voice chosen here before is not on this device now, so Automatic is used.</p>}
+            <p className="o-chat-sub">Newly downloaded voices show up after the app is closed and reopened. Siri voices are not offered to web apps.</p>
+          </>
+        )}
+    </div>
   );
 }
 

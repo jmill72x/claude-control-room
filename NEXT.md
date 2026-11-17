@@ -2099,8 +2099,8 @@ tables is Deny-only on the page. **Follow-ups, not built:** the page's link-labe
 needs a web build, the second a look at what the board's fields must allow (U+200D sits inside
 combined emoji, and the set marks it).
 
-**Read aloud, chat search and the icon badge, on main a6d46ff (committed 2026-11-16), not
-live yet.** Jeff's yes to Shuri's scout items 1 and 2 ("Yes do 1&2", 11-15), plus his ask
+**Read aloud, chat search and the icon badge, on main a6d46ff (committed 2026-11-16), live
+since the 11-16 build.** Jeff's yes to Shuri's scout items 1 and 2 ("Yes do 1&2", 11-15), plus his ask
 the same day: "can we get a chat notification badge on the icon?" README ("The chat with
 the lead agent": the routes bullet, the Chat tab bullet and "Read aloud and search in the
 Chat tab") has how each works. (1) **Read aloud:** a speaker button on each of the lead's
@@ -2150,9 +2150,11 @@ in the home-screen app (whether the silent switch mutes it, whether a long messa
 and whether `cancel()` then `speak()` in one tap works on WebKit); the badge on iOS (it
 needs notification permission; the page sets it only while it runs) and on the Chrome app
 on the Mac (Dock); Safari's layout of the menu and the search sheet with the keyboard up.
-**Go-live order:** restart the server (the loop 3 Restart card, or Vision); then `cd web &&
-npm run build`. If `jos/local-voice` (below) is merged first, the same build carries it. A build before the restart is safe except that search answers "Couldn't
-search: not found" until the restart. **Device checks for Jeff:** on the iPhone, tap the
+**Live:** the page was built 2026-11-16 21:42 with `jos/local-voice` (below) in it (the
+live `web/dist` carries the on-device rule; read 11-16), and Jarvis's 11-16 brief calls main
+16619c0 live. Jeff has used read aloud on the iPad since ("it didn't change the voice on
+ipad", 11-16), so the button is there on iPadOS; the other device checks are not reported
+back yet. **Device checks for Jeff:** on the iPhone, tap the
 speaker on one of Jarvis's replies; open ⋮, then Search messages, search a word from last
 week and tap the result; leave the app on the Board tab, and after Jarvis's next reply the
 icon shows a number. On the Mac, the Dock icon shows the count while the app sits on
@@ -2160,9 +2162,8 @@ another tab or minimised (within a minute), and opening Chat clears it. Unrelate
 still open: the Shortcuts follow-up "Ask Jarvis speaking the answer" is the Shortcut
 speaking, not the page.
 
-**On-device voices only, and one jump at a time, staged on `jos/local-voice` (from main
-a6d46ff, 2026-11-16, worktree `~/Projects/.worktrees/ccr-local-voice`), not committed, page
-only.** Jeff picked option (a) for Ultron's read-aloud low on 11-16 ("Def A"): Jarvis's text
+**On-device voices only, and one jump at a time, on main 16619c0 (2026-11-16, from
+`jos/local-voice`), live with the 11-16 build, page only.** Jeff picked option (a) for Ultron's read-aloud low on 11-16 ("Def A"): Jarvis's text
 must never go to a network voice (Chrome on the Mac lists "Google US English",
 `localService: false`, and with no voice set it may be picked). `pickLocalVoice` in
 `web/src/lib/orbit/speech.js` keeps voices whose `localService` is exactly `true`, then takes
@@ -2191,4 +2192,72 @@ and its voice list (the headless shell has none). **Unverified (needs Jeff's dev
 which voices iOS Safari and the Mac's Chrome actually list as on-device and which one is
 picked; if an iPhone lists none as local, the button disappears there. **Device check:** on
 the Mac's Chrome app, the speaker reads in a macOS voice (Samantha or the system voice), not
-Google's; on the iPhone the button is still there and speaks.
+Google's; on the iPhone the button is still there and speaks. **Seen on the iPad (Jeff,
+11-16):** it speaks, and changing the iPad's default voice in Settings did not change the
+voice, so WebKit's `default` flag doesn't follow that setting. The voice picker below is the
+answer.
+
+**A voice picker in Chat settings, staged on `jos/voice-picker` (from main 16619c0,
+2026-11-16, worktree `~/Projects/.worktrees/ccr-voice-picker`), not committed, page only.**
+Jeff, 11-16: "it didn't change the voice on ipad" after he changed the iPad's default voice.
+A web page is never offered Siri voices, and the system setting doesn't reach the page, so
+each device now picks its own. **What it is:** Chat settings (⋮, then Chat settings) has a
+"Read-aloud voice" list, a native `<select>` (the iPad lists a hundred or more voices; the
+system picker handles that and groups): "Automatic (<the voice today's order picks>)" on
+top, then "Your language" (the page's `<html lang>` and `navigator.languages`: exact
+matches in that order, then the same language in other regions), then "Other languages",
+each row a name and the language by its name (`Intl.DisplayNames`, else the tag). On-device
+voices only (`localService === true`), each `voiceURI` once; a voice with no `voiceURI`
+can't be saved, so it isn't listed (Automatic may still use it). Beside the list a "Play a
+sample" button speaks one sentence in the chosen voice from the tap itself; it reads "Stop"
+while it plays and stops when the sheet closes. The pick is saved per browser in
+`localStorage` under `jos.chat.voice`, as the `voiceURI` (`createVoiceStore` in
+`web/src/lib/orbit/speech.js`): read once, and kept in memory, so with storage blocked or
+full the pick holds until the app is closed and the next visit is Automatic.
+`pickLocalVoice(voices, langs, saved)` uses the saved voice while it is listed and on-device,
+else the order it always had. A saved voice that is gone is never erased: Automatic is shown
+and used, a line says so, and the voice is the pick again when it returns. Picking a voice
+stops whatever is speaking (it was queued in the old voice). `setVoice` takes only a voice on
+the list as it is at that moment. The list follows `voiceschanged`, also with the sheet open
+(`useVoices` in `useSpeaker.js`; the speaker hands out the same object until the content
+changes, compared as JSON, because browsers return new voice objects on every call). Under
+the list: "Newly downloaded voices show up after the app is closed and reopened. Siri voices
+are not offered to web apps." With no on-device voice the section says read aloud is off in
+this browser. **Choices to defend:** a `<select>` and not a custom list (one tap opens the
+system picker; a hundred radio rows would bury the rest of the sheet); the sample doesn't
+play by itself on a pick (iOS speaks only from a tap, and a `change` from the system picker
+may not count as one); the installed app and Safari are two browsers to iOS, so each has its
+own pick; no sync between devices, as asked. **Verified:** web 301 tests (37 in
+`orbit-speech.test.js`, 14 of them new: the saved voice in `pickLocalVoice`, the list's
+filter, order and names, language names, the store with missing, throwing and read-only
+storage, and the speaker's saved voice, fallback, `setVoice`, stable `voices()` and sample).
+91 mutations of `speech.js`: 89 caught, and the two no-op baselines survive as they should.
+Mutation found four redundant checks, removed: a tie-break by listed order (the sort is
+stable), an empty-tag guard, an inner try and a null check. Server 1294 in local time and
+Tokyo. Lint clean (only the old Lanes.jsx warning). Built to a scratch `--outDir` (the live
+`web/dist` mtime unchanged). Headless Chromium (the 1223 shell) on a scratch server with a
+fake engine: 61 of 61, covering the list's order and groups, no network voice in it, the
+pick saved and shown, the sample (words, voice, Stop, ending, stopping with the sheet), a
+reply read in the picked voice, the pick surviving a reload, a voice arriving and leaving
+with the sheet open, a saved voice missing at load, Automatic clearing the saved key,
+storage that throws and storage that refuses writes, only a network voice, an empty list
+that fills, and at 360, 390, 820 and 1440 (light and dark) the list and button on one row
+inside the sheet, 44 px tall, 16 px text, no sideways scroll, the button the same width as
+Play a sample and as Stop (it first jumped 7 px; fixed with a `min-width`). 13 page-level
+mutants (builds with one thing broken): 12 fail that check; the 13th, the list given the
+saved voice in place of the one in use, is equivalent, because React shows a `<select>`'s
+first option when its value matches none. The two earlier harnesses still pass on this
+build (14 of 14 and 43 of 43). **Faked:** `speechSynthesis`, its voices and
+`voiceschanged`; Chromium, not WebKit. **Unverified (needs Jeff's iPad and iPhone):** which
+voices iPadOS lists and under what names (enhanced and compact versions of one voice may
+show as two rows with the same name); that the system picker shows the two groups; that
+`u.voice` set to a non-default voice is honoured by WebKit (if it isn't, the sample plays in
+the old voice whatever is picked, and that is the finding to report); that a `voiceURI` is
+the same after an iPadOS update (if not, the pick falls back to Automatic with the line);
+whether a voice downloaded in Settings really needs the app closed and reopened; and the
+claim about Siri voices, which is Jarvis's brief and WebKit's known behaviour, not something
+I measured. **Go-live:** C&P, then `cd web && npm run build` (no server change, no restart).
+The page reloads itself on the new build. **Device check for Jeff:** on the iPad, ⋮, Chat
+settings, Read-aloud voice: pick a voice, tap Play a sample, close the sheet, tap the
+speaker on a reply; close and reopen the app and the pick is still there. Same on the
+iPhone, which keeps its own pick.

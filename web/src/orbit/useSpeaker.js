@@ -1,16 +1,19 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import { createSpeaker } from '../lib/orbit/speech.js';
+import { createSpeaker, createVoiceStore, NO_VOICES } from '../lib/orbit/speech.js';
 
 // Read aloud (src/lib/orbit/speech.js): one speaker for the page, over the browser's
 // speechSynthesis, in an on-device voice only. The page shows no speaker button where
-// the browser has no speechSynthesis or lists no on-device voice (useCanSpeak).
+// the browser has no speechSynthesis or lists no on-device voice (useCanSpeak). Which
+// voice is this device's choice, kept in its localStorage (Chat settings, useVoices).
 let speaker = null;
 export function getSpeaker() {
   if (speaker === null) {
     const w = typeof window === 'undefined' ? null : window;
     // The voice's language: the page's first, then the browser's.
     const langs = w ? [w.document?.documentElement?.lang, ...(w.navigator?.languages ?? []), w.navigator?.language] : [];
-    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null, langs });
+    // Reading window.localStorage can itself throw (blocked site data): the store takes that.
+    const store = createVoiceStore(() => w?.localStorage);
+    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null, langs, store });
   }
   return speaker;
 }
@@ -20,6 +23,13 @@ export function getSpeaker() {
 export function useCanSpeak() {
   const sp = getSpeaker();
   return useSyncExternalStore(sp.subscribe, sp.canSpeak, () => false);
+}
+
+// What the voice picker shows: the on-device voices, this device's choice and the
+// voice Automatic uses; re-renders when the browser's list or the choice changes.
+export function useVoices() {
+  const sp = getSpeaker();
+  return useSyncExternalStore(sp.subscribe, sp.voices, () => NO_VOICES);
 }
 
 // The id of the message speaking now, or null; re-renders on every change.

@@ -932,6 +932,13 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-device-actions { display: flex; gap: 6px; flex: none; }
 .o-chat-approve { display: flex; gap: 8px; align-items: center; }
 .o-chat-approve .o-chat-input { flex: 1 1 auto; min-width: 0; letter-spacing: 0.2em; text-transform: uppercase; }
+/* the read-aloud voice: the list takes the row; the sample button keeps one width
+   whether it reads Play a sample or Stop, and drops under the list where the two
+   don't fit */
+.o-chat-voice { display: flex; flex-direction: column; gap: 8px; }
+.o-chat-voice-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.o-chat-voice-select { flex: 1 1 140px; min-width: 0; text-overflow: ellipsis; }
+.o-chat-voice-sample { flex: none; min-width: 9.5em; }
 .o-chat-viewer { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.88); }
 .o-chat-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .o-chat-viewer-close { position: absolute; top: max(8px, env(safe-area-inset-top)); right: 8px; color: #FFFFFF; background: rgba(0, 0, 0, 0.4); }

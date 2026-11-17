@@ -976,10 +976,20 @@ three pieces, each with its own router:
   has a speaker button at the start of its time line. A tap reads the message with the
   browser's `speechSynthesis` (page only, no server call), in an on-device voice only
   (`localService === true`, set on every utterance; since 2026-11-16), so the text never
-  goes to a network voice such as Chrome's "Google US English". The default on-device
-  voice comes first, then one in the page's or the browser's language, then any. The voice
+  goes to a network voice such as Chrome's "Google US English". Which on-device voice is
+  the device's own choice (2026-11-16): Chat settings has a "Read-aloud voice" list of the
+  browser's on-device voices (name and language, the page's and the browser's language
+  first, "Automatic" on top) and a "Play a sample" button that speaks one sentence from
+  its tap. The pick is saved in that browser's `localStorage` under `jos.chat.voice`, by
+  the voice's `voiceURI`, so each device, and on iOS the installed app apart from Safari,
+  has its own. A page is never offered Siri voices, and the system's default-voice setting
+  doesn't reach it, which is why the page has a list. With nothing saved, storage blocked,
+  or the saved voice no longer listed, it is Automatic: the default on-device
+  voice first, then one in the page's or the browser's language, then any (a saved voice
+  that is gone is kept, and used again when it returns). The voice
   list is read again on `voiceschanged`, on subscribe and on each tap (it can be empty at
-  first load), and losing the last on-device voice stops the speech. Markdown markers are dropped,
+  first load, and a newly downloaded voice may need the app closed and reopened), and
+  losing the last on-device voice stops the speech. Markdown markers are dropped,
   a link is read by its label, a bare address as "a link to <host>", and a code block as
   "Code block skipped." (`web/src/lib/orbit/speech.js`, tested by
   `web/test/orbit-speech.test.js`; `web/src/orbit/useSpeaker.js`). All of a message's

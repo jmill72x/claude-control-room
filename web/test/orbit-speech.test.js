@@ -3,7 +3,10 @@
 // speaking at a time over a fake speechSynthesis. Every message here is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { speechText, speechChunks, createSpeaker, pickLocalVoice, CODE_WORDS, CHUNK_MAX } from '../src/lib/orbit/speech.js';
+import {
+  speechText, speechChunks, createSpeaker, pickLocalVoice, CODE_WORDS, CHUNK_MAX,
+  voiceChoices, langLabel, createVoiceStore, VOICE_KEY, VOICE_URI_MAX, NO_VOICES, SAMPLE_ID, SAMPLE_WORDS
+} from '../src/lib/orbit/speech.js';
 
 test('Markdown markers are dropped: emphasis, inline code and headings read as their words', () => {
   assert.equal(speechText('**Bold** and _it_ and `npm test`'), 'Bold and it and npm test.');
@@ -333,4 +336,368 @@ test('the speaker: a getVoices that throws or answers nonsense leaves it unable 
   synth.getVoices = () => 'Samantha';
   assert.equal(sp.toggle('m_1', 'hello'), false);
   assert.equal(synth.spoken.length, 0);
+});
+
+// ---- the voice picker (2026-11-16): the device's own choice of on-device voice ----
+// Chat settings lists the on-device voices; the pick is kept per device, by voiceURI.
+// Automatic is the order above. Every voice here is invented.
+
+test('pickLocalVoice: the saved voice wins while it is listed and on-device', () => {
+  const us = v('Samantha', 'en-US');
+  const fr = v('Thomas', 'fr-FR');
+  const def = v('Daniel', 'en-GB', { default: true });
+  assert.equal(pickLocalVoice([def, us, fr], ['en-US'], 'Thomas'), fr, 'over the default and the language');
+  assert.equal(pickLocalVoice([def, us, fr], ['en-US'], 'Karen'), def, 'gone: the automatic order');
+  assert.equal(pickLocalVoice([us, fr], ['fr-FR'], 'Karen'), fr, 'gone: the language still counts');
+  // A saved voice that is now a network one is never used.
+  const cloudNow = { ...fr, localService: false };
+  assert.equal(pickLocalVoice([us, cloudNow], ['en-US'], 'Thomas'), us);
+  assert.equal(pickLocalVoice([cloudNow], ['en-US'], 'Thomas'), null);
+  // The address is matched whole and as written.
+  assert.equal(pickLocalVoice([us, fr], ['en-US'], 'thomas'), us);
+  assert.equal(pickLocalVoice([us, fr], ['en-US'], 'Thom'), us);
+  // Two voices can share a name (compact and enhanced): the address decides.
+  const compact = v('Ava', 'en-US', { voiceURI: 'voice.compact.Ava' });
+  const enhanced = v('Ava', 'en-US', { voiceURI: 'voice.enhanced.Ava' });
+  assert.equal(pickLocalVoice([compact, enhanced], ['en-US'], 'voice.enhanced.Ava'), enhanced);
+  // Anything but a real address is no choice at all.
+  const noUri = { name: 'Bare', lang: 'fr-FR', localService: true, default: false };
+  for (const bad of [null, undefined, '', 7, {}, ['Thomas'], true]) assert.equal(pickLocalVoice([noUri, us, fr], ['en-US'], bad), us, String(bad));
+  const long = 'x'.repeat(VOICE_URI_MAX + 1);
+  assert.equal(pickLocalVoice([us, v('Long', 'fr-FR', { voiceURI: long })], ['en-US'], long), us, 'an over-long address is not a choice');
+  const most = 'y'.repeat(VOICE_URI_MAX);
+  const atMax = v('Most', 'fr-FR', { voiceURI: most });
+  assert.equal(pickLocalVoice([us, atMax], ['en-US'], most), atMax, 'exactly the limit is');
+});
+
+test('voiceChoices: on-device voices only, each once, with a name and a language', () => {
+  assert.deepEqual(voiceChoices([CLOUD, LOCAL], ['en-US']), [{ uri: 'Samantha', name: 'Samantha', lang: 'en-US', mine: true }]);
+  assert.deepEqual(voiceChoices([CLOUD], ['en-US']), []);
+  assert.deepEqual(voiceChoices([{ ...LOCAL, localService: 'true' }, { ...LOCAL, localService: 1 }], ['en-US']), [], 'only a real true is on-device');
+  for (const bad of [null, undefined, 'Samantha', 7, {}, new Set([LOCAL])]) assert.deepEqual(voiceChoices(bad, ['en-US']), []);
+  assert.equal(pickLocalVoice(new Set([LOCAL]), ['en-US']), null, 'only a real list is a voice list');
+  assert.deepEqual(voiceChoices([null, 7, 'x', LOCAL], ['en-US']).map(c => c.uri), ['Samantha']);
+  // A voice with no address can't be saved, so it isn't offered (Automatic may still use it).
+  const noUri = { name: 'Bare', lang: 'en-US', localService: true };
+  const emptyUri = v('Empty', 'en-US', { voiceURI: '' });
+  const numUri = v('Num', 'en-US', { voiceURI: 7 });
+  const longUri = v('Long', 'en-US', { voiceURI: 'x'.repeat(VOICE_URI_MAX + 1) });
+  assert.deepEqual(voiceChoices([noUri, emptyUri, numUri, longUri, LOCAL], ['en-US']).map(c => c.uri), ['Samantha']);
+  // The same address listed twice is one choice: the first.
+  const twice = voiceChoices([v('Ava', 'en-US', { voiceURI: 'a' }), v('Ava again', 'en-GB', { voiceURI: 'a' })], ['en-US']);
+  assert.deepEqual(twice, [{ uri: 'a', name: 'Ava', lang: 'en-US', mine: true }]);
+  // Names are tidied; a voice with none shows its address. An Android tag reads as a tag.
+  const odd = voiceChoices([v('  Spaced  out ', ' en_us ', { voiceURI: 'u1' }), v('', 'fr-FR', { voiceURI: 'u2' }), { voiceURI: 'u3', localService: true }, v('N'.repeat(200), 'de-DE', { voiceURI: 'u4' }), v(7, 'it-IT', { voiceURI: 'u5' })], []);
+  assert.deepEqual(odd.map(c => [c.uri, c.name, c.lang]), [['u3', 'u3', ''], ['u4', 'N'.repeat(80), 'de-DE'], ['u1', 'Spaced out', 'en-us'], ['u2', 'u2', 'fr-FR'], ['u5', 'u5', 'it-IT']]);
+  assert.ok(odd.every(c => c.mine === false), 'no language asked for: none is "mine"');
+});
+
+const FR_FIRST = v('Thomas', 'fr-FR');
+const US_SECOND = v('Samantha', 'en-US');
+
+test('voiceChoices: the page or browser language first, then the rest by language and name', () => {
+  const list = [
+    v('Thomas', 'fr-FR'), v('Zoe', 'en-US'), v('Daniel', 'en-GB'), v('Anna', 'de-DE'), v('Samantha', 'en-US'),
+    v('Karen', 'en-AU'), v('Amelie', 'fr-CA'), v('alex', 'en-US'), v('Kyoko', 'ja-JP'), v('Plain', 'en')
+  ];
+  // The page says "en", the browser "en-US" then "en": as the Chat tab passes them.
+  const got = voiceChoices(list, ['en', 'en-US', 'en', 'en-US']);
+  assert.deepEqual(got.map(c => `${c.name}|${c.lang}|${c.mine ? 'mine' : 'other'}`), [
+    'Plain|en|mine',
+    'alex|en-US|mine', 'Samantha|en-US|mine', 'Zoe|en-US|mine',
+    'Karen|en-AU|mine', 'Daniel|en-GB|mine',
+    'Anna|de-DE|other', 'Amelie|fr-CA|other', 'Thomas|fr-FR|other', 'Kyoko|ja-JP|other'
+  ]);
+  // The order of the wanted languages decides between two exact matches, and between two near ones.
+  assert.deepEqual(voiceChoices(list, ['fr-FR', 'en-GB']).map(c => c.name).slice(0, 4), ['Thomas', 'Daniel', 'Amelie', 'Plain']);
+  assert.deepEqual(voiceChoices(list, ['ja', 'fr']).map(c => c.name).slice(0, 3), ['Kyoko', 'Amelie', 'Thomas']);
+  // An exact match always comes before a near one, whatever the order asked.
+  assert.deepEqual(voiceChoices([v('Daniel', 'en-GB'), v('Thomas', 'fr-FR')], ['en', 'fr-FR']).map(c => c.name), ['Thomas', 'Daniel']);
+  // Case and Android's underscore don't matter; empty wants are skipped.
+  assert.deepEqual(voiceChoices([v('Anna', 'de-DE'), v('Alex', 'en_US'), v('Nolang', '')], ['', null, 'EN-us']).map(c => `${c.name}|${c.mine}`), ['Alex|true', 'Nolang|false', 'Anna|false']);
+  // Nothing asked for: by language, then name, and the listed order for a tie.
+  assert.deepEqual(voiceChoices([v('B', 'fr-FR', { voiceURI: 'b1' }), v('B', 'fr-FR', { voiceURI: 'b2' }), v('a', 'fr-FR'), v('C', 'de-DE')]).map(c => c.uri), ['C', 'a', 'b1', 'b2']);
+  for (const notList of ['en-US', new Set(['en-US']), { 0: 'en-US', length: 1 }]) assert.deepEqual(voiceChoices(list, notList).map(c => c.mine), list.map(() => false), 'languages that are not a list are none');
+  assert.equal(pickLocalVoice([FR_FIRST, US_SECOND], new Set(['en-US'])), FR_FIRST);
+});
+
+test('langLabel: the language by its name where the browser can name it, else its tag', () => {
+  const names = { of: tag => ({ 'en-US': 'English (United States)', 'fr-FR': 'French (France)' })[tag] };
+  assert.equal(langLabel('en-US', names), 'English (United States)');
+  assert.equal(langLabel('en_US', names), 'English (United States)', 'an underscore tag is looked up as a tag');
+  assert.equal(langLabel(' fr-FR ', names), 'French (France)');
+  assert.equal(langLabel('xx-YY', names), 'xx-YY', 'unknown to the browser: the tag itself');
+  assert.equal(langLabel('en-US'), 'en-US');
+  assert.equal(langLabel('en-US', null), 'en-US');
+  assert.equal(langLabel('en-US', { of: () => { throw new RangeError('bad tag'); } }), 'en-US');
+  assert.equal(langLabel('en-US', { of: () => '  ' }), 'en-US');
+  assert.equal(langLabel('en-US', { of: () => 7 }), 'en-US');
+  for (const none of ['', '  ', null, undefined, 7]) assert.equal(langLabel(none, names), '');
+});
+
+// A localStorage stand-in that records what was asked of it.
+function fakeStorage(initial = {}) {
+  const st = {
+    data: { ...initial }, gets: 0, sets: 0, removes: 0,
+    getItem(k) { st.gets++; return Object.hasOwn(st.data, k) ? st.data[k] : null; },
+    setItem(k, val) { st.sets++; st.data[k] = String(val); },
+    removeItem(k) { st.removes++; delete st.data[k]; }
+  };
+  return st;
+}
+
+test('the voice store: the saved choice is read once and written through', () => {
+  assert.equal(VOICE_KEY, 'jos.chat.voice');
+  const st = fakeStorage({ [VOICE_KEY]: 'Samantha' });
+  const store = createVoiceStore(() => st);
+  assert.equal(store.get(), 'Samantha');
+  assert.equal(store.get(), 'Samantha');
+  assert.equal(st.gets, 1, 'read once, then kept');
+  assert.equal(store.set('Thomas'), 'Thomas');
+  assert.equal(st.data[VOICE_KEY], 'Thomas');
+  assert.equal(store.get(), 'Thomas');
+  assert.equal(store.set(null), null, 'Automatic');
+  assert.equal(Object.hasOwn(st.data, VOICE_KEY), false, 'Automatic leaves nothing saved');
+  assert.equal(st.removes, 1);
+  assert.equal(store.get(), null);
+  assert.equal(st.gets, 1);
+  // A set before any read never reads an older value back over it.
+  const st2 = fakeStorage({ [VOICE_KEY]: 'Old' });
+  const store2 = createVoiceStore(() => st2);
+  store2.set('New');
+  assert.equal(store2.get(), 'New');
+  assert.equal(st2.gets, 0);
+  // Another page of the same app sees it at its next start.
+  assert.equal(createVoiceStore(() => st2).get(), 'New');
+});
+
+test('the voice store: what is saved must look like a voice address, or it is Automatic', () => {
+  for (const bad of ['', 'x'.repeat(VOICE_URI_MAX + 1)]) assert.equal(createVoiceStore(() => fakeStorage({ [VOICE_KEY]: bad })).get(), null);
+  assert.equal(createVoiceStore(() => ({ getItem: () => 7 })).get(), null);
+  assert.equal(createVoiceStore(() => ({ getItem: () => ({ voiceURI: 'x' }) })).get(), null);
+  assert.equal(createVoiceStore(() => fakeStorage({ [VOICE_KEY]: 'y'.repeat(VOICE_URI_MAX) })).get(), 'y'.repeat(VOICE_URI_MAX));
+  const st = fakeStorage({ [VOICE_KEY]: 'Samantha' });
+  const store = createVoiceStore(() => st);
+  for (const bad of ['', 7, {}, undefined, 'x'.repeat(VOICE_URI_MAX + 1)]) {
+    store.set('Thomas');
+    assert.equal(store.set(bad), null, String(bad).slice(0, 20));
+    assert.equal(store.get(), null);
+    assert.equal(Object.hasOwn(st.data, VOICE_KEY), false, 'nothing unusable is ever written');
+  }
+});
+
+test('the voice store: with no storage, or one that throws, it is Automatic and a pick lasts for the visit', () => {
+  const broken = [
+    undefined,
+    () => null,
+    () => undefined,
+    () => { throw new Error('SecurityError: storage is blocked'); },
+    () => ({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('QuotaExceededError'); }, removeItem() { throw new Error('denied'); } }),
+    () => ({})
+  ];
+  for (const getStorage of broken) {
+    const store = createVoiceStore(getStorage);
+    assert.equal(store.get(), null);
+    assert.equal(store.set('Thomas'), 'Thomas');
+    assert.equal(store.get(), 'Thomas', 'kept in memory');
+    assert.equal(store.set(null), null);
+    assert.equal(store.get(), null);
+  }
+  // A store that reads but can't write (a full or private one) keeps the pick for the visit.
+  const st = fakeStorage({ [VOICE_KEY]: 'Samantha' });
+  st.setItem = () => { throw new Error('QuotaExceededError'); };
+  const store = createVoiceStore(() => st);
+  assert.equal(store.get(), 'Samantha');
+  store.set('Thomas');
+  assert.equal(store.get(), 'Thomas');
+  assert.equal(st.data[VOICE_KEY], 'Samantha');
+});
+
+const US = v('Samantha', 'en-US');
+const GB = v('Daniel', 'en-GB');
+const FR = v('Thomas', 'fr-FR');
+const memoryStore = saved => createVoiceStore(() => fakeStorage(saved ? { [VOICE_KEY]: saved } : {}));
+
+test('the speaker: speaks in the saved voice, every piece', () => {
+  const synth = fakeSynth([CLOUD, US, GB, FR]);
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, chunkMax: 20, langs: ['en-US'], store: memoryStore('Thomas') });
+  sp.toggle('m_1', 'First part here. Second part here.');
+  assert.equal(synth.queue.length, 2);
+  for (const u of synth.queue) { assert.equal(u.voice, FR); assert.equal(u.lang, 'fr-FR'); }
+  assert.deepEqual(sp.voices(), {
+    choices: [{ uri: 'Samantha', name: 'Samantha', lang: 'en-US', mine: true }, { uri: 'Daniel', name: 'Daniel', lang: 'en-GB', mine: true }, { uri: 'Thomas', name: 'Thomas', lang: 'fr-FR', mine: false }],
+    saved: 'Thomas', picked: 'Thomas', auto: 'Samantha'
+  });
+});
+
+test('the speaker: no store, or nothing saved, is Automatic', () => {
+  const synth = fakeSynth([FR, { ...GB, default: true }, US]);
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'] });
+  assert.deepEqual({ ...sp.voices(), choices: null }, { choices: null, saved: null, picked: null, auto: 'Daniel' });
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice.name, 'Daniel');
+  // Even with no store a pick works, for the visit.
+  assert.equal(sp.setVoice('Thomas'), true);
+  sp.toggle('m_2', 'hello');
+  assert.equal(synth.queue[0].voice, FR);
+  const sp2 = createSpeaker({ synth: fakeSynth([FR, US]), Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore(null) });
+  assert.equal(sp2.voices().picked, null);
+  assert.equal(sp2.voices().auto, 'Samantha');
+  // A choice saved on a browser that now lists no on-device voice at all.
+  const sp3 = createSpeaker({ synth: fakeSynth([CLOUD]), Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore('Thomas') });
+  assert.deepEqual(sp3.voices(), { choices: [], saved: 'Thomas', picked: null, auto: null });
+  assert.equal(sp3.canSpeak(), false);
+});
+
+test('the speaker: a saved voice that is gone falls back to Automatic, and comes back with the voice', () => {
+  const synth = fakeSynth([US, GB]);
+  const store = memoryStore('Thomas');
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-GB'], store });
+  const seen = [];
+  sp.subscribe(() => seen.push(sp.voices().picked));
+  assert.equal(sp.voices().saved, 'Thomas', 'the choice is kept');
+  assert.equal(sp.voices().picked, null, 'but Automatic is what is used');
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice, GB);
+  assert.equal(store.get(), 'Thomas', 'falling back never erases the choice');
+  sp.stop();
+  synth.changeVoices([US, GB, FR]);
+  assert.equal(sp.voices().picked, 'Thomas');
+  assert.equal(seen.at(-1), 'Thomas', 'subscribers hear of it');
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice, FR);
+  // Listed again, but as a network voice: still Automatic.
+  sp.stop();
+  synth.changeVoices([US, GB, { ...FR, localService: false }]);
+  assert.equal(sp.voices().picked, null);
+  assert.deepEqual(sp.voices().choices.map(c => c.uri), ['Daniel', 'Samantha']);
+});
+
+test('the speaker: setVoice saves the pick, uses it at once and stops what was speaking', () => {
+  const synth = fakeSynth([US, GB, FR]);
+  const st = fakeStorage();
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'], store: createVoiceStore(() => st) });
+  let calls = 0;
+  sp.subscribe(() => { calls++; });
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice, US);
+  const before = calls;
+  assert.equal(sp.setVoice('Daniel'), true);
+  assert.equal(st.data[VOICE_KEY], 'Daniel');
+  assert.equal(sp.current(), null, 'the message in the old voice stops');
+  assert.equal(synth.queue.length, 0);
+  assert.ok(calls > before, 'subscribers hear of it');
+  assert.equal(sp.voices().picked, 'Daniel');
+  assert.equal(sp.voices().saved, 'Daniel');
+  assert.equal(sp.voices().auto, 'Samantha', 'what Automatic would use is still named');
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice, GB);
+  // Back to Automatic: null or the list's empty value.
+  sp.stop();
+  assert.equal(sp.setVoice(''), true);
+  assert.equal(Object.hasOwn(st.data, VOICE_KEY), false);
+  assert.equal(sp.voices().picked, null);
+  assert.equal(sp.voices().saved, null);
+  sp.toggle('m_1', 'hello');
+  assert.equal(synth.queue[0].voice, US);
+  sp.stop();
+  sp.setVoice('Thomas');
+  assert.equal(sp.setVoice(null), true);
+  assert.equal(sp.voices().saved, null);
+});
+
+test('the speaker: setVoice takes only a voice on the list', () => {
+  const synth = fakeSynth([US, CLOUD, FR]);
+  const st = fakeStorage({ [VOICE_KEY]: 'Thomas' });
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'], store: createVoiceStore(() => st) });
+  sp.toggle('m_1', 'hello');
+  for (const bad of ['Google US English', 'Karen', 7, {}, undefined, 'thomas']) {
+    assert.equal(sp.setVoice(bad), false, String(bad));
+    assert.equal(st.data[VOICE_KEY], 'Thomas');
+    assert.equal(sp.voices().picked, 'Thomas');
+  }
+  assert.equal(sp.current(), 'm_1', 'a refused pick stops nothing');
+  // The list is read again first: a voice that just arrived can be picked, one that just left can't.
+  synth.voices = [US, FR, GB];
+  assert.equal(sp.setVoice('Daniel'), true);
+  synth.voices = [US, FR];
+  assert.equal(sp.setVoice('Daniel'), false, 'the saved voice itself, once it has left');
+  assert.equal(sp.voices().picked, null);
+  assert.equal(sp.voices().saved, 'Daniel');
+  synth.voices = [US, GB];
+  assert.equal(sp.setVoice('Thomas'), false);
+  // No engine: nothing to pick.
+  const off = createSpeaker({ Utterance: FakeUtterance, store: createVoiceStore(() => st) });
+  assert.equal(off.setVoice(null), false);
+  assert.equal(off.sample(), false);
+  assert.equal(off.voices(), NO_VOICES);
+  assert.equal(st.data[VOICE_KEY], 'Daniel');
+});
+
+test('the speaker: voices() is the same object until something in it changes', () => {
+  assert.deepEqual(NO_VOICES, { choices: [], saved: null, picked: null, auto: null });
+  const synth = fakeSynth([]);
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore(null) });
+  let calls = 0;
+  sp.subscribe(() => { calls++; });
+  assert.deepEqual(sp.voices(), NO_VOICES);
+  const empty = sp.voices();
+  synth.changeVoices([CLOUD]);
+  assert.equal(sp.voices(), empty, 'a network voice changes nothing on the list');
+  assert.equal(calls, 0);
+  synth.changeVoices([CLOUD, US]);
+  const one = sp.voices();
+  assert.notEqual(one, empty);
+  assert.equal(calls, 1);
+  assert.equal(one.auto, 'Samantha');
+  // The browser hands out new voice objects with the same content: no change, no re-render.
+  synth.changeVoices([{ ...CLOUD }, { ...US }]);
+  sp.subscribe(() => {})();
+  sp.toggle('m_1', 'hello');
+  sp.stop();
+  assert.equal(sp.voices(), one);
+  // A voice downloaded since: a new list.
+  const at = calls;
+  synth.changeVoices([US, FR]);
+  assert.notEqual(sp.voices(), one);
+  assert.deepEqual(sp.voices().choices.map(c => c.uri), ['Samantha', 'Thomas']);
+  assert.equal(calls, at + 1);
+  // What Automatic would use changes with the default flag alone.
+  const two = sp.voices();
+  synth.changeVoices([US, { ...FR, default: true }]);
+  assert.notEqual(sp.voices(), two);
+  assert.equal(sp.voices().auto, 'Thomas');
+  // An on-device voice with no address: Automatic can use it, the list can't offer it.
+  synth.changeVoices([{ name: 'Bare', lang: 'en-US', localService: true }]);
+  assert.deepEqual(sp.voices(), { choices: [], saved: null, picked: null, auto: 'Bare' });
+  assert.equal(sp.canSpeak(), true);
+  synth.changeVoices([{ lang: 'en-US', localService: true }]);
+  assert.equal(sp.voices().auto, 'an on-device voice', 'a voice with no name still gets words');
+});
+
+test('the speaker: the sample is one short sentence in the chosen voice, from the call itself', () => {
+  assert.ok(SAMPLE_WORDS.length > 10 && SAMPLE_WORDS.length <= CHUNK_MAX && /[.]$/.test(SAMPLE_WORDS), 'one piece, one sentence');
+  assert.ok(!/^m_/.test(SAMPLE_ID), 'never a message id');
+  const synth = fakeSynth([US, GB, FR]);
+  const sp = createSpeaker({ synth, Utterance: FakeUtterance, langs: ['en-US'], store: memoryStore('Daniel') });
+  const seen = [];
+  sp.subscribe(() => seen.push(sp.current()));
+  sp.toggle('m_1', 'a message');
+  assert.equal(sp.sample(), true);
+  assert.deepEqual(synth.queue.map(u => [u.text, u.voice.name]), [[SAMPLE_WORDS, 'Daniel']], 'the message stopped, the sample queued before the call returned');
+  assert.equal(sp.current(), SAMPLE_ID);
+  // A second tap stops it.
+  assert.equal(sp.sample(), false);
+  assert.equal(sp.current(), null);
+  assert.equal(synth.queue.length, 0);
+  // It ends by itself, and follows a new pick.
+  sp.setVoice('Thomas');
+  sp.sample();
+  assert.equal(synth.queue[0].voice, FR);
+  synth.finishOne();
+  assert.equal(sp.current(), null);
+  assert.deepEqual(seen.filter(Boolean), ['m_1', SAMPLE_ID, SAMPLE_ID]);
+  // With no on-device voice there is nothing to sample.
+  const none = createSpeaker({ synth: fakeSynth([CLOUD]), Utterance: FakeUtterance });
+  assert.equal(none.sample(), false);
 });
