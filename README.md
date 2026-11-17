@@ -988,7 +988,8 @@ three pieces, each with its own router:
   voice first, then one in the page's or the browser's language, then any (a saved voice
   that is gone is kept, and used again when it returns). The voice
   list is read again on `voiceschanged`, on subscribe and on each tap (it can be empty at
-  first load, and a newly downloaded voice may need the app closed and reopened), and
+  first load; on iPhone and iPad a downloaded voice never appears, because WebKit lists
+  only built-in voices), and
   losing the last on-device voice stops the speech. Markdown markers are dropped,
   a link is read by its label, a bare address as "a link to <host>", and a code block as
   "Code block skipped." (`web/src/lib/orbit/speech.js`, tested by

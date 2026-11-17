@@ -884,7 +884,7 @@ function VoicePicker() {
               <button type="button" className="o-cbtn o-chat-voice-sample" aria-pressed={sampling} onClick={() => sp.sample()}>{sampling ? 'Stop' : 'Play a sample'}</button>
             </div>
             {view.saved !== null && view.picked === null && <p className="o-chat-sub" role="status">The voice chosen here before is not on this device now, so Automatic is used.</p>}
-            <p className="o-chat-sub">Newly downloaded voices show up after the app is closed and reopened. Siri voices are not offered to web apps.</p>
+            <p className="o-chat-sub">On iPhone and iPad, web apps are offered only Apple&apos;s built-in voices; downloaded Enhanced and Premium voices and Siri voices can&apos;t be used here. On the Mac, restart Chrome if a newly downloaded voice is missing.</p>
           </>
         )}
     </div>

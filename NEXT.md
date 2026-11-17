@@ -2194,12 +2194,13 @@ picked; if an iPhone lists none as local, the button disappears there. **Device 
 the Mac's Chrome app, the speaker reads in a macOS voice (Samantha or the system voice), not
 Google's; on the iPhone the button is still there and speaks. **Seen on the iPad (Jeff,
 11-16):** it speaks, and changing the iPad's default voice in Settings did not change the
-voice, so WebKit's `default` flag doesn't follow that setting. The voice picker below is the
-answer.
+voice, so WebKit's `default` flag doesn't follow that setting (found 11-17: WebKit marks
+every voice it lists `default: true`; see "The hint under the voice list" below). The voice
+picker below is the answer.
 
-**A voice picker in Chat settings, staged on `jos/voice-picker` (from main 16619c0,
-2026-11-16, worktree `~/Projects/.worktrees/ccr-voice-picker`), not committed, page only.**
-Jeff, 11-16: "it didn't change the voice on ipad" after he changed the iPad's default voice.
+**A voice picker in Chat settings, on main a751e1a (2026-11-16, from `jos/voice-picker`),
+live with the 11-16 22:55 build (the live `web/dist` carries the picker; read 11-17), page
+only.** Jeff, 11-16: "it didn't change the voice on ipad" after he changed the iPad's default voice.
 A web page is never offered Siri voices, and the system setting doesn't reach the page, so
 each device now picks its own. **What it is:** Chat settings (⋮, then Chat settings) has a
 "Read-aloud voice" list, a native `<select>` (the iPad lists a hundred or more voices; the
@@ -2221,8 +2222,9 @@ stops whatever is speaking (it was queued in the old voice). `setVoice` takes on
 the list as it is at that moment. The list follows `voiceschanged`, also with the sheet open
 (`useVoices` in `useSpeaker.js`; the speaker hands out the same object until the content
 changes, compared as JSON, because browsers return new voice objects on every call). Under
-the list: "Newly downloaded voices show up after the app is closed and reopened. Siri voices
-are not offered to web apps." With no on-device voice the section says read aloud is off in
+the list is a hint about which voices a web app gets. Its first wording ("Newly downloaded
+voices show up after the app is closed and reopened. Siri voices are not offered to web
+apps.") was wrong for Apple devices and is corrected in the next paragraph. With no on-device voice the section says read aloud is off in
 this browser. **Choices to defend:** a `<select>` and not a custom list (one tap opens the
 system picker; a hundred radio rows would bury the rest of the sheet); the sample doesn't
 play by itself on a pick (iOS speaks only from a tap, and a `change` from the system picker
@@ -2249,15 +2251,59 @@ saved voice in place of the one in use, is equivalent, because React shows a `<s
 first option when its value matches none. The two earlier harnesses still pass on this
 build (14 of 14 and 43 of 43). **Faked:** `speechSynthesis`, its voices and
 `voiceschanged`; Chromium, not WebKit. **Unverified (needs Jeff's iPad and iPhone):** which
-voices iPadOS lists and under what names (enhanced and compact versions of one voice may
-show as two rows with the same name); that the system picker shows the two groups; that
-`u.voice` set to a non-default voice is honoured by WebKit (if it isn't, the sample plays in
+voices iPadOS lists and under what names (built-in ones only, per the 11-17 finding below,
+but compact and super-compact versions of one voice may still show as two rows with the
+same name); that the system picker shows the two groups; that
+`u.voice` set to another voice is honoured by WebKit (if it isn't, the sample plays in
 the old voice whatever is picked, and that is the finding to report); that a `voiceURI` is
 the same after an iPadOS update (if not, the pick falls back to Automatic with the line);
-whether a voice downloaded in Settings really needs the app closed and reopened; and the
-claim about Siri voices, which is Jarvis's brief and WebKit's known behaviour, not something
-I measured. **Go-live:** C&P, then `cd web && npm run build` (no server change, no restart).
-The page reloads itself on the new build. **Device check for Jeff:** on the iPad, ⋮, Chat
+and the claim about Siri voices, which is Jarvis's brief and WebKit's known behaviour, not
+something I measured. Whether a downloaded voice needs the app closed and reopened is
+answered: on iPhone and iPad it never appears (below). **Go-live:** done 11-16 (C&P, then
+`cd web && npm run build`; no server change, no restart). **Device check for Jeff:** on the iPad, ⋮, Chat
 settings, Read-aloud voice: pick a voice, tap Play a sample, close the sheet, tap the
 speaker on a reply; close and reopen the app and the pick is still there. Same on the
 iPhone, which keeps its own pick.
+
+**The hint under the voice list, corrected on `jos/voice-hint` (from main a751e1a,
+2026-11-17, worktree `~/Projects/.worktrees/ccr-voice-hint`), staged, not committed, page
+only.** The picker told Jeff that newly downloaded voices show up after the app is closed
+and reopened. On Apple devices they never do. **The WebKit finding:** WebKit offers a page
+only the voices the system ships with. `PlatformSpeechSynthesizer::appendVoices` in
+`Source/WebCore/platform/cocoa/PlatformSpeechSynthesizerCocoa.mm` (lines 341 to 347 on
+WebKit's `main`; Jarvis read it 11-17 and so did I) adds a voice only
+`if (voice.isSystemVoice)`. That is WebKit bug 203689, in since 2019, to give a page less to
+fingerprint a device by (the bug number and year are from Jarvis's brief). So a voice downloaded in Settings (Enhanced or Premium) is never on
+the list in Safari or the home-screen app on an iPhone or iPad, whatever is closed or
+restarted, and no page code can change that. The file is under `platform/cocoa`, so Safari
+on the Mac should behave the same (not checked). Siri voices aren't offered either, as
+before. Chrome on the Mac uses its own engine and lists every installed macOS voice
+(Jarvis's 11-17 brief; not measured by me), and a fresh download probably needs Chrome
+restarted (unconfirmed, which is why the hint says "if … is missing" and doesn't promise).
+**The hint now reads:** "On iPhone and iPad, web apps are offered only Apple's built-in
+voices; downloaded Enhanced and Premium voices and Siri voices can't be used here. On the
+Mac, restart Chrome if a newly downloaded voice is missing." It is one line of
+`VoicePicker` in `web/src/orbit/Chat.jsx`, the same on every device (no device sniffing).
+**"Automatic" on Apple devices:** that same WebKit line creates every voice with
+`localService` true and `isDefault` true. So on WebKit every listed voice counts as
+on-device (the on-device filter drops none), and every one says `default: true`, which is
+why the flag never followed Jeff's Settings change. `pickLocalVoice` takes the first
+on-device voice whose `default` is true, so on an iPhone or iPad "Automatic" is simply the
+first voice WebKit lists; the language steps after it are never reached there. The list
+names it: "Automatic (<name>)". No code change was made for this (Jarvis's brief). If that
+first voice turns out to be a poor one for Jeff's language, the fix would be to stop
+trusting `default` when more than one on-device voice claims it and go by language, a small
+change in `pickLocalVoice`. **Verified:** web 301 tests, as before (no test in the repo
+pinned the wording, and components have no unit tests); lint clean (only the old Lanes.jsx
+warning); built to a scratch `--outDir` (the live `web/dist` mtime unchanged). The 11-16
+headless picker check, with its hint line changed to want the new sentence whole and the
+old one gone: 62 of 62 on Chromium (the 1223 shell) on a scratch server, at 360, 390, 820
+and 1440; against the 11-16 build it fails exactly those two hint checks (60 of 62). At
+360 px the hint wraps to four lines inside the sheet, with no sideways scroll. **Unverified:**
+the hint on Jeff's devices; whether Chrome on the Mac needs a restart to see a new voice;
+which voice WebKit lists first on the iPad and iPhone (what Automatic names there).
+**Still stale:** README's "Read aloud and search in the Chat tab" bullet says "a newly
+downloaded voice may need the app closed and reopened"; the 11-17 brief limited this change
+to the hint and this file, so that sentence is left for Jarvis's say. **Go-live:** C&P, then
+`cd web && npm run build` in the main checkout (no server change, no restart). The page
+reloads itself on the new build.
