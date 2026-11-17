@@ -69,6 +69,22 @@ export function reachStep(page, target, asked) {
   return 'more';
 }
 
+// One run at a time (the jump to a search result): `run(fn, refused)` answers
+// `refused` without calling fn while an earlier run is going, else fn's answer. It is
+// busy from the moment run is called, before fn's first await, and free again however
+// fn ends.
+export function singleFlight() {
+  let busy = false;
+  return {
+    busy: () => busy,
+    async run(fn, refused) {
+      if (busy) return refused;
+      busy = true;
+      try { return await fn(); } finally { busy = false; }
+    }
+  };
+}
+
 // Plain words for a jump that did not land, or null.
 export function reachProblem(outcome) {
   switch (outcome) {

@@ -2,15 +2,24 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { createSpeaker } from '../lib/orbit/speech.js';
 
 // Read aloud (src/lib/orbit/speech.js): one speaker for the page, over the browser's
-// speechSynthesis. `supported` is false where the browser has none, and the page then
-// shows no speaker button at all.
+// speechSynthesis, in an on-device voice only. The page shows no speaker button where
+// the browser has no speechSynthesis or lists no on-device voice (useCanSpeak).
 let speaker = null;
 export function getSpeaker() {
   if (speaker === null) {
     const w = typeof window === 'undefined' ? null : window;
-    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null });
+    // The voice's language: the page's first, then the browser's.
+    const langs = w ? [w.document?.documentElement?.lang, ...(w.navigator?.languages ?? []), w.navigator?.language] : [];
+    speaker = createSpeaker({ synth: w?.speechSynthesis ?? null, Utterance: w?.SpeechSynthesisUtterance ?? null, langs });
   }
   return speaker;
+}
+
+// Whether an on-device voice is there to speak in; turns true when a voice list that
+// was empty at first load fills in.
+export function useCanSpeak() {
+  const sp = getSpeaker();
+  return useSyncExternalStore(sp.subscribe, sp.canSpeak, () => false);
 }
 
 // The id of the message speaking now, or null; re-renders on every change.

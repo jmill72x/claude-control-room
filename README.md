@@ -974,20 +974,28 @@ three pieces, each with its own router:
   stop), with a `chat: removed N unsent uploads` line.
 - **Read aloud and search in the Chat tab** (2026-11-15). Each of the lead's chat bubbles
   has a speaker button at the start of its time line. A tap reads the message with the
-  browser's `speechSynthesis` (page only, no server call). Markdown markers are dropped,
+  browser's `speechSynthesis` (page only, no server call), in an on-device voice only
+  (`localService === true`, set on every utterance; since 2026-11-16), so the text never
+  goes to a network voice such as Chrome's "Google US English". The default on-device
+  voice comes first, then one in the page's or the browser's language, then any. The voice
+  list is read again on `voiceschanged`, on subscribe and on each tap (it can be empty at
+  first load), and losing the last on-device voice stops the speech. Markdown markers are dropped,
   a link is read by its label, a bare address as "a link to <host>", and a code block as
   "Code block skipped." (`web/src/lib/orbit/speech.js`, tested by
   `web/test/orbit-speech.test.js`; `web/src/orbit/useSpeaker.js`). All of a message's
   pieces (220 characters at most each) are queued inside the tap, because mobile Safari
   speaks only from a gesture. A second tap stops it, a tap on another message replaces it,
   and leaving the tab or hiding the page stops it. The button isn't drawn where the
-  browser has no `speechSynthesis`. The banner's ⋮ is now a menu with Search messages and
+  browser has no `speechSynthesis` or lists no on-device voice. The banner's ⋮ is now a menu with Search messages and
   Chat settings. The search sheet (`web/src/orbit/ChatSearch.jsx`, logic in
   `web/src/lib/orbit/chat-search.js`, tested by `web/test/orbit-chat-search.test.js`)
   searches 300 ms after typing stops and keeps the last query. It shows each snippet as
   plain text with `<mark>` around the matches, never as Markdown, since a snippet is cut
   anywhere. A tap on a result loads older history 100 at a time, at most 20 pages
-  (`useChat`'s `reach`), scrolls the message to the middle and outlines it for 2.6 s. A
+  (`useChat`'s `reach`), scrolls the message to the middle and outlines it for 2.6 s. One
+  jump runs at a time (`singleFlight` in `chat-search.js`): a second pick while one loads
+  is refused and the first one's outcome lands, and the scroll-up loader (`loadOlder`)
+  skips its turn while a jump loads. A
   message further back says so in a note under the banner, as does one no longer in the
   store.
 - **Notifications** (Web Push, the spec's §3; `server/lib/webpush.mjs`,

@@ -3,7 +3,7 @@ import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
 import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
-import { reachStep, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
+import { reachStep, singleFlight, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
 // paired, the thread, the open permission requests, the status, and the stream.
@@ -49,6 +49,8 @@ export function useChat({ active }) {
   const dismissedRef = useRef(new Set());
   const reopenRef = useRef(null);
   const aliveRef = useRef(true);
+  const reachGateRef = useRef(null); // one jump to a search result at a time
+  if (reachGateRef.current === null) reachGateRef.current = singleFlight();
   const pairingRef = useRef(null); // the pairing poll's timer
   const pollRef = useRef(null);    // the poll itself, for a pairing resumed after a reload
 
@@ -192,9 +194,11 @@ export function useChat({ active }) {
   }, [active, phase, openStream, closeStream]);
 
   // ---- older history (scroll-up) ----
+  // Skipped while a jump (reach) loads the same history: two loaders would race on
+  // the thread and on `hasOlder`.
   const loadOlder = useCallback(async () => {
     const before = oldestId(messagesRef.current);
-    if (!before || loadingOlder) return 0;
+    if (!before || loadingOlder || reachGateRef.current.busy()) return 0;
     setLoadingOlder(true);
     try {
       const page = await api.messagesBefore(before, PAGE);
@@ -215,7 +219,8 @@ export function useChat({ active }) {
   // `target.id` is in the thread. The outcome is 'found', 'passed' or 'start' (the
   // store no longer holds it), 'too-far', 'newer' (past what the thread holds: the
   // stream has not brought it yet) or 'error'; lib/orbit/chat-search.js words each one.
-  const reach = useCallback(async target => {
+  // One jump at a time: a second while one loads answers 'busy' and loads nothing.
+  const reach = useCallback(target => reachGateRef.current.run(async () => {
     const have = messagesRef.current;
     if (have.some(m => m.id === target.id)) return 'found';
     let before = oldestId(have);
@@ -237,7 +242,7 @@ export function useChat({ active }) {
       before = list[0].id;
     }
     return 'too-far';
-  }, [unpaired]);
+  }, 'busy'), [unpaired]);
 
   // ---- sending ----
   const setPending = (clientId, patch) => setMessages(list => list.map(m => (m.clientId === clientId && !Number.isInteger(m.seq) ? { ...m, ...patch } : m)));

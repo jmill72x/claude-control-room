@@ -8,7 +8,7 @@ import { prepareFile } from './photo.js';
 import * as push from './pushApi.js';
 import { holdReload } from './buildWatch.js';
 import { ChatSearch } from './ChatSearch.jsx';
-import { getSpeaker, useSpeaking, useStopSpeechWhenAway } from './useSpeaker.js';
+import { getSpeaker, useCanSpeak, useSpeaking, useStopSpeechWhenAway } from './useSpeaker.js';
 import { reachProblem } from '../lib/orbit/chat-search.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
@@ -132,6 +132,7 @@ function Thread({ chat, now, lead, onSettings }) {
   const [jump, setJump] = useState(null); // { busy: true } | { problem }
   const menuBtnRef = useRef(null);
   const speaking = useSpeaking();
+  const canSpeak = useCanSpeak();
   useStopSpeechWhenAway();
   const { messages, hasOlder, loadingOlder } = chat;
   const topRef = useRef(null);
@@ -198,6 +199,8 @@ function Thread({ chat, now, lead, onSettings }) {
     setSearching(false);
     setJump({ busy: true });
     const outcome = await chat.reach({ id: r.id, seq: r.seq });
+    // Refused: an earlier jump is still loading, and its own outcome lands.
+    if (outcome === 'busy') return;
     const problem = reachProblem(outcome);
     if (problem) { setJump({ problem }); return; }
     setJump(null);
@@ -258,7 +261,7 @@ function Thread({ chat, now, lead, onSettings }) {
           {messages.length === 0 && <li className="o-chat-empty">No messages yet. Say hello.</li>}
           {rows.map(row => (row.type === 'day'
             ? <li key={row.key} className="o-chat-day"><span>{row.label}</span></li>
-            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} speaking={speaking} found={found === row.message.id} />))}
+            : <Row key={row.key} m={row.message} list={messages} lead={lead} chat={chat} onReply={setReplyTo} onView={setViewing} speaking={speaking} canSpeak={canSpeak} found={found === row.message.id} />))}
         </ol>
         <div className="o-chat-bottom">
           {cards.length > 0 && (
@@ -304,11 +307,11 @@ function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
 }
 
 // Read aloud on one of the lead's bubbles (src/lib/orbit/speech.js). Shown only where
-// the browser has speechSynthesis; the tap itself starts the speech (mobile Safari
-// speaks from a user gesture only).
-function SpeakButton({ m, speaking }) {
+// the browser has speechSynthesis and an on-device voice (`canSpeak`); the tap itself
+// starts the speech (mobile Safari speaks from a user gesture only).
+function SpeakButton({ m, speaking, canSpeak }) {
   const sp = getSpeaker();
-  if (!sp.supported) return null;
+  if (!canSpeak) return null;
   const on = speaking === m.id;
   return (
     <button type="button" className={`o-chat-speakbtn${on ? ' o-chat-speaking' : ''}`} aria-label="Read aloud" aria-pressed={on} onClick={() => sp.toggle(m.id, m.text)}>
@@ -319,7 +322,7 @@ function SpeakButton({ m, speaking }) {
   );
 }
 
-function Row({ m, list, lead, chat, onReply, onView, speaking, found }) {
+function Row({ m, list, lead, chat, onReply, onView, speaking, canSpeak, found }) {
   // A notice carries its own time in its words ("… restarted 08:06").
   const mid = m.id ?? undefined;
   const foundClass = found ? ' o-chat-found' : '';
@@ -362,7 +365,7 @@ function Row({ m, list, lead, chat, onReply, onView, speaking, found }) {
         )}
         {m.text && <Markdown text={m.text} className="o-chat-text o-md" />}
         <div className="o-chat-meta">
-          {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} />}
+          {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} canSpeak={canSpeak} />}
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
           {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}

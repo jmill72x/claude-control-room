@@ -1,7 +1,9 @@
 // Read aloud on the lead's chat bubbles: the browser's own speech engine
 // (window.speechSynthesis), on the page alone. No server change and no network call
-// from here (a system voice may itself be a network voice; that is the browser's
-// choice). Checked by web/test/orbit-speech.test.js.
+// from here. Only an on-device voice is used (localService true), set on every piece,
+// so Jarvis's words never go to a network voice such as Chrome's "Google US English"
+// (option (a), 2026-11-16). Where the browser lists no on-device voice the speaker
+// can't speak and the page shows no button. Checked by web/test/orbit-speech.test.js.
 //
 // What is spoken is the message's words without its Markdown: the same parser as the
 // bubble (markdown.js), so emphasis, headings and inline code read as their words, a
@@ -94,17 +96,64 @@ export function speechChunks(text, max = CHUNK_MAX) {
   return out;
 }
 
+// A language tag compared loosely: case and Android's underscore don't matter.
+const tagOf = t => (typeof t === 'string' ? t.trim().toLowerCase().replace(/_/g, '-') : '');
+
+// The voice to speak in, from speechSynthesis.getVoices(): on-device ones only (a
+// real `localService === true`), the default one first, then the first of `langs`
+// (the page's language, then the browser's) matched exactly, then by language alone
+// (en-US finds en-GB), then any. null when none is on-device.
+export function pickLocalVoice(voices, langs = []) {
+  const local = (Array.isArray(voices) ? voices : []).filter(v => v !== null && typeof v === 'object' && v.localService === true);
+  if (local.length === 0) return null;
+  const preferred = local.find(v => v.default === true);
+  if (preferred) return preferred;
+  const wants = (Array.isArray(langs) ? langs : []).map(tagOf).filter(Boolean);
+  for (const w of wants) { const hit = local.find(v => tagOf(v.lang) === w); if (hit) return hit; }
+  for (const w of wants) {
+    const base = w.split('-')[0];
+    const hit = local.find(v => tagOf(v.lang).split('-')[0] === base);
+    if (hit) return hit;
+  }
+  return local[0];
+}
+
 // The speaker over a speechSynthesis (`synth`) and its utterance class. `current()` is
-// the id of the message speaking, or null; `subscribe(fn)` calls fn on every change.
-// Each start takes a new token, and an utterance's late end or error (a cancelled
-// message's) acts only while its own token is the current one.
-export function createSpeaker({ synth = null, Utterance = null, chunkMax = CHUNK_MAX } = {}) {
-  const supported = Boolean(synth && typeof synth.speak === 'function' && typeof synth.cancel === 'function' && typeof Utterance === 'function');
+// the id of the message speaking, or null; `canSpeak()` says whether an on-device voice
+// is there to speak in; `subscribe(fn)` calls fn on every change of either. Each start
+// takes a new token, and an utterance's late end or error (a cancelled message's) acts
+// only while its own token is the current one.
+//
+// The voice list can be empty at first load (Chrome fills it in later and says so with
+// `voiceschanged`; some engines fill it without the event), so it is read again on
+// that event, on every subscribe and on every tap. Without getVoices there is no way
+// to tell an on-device voice from a network one, so that engine counts as none.
+export function createSpeaker({ synth = null, Utterance = null, chunkMax = CHUNK_MAX, langs = [] } = {}) {
+  const supported = Boolean(synth && typeof synth.speak === 'function' && typeof synth.cancel === 'function'
+    && typeof synth.getVoices === 'function' && typeof Utterance === 'function');
   const listeners = new Set();
   let current = null; // { id, token }
   let token = 0;
+  let voice = null;
   const emit = () => { for (const fn of [...listeners]) fn(); };
   const cancel = () => { try { synth.cancel(); } catch { /* nothing to stop */ } };
+
+  // Reads the list again. Losing the last on-device voice stops what is speaking.
+  function refreshVoice() {
+    if (!supported) return;
+    let list = [];
+    try { list = synth.getVoices(); } catch { list = []; }
+    const had = voice !== null;
+    voice = pickLocalVoice(list, langs);
+    if (voice === null && current) { current = null; token++; cancel(); emit(); return; }
+    if (had !== (voice !== null)) emit();
+  }
+
+  if (supported) {
+    if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', refreshVoice);
+    else if (synth.onvoiceschanged == null) synth.onvoiceschanged = refreshVoice;
+    refreshVoice();
+  }
 
   function stop() {
     if (!current) return;
@@ -117,6 +166,8 @@ export function createSpeaker({ synth = null, Utterance = null, chunkMax = CHUNK
   function toggle(id, md) {
     if (!supported) return false;
     if (current && current.id === id) { stop(); return false; }
+    refreshVoice();
+    if (voice === null) return false;
     const chunks = speechChunks(speechText(md), chunkMax);
     if (chunks.length === 0) return false;
     // One at a time: whatever speaks now (this speaker's, or anything else on the page) stops first.
@@ -127,6 +178,9 @@ export function createSpeaker({ synth = null, Utterance = null, chunkMax = CHUNK
     try {
       chunks.forEach((text, i) => {
         const u = new Utterance(text);
+        // Always named: left unset, the browser may pick a network voice.
+        u.voice = voice;
+        if (typeof voice.lang === 'string' && voice.lang) u.lang = voice.lang;
         // An engine error ends the whole message, its later pieces too.
         u.onerror = () => { if (!isMine()) return; current = null; cancel(); emit(); };
         if (i === chunks.length - 1) u.onend = () => { if (!isMine()) return; current = null; emit(); };
@@ -146,6 +200,7 @@ export function createSpeaker({ synth = null, Utterance = null, chunkMax = CHUNK
   return {
     supported, toggle, stop,
     current: () => (current ? current.id : null),
-    subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; }
+    canSpeak: () => supported && voice !== null,
+    subscribe(fn) { listeners.add(fn); refreshVoice(); return () => { listeners.delete(fn); }; }
   };
 }

@@ -2099,17 +2099,17 @@ tables is Deny-only on the page. **Follow-ups, not built:** the page's link-labe
 needs a web build, the second a look at what the board's fields must allow (U+200D sits inside
 combined emoji, and the set marks it).
 
-**Read aloud, chat search and the icon badge, staged on `jos/read-search-badge` (from main
-82449f7, 2026-11-15, worktree `~/Projects/.worktrees/ccr-read-search-badge`), not committed,
-not live.** Jeff's yes to Shuri's scout items 1 and 2 ("Yes do 1&2", 11-15), plus his ask
+**Read aloud, chat search and the icon badge, on main a6d46ff (committed 2026-11-16), not
+live yet.** Jeff's yes to Shuri's scout items 1 and 2 ("Yes do 1&2", 11-15), plus his ask
 the same day: "can we get a chat notification badge on the icon?" README ("The chat with
 the lead agent": the routes bullet, the Chat tab bullet and "Read aloud and search in the
 Chat tab") has how each works. (1) **Read aloud:** a speaker button on each of the lead's
-chat bubbles uses the browser's `speechSynthesis`, on the page only, with no server change.
+chat bubbles uses the browser's `speechSynthesis`, on the page only, with no server change,
+in an on-device voice only (see "On-device voices only" below).
 It reads the words without Markdown: a code block is "Code block skipped.", a link is read
 by its label, and a bare address as "a link to <host>". The whole message is queued inside
 the tap. A second tap stops it, another message replaces it, and leaving the tab or hiding
-the page stops it. The button isn't drawn without `speechSynthesis`. (2) **Search:** a
+the page stops it. The button isn't drawn without `speechSynthesis` or an on-device voice. (2) **Search:** a
 read-only `GET /api/chat/search?q=` (`server/lib/chat-search.mjs`; the route is 4 lines in
 `chat-routes.mjs`, plus `store.newest(n)`). It has `/api/feed`'s read rule (a paired
 device with the owner's login) and looks at message text only: chat messages and event
@@ -2150,9 +2150,8 @@ in the home-screen app (whether the silent switch mutes it, whether a long messa
 and whether `cancel()` then `speak()` in one tap works on WebKit); the badge on iOS (it
 needs notification permission; the page sets it only while it runs) and on the Chrome app
 on the Mac (Dock); Safari's layout of the menu and the search sheet with the keyboard up.
-**Go-live order:** Ultron reviews the route (`chat-search.mjs`, the route block and
-`store.newest`); C&P; restart the server (the loop 3 Restart card, or Vision); then `cd web &&
-npm run build`. A build before the restart is safe except that search answers "Couldn't
+**Go-live order:** restart the server (the loop 3 Restart card, or Vision); then `cd web &&
+npm run build`. If `jos/local-voice` (below) is merged first, the same build carries it. A build before the restart is safe except that search answers "Couldn't
 search: not found" until the restart. **Device checks for Jeff:** on the iPhone, tap the
 speaker on one of Jarvis's replies; open ⋮, then Search messages, search a word from last
 week and tap the result; leave the app on the Board tab, and after Jarvis's next reply the
@@ -2160,3 +2159,36 @@ icon shows a number. On the Mac, the Dock icon shows the count while the app sit
 another tab or minimised (within a minute), and opening Chat clears it. Unrelated, and
 still open: the Shortcuts follow-up "Ask Jarvis speaking the answer" is the Shortcut
 speaking, not the page.
+
+**On-device voices only, and one jump at a time, staged on `jos/local-voice` (from main
+a6d46ff, 2026-11-16, worktree `~/Projects/.worktrees/ccr-local-voice`), not committed, page
+only.** Jeff picked option (a) for Ultron's read-aloud low on 11-16 ("Def A"): Jarvis's text
+must never go to a network voice (Chrome on the Mac lists "Google US English",
+`localService: false`, and with no voice set it may be picked). `pickLocalVoice` in
+`web/src/lib/orbit/speech.js` keeps voices whose `localService` is exactly `true`, then takes
+the default one, then the first of the page's language (`<html lang>`) and the browser's
+(`navigator.languages`) matched exactly, then by language alone, then any. The speaker sets
+`u.voice` (and `u.lang`) on every piece. The list is read again on `voiceschanged`, on
+subscribe and on every tap, since it can be empty at first load; an engine without
+`getVoices` counts as having no voice, since locality can't be told. With no on-device voice
+the button isn't drawn (`useCanSpeak` in `useSpeaker.js`), and losing the last one while
+speaking stops the speech. Also Ultron's other two 11-15 lows on board 9e0b1c52: the search
+jump `reach()` in `useChat.js` is single-flight (`singleFlight()` in `chat-search.js`, held
+in a ref; a second pick while one loads answers `busy`, which `Chat.jsx` ignores so the first
+jump's outcome lands), and `loadOlder` returns 0 while a jump loads. Search rate limiting was
+left alone, as briefed. **Verified:** web 287 tests (11 new: 9 speech, 2 single-flight),
+server 1294 in local time and Tokyo, lint clean (only the old Lanes.jsx warning). 25
+mutations: 24 caught; the survivor swaps the `Array.isArray` guard for `Array.from`, the same
+for anything `getVoices` returns (a real array by spec). Built to a scratch `--outDir` (the
+live `web/dist` mtime unchanged). Headless Chromium on a scratch server (2,300 seeded
+messages, 390 px): 14 of 14 new checks (the network voice as default with an on-device one
+listed speaks in the on-device one; only a network voice shows no button; an empty list that
+fills in later shows the buttons; losing the on-device voice mid-speech stops it; two picks
+of a 13-page jump load 13 pages, none of them the scroll-up loader's 50). A build with the
+gate removed fails both jump checks (24 requests, one of 50). The 11-15 harness, with its
+fake engine given an on-device voice, still passes 43 of 43. **Faked:** `speechSynthesis`
+and its voice list (the headless shell has none). **Unverified (needs Jeff's devices):**
+which voices iOS Safari and the Mac's Chrome actually list as on-device and which one is
+picked; if an iPhone lists none as local, the button disappears there. **Device check:** on
+the Mac's Chrome app, the speaker reads in a macOS voice (Samantha or the system voice), not
+Google's; on the iPhone the button is still there and speaks.

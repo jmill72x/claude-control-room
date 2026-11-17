@@ -4,7 +4,7 @@
 // here is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchable, snippetParts, resultWho, searchSummary, reachStep, reachProblem, REACH_PAGE, REACH_PAGES_MAX, SEARCH_DEBOUNCE_MS } from '../src/lib/orbit/chat-search.js';
+import { searchable, snippetParts, resultWho, searchSummary, reachStep, reachProblem, singleFlight, REACH_PAGE, REACH_PAGES_MAX, SEARCH_DEBOUNCE_MS } from '../src/lib/orbit/chat-search.js';
 
 test('a query is sent at 2 to 100 characters after trimming', () => {
   assert.equal(SEARCH_DEBOUNCE_MS, 300);
@@ -79,3 +79,30 @@ test('reachProblem: plain words for each way a jump can fail', () => {
   assert.match(reachProblem('newer'), /reopen the Chat tab/);
   assert.match(reachProblem('error'), /couldn't load/i);
 });
+
+// Ultron's 11-15 low (board 9e0b1c52): one jump at a time. A second pick while a jump
+// loads is refused (its outcome 'busy'), and the scroll-up loader skips its turn.
+test('singleFlight: a second run while one is going is refused, not started', async () => {
+  const gate = singleFlight();
+  assert.equal(gate.busy(), false);
+  let release;
+  let started = 0;
+  const first = gate.run(() => { started++; return new Promise(r => { release = r; }); }, 'busy');
+  assert.equal(gate.busy(), true, 'busy from the moment it starts, before any await');
+  assert.equal(await gate.run(() => { started++; return 'second'; }, 'busy'), 'busy');
+  assert.equal(started, 1, 'the second never ran');
+  release('found');
+  assert.equal(await first, 'found');
+  assert.equal(gate.busy(), false);
+  assert.equal(await gate.run(async () => 'again', 'busy'), 'again', 'free once the first is done');
+});
+
+test('singleFlight: a run that throws still frees the gate', async () => {
+  const gate = singleFlight();
+  await assert.rejects(gate.run(async () => { throw new Error('boom'); }, 'busy'), /boom/);
+  assert.equal(gate.busy(), false);
+  await assert.rejects(gate.run(() => { throw new Error('sync'); }, 'busy'), /sync/);
+  assert.equal(gate.busy(), false);
+  assert.equal(await gate.run(() => 'ok', 'busy'), 'ok');
+});
+
