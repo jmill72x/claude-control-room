@@ -113,21 +113,91 @@ test('a collector may name one to run right after it: once per successful run, a
   assert.equal(seen.length, 3);
 });
 
-test('the run that follows is not waited for, and is skipped while that collector is already running', async () => {
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('the run that follows is not waited for, and never runs beside one already under way', async () => {
   const cache = createCache();
   const r = createRegistry(cache, fakeTimers());
   let release;
-  let runs = 0;
+  let runs = 0, most = 0, active = 0;
   r.register('usage', async () => 1, 1000, { then: 'notifier' });
-  r.register('notifier', () => { runs++; return new Promise(resolve => { release = resolve; }); }, 1000);
+  r.register('notifier', async () => { runs++; most = Math.max(most, ++active); await new Promise(resolve => { release = resolve; }); active--; return {}; }, 1000);
   const first = await Promise.race([r.runOnce('usage').then(() => 'ended'), new Promise(resolve => setTimeout(() => resolve('still waiting'), 200))]);
   assert.equal(first, 'ended', 'the usage run ends while the notifier is still running');
   assert.equal(runs, 1, 'and the notifier has started');
   await r.runOnce('usage');
-  assert.equal(runs, 1, 'still running: skipped, not stacked');
-  release({});
-  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runs, 1, 'still running: not stacked');
+  release();
+  await tick();
+  assert.equal(most, 1);
+  release();
+});
+
+test('a run that follows another and meets one under way is not lost: one more run comes after it, however many asked, on the newest value', async () => {
+  const cache = createCache();
+  const r = createRegistry(cache, fakeTimers());
+  let release, pct = 0;
+  const seen = [];
+  r.register('usage', async () => ({ pct: ++pct }), 1000, { then: 'notifier' });
+  r.register('notifier', async () => { seen.push(cache.get('usage', Date.now()).data.pct); await new Promise(resolve => { release = resolve; }); return {}; }, 1000);
   await r.runOnce('usage');
+  await tick();
+  assert.deepEqual(seen, [1], 'the notifier is under way, on the first reading');
+  await r.runOnce('usage');
+  await r.runOnce('usage');
+  await tick();
+  assert.deepEqual(seen, [1], 'two more readings came meanwhile; nothing ran beside it');
+  release();
+  await tick();
+  assert.deepEqual(seen, [1, 3], 'one more run, and it read the newest');
+  release();
+  await tick();
+  await tick();
+  assert.deepEqual(seen, [1, 3], 'one, not one per ask');
+  // The same again later: the note was cleared, and is taken anew.
+  await r.runOnce('usage');
+  await tick();
+  await r.runOnce('usage');
+  release();
+  await tick();
+  assert.deepEqual(seen, [1, 3, 4, 5]);
+  release();
+  await tick();
+  assert.deepEqual(seen, [1, 3, 4, 5]);
+});
+
+test('only a run that follows another is kept for later: a timer\'s or a caller\'s run that meets one under way is skipped, as ever', async () => {
+  const cache = createCache();
+  const timers = fakeTimers();
+  const r = createRegistry(cache, timers);
+  let release, runs = 0;
+  r.register('notifier', async () => { runs++; await new Promise(resolve => { release = resolve; }); return {}; }, 1000);
+  r.startAll();
+  await tick();
+  assert.equal(runs, 1);
+  timers.jobs[0].fn();
+  await r.runOnce('notifier');
+  release();
+  await tick();
+  await tick();
+  assert.equal(runs, 1, 'skipped, and not made up for');
+  await r.runOnce('nobody', { again: true });
+});
+
+test('the run kept for later comes after a run that failed too', async () => {
+  const cache = createCache();
+  const r = createRegistry(cache, fakeTimers());
+  let release, runs = 0;
+  r.register('usage', async () => 1, 1000, { then: 'notifier' });
+  r.register('notifier', async () => { const n = ++runs; await new Promise(resolve => { release = resolve; }); if (n === 1) throw new Error('first pass failed'); return { n }; }, 1000);
+  await r.runOnce('usage');
+  await tick();
+  await r.runOnce('usage');
+  release();
+  await tick();
   assert.equal(runs, 2);
-  release({});
+  assert.equal(cache.get('notifier', Date.now()).status, 'unavailable', 'the failure is on show until the next run ends');
+  release();
+  await tick();
+  assert.deepEqual(cache.get('notifier', Date.now()).data, { n: 2 });
 });

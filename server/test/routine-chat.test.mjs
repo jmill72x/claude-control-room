@@ -110,6 +110,31 @@ test('the body: text shaped like a credential is refused by the pattern\'s name,
   }
 });
 
+test('the body: a credential split by a kept invisible character is refused too, and so is one only the stored text shows', () => {
+  const tail = 'a1B2'.repeat(8);
+  const refusal = 'the text looks like it holds an Anthropic key; it was not added';
+  const joiner = cp(0x200d), selector = cp(0xfe0f);
+  // The joiner and the variation selector are kept (emoji are made of them), draw as
+  // nothing, and would hide a key from every pattern.
+  for (const text of [`sk-ant-${joiner}${tail}`, `sk-ant-${selector}${tail}`, `sk-${joiner}ant-${tail.slice(0, 9)}${selector}${joiner}${tail.slice(9)}`, `the key is s${selector}k-ant-${tail} today`]) {
+    const r = checkRoutinePost({ kind: 'brief', text });
+    assert.equal(r.ok, false);
+    assert.equal(r.error, refusal);
+  }
+  // The text as stored is still read as well: here the joiner is the word boundary
+  // the pattern needs, and with it gone the key would follow a letter and fit nothing.
+  assert.equal(checkRoutinePost({ kind: 'brief', text: `x${joiner}sk-ant-${tail}` }).error, refusal);
+  // Two shapes, one in each reading, are both named, each once.
+  const gh = `ghp_${'c3D4'.repeat(6)}`;
+  assert.equal(checkRoutinePost({ kind: 'brief', text: `${gh} and sk-ant-${joiner}${tail}` }).error, 'the text looks like it holds a GitHub token, an Anthropic key; it was not added');
+  // The copy is for the check alone: what is stored keeps both characters.
+  const family = cp(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467), heart = cp(0x2764, 0xfe0f);
+  const ok = checkRoutinePost({ kind: 'brief', text: `Good morning ${family} ${heart}` });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value.text, `Good morning ${family} ${heart}`);
+  assert.equal(ok.value.removed, 0);
+});
+
 test('the text is cleaned: line ends become newlines, controls and the characters that hide or reorder text go, emoji stay', () => {
   assert.deepEqual(cleanRoutineText('one\r\ntwo\rthree\n\tfour'), { text: 'one\ntwo\nthree\n\tfour', removed: 0 });
   assert.deepEqual(cleanRoutineText(`a${cp(0x2028)}b${cp(0x2029)}c`), { text: 'a\nb\nc', removed: 0 });

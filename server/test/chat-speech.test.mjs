@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import {
   createSpeech, readSpeechConfig, clearSpeechCache, parseVoices, resolveVoice, voiceBase, speakable, parseRange, isVoiceName,
   SAY, DEFAULT_VOICE, BUILT_IN_VOICES, SPEECH_TEXT_MAX, RENDER_TIMEOUT_MS, VOICES_TTL_MS, RENDERS_WAITING_MAX,
-  RENDERS_PER_WINDOW, RENDER_WINDOW_MS, RENDERS_PER_DAY, FAILED_TTL_MS, FAILED_MAX, SWEEP_EVERY_MS, LIST_FAILS_MAX, CACHE_VERSION,
+  RENDERS_PER_WINDOW, RENDER_WINDOW_MS, RENDERS_PER_DAY, FAILED_TTL_MS, FAILED_MAX, FAIL_LOG_MS, SWEEP_EVERY_MS, LIST_FAILS_MAX, CACHE_VERSION,
   AUDIO_MAX_BYTES, CACHE_MAX_BYTES, CACHE_MAX_FILES, CACHE_MAX_AGE_MS, WORK_MAX_AGE_MS, AUDIO_TYPE
 } from '../lib/chat-speech.mjs';
 import * as speechConfig from '../lib/chat-speech-config.mjs';
@@ -103,6 +103,7 @@ test('the limits are what the docs say', () => {
   assert.equal(RENDERS_PER_DAY, 300);
   assert.equal(FAILED_TTL_MS, 10 * 60e3);
   assert.equal(FAILED_MAX, 100);
+  assert.equal(FAIL_LOG_MS, 60e3);
   assert.equal(SWEEP_EVERY_MS, 3600e3);
   assert.equal(LIST_FAILS_MAX, 2);
   assert.equal(AUDIO_MAX_BYTES, 16 * 1024 * 1024);
@@ -638,7 +639,8 @@ test('each device may start so many renders in a window; cached audio and other 
 
 test('a render that fails leaves nothing behind and says so plainly: timeout, failure, no file, not audio, too large', async t => {
   const say = fakeSay();
-  const { get, jarvis, dir, lines } = await makeEnv(t, { say });
+  // failLogMs 0: every failure's line is written, where the log holds it to one a minute.
+  const { get, jarvis, dir, lines } = await makeEnv(t, { say, speechOpts: { failLogMs: 0 } });
   let n = 0;
   const next = async () => { n++; return jarvis(`Attempt ${n} of the secret plan.`); };
   const ask = async () => { const m = await next(); const r = await get(`/api/chat/speech/${m.id}`); return { status: r.status, error: JSON.parse(r.buf).error }; };
@@ -833,12 +835,14 @@ test('a failure of the server\'s own takes back that render\'s start and no othe
 
 test('a cache folder that can\'t be made again is a plain 502: no path in the answer or the log, nothing remembered, nothing charged', async t => {
   const say = fakeSay();
-  const { get, jarvis, dir, lines } = await makeEnv(t, { say, speechOpts: { perWindow: 1, windowMs: 3600e3, perDay: 1 } });
+  const { env, get, jarvis, dir, lines } = await makeEnv(t, { say, speechOpts: { perWindow: 1, windowMs: 3600e3, perDay: 1 } });
   // A file where the folder was: it can't be made, and must not be used.
   await rm(dir, { recursive: true, force: true });
   await writeFile(dir, 'not a folder');
   const m = await jarvis('The folder is a file now.');
   for (let i = 0; i < 3; i++) {
+    // A minute apart, so each failure has its own log line (the line is held to one a minute).
+    env.clock.t += FAIL_LOG_MS;
     const r = await get(`/api/chat/speech/${m.id}`);
     assert.equal(r.status, 502, `ask ${i}`);
     assert.equal(JSON.parse(r.buf).error, 'the voice could not read this');
@@ -865,6 +869,86 @@ test('a cache folder that can\'t be made again is a plain 502: no path in the an
   assert.equal(say.calls.length, 1);
   const next = await jarvis('One too many.');
   assert.equal((await get(`/api/chat/speech/${next.id}`)).status, 429, 'and that one render was charged');
+});
+
+test('the log\'s "failed" line is written at most once a minute, and the next one says how many went unsaid', async t => {
+  const say = fakeSay();
+  const { env, get, jarvis, dir, lines } = await makeEnv(t, { say });
+  // A file where the cache folder was: every ask fails as the server's own trouble,
+  // which is not remembered, so each ask is a failure of its own.
+  await rm(dir, { recursive: true, force: true });
+  await writeFile(dir, 'not a folder');
+  const m = await jarvis('Asked again and again.');
+  const ask = async () => assert.equal((await get(`/api/chat/speech/${m.id}`)).status, 502);
+  const failed = () => lines.filter(l => /failed/.test(l));
+  const LINE = `speech: a render of ${'Asked again and again.'.length} characters for Test Phone failed \\((?:EEXIST|ENOTDIR|error)\\)`;
+  for (let i = 0; i < 3; i++) await ask();
+  assert.equal(failed().length, 1, 'three failures in one moment, one line');
+  assert.match(failed()[0], new RegExp(`^${LINE}$`));
+  env.clock.t += FAIL_LOG_MS - 1;
+  await ask();
+  assert.equal(failed().length, 1, 'a millisecond short of the minute');
+  env.clock.t += 1;
+  await ask();
+  assert.equal(failed().length, 2);
+  assert.match(failed()[1], new RegExp(`^${LINE}; 3 more failed since the last such line$`));
+  // The minute runs from the line just written.
+  env.clock.t += FAIL_LOG_MS - 1;
+  await ask();
+  assert.equal(failed().length, 2);
+  env.clock.t += 1;
+  await ask();
+  assert.match(failed()[2], new RegExp(`^${LINE}; 1 more failed since the last such line$`));
+  // Nothing unsaid, nothing added.
+  env.clock.t += FAIL_LOG_MS;
+  await ask();
+  assert.match(failed()[3], new RegExp(`^${LINE}$`));
+  // A clock set back never holds the line; the minute then runs from the new time.
+  env.clock.t -= 3600e3;
+  await ask();
+  assert.equal(failed().length, 5);
+  await ask();
+  env.clock.t += FAIL_LOG_MS - 1;
+  await ask();
+  assert.equal(failed().length, 5);
+  env.clock.t += 1;
+  await ask();
+  assert.match(failed()[5], new RegExp(`^${LINE}; 2 more failed since the last such line$`));
+  assert.equal(say.calls.length, 0);
+});
+
+test('the day\'s count never goes under zero: starts either side of midnight, both taken back, leave the new day its full limit and no more', async t => {
+  // Half a minute to local midnight, whatever the zone.
+  const start = new Date(2026, 10, 16, 23, 59, 30).getTime();
+  const say = fakeSay();
+  const { env, speech, get, jarvis, dir } = await makeEnv(t, { say, speechOpts: { perDay: 2 }, envOpts: { start } });
+  const texts = ['Started before midnight, never kept.', 'Started after midnight, never kept.', 'Third.', 'Fourth.', 'Fifth.'];
+  const ms = [];
+  for (const text of texts) ms.push(await jarvis(text));
+  const ask = m => get(`/api/chat/speech/${m.id}`);
+  // Neither of the first two can be kept: a folder sits where each one's audio would
+  // go, so the move into the cache fails after `say` has done its part. The server's
+  // own trouble, so each start is taken back.
+  for (const text of texts.slice(0, 2)) {
+    const name = `${createHash('sha256').update([CACHE_VERSION, 'Samantha', text].join(String.fromCharCode(0))).digest('hex')}.m4a`;
+    await mkdir(join(dir, name));
+    await writeFile(join(dir, name, 'in the way'), 'x');
+  }
+  say.hold();
+  const first = ask(ms[0]);
+  assert.ok(await until(() => say.calls.length === 1), 'the first render started, the day before');
+  env.clock.t += 60e3;
+  const second = ask(ms[1]);
+  assert.ok(await until(() => speech.waiting() === 1), 'the second started in the new day, and waits its turn');
+  say.release();
+  assert.equal((await first).status, 502);
+  assert.equal((await second).status, 502);
+  // The new day: two renders, its limit, and the third is refused.
+  assert.equal((await ask(ms[2])).status, 200);
+  assert.equal((await ask(ms[3])).status, 200);
+  const over = await ask(ms[4]);
+  assert.equal(over.status, 429);
+  assert.match(JSON.parse(over.buf).error, /read its fill for today/);
 });
 
 test('every device together may start so many renders in a local day; said once in the log; the next day starts over', async t => {

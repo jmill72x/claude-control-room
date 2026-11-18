@@ -29,6 +29,7 @@ import { readToPushConfig } from './lib/to-push.mjs';
 import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier, entrySender } from './collectors/notifier.mjs';
+import { createSentStore } from './lib/sent-store.mjs';
 import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
 import { createChatEventHandler, NTFY_WORDS, oneLine } from './lib/chat-events.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
@@ -288,14 +289,8 @@ registry.register('sessions', async () => {
 // while there is still room to archive the done lane. A stat, nothing more.
 registry.register('board', async () => ({ bytes: await todos.size(), cap: BOARD_MAX_BODY }), 60 * 1000);
 
-const SENT_PATH = join(HERE, 'data', 'notified.json');
-const readSent = async () => {
-  try { return JSON.parse(await readFile(SENT_PATH, 'utf8')); } catch { return {}; }
-};
-const writeSent = async next => {
-  await mkdir(dirname(SENT_PATH), { recursive: true });
-  await writeFile(SENT_PATH, JSON.stringify(next, null, 2));
-};
+// What the notifier has told (lib/sent-store.mjs): written through a temp file, 0600.
+const sentStore = createSentStore(join(HERE, 'data', 'notified.json'));
 
 // Events (lib/events.mjs): made from the notifier's alerts after acks, once the chat
 // is on (below). Until then, and with the chat off, the hook is absent.
@@ -318,8 +313,8 @@ registry.register('notifier', async () => {
     snapshot: { ...cache.snapshot(now), needsYou: { status: 'ok', data: needsYou.view(now), fetchedAt: now, error: null } },
     config,
     now,
-    readSent,
-    writeSent,
+    readSent: sentStore.read,
+    writeSent: sentStore.write,
     acks: await ackStore.read(now),
     send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message }), devices: limitPush }),
     events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys }))

@@ -226,6 +226,8 @@ const passes = (h, send, logs = []) => {
   return { run: (pct, reset = W1) => { now += 5 * 60e3; return runNotifier({ snapshot: sessionAt(pct, reset), config: cfg85, now, ...h, send, log: l => logs.push(l) }); }, at: t => { now = t; } };
 };
 const KEY80 = `limit-step:Current session:80:${W1}`;
+// What is owed without each debt's time (`at`; limit-hardening.test.mjs has those).
+const bare = owed => Object.fromEntries(Object.entries(owed).map(([k, { at: _at, ...rest }]) => [k, rest]));
 
 test('a warning the alert took but a device missed: that device alone is tried again, with no second alert, until it lands', async () => {
   const h = harness();
@@ -234,13 +236,13 @@ test('a warning the alert took but a device missed: that device alone is tried a
   const p = passes(h, send, logs);
   const first = await p.run(81);
   assert.equal(first.sent, 1);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, { [KEY80]: { passes: 0, missed: ['aa'] } });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), { [KEY80]: { passes: 0, missed: ['aa'] } });
   const second = await p.run(82);
   assert.deepEqual([second.sent, second.retried, second.skipped, second.capped], [0, 1, 0, undefined]);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, { [KEY80]: { passes: 1, missed: ['aa'] } });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), { [KEY80]: { passes: 1, missed: ['aa'] } });
   const third = await p.run(83);
   assert.equal(third.retried, 1);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, {}, 'it landed');
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), {}, 'it landed');
   const fourth = await p.run(84);
   assert.deepEqual([fourth.retried, fourth.skipped], [undefined, 1]);
   assert.equal(calls.length, 3);
@@ -259,12 +261,12 @@ test('a device that keeps missing is tried on three later passes and no more; th
   const p = passes(h, send, logs);
   await p.run(81);
   await p.run(81);
-  assert.deepEqual(h.store[LIMIT_STATE].owed[KEY80], { passes: 1, missed: ['bb'] });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed)[KEY80], { passes: 1, missed: ['bb'] });
   await p.run(81);
-  assert.deepEqual(h.store[LIMIT_STATE].owed[KEY80], { passes: 2, missed: ['bb'] });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed)[KEY80], { passes: 2, missed: ['bb'] });
   assert.deepEqual(logs, []);
   await p.run(81);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, {});
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), {});
   assert.deepEqual(logs, ['push: a limit warning did not reach every device in 3 more tries; no more are made']);
   await p.run(81);
   await p.run(81);
@@ -280,7 +282,7 @@ test('nothing is owed when there was nothing to try, when every device took it, 
     await p.run(81);
     await p.run(82);
     assert.equal(calls.length, 1, JSON.stringify(answer));
-    assert.deepEqual(h.store[LIMIT_STATE].owed, {});
+    assert.deepEqual(bare(h.store[LIMIT_STATE].owed), {});
   }
 });
 
@@ -289,15 +291,15 @@ test('a device push that threw is owed to every device; a later try that throws 
   const { calls, send } = legs({ script: [{ tried: 0, reached: 0, missed: [], failed: true }, { tried: 2, reached: 1, missed: ['bb'] }, 'throw', { tried: 1, reached: 1, missed: [] }] });
   const p = passes(h, send);
   await p.run(81);
-  assert.deepEqual(h.store[LIMIT_STATE].owed[KEY80], { passes: 0, missed: null });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed)[KEY80], { passes: 0, missed: null });
   const second = await p.run(81);
   assert.equal(second.retried, 1);
-  assert.deepEqual(h.store[LIMIT_STATE].owed[KEY80], { passes: 1, missed: ['bb'] });
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed)[KEY80], { passes: 1, missed: ['bb'] });
   const third = await p.run(81);
   assert.equal(third.retried, 1);
-  assert.deepEqual(h.store[LIMIT_STATE].owed[KEY80], { passes: 2, missed: ['bb'] }, 'the throw was a try, and the list stands');
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed)[KEY80], { passes: 2, missed: ['bb'] }, 'the throw was a try, and the list stands');
   await p.run(81);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, {}, 'the third landed');
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), {}, 'the third landed');
   assert.deepEqual(calls.slice(1).map(c => c.only), [null, ['bb'], ['bb']]);
 });
 
@@ -311,18 +313,18 @@ test('a warning nothing took is told again whole on the next pass, and owes noth
   assert.deepEqual(calls.map(c => c.devicesOnly), [undefined, undefined]);
 });
 
-test('what is owed ends with its window: after the reset nothing is tried, and the next step owes on its own', async () => {
+test('what is owed ends with its window: after the reset nothing is tried; the next step owes on its own, in place of the one under it', async () => {
   const h = harness();
   const miss = { tried: 1, reached: 0, missed: ['aa'] };
   const { calls, send } = legs({ script: [miss, miss, miss] });
   const p = passes(h, send);
   await p.run(81);
   await p.run(96);
-  assert.deepEqual(Object.keys(h.store[LIMIT_STATE].owed).sort(), [KEY80, `limit-step:Current session:95:${W1}`], 'the 95% telling is new and whole');
+  assert.deepEqual(Object.keys(h.store[LIMIT_STATE].owed), [`limit-step:Current session:95:${W1}`], 'the 95% telling is new and whole');
   assert.equal(calls[1].devicesOnly, undefined);
   p.at(W1 + 60e3);
   await p.run(4, W2);
-  assert.deepEqual(h.store[LIMIT_STATE].owed, {});
+  assert.deepEqual(bare(h.store[LIMIT_STATE].owed), {});
   assert.equal(calls.length, 2);
 });
 
@@ -343,7 +345,7 @@ test('the kept state is read strictly: anything not in shape is dropped, and wit
     }
   }, now);
   assert.deepEqual(read.told, [{ at: now - 60e3, label: 'Current session', step: 80 }, { at: now, label: 'A', step: 90 }]);
-  assert.deepEqual(read.owed, { [KEY80]: { passes: 1, missed: ['aa'] }, 'limit-step:Weekly · A:90:-': { passes: 0, missed: null } });
+  assert.deepEqual(read.owed, { [KEY80]: { passes: 1, missed: ['aa'], at: 0 }, 'limit-step:Weekly · A:90:-': { passes: 0, missed: null, at: 0 } });
   // Through a pass: a day-old telling and a debt with no told key are gone, and so is the entry.
   const h = harness({ [LIMIT_STATE]: { told: [{ at: now - 24 * 3600e3, label: 'Current session', step: 80 }], owed: { [KEY80]: { passes: 0, missed: ['aa'] } } } });
   await runNotifier({ snapshot: sessionAt(10), config: cfg85, now, ...h });
@@ -353,7 +355,7 @@ test('the kept state is read strictly: anything not in shape is dropped, and wit
   const weekKey = `limit-step:Weekly · all models:90:${at(2026, 10, 23, 19, 0)}`;
   const owing = harness({ [weekKey]: now - 25 * 3600e3, [LIMIT_STATE]: { told: [{ at: now - 25 * 3600e3, label: 'Weekly · all models', step: 90 }], owed: { [weekKey]: { passes: 1, missed: ['aa'] } } } });
   await runNotifier({ snapshot: sessionAt(10), config: cfg85, now, ...owing });
-  assert.deepEqual(owing.store[LIMIT_STATE], { told: [], owed: { [weekKey]: { passes: 1, missed: ['aa'] } } });
+  assert.deepEqual(owing.store[LIMIT_STATE], { told: [], owed: { [weekKey]: { passes: 1, missed: ['aa'], at: 0 } } });
 });
 
 // ---- the backstop caps (Ultron, 11-17) ----
@@ -417,12 +419,12 @@ test('a warning with no reset time is kept for five hours once told: a reading t
   const t0 = at(2026, 10, 17, 9, 0);
   const run = (pct, now) => runNotifier({ snapshot: base([{ label: 'Current session', pct, resetsAt: null }]), config: cfg85, now, ...h });
   assert.equal((await run(82, t0)).sent, 1);
-  await run(10, t0 + 40 * 60e3);
+  await run(60, t0 + 40 * 60e3);
   assert.deepEqual(toldKeys(h.store), ['limit-step:Current session:80:-'], 'kept though it cleared');
   assert.equal((await run(83, t0 + 45 * 60e3)).sent, 0);
-  await run(10, t0 + NO_RESET_KEEP_MS - 1);
+  await run(40, t0 + NO_RESET_KEEP_MS - 1);
   assert.deepEqual(toldKeys(h.store), ['limit-step:Current session:80:-']);
-  await run(10, t0 + NO_RESET_KEEP_MS);
+  await run(40, t0 + NO_RESET_KEEP_MS);
   assert.deepEqual(toldKeys(h.store), [], 'five hours on, it is forgotten');
   assert.equal((await run(84, t0 + NO_RESET_KEEP_MS + 60e3)).sent, 1);
 });

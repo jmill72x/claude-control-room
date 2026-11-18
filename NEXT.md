@@ -2567,9 +2567,10 @@ notifications") is the reference; this is what is left and what to defend.
   evening and awaiting his reread.** (1, medium) The device push was one-shot: a `#pepper`
   post marked a warning told even when no device got it. The device leg is now tracked on
   its own (`limitWarning` answers `{ tried, reached, missed }`) and a missed device is
-  tried again alone, with no second alert, on up to three later passes or until the window
-  resets. (2) A backstop under the keys: one telling per limit in 30 minutes unless its
-  step rises, 12 per limit in 24 hours, and a key with no reset time is kept five hours.
+  tried again alone, with no second alert, up to three times or until the window
+  resets (spaced by time since §13). (2) A backstop under the keys: one telling per limit
+  in 30 minutes unless its step rises, 12 per limit in 24 hours, and a key with no reset
+  time is kept five hours (or until a real reset is read, since §13).
   (3) An event's words are checked on the way out too, with `a limit warning` as the
   fallback. (4) One held copy per alert in quiet hours. (5) A notifier pass runs right
   after each usage poll (the registry's `then`). (6) The config refusal names `limit`.
@@ -2623,7 +2624,13 @@ notifications") is the reference; this is what is left and what to defend.
   event. (c) The steps and the caps in config, if Jeff wants other numbers. (d) What the lead does on the event (hold new agent
   runs past 80%, say) is Jarvis's rule to write, not this server's. (e) `sw.js` files a
   limit push under the chat's tag on iOS before 18.4; it changes with the next web build
-  that touches it.
+  that touches it. (f) Found 2026-11-17 while sizing §13's reset mark: a key that names
+  its window is kept until the printed reset even when the limit is reset early. It has
+  happened once in 85,254 readings (2026-10-19: a weekly limit went from 93% to 0% eight
+  and a half hours before its printed reset); had it climbed back to 90% in those hours,
+  no warning would have gone out. The fix would be §13's rule (forget a told key once its
+  limit is read under 40%) for every warning key, not only the ones with no reset time.
+  Not built: it changes choice (6) above, so it is Ultron's and Jeff's to weigh.
 
 ## 12. The morning brief and the weekly digest in the chat (board ebce2df9, "Spoken morning briefing"; staged 2026-11-17)
 
@@ -2703,3 +2710,60 @@ answers, what keeps it narrow); this is what is left and what to defend.
 - **Follow-ups, not built:** (a) the channel can give routine messages its own label in
   `historyLine` (the jarvis repo, Jarvis's). (b) The scout and the sweep are not on the
   list of kinds; adding one is a line in `ROUTINE_KINDS` and one in the page's list.
+
+## 13. Hardening batch: Ultron's lows on what went live 11-17 (staged 2026-11-17 on `jos/hardening-1117`)
+
+**Staged, not committed, on `jos/hardening-1117` (worktree `~/Projects/.worktrees/ccr-hardening`,
+from main d715846).** The brief named the branch `jos/hardening`; that name was taken by a
+merged 11-11 branch, left as it is. Four board items, server only: no page change, no web
+build, no config, no new `claude -p`. The README's "Limit warnings", "A routine's message
+in the chat" and "Read aloud in the Mac's own voice" are updated and are the reference.
+
+- **Config backups ignored (board c109668a).** `.gitignore` has `server/config.json.bak-*`.
+  The two such files in the main checkout were not opened, moved or removed. After the
+  merge, `git status` there no longer lists them.
+- **Limit warnings, five lows (board 0dcdb867).** (a) A told key with no reset time
+  (`...:-`) is forgotten as soon as its limit is read under 40% (`RESET_BELOW_PCT`, half
+  the lowest step), not only after five hours: with no reset time every window has the
+  same key, and the old one hid the next window's warning. The five hours stay for a dip.
+  Sized on the history: of 85,254 readings, no limit that had reached a step was read
+  under it again in the same window, but for one early reset (§11, follow-up f). (b) A
+  missed device's three later tries are at least four minutes apart (`DEVICE_RETRY_GAP_MS`,
+  the debt's new `at`), not one a pass: a pass after the poll and one on the tick can be
+  seconds apart. A debt written by the version before (no `at`) is due at once. (c)
+  `notified.json` is written through a temp file and a rename, 0600
+  (`lib/sent-store.mjs`, the same pattern as the ledgers); a read of anything but an
+  object is `{}`. (d) When a higher step is told, the debts under the keys it covers are
+  dropped, so no late 80% line follows a 95% one. (e) A notifier pass asked for by the
+  usage poll while a pass is under way is not lost: one more pass follows it. Only the
+  registry's own `then` run does this; a timer's run that meets one under way is skipped
+  as before. And the comment on the daily cap now says twelve is exactly what a limit
+  can need.
+- **Mini voice, N4 (board e4d7575a).** The log's `failed` line is held to one a minute
+  (`FAIL_LOG_MS`), the next one saying how many went unsaid; a clock set back never holds
+  it. `uncharge` stops the day's count at zero: two starts either side of midnight, both
+  taken back, left the new day one render over its limit.
+- **Routine chat (board 0c096bd1).** The credential check reads the text as stored and
+  again without U+200D and U+FE0F, the two kept characters that draw as nothing. Both
+  readings are needed: a joiner can also be the word boundary a pattern wants. What is
+  stored is unchanged.
+- **Choices to defend.** (1) 40% is a constant, not half of each key's own step: one
+  number for "this window is new". (2) (a) is for `:-` keys only, as asked; follow-up (f)
+  in §11 is the same rule for the rest. (3) A try held by the gap counts as `skipped` in
+  the pass's result and uses up none of the three. (4) An unreadable `at` is 0, "long
+  ago", so the next pass tries. (5) `sent-store` takes the temp file's suffix as an
+  option, only so a test can plant a link under the name. A link planted there is
+  removed by the failed write's cleanup; what it points at is never written. (6) The
+  rerun comes after a failed pass too. (7) The throttle is one line a minute for every
+  render failure, `say`'s own too (those are remembered, so they rarely repeat).
+- **To go live:** Ultron's read, C&P, a merge, then a restart of the server (Vision's
+  scope; every change but `.gitignore` is server code loaded at start). **After the
+  restart, check:** within five minutes `ls -l server/data/notified.json` shows
+  `-rw-------` and no `notified.json.tmp-*` sits beside it. The rest shows only when a
+  warning misses a device or a render fails.
+- **Checked:** server 1,429 tests (25 new), in local time and `TZ=Asia/Tokyo`. 73 mutants
+  on the changed lines: 72 caught, one equivalent (reading the limits from the raw
+  snapshot instead of the current one; a panel that is not current keeps every key
+  anyway). Two redundant guards found while listing them were removed, not tested. No browser
+  run and no web suite: nothing under `web/` changed. Nothing ran against :8322, the
+  live config or the live `say` service.

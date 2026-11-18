@@ -65,6 +65,8 @@ export const RENDERS_PER_DAY = 300;
 // A render that failed is not tried again this long: the same answer, no process.
 export const FAILED_TTL_MS = 10 * 60e3;
 export const FAILED_MAX = 100;
+// The log's "failed" line is written at most once in this long.
+export const FAIL_LOG_MS = 60e3;
 // While read aloud is on the cache is swept this often, played or not.
 export const SWEEP_EVERY_MS = 3600e3;
 // This many failed reads of the voice list in a row, and the voice is no longer known.
@@ -183,7 +185,7 @@ const HAS_WORDS = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
 export function createSpeech({
   store, dir, voice: wanted = DEFAULT_VOICE, fallback = null, killed = () => false, now = () => Date.now(), log: logLine = console.log,
   say = SAY, run = runFile, timeoutMs = RENDER_TIMEOUT_MS, textMax = SPEECH_TEXT_MAX, waitingMax = RENDERS_WAITING_MAX,
-  perWindow = RENDERS_PER_WINDOW, windowMs = RENDER_WINDOW_MS, perDay = RENDERS_PER_DAY, failedTtlMs = FAILED_TTL_MS, failedMax = FAILED_MAX,
+  perWindow = RENDERS_PER_WINDOW, windowMs = RENDER_WINDOW_MS, perDay = RENDERS_PER_DAY, failedTtlMs = FAILED_TTL_MS, failedMax = FAILED_MAX, failLogMs = FAIL_LOG_MS,
   audioMaxBytes = AUDIO_MAX_BYTES, cacheMaxBytes = CACHE_MAX_BYTES, cacheMaxFiles = CACHE_MAX_FILES, cacheMaxAgeMs = CACHE_MAX_AGE_MS, sweepEveryMs = SWEEP_EVERY_MS
 }) {
   if (typeof dir !== 'string' || dir === '') throw new Error('createSpeech needs dir');
@@ -200,6 +202,7 @@ export function createSpeech({
   const starts = new Map();   // device id -> when its renders started, within the window
   const failures = new Map(); // cache name -> { reason, at }: renders that just failed, oldest first
   const day = { of: null, count: 0, said: false }; // render starts in the local day, every device's
+  const failLog = { at: -Infinity, unsaid: 0 };    // when the last "failed" line was written, and failures unsaid since
   let running = false;
   const waiting = [];
 
@@ -387,13 +390,25 @@ export function createSpeech({
 
   // A render start taken back: off the device's window (if it is still in it) and off
   // the day's count. A start taken back after midnight comes off the new day's count,
-  // which is one render's worth of slack on a limit of hundreds; the count never goes
-  // below zero, because a new day's count is raised by the very ask that starts it.
+  // which is one render's worth of slack on a limit of hundreds. It stops at zero: two
+  // starts either side of midnight, both taken back, would else leave the new day's
+  // count at one under, and the day one render over its limit.
   function uncharge(deviceId, at) {
     const mine = starts.get(deviceId) ?? [];
     const i = mine.indexOf(at);
     if (i !== -1) mine.splice(i, 1);
-    day.count--;
+    day.count = Math.max(0, day.count - 1);
+  }
+
+  // The "failed" line, at most one in failLogMs: a failure of the server's own is not
+  // remembered, so a page that keeps asking would write one a request. The next line
+  // says how many went unsaid. (A clock set back says the line again, never holds it.)
+  function logFailed(line, at) {
+    const since = at - failLog.at;
+    if (since >= 0 && since < failLogMs) { failLog.unsaid++; return; }
+    log(failLog.unsaid ? `${line}; ${failLog.unsaid} more failed since the last such line` : line);
+    failLog.at = at;
+    failLog.unsaid = 0;
   }
 
   // The audio for `words` in `voice`: from a render already under way for the same
@@ -433,7 +448,7 @@ export function createSpeech({
         // fine, and the device did nothing to spend a turn on.
         if (known) noteFailure(name, err.reason, now());
         else uncharge(device.id, at);
-        log(`speech: a render of ${words.length} characters for ${device.name} failed (${known ? err.reason : err?.code ?? 'error'})`);
+        logFailed(`speech: a render of ${words.length} characters for ${device.name} failed (${known ? err.reason : err?.code ?? 'error'})`, now());
         throw err;
       } finally {
         done();

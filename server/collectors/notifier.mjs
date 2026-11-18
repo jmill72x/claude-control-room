@@ -1,7 +1,7 @@
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
 import { applyAcks } from '../lib/acks.mjs';
-import { limitWarnings, keyParts, mayTell, DAY_MS, DEVICE_RETRIES } from '../lib/limit-warnings.mjs';
+import { limitWarnings, keyParts, mayTell, DAY_MS, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS } from '../lib/limit-warnings.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
 // its last good reading, which is right to keep showing on screen — but pushing
@@ -62,7 +62,9 @@ export const entrySender = ({ alert, devices = null, log = console.error }) => a
 // under this one name (no alert's key: every key has a colon): `told`, the tellings of
 // the last 24 hours (`{ at, label, step }`, for the caps in lib/limit-warnings.mjs),
 // and `owed`, by warning key, the devices a told warning has not reached yet
-// (`{ passes, missed }`; `missed: null` is every device).
+// (`{ passes, missed, at }`: the tries made since the telling, the devices, `null` for
+// every one, and when the last try or the telling was; a file that has no time there,
+// or one still ahead, is read as `at: 0`, long ago, so its next try is due).
 export const LIMIT_STATE = 'limit-step-state';
 export function readLimitState(raw, now) {
   const told = (Array.isArray(raw?.told) ? raw.told : [])
@@ -72,7 +74,7 @@ export function readLimitState(raw, now) {
   // Whatever `owed` is, only an entry under a warning's key with a count is read.
   for (const [key, debt] of Object.entries(raw?.owed ?? {})) {
     if (!keyParts(key) || !Number.isInteger(debt?.passes) || debt.passes < 0 || debt.passes >= DEVICE_RETRIES) continue;
-    owed[key] = { passes: debt.passes, missed: Array.isArray(debt.missed) ? debt.missed.filter(isDeviceId) : null };
+    owed[key] = { passes: debt.passes, missed: Array.isArray(debt.missed) ? debt.missed.filter(isDeviceId) : null, at: Number.isFinite(debt.at) && debt.at <= now ? debt.at : 0 };
   }
   return { told, owed };
 }
@@ -98,7 +100,7 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
   const observable = observableSources(snapshot);
   // Pruned with every live alert, held ones included, so a hold never forgets a key.
   const { [LIMIT_STATE]: rawLimitState, ...sentKeys } = (await readSent()) ?? {};
-  const alreadySent = prune(sentKeys, alerts, observable, now);
+  const alreadySent = prune(sentKeys, alerts, observable, now, current.usage?.data?.limits);
   // A device debt lasts as long as its warning's key: until the window resets.
   const limitState = readLimitState(rawLimitState, now);
   for (const key of Object.keys(limitState.owed)) if (!Object.hasOwn(alreadySent, key)) delete limitState.owed[key];
@@ -123,9 +125,10 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
     // A grouped cron entry carries several keys; it is new if ANY of them is.
     if (!entry.keys.some(k => unsentKeys.has(k))) {
       // Told already. If it missed a device then, that device alone is tried again,
-      // with no second alert, on up to DEVICE_RETRIES later passes.
+      // with no second alert, up to DEVICE_RETRIES times, each at least
+      // DEVICE_RETRY_GAP_MS after the one before: a pass sooner than that leaves it.
       const debt = warning ? limitState.owed[entry.keys[0]] : null;
-      if (!debt) { skipped++; continue; }
+      if (!debt || now - debt.at < DEVICE_RETRY_GAP_MS) { skipped++; continue; }
       let again;
       try { again = await send({ ...entry, devicesOnly: true, only: debt.missed }); } catch { again = { devices: { failed: true } }; }
       retried++;
@@ -134,7 +137,7 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
         delete limitState.owed[entry.keys[0]];
         if (still) log(`push: a limit warning did not reach every device in ${DEVICE_RETRIES} more tries; no more are made`);
       } else {
-        limitState.owed[entry.keys[0]] = { passes: debt.passes + 1, missed: still.missed ?? debt.missed };
+        limitState.owed[entry.keys[0]] = { passes: debt.passes + 1, missed: still.missed ?? debt.missed, at: now };
       }
       continue;
     }
@@ -153,8 +156,12 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
       for (const k of entry.keys) alreadySent[k] = now;
       if (warning) {
         limitState.told.push({ at: now, label: warning.label, step: warning.step });
+        // What the steps under this one still owed is dropped: this telling says more,
+        // and a later try of a lower step would arrive after it, saying less. (Its own
+        // key owes nothing yet: a debt never outlives its told key.)
+        for (const k of entry.keys) delete limitState.owed[k];
         const owes = owedAfter(result);
-        if (owes) limitState.owed[entry.keys[0]] = { passes: 0, missed: owes.missed };
+        if (owes) limitState.owed[entry.keys[0]] = { passes: 0, missed: owes.missed, at: now };
       }
     }
   }

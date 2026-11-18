@@ -7,6 +7,8 @@ Claude dashboard prototype.zip
 
 # Local runtime state — machine-specific, not source
 server/config.json
+# A dated copy of it made before an edit: the same credit balances
+server/config.json.bak-*
 server/todos.json
 server/todos-history/
 # Left beside the board by the store: a temp file a crash cut short, and a

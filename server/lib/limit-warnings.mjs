@@ -67,17 +67,31 @@ export const keyWindow = key => keyParts(key)?.window ?? null;
 // The keys above tell each step once per window. These caps hold whatever the keys
 // miss (a reset time that starts to move off its 10-minute mark, a reading with no
 // reset that comes and goes): one telling per limit in 30 minutes unless its step
-// rises, and 12 per limit in any 24 hours. Twelve is one more than a limit can
-// honestly need: 24 hours touch at most six session windows of two steps each. A
-// telling over a cap is put off, not dropped: it goes on the first pass that has room.
+// rises, and 12 per limit in any 24 hours. Twelve is exactly what a limit can honestly
+// need: 24 hours touch at most six session windows of two steps each. A telling over a
+// cap is put off, not dropped: it goes on the first pass that has room.
 export const REPEAT_MS = 30 * 60e3;
 export const DAILY_MAX = 12;
 export const DAY_MS = 24 * 3600e3;
 // A told key with no reset in it is kept this long (lib/push-alerts.mjs, prune): about
 // one session window, so a reading that comes and goes is one telling.
 export const NO_RESET_KEEP_MS = 5 * 3600e3;
-// How many later passes try again a device the push service did not take a warning for.
+// ...unless its limit is read under this meanwhile: the window has reset, and the key
+// would hide the next window's warning (with no reset time, every window has the one
+// key). Half the lowest step: in the history no limit that had reached a step was
+// read this low again inside the same window, but for one that was reset early.
+export const RESET_BELOW_PCT = 40;
+// How many later tries a device gets that the push service did not take a warning for,
+// and how far apart at least: two passes can be seconds apart (one follows each usage
+// poll, one runs on the notifier's own timer), and a push service that is down for a
+// moment is still down a second later.
 export const DEVICE_RETRIES = 3;
+export const DEVICE_RETRY_GAP_MS = 4 * 60e3;
+
+// The limits read under RESET_BELOW_PCT now, by label: those whose window has reset.
+export function resetLabels(limits) {
+  return new Set((Array.isArray(limits) ? limits : []).filter(l => Number.isFinite(l?.pct) && l.pct < RESET_BELOW_PCT).map(l => l.label));
+}
 
 // Whether `{ label, step }` may be told at `now`, given the tellings so far
 // (`[{ at, label, step }]`, in any order): not when this limit was told at this step

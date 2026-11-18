@@ -550,7 +550,7 @@ claude-control-room/
     history.mjs      append-only /usage snapshot store — see "Pace, history, and the usage-drivers panel"
     routes.mjs        /api/dashboard · /api/todos · /api/acks, and /api/ingest/* for the ingest socket (and server.mjs serves /avatars/<key>.png)
     acks.mjs           the acknowledgement file — see "Acknowledging a known miss"
-    config.json        user-set values with no API source (gitignored — see config.example.json)
+    config.json        user-set values with no API source (gitignored, and so is a dated copy, config.json.bak-* — see config.example.json)
     todos.json          the column 03 backlog (gitignored)
     todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
     data/              usage-history-YYYY-MM.jsonl, append-only, plus notified.json and acks.json; gitignored (runtime data, not source)
@@ -760,7 +760,8 @@ characters)` or why one was refused.
   zero-width characters, the byte-order mark, tag characters, whatever a renderer draws
   as nothing), less tab, newline and the two characters emoji are made of, the
   zero-width joiner and U+FE0F. Text shaped like a credential is refused, by the
-  pattern's name (`server/lib/secret-shape.mjs`).
+  pattern's name (`server/lib/secret-shape.mjs`); the check reads the text as stored and
+  again without those two characters, so one of them inside a key hides nothing.
 - **A limit.** At most 3 of a kind in any 24 hours (a run, a rerun and one to spare),
   counted from the chat store itself, so a restart forgets nothing; posts are taken one
   at a time. A duplicate is not counted.
@@ -1161,7 +1162,9 @@ three pieces, each with its own router:
     message already rendered, and a second ask for one being rendered, cost none of
     these. A render that `say` failed (timeout, failure, too large) is remembered for 10
     minutes, in memory, for at most 100 wordings: the same ask gets the same answer with
-    no process started.
+    no process started. A failure of the server's own (the cache folder gone for good) is
+    not remembered and costs the device nothing, so the log's `failed` line is held to
+    one a minute; the next one ends `; N more failed since the last such line`.
   - **The cache** is `~/.local/state/jarvis-os/speech-cache/` (0700, files 0600), one
     `.m4a` per voice and wording, named by a SHA-256 of both, so an edited message is made
     again and the same words in two messages are made once. A file goes 7 days after it
@@ -1252,7 +1255,7 @@ three pieces, each with its own router:
   warning** (2026-11-17, see "Limit warnings" under "Push notifications"), such as "Claude
   session at 80%, resets 5:30 pm", sent by the notifier to every device at once, urgent
   (`Urgency: high`, `Topic: jos-limit`), whether or not it is looking and at any hour; a
-  device it missed is tried again alone on up to three later passes. Its
+  device it missed is tried again alone up to three times, four minutes apart at least. Its
   body is the usage panel's own figures in one fixed shape (`WARNING_BODY` in
   `server/lib/limit-warnings.mjs`); a body in any other shape is not sent, so no message
   text or tool name can travel this way. It is titled "Control Room", a tap opens the
@@ -3003,16 +3006,23 @@ minutes left. So the limits now have warning steps of their own, and these reach
   or Web Push off, a warning still goes to ntfy and `#pepper`.
 - **When.** A notifier pass runs right after each `/usage` poll (the registry's `then`,
   `server/collectors/registry.mjs`), besides its own five-minute tick, so a warning is as
-  late as the poll (five minutes at most) and not the poll plus the tick.
+  late as the poll (five minutes at most) and not the poll plus the tick. When the poll
+  ends while a pass is already under way (the tick began a moment earlier, on the old
+  reading), one more pass follows that one; a timer's own run that meets one under way
+  is skipped, as for every collector.
 - **The devices are owed it on their own.** Landing on the devices or on either alert
   channel marks a warning told, by the same rule as for any alert, so `#pepper` never
   gets it twice. But the device push is tracked apart: `limitWarning` answers `{ tried,
   reached, missed }`, and a device the push service did not take it for (refused, failed,
   dropped from the send queue, or the call threw) is tried again **alone**, with no second
-  ntfy or `#pepper` post, on up to three later passes or until the window resets,
-  whichever comes first. A device whose subscription is gone is not tried again, and with
-  nothing to try (push off, no device) nothing is owed. The third failure is logged. A
-  warning that landed nowhere is told again whole on the next pass, like any alert.
+  ntfy or `#pepper` post, up to three times or until the window resets, whichever comes
+  first. The tries are at least four minutes apart, counted from the telling and then
+  from each try: two passes can be seconds apart (one after the poll, one on the tick),
+  and a pass that comes sooner leaves the debt as it is. A device whose subscription is
+  gone is not tried again, and with nothing to try (push off, no device) nothing is owed.
+  The third failure is logged. When the session goes on to 95%, that telling takes over
+  whatever the 80% one still owed, so no late 80% line follows it. A warning that landed
+  nowhere is told again whole on the next pass, like any alert.
 - **What it says.** `Claude session at 80%, resets 5:30 pm`; `Claude week (all models) at
   90%, resets Mon 7:00 pm`; `Claude week (Fable) at 91%, resets Mon 7:00 pm`. The percent
   is the reading's own; the reset is the server's local time, with the weekday when it is
@@ -3025,15 +3035,20 @@ minutes left. So the limits now have warning steps of their own, and these reach
   5:30pm; every reset in three months of history sat within a minute of a 10-minute
   mark), so the window is named by its reset rounded to 10 minutes of local time; keyed
   on the printed minute, one window would warn again at every flip. A reading with no
-  reset has no time in its words, and its key is kept for five hours once told.
+  reset has no time in its words, and its key is kept for five hours once told, or until
+  that limit is read under 40% (half the lowest step): that is a new window, and with no
+  reset time every window has the same key, so the old one would hide its warning.
 - **A backstop under the keys.** Whatever the keys miss (a reset that starts to move off
   its 10-minute mark, a reading whose reset comes and goes) is held by two caps: a limit
   is told at most once in 30 minutes unless its step rises, and at most 12 times in any
-  24 hours (24 hours touch at most six session windows of two steps, so an honest day
-  never reaches it). A warning over a cap is put off, not dropped: it goes on the first
-  pass with room. The tellings of the last 24 hours and what the devices are owed live in
-  `server/data/notified.json` beside the told keys, under the one name
-  `limit-step-state`, read strictly (anything not in shape is dropped).
+  24 hours (24 hours touch at most six session windows of two steps, so twelve is exactly
+  what an honest day can need). A warning over a cap is put off, not dropped: it goes on
+  the first pass with room. The tellings of the last 24 hours and what the devices are
+  owed live in `server/data/notified.json` beside the told keys, under the one name
+  `limit-step-state`, read strictly (anything not in shape is dropped). The file is
+  written whole each pass through a temp file and a rename, mode 0600
+  (`server/lib/sent-store.mjs`): a crash mid-write leaves the old file, never half a new
+  one, which would read as empty and tell every live alert again.
 - **Never from an old reading.** Like every push, only from a usage panel that is current
   (`ok`); and a reading whose window has already ended warns of nothing. No ack applies:
   only `cron` and `service` alerts can be acked.

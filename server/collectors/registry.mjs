@@ -11,18 +11,23 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
   return {
     // `then` names a collector to run once right after each run of this one that
     // succeeded (the notifier after the usage poll, so a new reading is acted on at
-    // once and not at the notifier's own next tick). It is not waited for, and is
-    // skipped like any run while that collector is already running.
+    // once and not at the notifier's own next tick). It is not waited for. While that
+    // collector is already running (its own tick began a moment before, on the old
+    // value), the run is not stacked on it and not lost either: one more run follows
+    // the one under way, however many asked meanwhile.
     register(name, fn, intervalMs, { then = null } = {}) {
-      collectors.set(name, { fn, intervalMs, running: false, then });
+      collectors.set(name, { fn, intervalMs, running: false, again: false, then });
       // Tell the cache what this collector's own interval is so its
       // staleness budget can never be shorter than the interval the data is
       // produced on — see cache.mjs's deriveBudgetFromInterval().
       cache.deriveBudgetFromInterval(name, intervalMs);
     },
-    async runOnce(name) {
+    // `again` is the registry's own, for a run that follows another collector's: a
+    // timer's or a caller's run that meets one under way is skipped, as ever.
+    async runOnce(name, { again = false } = {}) {
       const c = collectors.get(name);
-      if (!c || c.running) return;
+      if (!c) return;
+      if (c.running) { if (again) c.again = true; return; }
       c.running = true;
       let failed = false;
       try {
@@ -37,7 +42,8 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
           if (firstPending.size === 0) resolveFirst({ failed: [...firstFailed] });
         }
       }
-      if (!failed && c.then) this.runOnce(c.then);
+      if (!failed && c.then) this.runOnce(c.then, { again: true });
+      if (c.again) { c.again = false; this.runOnce(name); }
     },
     startAll() {
       // All of them first. (runOnce can't end before the loop below finishes, since it

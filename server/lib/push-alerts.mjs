@@ -1,4 +1,4 @@
-import { KIND as LIMIT_STEP, ruleFor, keyParts, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
+import { KIND as LIMIT_STEP, ruleFor, keyParts, resetLabels, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
 
 // What may leave this machine, and what may not.
 //
@@ -102,14 +102,18 @@ const ownedBy = (key, prefixes) => {
 // With `now` (the notifier gives it), a limit warning's key is also kept until its
 // window's reset has passed: a step is told once per window, even when a reading dips
 // under it and comes back, or the limit moves on to its next step. A key with no reset
-// in it is kept for a fixed time after it was told (its value), so it can't flap.
-export function prune(alreadySent, alerts, observable, now = null) {
+// in it is kept for a fixed time after it was told (its value), so it can't flap; but
+// only until its limit is read well under every step (`limits`, the usage panel's
+// readings now): that is a new window, whose warning the old key must not hide.
+export function prune(alreadySent, alerts, observable, now = null, limits = null) {
   const live = new Set((alerts ?? []).map(a => a?.key));
   const prefixes = [...(observable ?? [])];
+  const reset = resetLabels(limits);
   const out = {};
   for (const [k, v] of Object.entries(alreadySent ?? {})) {
     const warning = Number.isFinite(now) ? keyParts(k) : null;
-    const stays = warning !== null && (warning.window !== null ? now < warning.window : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS);
+    const stays = warning !== null && (warning.window !== null ? now < warning.window
+      : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS && !reset.has(warning.label));
     if (live.has(k) || !ownedBy(k, prefixes) || stays) out[k] = v;
   }
   return out;

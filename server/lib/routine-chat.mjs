@@ -17,7 +17,7 @@
 //     makes no raw HTML; the hidden characters (lib/hidden-chars.mjs: controls, the
 //     ones that reorder or hide text, tag characters) are taken out first, and text
 //     shaped like a credential is refused (lib/secret-shape.mjs, by the pattern's name,
-//     never the match).
+//     never the match), also when a kept invisible character splits it.
 //   - It is display and push only. The message is the lead's (`from: "jarvis"`), and
 //     the channel's inbound stream carries only the owner's messages, verdicts, events
 //     and stops (lib/chat-socket.mjs, toInbound), so it never reaches the lead's
@@ -62,6 +62,9 @@ export const isRoutineMessage = m => Boolean(m) && m.from === 'jarvis' && m.kind
 // joiner (U+200D) and the emoji variation selector (U+FE0F). Written as numbers, never
 // typed characters (a typed one has turned into the real character in this repo).
 export const ROUTINE_KEEP = new Set([0x09, 0x0a, 0x200d, 0xfe0f]);
+// The two kept characters that draw as nothing. A credential with one inside it reads
+// the same on the page and fits no pattern, so the check also reads the text without them.
+const KEPT_UNSEEN = new RegExp(`[${String.fromCodePoint(0x200d, 0xfe0f)}]`, 'gu');
 // The line and paragraph separators, U+2028 and U+2029, become plain newlines.
 const SEPARATORS = new RegExp(`[${String.fromCodePoint(0x2028, 0x2029)}]`, 'gu');
 
@@ -87,7 +90,9 @@ export function checkRoutinePost(body) {
   if (id !== null && !(typeof id === 'string' && ROUTINE_ID.test(id))) return fail('id must be 1 to 40 letters, digits, dots, dashes or underscores');
   const { text, removed } = cleanRoutineText(body.text);
   if (text === '') return fail('text must not be blank');
-  const shapes = secretShapes(text);
+  // As stored, and with the joiner and the variation selector gone: either may match
+  // where the other does not (a pattern's word boundary can sit on such a character).
+  const shapes = [...new Set([...secretShapes(text), ...secretShapes(text.replace(KEPT_UNSEEN, ''))])];
   if (shapes.length) return fail(`the text looks like it holds ${shapes.join(', ')}; it was not added`);
   return { ok: true, value: { kind: body.kind, text, id, removed } };
 }
