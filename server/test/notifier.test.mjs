@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runNotifier } from '../collectors/notifier.mjs';
+import { runNotifier, LIMIT_STATE } from '../collectors/notifier.mjs';
+
+// The told keys in a store, without the limit warnings' own entry.
+const toldKeys = store => Object.keys(store).filter(k => k !== LIMIT_STATE);
 
 const okUsage = limits => ({ status: 'ok', data: { limits } });
 const base = limits => ({
@@ -41,9 +44,11 @@ test('a moving percentage does not re-send', async () => {
 test('a cleared condition that returns sends again', async () => {
   const h = harness();
   const cfg = { warnThreshold: 85 };
-  await runNotifier({ snapshot: base([{ label: 'Weekly · X', pct: 90 }]), config: cfg, now: Date.now(), ...h });
-  await runNotifier({ snapshot: base([{ label: 'Weekly · X', pct: 10 }]), config: cfg, now: Date.now(), ...h });
-  await runNotifier({ snapshot: base([{ label: 'Weekly · X', pct: 90 }]), config: cfg, now: Date.now(), ...h });
+  // A limit with no warning steps of its own: the plain rule (a session or weekly
+  // limit is told once per window instead; see the limit warnings below).
+  await runNotifier({ snapshot: base([{ label: 'Monthly spend', pct: 90 }]), config: cfg, now: Date.now(), ...h });
+  await runNotifier({ snapshot: base([{ label: 'Monthly spend', pct: 10 }]), config: cfg, now: Date.now(), ...h });
+  await runNotifier({ snapshot: base([{ label: 'Monthly spend', pct: 90 }]), config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 2);
 });
 
@@ -113,7 +118,7 @@ test('a snapshot where usage has not been observed yet leaves a previously-notif
   const withUsage = base([{ label: 'Weekly · X', pct: 90 }]);
   await runNotifier({ snapshot: withUsage, config: cfg, now: Date.now(), ...h });
   assert.equal(h.sent.length, 1);
-  assert.deepEqual(Object.keys(h.store), ['limit:Weekly · X']);
+  assert.deepEqual(toldKeys(h.store), ['limit-step:Weekly · X:90:-']);
 
   // Cold start: the usage collector has not written to the cache yet, so its
   // cache entry does not exist at all (not even as 'stale').
@@ -121,7 +126,7 @@ test('a snapshot where usage has not been observed yet leaves a previously-notif
   const out = await runNotifier({ snapshot: cold, config: cfg, now: Date.now(), ...h });
   assert.equal(out.sent, 0, 'usage is unobserved, so nothing should push');
   assert.equal(h.sent.length, 1, 'no new push must occur while usage is unobserved');
-  assert.deepEqual(Object.keys(h.store), ['limit:Weekly · X'], 'the previously-notified key must survive a run that cannot observe it');
+  assert.deepEqual(toldKeys(h.store), ['limit-step:Weekly · X:90:-'], 'the previously-notified key must survive a run that cannot observe it');
 });
 
 test('the full restart sequence — notify, cold-start with an incomplete cache, then a fully populated cache — does not wipe the notified set or re-push', async () => {
@@ -138,8 +143,8 @@ test('the full restart sequence — notify, cold-start with an incomplete cache,
     usage: okUsage([{ label: 'Weekly · X', pct: 90 }])
   };
   await runNotifier({ snapshot: full, config: cfg, now: Date.now(), readSent, writeSent, send });
-  assert.deepEqual(Object.keys(store).sort(), ['cron:launchd:net.example.nightly', 'limit:Weekly · X']);
-  assert.equal(sent.length, 2, 'the disclosed limit and the counted cron push separately');
+  assert.deepEqual(toldKeys(store).sort(), ['cron:launchd:net.example.nightly', 'limit-step:Weekly · X:90:-']);
+  assert.equal(sent.length, 2, 'the limit warning and the counted cron push separately');
 
   // Restart: registry.startAll() runs every collector at once, so the first
   // notifier tick after a restart can see crons before usage has landed.
@@ -149,7 +154,7 @@ test('the full restart sequence — notify, cold-start with an incomplete cache,
     // usage: absent — the collector has not run yet on this process lifetime
   };
   await runNotifier({ snapshot: coldStart, config: cfg, now: Date.now(), readSent, writeSent, send });
-  assert.deepEqual(Object.keys(store).sort(), ['cron:launchd:net.example.nightly', 'limit:Weekly · X'],
+  assert.deepEqual(toldKeys(store).sort(), ['cron:launchd:net.example.nightly', 'limit-step:Weekly · X:90:-'],
     'a cold start must not wipe keys belonging to a source it cannot observe');
   assert.equal(sent.length, 2, 'nothing should be pushed while usage remains unobserved');
 

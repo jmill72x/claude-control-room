@@ -1,3 +1,5 @@
+import { KIND as LIMIT_STEP, ruleFor, keyParts, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
+
 // What may leave this machine, and what may not.
 //
 // The ntfy topic is the only access control on the free tier — anyone who knows
@@ -27,11 +29,22 @@ export function pushableFrom(alerts) {
   const out = [];
 
   for (const a of keyed.filter(a => DISCLOSED_KINDS.has(a.kind))) {
+    // A limit with warning steps of its own (lib/limit-warnings.mjs) is told by
+    // those, not by the alert bar's threshold: one limit, one line of messages.
+    if (a.kind === 'limit' && a.key.startsWith('limit:') && ruleFor(a.key.slice('limit:'.length))) continue;
     out.push({ keys: [a.key], title: 'Control Room', message: a.text });
   }
 
+  // A limit warning: its words are the usage panel's own numbers, so they go out as
+  // written, and to the paired devices too (`devices`; collectors/notifier.mjs). It
+  // carries the keys of the steps it has passed, so each is told once.
+  for (const a of keyed.filter(a => a.kind === LIMIT_STEP)) {
+    const covers = (Array.isArray(a.covers) ? a.covers : []).filter(k => typeof k === 'string' && k);
+    out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, devices: true });
+  }
+
   const groups = new Map();
-  for (const a of keyed.filter(a => !DISCLOSED_KINDS.has(a.kind))) {
+  for (const a of keyed.filter(a => !DISCLOSED_KINDS.has(a.kind) && a.kind !== LIMIT_STEP)) {
     const group = Object.hasOwn(COUNT_WORDS, a.kind) ? a.kind : 'other';
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(a.key);
@@ -59,7 +72,7 @@ export function observableSources(snapshot) {
   const status = k => snapshot?.[k]?.status;
   const ok = k => status(k) === 'ok';
   return new Set([
-    ...(ok('usage') ? ['limit', 'projection'] : []),
+    ...(ok('usage') ? ['limit', 'projection', LIMIT_STEP] : []),
     ...(ok('crons') ? ['cron:launchd'] : []),
     ...(ok('ingestCrons') ? ['cron:ingest'] : []),
     ...(ok('board') ? ['board'] : []),
@@ -86,12 +99,18 @@ const ownedBy = (key, prefixes) => {
 // again — without this, one 88% week would silence that limit forever. But a
 // key whose SOURCE is not observable right now is kept, because absence of
 // evidence is not evidence the condition cleared.
-export function prune(alreadySent, alerts, observable) {
+// With `now` (the notifier gives it), a limit warning's key is also kept until its
+// window's reset has passed: a step is told once per window, even when a reading dips
+// under it and comes back, or the limit moves on to its next step. A key with no reset
+// in it is kept for a fixed time after it was told (its value), so it can't flap.
+export function prune(alreadySent, alerts, observable, now = null) {
   const live = new Set((alerts ?? []).map(a => a?.key));
   const prefixes = [...(observable ?? [])];
   const out = {};
   for (const [k, v] of Object.entries(alreadySent ?? {})) {
-    if (live.has(k) || !ownedBy(k, prefixes)) out[k] = v;
+    const warning = Number.isFinite(now) ? keyParts(k) : null;
+    const stays = warning !== null && (warning.window !== null ? now < warning.window : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS);
+    if (live.has(k) || !ownedBy(k, prefixes) || stays) out[k] = v;
   }
   return out;
 }

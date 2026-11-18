@@ -28,7 +28,7 @@ import { createToPush } from './collectors/to-push.mjs';
 import { readToPushConfig } from './lib/to-push.mjs';
 import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
-import { runNotifier } from './collectors/notifier.mjs';
+import { runNotifier, entrySender } from './collectors/notifier.mjs';
 import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
 import { createChatEventHandler, NTFY_WORDS, oneLine } from './lib/chat-events.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
@@ -128,7 +128,9 @@ registry.register('usage', async () => {
     now,
     historyStatus: history.status()
   });
-}, 5 * 60 * 1000);
+  // A notifier pass follows each reading at once (collectors/registry.mjs, `then`): a
+  // limit warning is then as late as the poll, not the poll plus the notifier's tick.
+}, 5 * 60 * 1000, { then: 'notifier' });
 // The health strip (collectors/health.mjs): job-status every minute, whose
 // verdicts the crons panel then takes over launchd's own, so the morning brief,
 // the page, the mod and the alerts agree on every job.
@@ -297,6 +299,9 @@ const writeSent = async next => {
 // Events (lib/events.mjs): made from the notifier's alerts after acks, once the chat
 // is on (below). Until then, and with the chat off, the hook is absent.
 let events = null;
+// A limit warning's Web Push to the paired devices (lib/chat-push.mjs, limitWarning):
+// set once the chat is on (below); until then a warning goes to ntfy and #pepper only.
+let limitPush = null;
 const eventsSettings = readEventsConfig(config);
 for (const problem of eventsSettings.problems) console.error(`config: ${problem}`);
 const serviceNames = new Set(healthSettings.services.map(s => s.name));
@@ -315,7 +320,7 @@ registry.register('notifier', async () => {
     readSent,
     writeSent,
     acks: await ackStore.read(now),
-    send: entry => sendAlert({ topic, title: entry.title, message: entry.message }),
+    send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message }), devices: limitPush }),
     events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys }))
   });
   return { configured: Boolean(topic), ...out };
@@ -510,6 +515,7 @@ if (chatSettings.on && socketsReady) {
   for (const problem of pushProblems) console.error(`push: ${problem}`);
   if (vapid) console.log('push: notifications on');
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
+  limitPush = body => push.limitWarning(body);
   const shortcutSettings = readShortcutsConfig(config);
   for (const problem of shortcutSettings.problems) console.error(`config: ${problem}`);
   // Stop buttons (war room slice 2, lib/agent-stop.mjs): the rows come from the

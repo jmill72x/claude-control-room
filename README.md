@@ -1166,7 +1166,18 @@ three pieces, each with its own router:
   open then, so a burst is one push; a push the send queue drops starts no window and
   is tried again every 15 s while a request is open); "Jarvis is offline" once after 5
   minutes without the channel's heartbeat (counted from the server's start when there was
-  none), and again only after it has come back. `notice`s, verdicts, edits and the owner's
+  none), and again only after it has come back. **One push carries numbers: a limit
+  warning** (2026-11-17, see "Limit warnings" under "Push notifications"), such as "Claude
+  session at 80%, resets 5:30 pm", sent by the notifier to every device at once, urgent
+  (`Urgency: high`, `Topic: jos-limit`), whether or not it is looking and at any hour; a
+  device it missed is tried again alone on up to three later passes. Its
+  body is the usage panel's own figures in one fixed shape (`WARNING_BODY` in
+  `server/lib/limit-warnings.mjs`); a body in any other shape is not sent, so no message
+  text or tool name can travel this way. It is titled "Control Room", a tap opens the
+  Overview (`/#overview`), and it sets no badge, which counts unseen chat messages. The
+  service worker, which shows a push on iOS before 18.4, files it with the chat's
+  notifications and opens the Chat tab on a tap; `sw.js` was left as it is. `notice`s,
+  verdicts, edits and the owner's
   own messages never push. At most 4 sends are in flight at once; the rest wait in a queue
   of at most 16, past which a push is dropped with a log line (a dropped "New message"
   starts no minute, so the next message pushes). The payload is Declarative Web Push (`{"web_push": 8030,
@@ -1892,15 +1903,25 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   the same caps, staleness rule and kill switch.
 - **What makes one.** The notifier, every 5 minutes, from its alerts *after acks*: only kind
   `cron` with a `cron:launchd:*` key and kind `service`, never `service:session:*` (the
-  lead's own session) and never a key in config's `events.excludeKeys`. Ingested crons,
-  waits, limits, projections, the board and credits never make events. An acked alert
-  makes none.
+  lead's own session) and never a key in config's `events.excludeKeys`. **Since
+  2026-11-17 a limit warning makes one too** (kind `limit-step`, source `limit`, type
+  `limit-warning`; see "Limit warnings" under "Push notifications"): the session at 80% and
+  95%, a weekly limit at 90%. This is a deliberate change to the rule that limits never
+  make events. It was made after a morning when two agent runs took the session limit from
+  3% to 100% in three hours and one died mid-fix, so the lead now hears of it while there
+  is room to stop starting work. The alert bar's own `limit` line (config's
+  `warnThreshold`), ingested crons, waits, projections, the board and credits still never
+  make events. An acked alert makes none.
 - **What it says.** Fixed templates with typed fields only: `Job <name> failed (exit N) at
   HH:MM`, `Service <name> is down since HH:MM`, `N jobs failed: …` for several at once, and
   `N more job failures held back since HH:MM (limits: …)`. A job is named only by its own
   entry in config's `jobs` (a plain name; never an inherited property), else "a launchd
   job": a launchd label is a plist file name any program running as the owner can pick, so
-  it never goes in. A service's name goes in only when `health.services` lists it. A cron's
+  it never goes in. A service's name goes in only when `health.services` lists it. A limit
+  warning's line (`Claude session at 80%, resets 5:30 pm`) is checked against its fixed
+  shape before it becomes a candidate and again when the event's words are written (a
+  candidate held overnight comes back from the ledger's file); one that does not fit is
+  said as `a limit warning`. Several at once are joined with `; `. A cron's
   `last` words, labels, log text and ingest names never go in. The exit code
   comes from the crons panel's numeric `exit` field. Times are the server's local time.
 - **Limits, on the server.** Dedupe by alert key while the condition lives, in a ledger of
@@ -1911,7 +1932,11 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   its caps again one "held back" line goes, which counts toward no cap and starts no other
   summary. Quiet hours (22:00 to 07:00) hold events that are not failures until 07:00, at
   most 100 of them; past that they are only counted and join the held-back summary at 07:00.
-  Slice 1 has only failures. A store that refuses an event leaves no dedupe key behind, so
+  A limit warning is not a failure, so it is held overnight, and at 07:00 it goes only if
+  it is still true: one whose limit has since reset or moved on to its next step (its key
+  is forgotten), or whose window has ended, is dropped. One copy is held per alert: a
+  warning that clears and comes back during the night takes the place of its earlier
+  copy. Every other alert event is a failure. A store that refuses an event leaves no dedupe key behind, so
   the next pass tries again. `takeTriage()` keeps a daily budget (`events.triagePerDay`,
   default 10) for slice 2's headless triage runs; nothing spends it yet.
 - **The kill switch** is the file `~/.local/state/jarvis-os/events-off`. While it exists no
@@ -2670,7 +2695,7 @@ and that must not reach every device on the tailnet.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. |
+| `warnThreshold` | number, default `85` | Percent at which any limit bar, and credits spend, turn accent-colored and produce an alert-bar line. Also drives the "70% of threshold" mid heat tier. It does not move the limit warnings' steps (80% and 95% of the session, 90% of a week), which are what is pushed for those limits. |
 | `showAlertBanner` | bool, default `true` | Whether the alert bar renders at all. Alerts themselves are always computed; this only controls whether they're shown. |
 | `allowedHosts` | list of strings, optional | The host names this server answers to besides `127.0.0.1:<port>` and `localhost:<port>`: the Tailscale Serve name (`<mini-hostname>.<tailnet>.ts.net`, which the proxy passes through as the request's `Host`). A name without a port also matches its `:80` and `:443` spellings. See "The Host check" under Security. |
 | `push` | object, optional | `push.subject`: the `mailto:` address the chat's Web Push names in its VAPID JWT (see "The chat with the lead agent", Notifications). Without it, or without the VAPID key in the Keychain (`bin/vapid-keygen`), a `push:` line at start and no notifications. |
@@ -2838,12 +2863,13 @@ changes. Discord gets the same title and text as ntfy, so the rules below apply 
 both. An alert that lands on either channel counts as notified: a channel that is down
 can't make the next run post it again on the one that worked.
 
-**Only four kinds of alert are quoted in full — everything else is counted, never
+**Only five kinds of alert are quoted in full — everything else is counted, never
 quoted:**
 
 | kind | pushed as |
 |---|---|
-| `limit` | full text — e.g. `Weekly · all models at 88%` |
+| `limit` | full text — e.g. `Monthly spend at 88%`. Only for a limit with no warning steps of its own: the session and the weekly limits are told by `limit-step` instead, and their alert-bar line is not pushed |
+| `limit-step` | full text, and to the paired devices too — e.g. `Claude session at 80%, resets 5:30 pm` (see "Limit warnings" below) |
 | `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
 | `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
@@ -2855,7 +2881,7 @@ quoted:**
 Each counted kind goes out as its own message, so a new failure of one kind doesn't
 repeat another.
 
-This is an **allowlist**, deliberately: only the four kinds above are named as safe to
+This is an **allowlist**, deliberately: only the five kinds above are named as safe to
 quote. A kind that is missing, misspelled, or added later by someone who has not read
 this rule is counted rather than disclosed, so the failure mode of a future mistake is
 over-redaction, not a private name leaving the machine. Cron alerts never include a job
@@ -2874,6 +2900,63 @@ source was readable that run. Launchd crons, ingested crons, usage, the board's 
 health panel's services and the ingested credits feed are tracked as separate sources, so a poster gap or a cold start where
 one feed is absent or stale keeps that feed's keys rather than re-pushing them when it
 comes back.
+
+### Limit warnings: a push before a limit runs out (2026-11-17)
+
+On 2026-11-17 two agent runs took the 5-hour session limit from 3% to 100% in three
+hours. The alert bar's 85% line was pushed once a reading passed it, at 87%, but only to
+ntfy (where a topic is set) and `#pepper`, a feed no device announces, with about 20
+minutes left. So the limits now have warning steps of their own, and these reach the phone
+(`server/lib/limit-warnings.mjs`, tested in `server/test/limit-warnings.test.mjs`):
+
+- **The steps.** "Current session" at **80%** and again at **95%**; each weekly limit
+  ("Weekly · all models" and the model's own, such as "Weekly · Fable") at **90%**. They
+  are fixed in the code, apart from `warnThreshold`, which still colours the bars and
+  writes the alert bar's line but no longer pushes for these limits (it would land between
+  the steps and say the same thing).
+- **Where a warning goes.** Three places: (1) a **Web Push to every paired device**
+  (`limitWarning` in `server/lib/chat-push.mjs`; see "Web Push" under the chat), urgent,
+  at any hour, which is the one that reaches the phone; (2) ntfy and `#pepper`, like any
+  alert; (3) an **event to the lead** (see "Events"), held in quiet hours. With the chat
+  or Web Push off, a warning still goes to ntfy and `#pepper`.
+- **When.** A notifier pass runs right after each `/usage` poll (the registry's `then`,
+  `server/collectors/registry.mjs`), besides its own five-minute tick, so a warning is as
+  late as the poll (five minutes at most) and not the poll plus the tick.
+- **The devices are owed it on their own.** Landing on the devices or on either alert
+  channel marks a warning told, by the same rule as for any alert, so `#pepper` never
+  gets it twice. But the device push is tracked apart: `limitWarning` answers `{ tried,
+  reached, missed }`, and a device the push service did not take it for (refused, failed,
+  dropped from the send queue, or the call threw) is tried again **alone**, with no second
+  ntfy or `#pepper` post, on up to three later passes or until the window resets,
+  whichever comes first. A device whose subscription is gone is not tried again, and with
+  nothing to try (push off, no device) nothing is owed. The third failure is logged. A
+  warning that landed nowhere is told again whole on the next pass, like any alert.
+- **What it says.** `Claude session at 80%, resets 5:30 pm`; `Claude week (all models) at
+  90%, resets Mon 7:00 pm`; `Claude week (Fable) at 91%, resets Mon 7:00 pm`. The percent
+  is the reading's own; the reset is the server's local time, with the weekday when it is
+  not today. A model's name is said only when it is plain and short, else "one model". A
+  jump past both session steps between two readings is one message.
+- **Once per window.** A warning's key holds its step and its window's reset time
+  (`limit-step:<label>:<step>:<reset in ms>`), and a told key is kept until that time has
+  passed, even when the reading dips under the step and comes back (the history holds a
+  dozen such dips). A new window is a new key. `/usage` prints one window's reset a minute apart from poll to poll (5:29pm, then
+  5:30pm; every reset in three months of history sat within a minute of a 10-minute
+  mark), so the window is named by its reset rounded to 10 minutes of local time; keyed
+  on the printed minute, one window would warn again at every flip. A reading with no
+  reset has no time in its words, and its key is kept for five hours once told.
+- **A backstop under the keys.** Whatever the keys miss (a reset that starts to move off
+  its 10-minute mark, a reading whose reset comes and goes) is held by two caps: a limit
+  is told at most once in 30 minutes unless its step rises, and at most 12 times in any
+  24 hours (24 hours touch at most six session windows of two steps, so an honest day
+  never reaches it). A warning over a cap is put off, not dropped: it goes on the first
+  pass with room. The tellings of the last 24 hours and what the devices are owed live in
+  `server/data/notified.json` beside the told keys, under the one name
+  `limit-step-state`, read strictly (anything not in shape is dropped).
+- **Never from an old reading.** Like every push, only from a usage panel that is current
+  (`ok`); and a reading whose window has already ended warns of nothing. No ack applies:
+  only `cron` and `service` alerts can be acked.
+- **Not done here.** No quiet hours on the device push (no other alert push has them;
+  the phone's own Focus decides at night). The steps and the caps are not in config.
 
 **One-time setup** — the topic lives in Keychain, never in this public repo:
 

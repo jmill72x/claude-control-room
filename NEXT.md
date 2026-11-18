@@ -2545,3 +2545,82 @@ and would otherwise be kept in backups past its 7 days. **Follow-ups, not built:
 play/pause and a position bar (the audio is a real file now); pre-rendering the newest
 reply when it arrives so the first tap is instant; splitting, only if a slower voice is
 ever picked; the Mac app's own check that Chrome plays it.
+
+## 11. Limit warnings: a push before a Claude limit runs out (board 1e2d7926; staged 2026-11-17, Ultron's six fixes in)
+
+**Staged on `jos/limit-alert` (worktree `~/Projects/.worktrees/ccr-limit-alert`, from main
+404ec29), not committed, not live.** Jeff, 2026-11-17, after two agent runs took the session
+limit from 3% to 100% in three hours and one died mid-fix: "so i guess we just bulled right
+into the session limit without a warning". The README's "Limit warnings" (under "Push
+notifications") is the reference; this is what is left and what to defend.
+
+- **What was found first.** A warning did exist: the alert bar's 85% line. The service log
+  shows one post to `#pepper` at 10:47 that morning, five minutes after the 87% reading
+  (the post's words were not read back, so that it was the limit line is inferred from the
+  timing). It reached no device: `#pepper` is a read-only feed, and nothing suggests an
+  ntfy topic is set. The gap was the channel, not the threshold alone.
+- **What is built.** The session at 80% and 95%, each weekly limit at 90%, once per window,
+  to three places: a Web Push to every paired device (the part that reaches the phone),
+  ntfy and `#pepper`, and an event to the lead. Server only: no page change, no web build,
+  no config, no new `claude -p`.
+- **Ultron's read, 2026-11-17: go with fixes, one medium and five lows, all made the same
+  evening and awaiting his reread.** (1, medium) The device push was one-shot: a `#pepper`
+  post marked a warning told even when no device got it. The device leg is now tracked on
+  its own (`limitWarning` answers `{ tried, reached, missed }`) and a missed device is
+  tried again alone, with no second alert, on up to three later passes or until the window
+  resets. (2) A backstop under the keys: one telling per limit in 30 minutes unless its
+  step rises, 12 per limit in 24 hours, and a key with no reset time is kept five hours.
+  (3) An event's words are checked on the way out too, with `a limit warning` as the
+  fallback. (4) One held copy per alert in quiet hours. (5) A notifier pass runs right
+  after each usage poll (the registry's `then`). (6) The config refusal names `limit`.
+- **Where I chose differently from his suggestion, to confirm on the reread:** the daily
+  cap is 12 per limit, not 12 in all. Any 24 hours can touch six session windows of two
+  steps each, which is 12 honest tellings of the session alone, so a cap across all three
+  limits could put off a real weekly warning on a heavy day. A warning over a cap is put
+  off, not dropped. Not fixed, as he did not ask: a dip inside a window still makes a
+  second event to the lead by day (the event ledger forgets a cleared key; the push
+  ledger does not), bounded by the events' own caps.
+- **To go live:** Ultron's reread, C&P, then a restart of the server (Vision's scope;
+  the notifier and the push service are wired at start). Nothing else to set.
+- **After the restart, check:** (1) at the next 80% of a session, the log has `push: a
+  limit warning went to N of N devices` and the phone shows "Claude session at 8x%, resets
+  h:mm pm" titled Control Room, within about five minutes of the reading (a notifier
+  pass now follows each poll); (2) one
+  `[discord] posted` line beside it, and never a second one for the same step; (3) the lead got
+  one event line with the same words (its tag says `source="limit"`, `event="unknown"`
+  until the channel learns the name); (4) no second push for that step in the window, and a
+  second one at 95%. **Not verified on a device:** how iOS shows a Declarative Web Push with
+  no `app_badge`, and that a tap lands on the Overview. Both were tested only as payloads.
+- **Choices to defend.** (1) The Web Push body carries numbers, the first push that is not
+  one of three fixed lines; the body is checked against one fixed shape at the push
+  (`WARNING_BODY`), and a model's name from the panel is said only when plain and short.
+  (2) The alert bar's `limit` line is no longer pushed for the session and weekly limits
+  (the steps replace it; at 85% it landed between them saying the same thing). The page is
+  unchanged. (3) No quiet hours on the device push, like every other alert push; the event
+  to the lead does respect them, and a held one is dropped at 07:00 if it is no longer
+  true. (4) Told means landed anywhere (devices, ntfy or `#pepper`), the notifier's old
+  rule, so `#pepper` never gets a warning twice; the devices are owed it on their own
+  (above). (5) The window is its reset rounded to
+  10 minutes, because `/usage` prints a reset a minute apart between polls: all 61,717
+  readings since 2026-08-06 end in :x9 or :x0. If Anthropic moves resets off that grid, the
+  failure is a repeated warning, never a missed one. (6) A told key is kept until its
+  reset, because the history holds 12 readings that dipped inside a window.
+- **For Ultron's reread:** `runNotifier`'s loop and `readLimitState` in
+  `collectors/notifier.mjs` (the debt, the caps, the one reserved entry
+  `limit-step-state` in `notified.json`, which now also holds paired-device ids for a few
+  passes); `limitWarning`'s `only` and its answer in `lib/chat-push.mjs`; `mayTell` and
+  `keyParts` in `lib/limit-warnings.mjs`; `prune`'s no-reset rule; `eventText`'s second
+  check and the held-copy replace in `lib/events.mjs`; the registry's `then`.
+- **Checked:** server 1,382 tests (48 new), in local time and `TZ=Asia/Tokyo`. Mutants on
+  the new logic: 116 on the first build, all caught, and after the fixes 116 on the
+  changed lines plus the 98 of the first list that still apply and 8 replacements, all
+  caught (eleven survived a first pass over the two rounds; ten now have a test and one
+  was a dead guard, removed, as were two dead branches in the first round). No browser
+  run: the page did not change.
+- **Follow-ups, not built:** (a) the channel's `EVENT_NAMES` (the jarvis repo) does not
+  know `limit-warning`, so the lead's tag reads `event="unknown"`; the words arrive all the
+  same. (b) The event ledger's own once-per-window rule, so a dip by day makes no second
+  event. (c) The steps and the caps in config, if Jeff wants other numbers. (d) What the lead does on the event (hold new agent
+  runs past 80%, say) is Jarvis's rule to write, not this server's. (e) `sw.js` files a
+  limit push under the chat's tag on iOS before 18.4; it changes with the next web build
+  that touches it.

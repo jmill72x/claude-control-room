@@ -84,3 +84,50 @@ test('an overlapping run is skipped rather than stacked', async () => {
   await Promise.all([r.runOnce('slow'), r.runOnce('slow')]);
   assert.equal(started, 1);
 });
+
+test('a collector may name one to run right after it: once per successful run, after its own value is in the cache, and never after a failure', async () => {
+  const cache = createCache();
+  const r = createRegistry(cache, fakeTimers());
+  let fail = false;
+  const seen = [];
+  r.register('usage', async () => { if (fail) throw new Error('cli missing'); return { pct: seen.length + 1 }; }, 1000, { then: 'notifier' });
+  r.register('notifier', async () => { seen.push(cache.get('usage', Date.now())?.data?.pct ?? null); return { ran: seen.length }; }, 1000);
+  await r.runOnce('usage');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(seen, [1], 'it ran, and read the value just set');
+  await r.runOnce('notifier');
+  assert.deepEqual(seen, [1, 1], 'its own runs go on as before');
+  await r.runOnce('usage');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(seen, [1, 1, 3]);
+  fail = true;
+  await r.runOnce('usage');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(seen.length, 3, 'a failed run starts nothing');
+  // A collector with no `then`, and one naming a collector that does not exist, start nothing.
+  r.register('board', async () => 1, 1000);
+  r.register('odd', async () => 1, 1000, { then: 'nobody' });
+  await r.runOnce('board');
+  await r.runOnce('odd');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(seen.length, 3);
+});
+
+test('the run that follows is not waited for, and is skipped while that collector is already running', async () => {
+  const cache = createCache();
+  const r = createRegistry(cache, fakeTimers());
+  let release;
+  let runs = 0;
+  r.register('usage', async () => 1, 1000, { then: 'notifier' });
+  r.register('notifier', () => { runs++; return new Promise(resolve => { release = resolve; }); }, 1000);
+  const first = await Promise.race([r.runOnce('usage').then(() => 'ended'), new Promise(resolve => setTimeout(() => resolve('still waiting'), 200))]);
+  assert.equal(first, 'ended', 'the usage run ends while the notifier is still running');
+  assert.equal(runs, 1, 'and the notifier has started');
+  await r.runOnce('usage');
+  assert.equal(runs, 1, 'still running: skipped, not stacked');
+  release({});
+  await new Promise(resolve => setImmediate(resolve));
+  await r.runOnce('usage');
+  assert.equal(runs, 2);
+  release({});
+});

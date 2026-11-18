@@ -9,8 +9,12 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
   const firstPass = new Promise(resolve => { resolveFirst = resolve; });
 
   return {
-    register(name, fn, intervalMs) {
-      collectors.set(name, { fn, intervalMs, running: false });
+    // `then` names a collector to run once right after each run of this one that
+    // succeeded (the notifier after the usage poll, so a new reading is acted on at
+    // once and not at the notifier's own next tick). It is not waited for, and is
+    // skipped like any run while that collector is already running.
+    register(name, fn, intervalMs, { then = null } = {}) {
+      collectors.set(name, { fn, intervalMs, running: false, then });
       // Tell the cache what this collector's own interval is so its
       // staleness budget can never be shorter than the interval the data is
       // produced on — see cache.mjs's deriveBudgetFromInterval().
@@ -33,6 +37,7 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
           if (firstPending.size === 0) resolveFirst({ failed: [...firstFailed] });
         }
       }
+      if (!failed && c.then) this.runOnce(c.then);
     },
     startAll() {
       // All of them first. (runOnce can't end before the loop below finishes, since it

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { createChatStore } from '../lib/chat-store.mjs';
 import { createSocketRouter, toInbound, summaryLine, SESSION_HEADER, EVENTS_CAPABILITY } from '../lib/chat-socket.mjs';
 import {
-  createEvents, candidatesFromAlerts, eventText, heldText, jobName, keyHash, readEventsConfig, checkEventBody, isQuiet, suppressedText,
+  createEvents, candidatesFromAlerts, eventText, heldText, LIMIT_WORDS, jobName, keyHash, readEventsConfig, checkEventBody, isQuiet, suppressedText,
   PER_SOURCE_HOURLY, DAILY_TOTAL, EVENT_TTL_MS, COALESCE_MS, QUIET_MAX, SUPPRESSED_EVERY_MS
 } from '../lib/events.mjs';
 import { createEventSocketRouter, EVENT_BODY_MAX } from '../lib/event-socket.mjs';
@@ -712,4 +712,140 @@ test('stop lines: only to a channel that declared stop, only while fresh, else m
     await assert.rejects(env.store.append({ from: 'jarvis', kind: 'stop', text: 'x', device: 'iPhone' }), /only a paired device makes stops/);
     await assert.rejects(env.store.append({ from: 'jeff', kind: 'stop', text: 'x' }), /only a paired device makes stops/);
   } finally { for (const s of streams) await s.close(); await srv.close(); await env.done(); }
+});
+
+// ---- limit warnings (lib/limit-warnings.mjs): the lead hears of a limit before it runs out ----
+
+const dayAt = (d, h, m) => new Date(2026, 10, d, h, m).getTime();
+const LIMITS = new Set([...ALL, 'limit-step']);
+const stepAlert = (step, pct, reset, extra = {}) => ({
+  kind: 'limit-step', key: `limit-step:Current session:${step}:${reset}`, covers: [], label: 'Current session', step, resetsAt: reset,
+  text: `Claude session at ${pct}%, resets 5:30 pm`, ...extra
+});
+
+test('a limit warning becomes a candidate with its own line; a line in any other shape, or another kind under its key, makes none', () => {
+  const reset = dayAt(11, 17, 30);
+  const [c] = candidatesFromAlerts([stepAlert(80, 82, reset)], { now: T0 });
+  assert.deepEqual(c, { source: 'limit', key: `limit-step:Current session:80:${reset}`, failure: false, words: 'Claude session at 82%, resets 5:30 pm', until: reset, since: T0 });
+  for (const none of [null, undefined, 'soon', NaN]) assert.equal(candidatesFromAlerts([stepAlert(80, 82, reset, { resetsAt: none })], { now: T0 })[0].until, null);
+  for (const text of [HOSTILE, `Claude session at 82%, resets 5:30 pm ${HOSTILE}`, `Claude session at 82%\n${HOSTILE}`, undefined, 7]) {
+    assert.deepEqual(candidatesFromAlerts([stepAlert(80, 82, reset, { text })], { now: T0 }), [], String(text));
+  }
+  assert.deepEqual(candidatesFromAlerts([stepAlert(80, 82, reset, { kind: 'limit' })], { now: T0 }), []);
+  assert.deepEqual(candidatesFromAlerts([stepAlert(80, 82, reset, { key: 'limit:Current session' })], { now: T0 }), []);
+  assert.deepEqual(candidatesFromAlerts([stepAlert(80, 82, reset)], { now: T0, excludeKeys: new Set([`limit-step:Current session:80:${reset}`]) }), [], 'config can exclude it');
+  assert.equal(eventText('limit', [{ words: 'Claude session at 82%, resets 5:30 pm' }]), 'Claude session at 82%, resets 5:30 pm');
+  assert.equal(eventText('limit', [{ words: 'Claude session at 82%, resets 5:30 pm' }, { words: 'Claude week (A) at 91%' }]), 'Claude session at 82%, resets 5:30 pm; Claude week (A) at 91%');
+  assert.match(heldText('limit', 2, T0), /^2 more limit warnings held back since 09:14/);
+});
+
+test('through the notifier: the session at 80% wakes the lead once, and again at 95%', async () => {
+  const env = await setup({ clockAt: dayAt(11, 14, 0) });
+  try {
+    const reset = dayAt(11, 17, 30);
+    const sentStore = {};
+    const run = pct => {
+      env.clock.t += 5 * MIN;
+      return runNotifier({
+        snapshot: { crons: { status: 'ok', data: [] }, ingestCrons: { status: 'ok', data: [] }, usage: { status: 'ok', data: { limits: [{ label: 'Current session', pct, resetsAt: new Date(reset).toISOString() }] } } },
+        config: {}, now: env.clock.t,
+        readSent: async () => ({ ...sentStore }), writeSent: async next => { for (const k of Object.keys(sentStore)) delete sentStore[k]; Object.assign(sentStore, next); },
+        send: async () => ({ sent: true }),
+        events: (alerts, info) => env.events.fromAlerts(alerts, { ...info, jobNames: {}, serviceNames: new Set() })
+      });
+    };
+    assert.equal((await run(79)).events.made, 0);
+    assert.equal((await run(81)).events.made, 1);
+    assert.equal((await run(88)).events.made, 0, 'the alert bar\'s 85% makes no event, and the step is told');
+    assert.equal((await run(96)).events.made, 1);
+    assert.equal((await run(100)).events.made, 0);
+    const made = env.eventsOf();
+    assert.deepEqual(made.map(m => m.text), ['Claude session at 81%, resets 5:30 pm', 'Claude session at 96%, resets 5:30 pm']);
+    assert.deepEqual(made.map(m => [m.meta.event.source, m.meta.event.type, m.meta.event.count, m.meta.event.live]), [['limit', 'limit-warning', 1, true], ['limit', 'limit-warning', 1, true]]);
+    assert.equal(env.events.deliverable(made[1]), true);
+    assert.ok(!JSON.stringify(made).includes('limit-step:'), 'the key leaves only as a hash');
+  } finally { await env.done(); }
+});
+
+test('quiet hours hold a limit warning until 07:00; one whose window has ended by then, or whose limit has moved on, is dropped', async () => {
+  const night = dayAt(11, 23, 30);
+  const early = dayAt(12, 1, 30), late = dayAt(12, 9, 30);
+  const env = await setup({ clockAt: night });
+  try {
+    const ended = stepAlert(80, 81, early, { label: 'Weekly · A', key: `limit-step:Weekly · A:90:${early}`, text: 'Claude week (A) at 91%, resets Thu 1:30 am' });
+    const cleared = stepAlert(80, 82, late, { key: `limit-step:Weekly · B:90:${late}`, text: 'Claude week (B) at 92%, resets Thu 9:30 am' });
+    const kept = stepAlert(80, 83, late, { text: 'Claude session at 83%, resets Thu 9:30 am' });
+    const out = await env.events.fromAlerts([ended, cleared, kept], { ...env.ctx, observable: LIMITS });
+    assert.equal(out.made, 0);
+    assert.equal(env.eventsOf().length, 0, 'nothing at night');
+    assert.equal(env.events.ledger.quiet.length, 3);
+    // 07:05: `ended` is still raised (the panel has not read since) but its window is
+    // over; `cleared` is no longer raised; `kept` is still true.
+    env.clock.t = dayAt(12, 7, 5);
+    await env.events.fromAlerts([ended, kept], { ...env.ctx, observable: LIMITS });
+    assert.deepEqual(env.eventsOf().map(m => m.text), ['Claude session at 83%, resets Thu 9:30 am']);
+    assert.equal(env.events.ledger.quiet.length, 0);
+    assert.equal(env.eventsOf()[0].meta.event.type, 'limit-warning');
+  } finally { await env.done(); }
+  // By day it goes at once.
+  const day = await setup({ clockAt: dayAt(11, 14, 0) });
+  try {
+    assert.equal((await day.events.fromAlerts([stepAlert(80, 83, dayAt(11, 17, 30))], { ...day.ctx, observable: LIMITS })).made, 1);
+  } finally { await day.done(); }
+});
+
+test('`limit` is the notifier\'s own source: config cannot name a socket source after it', () => {
+  const r = readEventsConfig({ events: { sources: { limit: { title: 'Limits' }, 'nas-drop': { title: 'NAS drop' } } } });
+  assert.deepEqual([...r.sources.keys()], ['nas-drop']);
+  assert.deepEqual(r.problems, ['events.sources: "limit" is not a source name (a-z, 0-9 and -, not launchd, service, limit or presence)']);
+});
+
+test('a limit warning\'s words are checked again on the way out: anything not in the fixed shape is said as "a limit warning"', async () => {
+  assert.equal(LIMIT_WORDS, 'a limit warning');
+  for (const words of [HOSTILE, `Claude session at 82%, resets 5:30 pm\n${HOSTILE}`, '', undefined, null, 7, { toString: () => 'Claude session at 82%' }]) {
+    assert.equal(eventText('limit', [{ words }]), 'a limit warning', String(words));
+  }
+  assert.equal(eventText('limit', [{ words: 'Claude session at 82%' }, { words: HOSTILE }]), 'Claude session at 82%; a limit warning');
+  // A candidate held overnight comes back from the ledger's file: words edited there
+  // never reach the lead.
+  const night = dayAt(11, 23, 30), reset = dayAt(12, 9, 30);
+  const env = await setup({ clockAt: night });
+  try {
+    const held = stepAlert(80, 83, reset, { text: 'Claude session at 83%, resets Thu 9:30 am' });
+    await env.events.fromAlerts([held], { ...env.ctx, observable: LIMITS });
+    const path = join(env.dir, 'events.json');
+    const ledger = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(ledger.quiet.length, 1);
+    ledger.quiet[0].words = HOSTILE;
+    await writeFile(path, JSON.stringify(ledger));
+    const again = env.make();
+    await again.load();
+    env.clock.t = dayAt(12, 7, 5);
+    await again.fromAlerts([held], { ...env.ctx, observable: LIMITS });
+    assert.deepEqual(env.eventsOf().map(m => m.text), ['a limit warning']);
+    assert.ok(!JSON.stringify(env.eventsOf()).includes('IGNORE'));
+  } finally { await env.done(); }
+});
+
+test('one held copy per alert: a warning that clears and comes back during the night replaces its earlier copy', async () => {
+  const night = dayAt(11, 23, 30), reset = dayAt(12, 9, 30);
+  const env = await setup({ clockAt: night, sources: new Map([['nas-drop', { title: 'NAS drop', failure: false }]]) });
+  try {
+    const first = stepAlert(80, 81, reset, { text: 'Claude session at 81%, resets Thu 9:30 am' });
+    const back = stepAlert(80, 84, reset, { text: 'Claude session at 84%, resets Thu 9:30 am' });
+    const other = stepAlert(90, 91, reset, { label: 'Weekly · A', key: `limit-step:Weekly · A:90:${reset}`, text: 'Claude week (A) at 91%, resets Thu 9:30 am' });
+    await env.events.fromAlerts([first, other], { ...env.ctx, observable: LIMITS });
+    env.clock.t += 5 * MIN;
+    await env.events.fromAlerts([other], { ...env.ctx, observable: LIMITS });
+    env.clock.t += 5 * MIN;
+    await env.events.fromAlerts([back, other], { ...env.ctx, observable: LIMITS });
+    assert.deepEqual(env.events.ledger.quiet.map(c => c.words), ['Claude session at 84%, resets Thu 9:30 am', 'Claude week (A) at 91%, resets Thu 9:30 am'], 'in its place, the newer words');
+    // Keyless candidates (a socket source's counts) are never folded together.
+    await env.events.post({ source: 'nas-drop', count: 1 });
+    await env.events.post({ source: 'nas-drop', count: 2 });
+    assert.equal(env.events.ledger.quiet.length, 4);
+    env.clock.t = dayAt(12, 7, 5);
+    await env.events.fromAlerts([back, other], { ...env.ctx, observable: LIMITS });
+    assert.deepEqual(env.eventsOf().map(m => m.text), ['Claude session at 84%, resets Thu 9:30 am; Claude week (A) at 91%, resets Thu 9:30 am', 'NAS drop: 3 new at 23:40']);
+  } finally { await env.done(); }
 });

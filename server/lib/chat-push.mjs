@@ -1,5 +1,5 @@
 // When the chat pushes to a paired device, and what it says (jarvis-os-chat-spec.md,
-// §3). Three generic lines and nothing else, never a message's text or a tool's name:
+// §3). Three generic lines and a limit warning, never a message's text or a tool's name:
 //
 // - "New message": a chat message from the lead, to each device that has had no
 //   stream open in the last 10 s. A device whose stream closed under 10 s ago is
@@ -14,6 +14,12 @@
 // - "Jarvis is offline": once, after 5 minutes without the channel's heartbeat;
 //   once more only after it has come back.
 //
+// - A limit warning (lib/limit-warnings.mjs; the notifier calls limitWarning): a line
+//   such as "Claude session at 80%, resets 5:30 pm", to every device at once, urgent,
+//   looking or not, at any hour. The one push whose body is not a fixed line: it is
+//   the usage panel's own numbers in a fixed shape (WARNING_BODY), and a body that is
+//   not in that shape is not sent. A tap opens the Overview. Titled "Control Room".
+//
 // `notice`s (the channel's restart line), verdicts, edits and the owner's own
 // messages never push. A subscription the push service calls gone (404 or 410) is
 // deleted; a 403 (the key or the JWT refused) is an alert, at most one per window.
@@ -22,6 +28,7 @@
 // windows above, so the next message or request pushes as if it never happened.
 import { sendPush, vapidKeys } from './webpush.mjs';
 import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
+import { WARNING_BODY } from './limit-warnings.mjs';
 
 export const CHAT_QUIET_MS = 10e3;
 export const CHAT_REPEAT_MS = 60e3;
@@ -31,7 +38,10 @@ export const SEND_QUEUE_MAX = 16;
 export const OFFLINE_AFTER_MS = 5 * 60e3;
 export const OFFLINE_CHECK_MS = 30e3;
 export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: 'Jarvis is offline' });
-const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat' };
+const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat', limit: 'jos-limit' };
+// What a limit warning says when its body is not in the fixed shape (payloadFor is
+// exported; limitWarning refuses such a body before it gets here).
+export const LIMIT_FALLBACK = 'Claude limit warning';
 // An origin a tap may go to: https, a DNS name (lowercase, as URL writes it) and an
 // optional port; nothing after it. The last label starts with a letter, so an IPv4
 // literal is no DNS name. The routes store only the Serve name's origin.
@@ -75,8 +85,14 @@ export async function loadVapid({ config, read = readVapidKey } = {}) {
 
 // The declarative Web Push message (iOS 18.4+; sw.js shows the same for older
 // iOS): a title, one of three bodies, where a tap goes, and the badge.
-export function payloadFor(kind, origin) {
-  const navigate = `${typeof origin === 'string' && NAV_ORIGIN.test(origin) ? origin : ''}/#chat`;
+export function payloadFor(kind, origin, body = null) {
+  const site = typeof origin === 'string' && NAV_ORIGIN.test(origin) ? origin : '';
+  // A limit warning: its own title, the Overview on a tap, and no badge (the badge
+  // counts unseen chat messages).
+  if (kind === 'limit') {
+    return { web_push: 8030, notification: { title: 'Control Room', body: typeof body === 'string' && WARNING_BODY.test(body) ? body : LIMIT_FALLBACK, navigate: `${site}/#overview` } };
+  }
+  const navigate = `${site}/#chat`;
   return { web_push: 8030, notification: { title: 'Jarvis', body: BODIES[kind], navigate, app_badge: 1 } };
 }
 
@@ -95,11 +111,11 @@ export function createPushService({
   let offlinePushed = false;
   const sending = new Set();
 
-  async function send(target, kind) {
+  async function send(target, kind, body = null) {
     if (!vapid) return { outcome: 'off' };
     const r = await sendPush({
-      subscription: target.push, payload: payloadFor(kind, target.push.origin), vapid,
-      urgency: kind === 'approval' ? 'high' : 'normal', topic: TOPICS[kind], now: now(), fetchImpl, testHosts
+      subscription: target.push, payload: payloadFor(kind, target.push.origin, body), vapid,
+      urgency: kind === 'approval' || kind === 'limit' ? 'high' : 'normal', topic: TOPICS[kind], now: now(), fetchImpl, testHosts
     });
     if (r.outcome === 'gone') {
       if (await devices.dropPush(target.id, target.push.endpoint)) log(`push: ${target.name}'s subscription is gone (${r.status}); removed`);
@@ -115,24 +131,45 @@ export function createPushService({
   const track = p => { sending.add(p); p.finally(() => sending.delete(p)); return p; };
 
   // A push goes through a bounded queue: at most `sendConcurrency` in flight, at
-  // most `sendQueueMax` waiting; one past that is dropped and logged. True when the
-  // push was queued, false when it was dropped.
+  // most `sendQueueMax` waiting; one past that is dropped and logged. A queued push
+  // returns the promise of its send's result; a dropped one returns null.
   function pump() {
     while (inFlight < sendConcurrency && queued.length) {
       const job = queued.shift();
       inFlight++;
-      send(job.target, job.kind)
-        .catch(err => log(`push: a ${job.kind} push to ${job.target.name} failed (${err?.message ?? err})`))
-        .finally(() => { inFlight--; job.done(); pump(); });
+      send(job.target, job.kind, job.body)
+        .catch(err => { log(`push: a ${job.kind} push to ${job.target.name} failed (${err?.message ?? err})`); return { outcome: 'failed' }; })
+        .then(r => { inFlight--; job.done(r); pump(); });
     }
   }
-  function enqueue(target, kind) {
+  function enqueue(target, kind, body = null) {
     if (queued.length >= sendQueueMax) {
       log(`push: ${queued.length} pushes are waiting; a ${kind} push to ${target.name} was dropped`);
-      return false;
+      return null;
     }
-    track(new Promise(done => { queued.push({ target, kind, done }); pump(); }));
-    return true;
+    return track(new Promise(done => { queued.push({ target, kind, body, done }); pump(); }));
+  }
+
+  // A limit warning to every paired device (the notifier's call), or with `only` (a
+  // list of device ids) to those alone: the notifier's later try for the ones a first
+  // send missed. Resolves to `{ tried, reached, missed }`: how many devices it was sent
+  // to, how many the push service took it for, and the ids of the rest, so "nothing to
+  // try" (push off, no device, a body not in the fixed shape: tried 0) and "tried and
+  // failed" are told apart. A device whose subscription is gone is not missed: there is
+  // nothing left to try.
+  async function limitWarning(body, { only = null } = {}) {
+    const none = { tried: 0, reached: 0, missed: [] };
+    if (!vapid) return none;
+    if (typeof body !== 'string' || !WARNING_BODY.test(body)) {
+      log('push: a limit warning that is not in the fixed shape was not sent');
+      return none;
+    }
+    const targets = devices.pushTargets().filter(target => !Array.isArray(only) || only.includes(target.id));
+    const results = await Promise.all(targets.map(target => enqueue(target, 'limit', body) ?? { outcome: 'dropped' }));
+    const reached = results.filter(r => r?.outcome === 'sent').length;
+    const missed = targets.filter((_, i) => results[i]?.outcome !== 'sent' && results[i]?.outcome !== 'gone').map(target => target.id);
+    log(`push: a limit warning went to ${reached} of ${targets.length} device${targets.length === 1 ? '' : 's'}`);
+    return { tried: targets.length, reached, missed };
   }
 
   // An approval held for `ms`: then pushed if the device is still paired and a
@@ -224,6 +261,7 @@ export function createPushService({
     on: () => vapid !== null,
     testHosts,
     checkOffline,
+    limitWarning,
     idle: async () => { while (sending.size) await Promise.allSettled([...sending]); },
     stop: () => { unsubscribe(); clearInterval(offlineTimer); for (const w of waiting.values()) clearTimer(w.timer); waiting.clear(); for (const t of heldApproval.values()) clearTimer(t); heldApproval.clear(); }
   };

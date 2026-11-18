@@ -89,7 +89,7 @@ test('an alert with no key is dropped rather than pushed unkeyed', () => {
 });
 
 test('observableSources reports usage-backed keys only when the usage panel is ok', () => {
-  assert.deepEqual([...observableSources({ usage: { status: 'ok' } })].sort(), ['credits', 'limit', 'needs-you', 'projection']);
+  assert.deepEqual([...observableSources({ usage: { status: 'ok' } })].sort(), ['credits', 'limit', 'limit-step', 'needs-you', 'projection']);
   assert.deepEqual([...observableSources({ usage: { status: 'stale' } })].sort(), ['credits', 'needs-you']);
 });
 
@@ -166,4 +166,61 @@ test('a down service can be forgotten only while the health panel reports', () =
   assert.ok(observableSources({ health: { status: 'ok' } }).has('service'));
   assert.ok(!observableSources({ health: { status: 'stale' } }).has('service'));
   assert.ok(!observableSources({}).has('service'));
+});
+
+// ---- limit warnings (lib/limit-warnings.mjs) ----
+
+const RESET = new Date(2026, 10, 17, 17, 30).getTime();
+const stepKey = (step, label = 'Current session', win = RESET) => `limit-step:${label}:${step}:${win}`;
+const warning = (step, covers = [], label = 'Current session') => ({ kind: 'limit-step', key: stepKey(step, label), covers, text: 'Claude session at 96%, resets 5:30 pm', label, step, resetsAt: RESET });
+
+test('a limit warning goes out as written, marked for the devices, with the keys of the steps it has passed', () => {
+  assert.deepEqual(pushableFrom([warning(95, [stepKey(80)])]), [
+    { keys: [stepKey(95), stepKey(80)], title: 'Control Room', message: 'Claude session at 96%, resets 5:30 pm', devices: true }
+  ]);
+  assert.deepEqual(pushableFrom([warning(80)])[0].keys, [stepKey(80)]);
+  assert.deepEqual(pushableFrom([{ ...warning(80), covers: undefined }])[0].keys, [stepKey(80)], 'no covers is none');
+  assert.deepEqual(pushableFrom([{ ...warning(80), covers: [7, '', null, stepKey(70)] }])[0].keys, [stepKey(80), stepKey(70)], 'only keys');
+  // It is its own message: never counted with the kinds that are not quoted.
+  const mixed = pushableFrom([warning(80), { kind: 'mystery', key: 'mystery:1', text: 'x' }]);
+  assert.equal(mixed.length, 2);
+  assert.deepEqual(mixed.find(e => isCounted(e.message)).keys, ['mystery:1']);
+  for (const e of pushableFrom([cron('cron:launchd:a', 'a cron failed'), limit('limit:Monthly', 'Monthly at 90%')])) assert.equal(e.devices, undefined, 'only a limit warning goes to the devices');
+});
+
+test('a limit that has warning steps is told by them: its alert-bar line is not pushed; any other limit\'s still is', () => {
+  assert.deepEqual(pushableFrom([limit('limit:Current session', 'Current session at 87%')]), []);
+  assert.deepEqual(pushableFrom([limit('limit:Weekly · all models', 'Weekly · all models at 88%'), limit('limit:Weekly · Fable', 'Weekly · Fable at 86%')]), []);
+  assert.deepEqual(pushableFrom([limit('limit:Monthly spend', 'Monthly spend at 88%')]).map(e => e.message), ['Monthly spend at 88%']);
+  const both = pushableFrom([limit('limit:Current session', 'Current session at 87%'), warning(80)]);
+  assert.deepEqual(both.map(e => e.message), ['Claude session at 96%, resets 5:30 pm']);
+  // A projection is another matter and still goes.
+  assert.equal(pushableFrom([{ kind: 'projection', key: 'projection:Current session', text: 'Current session projected to reach 140% by reset' }]).length, 1);
+});
+
+test('a told limit warning is kept until its window resets, even when it is no longer raised; then it is forgotten', () => {
+  const usage = new Set(['limit-step']);
+  const sent = { [stepKey(80)]: 1, [stepKey(95)]: 2 };
+  assert.deepEqual(prune(sent, [], usage, RESET - 1), sent, 'a dip under the step forgets nothing');
+  assert.deepEqual(prune(sent, [{ key: stepKey(95) }], usage, RESET - 1), sent, 'nor does moving on to the next step');
+  assert.deepEqual(prune(sent, [], usage, RESET), {}, 'the window is over');
+  assert.deepEqual(prune(sent, [], usage, RESET + 1), {});
+  assert.deepEqual(prune(sent, [{ key: stepKey(95) }], usage, RESET + 1), { [stepKey(95)]: 2 }, 'one still raised is kept as any alert is');
+  assert.deepEqual(prune(sent, [], new Set(), RESET + 1), sent, 'usage unread: kept, as any key is');
+  // Without a time (the event ledger's call) the rule is the plain one.
+  assert.deepEqual(prune(sent, [], usage), {});
+  // Every other kind never stays on.
+  assert.deepEqual(prune({ 'limit:Weekly': RESET - 2 }, [], new Set(['limit', 'limit-step']), RESET - 1), {});
+});
+
+test('a told limit warning with no reset in its key is kept for five hours from when it was told', () => {
+  const usage = new Set(['limit-step']);
+  const KEY = 'limit-step:Current session:80:-';
+  const told = RESET;
+  const FIVE_HOURS = 5 * 3600e3;
+  assert.deepEqual(prune({ [KEY]: told }, [], usage, told + FIVE_HOURS - 1), { [KEY]: told });
+  assert.deepEqual(prune({ [KEY]: told }, [], usage, told + FIVE_HOURS), {});
+  assert.deepEqual(prune({ [KEY]: told }, [{ key: KEY }], usage, told + FIVE_HOURS), { [KEY]: told }, 'still raised: kept as any alert is');
+  assert.deepEqual(prune({ [KEY]: told }, [], usage), {}, 'without a time, the plain rule');
+  for (const odd of ['yesterday', null, { at: told }, String(told), true]) assert.deepEqual(prune({ [KEY]: odd }, [], usage, told + 1), {}, 'a value that is no time keeps nothing');
 });

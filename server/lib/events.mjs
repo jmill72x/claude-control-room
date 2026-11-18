@@ -37,6 +37,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { prune as pruneKeys } from './push-alerts.mjs';
 import { clockTime } from './chat-socket.mjs';
+import { KIND as LIMIT_STEP, WARNING_BODY } from './limit-warnings.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 export const COALESCE_MS = 60e3;
@@ -56,7 +57,9 @@ export const SUPPRESSED_EVERY_MS = HOUR;
 
 // A source name on the socket's allowlist, and the in-process ones.
 export const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
-export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage' });
+export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage', limit: 'limit warning' });
+// What a limit warning's event says when its words are not in the fixed shape.
+export const LIMIT_WORDS = 'a limit warning';
 // Presence (lib/shortcut-routes.mjs): what a paired Shortcut may report, each a fixed
 // word. The Shortcut sends the name alone; no text of its own ever reaches an event.
 export const PRESENCE_SOURCE = 'presence';
@@ -111,6 +114,9 @@ export function eventText(source, items, { title = null } = {}) {
     if (n === 1) return `Service ${items[0].subject ?? 'a service'} is down since ${clockTime(items[0].since)}`;
     return `${n} services are down: ${listed(items, servicePart)}`;
   }
+  // A limit warning's own line (lib/limit-warnings.mjs), checked on the way in and
+  // again here: a candidate held overnight comes back from the ledger's file.
+  if (source === 'limit') return listed(items, c => (typeof c.words === 'string' && WARNING_BODY.test(c.words) ? c.words : LIMIT_WORDS));
   if (source === PRESENCE_SOURCE) {
     if (n === 1) return `Presence: ${presencePart(items[0])}`;
     return `${n} presence reports: ${listed(items, presencePart)}`;
@@ -141,6 +147,11 @@ export function candidatesFromAlerts(alerts, { jobNames = {}, serviceNames = new
       // `service:<kind>:<name>` (lib/health.mjs): the name only when config lists it.
       const name = key.split(':').slice(2).join(':');
       out.push({ source: 'service', key, failure: true, subject: serviceNames.has(name) ? safeName(name) : null, since });
+    } else if (a.kind === LIMIT_STEP && key.startsWith(`${LIMIT_STEP}:`) && typeof a.text === 'string' && WARNING_BODY.test(a.text)) {
+      // A limit warning (lib/limit-warnings.mjs): not a failure, so quiet hours hold
+      // it. Its words are numbers in a fixed shape; a line in any other shape makes
+      // no event. `until` is its window's reset: past it, a held one is dropped.
+      out.push({ source: 'limit', key, failure: false, words: a.text, until: Number.isFinite(a.resetsAt) ? a.resetsAt : null, since });
     }
   }
   return out;
@@ -158,7 +169,7 @@ export function readEventsConfig(config) {
   if (!isObject(raw)) { problems.push('events is not an object'); return out; }
   if (raw.sources !== undefined && !isObject(raw.sources)) problems.push('events.sources is not an object');
   for (const [name, s] of Object.entries(isObject(raw.sources) ? raw.sources : {})) {
-    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service or presence)`); continue; }
+    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service, limit or presence)`); continue; }
     const title = safeName(s?.title);
     if (!title) { problems.push(`events.sources.${name}: title must be a plain name of at most 60 characters`); continue; }
     out.sources.set(name, { title, failure: s.failure === true });
@@ -283,6 +294,7 @@ export function createEvents({
   const typeFor = (source, items = []) => {
     if (source === 'launchd') return 'job-failed';
     if (source === 'service') return 'service-down';
+    if (source === 'limit') return 'limit-warning';
     if (source !== PRESENCE_SOURCE) return 'count';
     const whats = new Set(items.map(c => c.what));
     return whats.size === 1 && Object.hasOwn(PRESENCE_EVENTS, items[0].what) ? items[0].what : 'presence';
@@ -321,6 +333,10 @@ export function createEvents({
     const loud = items.filter(atOnce);
     const hushed = items.filter(c => !atOnce(c));
     for (const c of hushed) {
+      // One held copy per alert: a condition that cleared and came back during the
+      // night takes the place of its earlier copy.
+      const earlier = c.key ? ledger.quiet.findIndex(q => q.key === c.key) : -1;
+      if (earlier >= 0) { ledger.quiet[earlier] = c; continue; }
       if (ledger.quiet.length < QUIET_MAX) { ledger.quiet.push(c); continue; }
       // Bounded: one past the limit is only counted, and at 07:00 the count joins the
       // held-back summary (so a flood at night is one line in the morning, not many).
@@ -398,7 +414,10 @@ export function createEvents({
     }
     if (ledger.quiet.length > 0 && !isQuiet(at)) {
       const bySource = new Map();
-      for (const c of ledger.quiet) bySource.set(c.source, [...(bySource.get(c.source) ?? []), c]);
+      // A held alert whose condition cleared overnight (its key is forgotten), or whose
+      // window has ended (`until`), says nothing true in the morning: it is dropped.
+      const stillTrue = c => !(c.key && !Object.hasOwn(ledger.keys, c.key)) && !(Number.isFinite(c.until) && c.until <= at);
+      for (const c of ledger.quiet.filter(stillTrue)) bySource.set(c.source, [...(bySource.get(c.source) ?? []), c]);
       ledger.quiet = [];
       for (const [source, items] of bySource) {
         if (killed()) suppress(items);

@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
 import { makeChatEnv, openStream } from './helpers/chat-env.mjs';
-import { createPushService, readPushConfig, payloadFor, BODIES, CHAT_QUIET_MS, CHAT_REPEAT_MS, OFFLINE_AFTER_MS, APPROVAL_REPEAT_MS, SEND_CONCURRENCY, SEND_QUEUE_MAX } from '../lib/chat-push.mjs';
+import { createPushService, readPushConfig, payloadFor, BODIES, LIMIT_FALLBACK, CHAT_QUIET_MS, CHAT_REPEAT_MS, OFFLINE_AFTER_MS, APPROVAL_REPEAT_MS, SEND_CONCURRENCY, SEND_QUEUE_MAX } from '../lib/chat-push.mjs';
 import { notificationOrigin } from '../lib/chat-routes.mjs';
 import { vapidKeys, newVapidKeys, decrypt, verifyVapidJwt, b64u } from '../lib/webpush.mjs';
 
@@ -669,4 +669,134 @@ test('the VAPID key: read from the Keychain item, derived, and each missing piec
   const locked = await loadVapid({ config: { push: { subject: 'mailto:owner@example.com' } }, read: () => readVapidKey({ run: fake(36), keychain: '/k/login.keychain-db' }) });
   assert.equal(locked.vapid, null);
   assert.match(locked.problems[0], /^the Keychain could not be read \(security could not read the key \(exit 36\)\)/);
+});
+
+// ---- a limit warning (lib/limit-warnings.mjs; the notifier's call) ----
+
+const WARNING = 'Claude session at 80%, resets 5:30 pm';
+
+test('a limit warning\'s payload: its own title, the line as written, a tap to the Overview, no badge', () => {
+  assert.deepEqual(payloadFor('limit', ORIGIN, WARNING), { web_push: 8030, notification: { title: 'Control Room', body: WARNING, navigate: `${ORIGIN}/#overview` } });
+  assert.equal(payloadFor('limit', 'https://x.example/evil', WARNING).notification.navigate, '/#overview', 'only a bare origin is used');
+  for (const bad of [null, undefined, 7, '', 'New message', `${WARNING}\nrm -rf the secret folder`, 'Claude session at 80%, resets soon', { toString: () => WARNING }]) {
+    assert.equal(payloadFor('limit', ORIGIN, bad).notification.body, LIMIT_FALLBACK, String(bad));
+  }
+  assert.equal(LIMIT_FALLBACK, 'Claude limit warning');
+  // The other kinds take no words from a caller.
+  assert.equal(payloadFor('chat', ORIGIN, WARNING).notification.body, 'New message');
+  assert.equal(payloadFor('approval', ORIGIN, WARNING).notification.body, 'Jarvis needs an approval');
+});
+
+test('a limit warning pushes its line, urgent, to every device at once, even one that is looking, and says how many it reached', async () => {
+  const t = await pushEnv();
+  try {
+    const phone = await t.device('phone');
+    const pad = await t.device('pad');
+    const s = await openStream({ port: t.env.port, headers: { cookie: phone.cookie } });
+    assert.deepEqual(await t.svc.limitWarning(WARNING), { tried: 2, reached: 2, missed: [] });
+    for (const d of [phone, pad]) {
+      const got = t.opened(d);
+      assert.equal(got.length, 1);
+      assert.deepEqual(got[0].notification, { title: 'Control Room', body: WARNING, navigate: '/#overview' });
+      assert.equal(got[0].headers.Urgency, 'high');
+      assert.equal(got[0].headers.Topic, 'jos-limit');
+    }
+    assert.ok(t.logs.includes('push: a limit warning went to 2 of 2 devices'));
+    // It starts none of the chat's or the approvals' windows: both still push at once.
+    t.sent.length = 0;
+    await t.env.store.openPermission({ requestId: 'abcde', tool: 'Bash', description: 'x', inputPreview: '' });
+    await t.svc.idle();
+    assert.equal(t.sent.length, 2);
+    await t.jarvis('hello');
+    await t.svc.idle();
+    assert.deepEqual(t.opened(pad).map(p => p.notification.body), ['Jarvis needs an approval', 'New message']);
+    await s.close();
+  } finally { await t.close(); }
+});
+
+test('a limit warning that is not in the fixed shape is not sent; with no device, or with push off, it reaches none', async () => {
+  const t = await pushEnv();
+  try {
+    const NONE = { tried: 0, reached: 0, missed: [] };
+    assert.deepEqual(await t.svc.limitWarning(WARNING), NONE, 'no device yet');
+    assert.ok(t.logs.includes('push: a limit warning went to 0 of 0 devices'));
+    await t.device('phone');
+    for (const bad of ['rm -rf the secret folder', `${WARNING} and the secret folder`, `${WARNING}\nmore`, '', null, undefined, 7, { toString: () => WARNING }]) {
+      assert.deepEqual(await t.svc.limitWarning(bad), NONE);
+    }
+    assert.equal(t.sent.length, 0);
+    assert.equal(t.logs.filter(l => l === 'push: a limit warning that is not in the fixed shape was not sent').length, 8);
+    for (const l of t.logs) assert.ok(!l.includes('secret'), 'the refused words stay out of the log');
+    assert.deepEqual(await t.svc.limitWarning('Claude week (all models) at 90%, resets Mon 7:00 pm'), { tried: 1, reached: 1, missed: [] });
+    assert.ok(t.logs.includes('push: a limit warning went to 1 of 1 device'));
+  } finally { await t.close(); }
+  const off = await pushEnv({ vapid: false });
+  try {
+    assert.deepEqual(await off.svc.limitWarning(WARNING), { tried: 0, reached: 0, missed: [] });
+    assert.equal(off.sent.length, 0);
+    assert.deepEqual(off.logs.filter(l => l.includes('limit warning')), []);
+  } finally { await off.close(); }
+});
+
+test('a limit warning counts only the devices the push service took it for: a gone, refused or failed one, a send that throws and a dropped one are not', async () => {
+  const codes = new Map();
+  const t = await pushEnv({ status: url => codes.get(url) ?? 201 });
+  try {
+    const a = await t.device('phone');
+    const b = await t.device('pad');
+    const c = await t.device('laptop');
+    const d = await t.device('desk');
+    codes.set(a.r.sub.endpoint, 410);
+    codes.set(b.r.sub.endpoint, 403);
+    codes.set(c.r.sub.endpoint, 500);
+    // The gone one is not missed (nothing is left to try); the refused and the failed are.
+    assert.deepEqual(await t.svc.limitWarning(WARNING), { tried: 4, reached: 1, missed: [b.id, c.id] });
+    assert.ok(t.logs.includes('push: a limit warning went to 1 of 4 devices'));
+    // A later try names its devices: only those are sent to.
+    t.sent.length = 0;
+    codes.delete(c.r.sub.endpoint);
+    assert.deepEqual(await t.svc.limitWarning(WARNING, { only: [b.id, c.id] }), { tried: 2, reached: 1, missed: [b.id] });
+    assert.deepEqual(t.sent.map(x => x.url).sort(), [b.r.sub.endpoint, c.r.sub.endpoint].sort());
+    assert.ok(t.logs.includes('push: a limit warning went to 1 of 2 devices'));
+    assert.deepEqual(await t.svc.limitWarning(WARNING, { only: [a.id, 'nobody'] }), { tried: 0, reached: 0, missed: [] }, 'a device no longer subscribed is not tried');
+    assert.equal((await t.svc.limitWarning(WARNING, { only: null })).tried, 3, 'no list is every device');
+    assert.equal((await t.svc.limitWarning(WARNING, { only: d.id })).tried, 3, 'and so is anything that is not a list');
+    assert.equal(t.env.devices.hasPush(a.id), false, 'a gone subscription is removed, as for any push');
+    assert.ok(t.logs.some(l => /a limit push to laptop failed \(500\)/.test(l)));
+  } finally { await t.close(); }
+  const thrower = await pushEnv({ fetchImpl: async () => { throw new Error('network down'); } });
+  try {
+    const phone = await thrower.device('phone');
+    assert.deepEqual(await thrower.svc.limitWarning(WARNING), { tried: 1, reached: 0, missed: [phone.id] });
+  } finally { await thrower.close(); }
+  // A send that fails outright (the device file can't be written while a gone
+  // subscription is removed) is logged and not counted.
+  const broken = await pushEnv({ status: () => 410 });
+  try {
+    const phone = await broken.device('phone');
+    broken.env.devices.dropPush = async () => { throw new Error('disk full'); };
+    assert.deepEqual(await broken.svc.limitWarning(WARNING), { tried: 1, reached: 0, missed: [phone.id] });
+    assert.ok(broken.logs.includes('push: a limit push to phone failed (disk full)'));
+    assert.ok(broken.logs.includes('push: a limit warning went to 0 of 1 device'));
+  } finally { await broken.close(); }
+  // One in flight, one waiting, and the third is dropped: two reach the service.
+  const gates = [];
+  const slow = await pushEnv({ fetchImpl: async () => { await new Promise(r => gates.push(r)); return { status: 201, arrayBuffer: async () => new ArrayBuffer(0) }; }, sendConcurrency: 1, sendQueueMax: 1 });
+  try {
+    const ids = [];
+    for (const name of ['phone', 'pad', 'laptop']) ids.push((await slow.device(name)).id);
+    const result = slow.svc.limitWarning(WARNING);
+    let settled = null;
+    result.then(n => { settled = n; });
+    while (settled === null) {
+      while (gates.length) gates.shift()();
+      await new Promise(r => setImmediate(r));
+    }
+    assert.equal(settled.reached, 2);
+    assert.equal(settled.tried, 3);
+    assert.equal(settled.missed.length, 1, 'the dropped one is missed, to be tried again');
+    assert.ok(ids.includes(settled.missed[0]));
+    assert.equal(slow.logs.filter(l => /a limit push to \S+ was dropped/.test(l)).length, 1);
+    assert.ok(slow.logs.includes('push: a limit warning went to 2 of 3 devices'));
+  } finally { await slow.close(); }
 });
