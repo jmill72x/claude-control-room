@@ -1,7 +1,8 @@
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
 import { applyAcks } from '../lib/acks.mjs';
-import { limitWarnings, keyParts, mayTell, DAY_MS, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS } from '../lib/limit-warnings.mjs';
+import { limitWarnings, keyParts, mayTell, DAY_MS, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS, RESET_BELOW_PCT } from '../lib/limit-warnings.mjs';
+import { oneLine } from '../lib/chat-events.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
 // its last good reading, which is right to keep showing on screen — but pushing
@@ -100,7 +101,10 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
   const observable = observableSources(snapshot);
   // Pruned with every live alert, held ones included, so a hold never forgets a key.
   const { [LIMIT_STATE]: rawLimitState, ...sentKeys } = (await readSent()) ?? {};
-  const alreadySent = prune(sentKeys, alerts, observable, now, current.usage?.data?.limits);
+  // A limit read under the reset mark forgets its told warnings (one line a limit, its
+  // label alone, so the log says why the next warning came early).
+  const alreadySent = prune(sentKeys, alerts, observable, now, current.usage?.data?.limits,
+    label => log(`push: ${oneLine(label, 80)} read under ${RESET_BELOW_PCT}%; its told warnings are forgotten`));
   // A device debt lasts as long as its warning's key: until the window resets.
   const limitState = readLimitState(rawLimitState, now);
   for (const key of Object.keys(limitState.owed)) if (!Object.hasOwn(alreadySent, key)) delete limitState.owed[key];

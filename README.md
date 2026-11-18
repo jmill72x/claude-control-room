@@ -9,8 +9,9 @@ pulled from the local machine — nothing is faked, and anything that has no rea
 says so. The same server feeds a Claude Code mod (`mod/`), a side pane with the usage
 breakdowns, the projects and the board.
 
-No screenshot is checked in: a live one would show one person's account (see
-[Fragility](#fragility)). **The first dashboard is gone.** Until 2026-11-10 the page at
+No live screenshot is checked in: a live one would show one person's account (see
+[Fragility](#fragility)); the pictures under `design_handoff_claude_control_room/` are
+the first design's handoff, not the running page. **The first dashboard is gone.** Until 2026-11-10 the page at
 `/` was a three-column dashboard (Usage, Projects, Ideas & to-dos); the Orbit page took
 its place that day (Orbit plan, Phase 5), the old one stayed at `/classic.html` for a
 week, and on 2026-11-18 its page, components, CSS and build entry were deleted.
@@ -2249,11 +2250,15 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   (config's `toPush.gitRead`, already vetted at start; `rev-list --max-count=1 HEAD`):
   the commit this process runs. Every 5 minutes it reads the checkout again (`status
   --porcelain=v2 --branch --untracked-files=no`: HEAD, the branch, tracked changes), and
-  when `diff --name-only <start> <HEAD> -- server` lists files, a restart is due: one card
-  in Needs you, **Restart the Control Room (N merges)** (N = `rev-list --first-parent
-  --count <start>..<HEAD> -- server`), with **Restart it** and **Not now**. A merge that
-  touches only `web/` or `docs/` opens nothing (the page is read from disk on every
-  request). **Fit to run:** a restart is offered only when the checkout is on `main`, has
+  when `diff --name-only <start> <HEAD> -- <the server's files>` lists files, a restart is
+  due: one card in Needs you, **Restart the Control Room (N merges)** (N = `rev-list
+  --first-parent --count <start>..<HEAD> -- <the server's files>`), with **Restart it**
+  and **Not now**. The server's files (`SERVER_PATHS` in `server/lib/heal-programs.mjs`)
+  are `server` and the two page files read aloud runs inside the server,
+  `web/src/lib/orbit/speech.js` and `web/src/lib/orbit/markdown.js`; they count whether
+  `chat.speech` is on or not, and a test ties the list to the server's real imports. A
+  merge that touches only the rest of `web/`, or `docs/`, opens nothing (the page is read
+  from disk on every request). **Fit to run:** a restart is offered only when the checkout is on `main`, has
   no changed, staged or unmerged tracked file (untracked files don't count; output
   git-read cut short does), and HEAD descends from the running commit (`rev-list --count
   <HEAD>..<start>` is 0). Otherwise (a feature branch, a rebase, a conflicted merge, a
@@ -2648,7 +2653,7 @@ edit of `todos.json` changes it like any other write.
 | `id` | yes | non-empty text or a number, unique on the board (the page makes a UUID) |
 | `text` | yes | free text (it may be empty) |
 | `lane` | yes | `idea`, `doing` or `done` |
-| `tag` | no | free text, or left out (not `null`); tags that differ only by case are unified on every write |
+| `tag` | no | text of at most 40 characters once trimmed, or left out (not `null`); tags that differ only by case are unified on every write |
 | `priority` | no | `P0` to `P3`; absent or `null` means none |
 | `due` | no | a plain local date `YYYY-MM-DD` (US Eastern, the mini's clock), no time of day; absent, `null` or `""` means none |
 | `title` | no | a short label for the card, at most 120 characters; absent or `""` means none. Without one, the Orbit page shows the first sentence of `text`, cut at a word to 72 characters |
@@ -2660,7 +2665,7 @@ The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`
 and `doneAt` on every write. A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
 `P4`, a due date like `10/21` or `2026-02-30`, an `ask` whose `kind` is `maybe`) is refused
 with **400** and a message naming the item and the field, and nothing is written. `title`,
-`ask.what` and `ask.why` may not hold control characters (a newline or a tab included),
+`tag`, `ask.what` and `ask.why` may not hold control characters (a newline or a tab included),
 the characters that reorder text (U+202A to U+202E and U+2066 to U+2069), the zero-width
 space (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF) or the direction
 marks (U+200E, U+200F and U+061C); `text` may. The joiners U+200C and U+200D are allowed,
@@ -2687,7 +2692,10 @@ reads `Overdue Thu 10-15` and is marked overdue; due within 2 days it is marked 
 done item it is plain. "Today" is the viewer's date, re-checked every minute. Opening a
 card shows a native date input and, when a date is set, a Clear button; the Board tab's
 **New item** form has the same optional Due field (with a title, a tag, details, a
-priority and a lane). When no date is picked the page writes no `due` key at all, and an
+priority and a lane). Its Area list offers the tags in use and, last, **Other…**, which
+opens a box for a new tag: checked as the server checks one (at most 40 characters, none
+of the refused characters above) before Add is allowed, and a name that matches a tag in
+use in another case says it joins that tag. When no date is picked the page writes no `due` key at all, and an
 item whose date is left alone keeps what it had (even `""`). **Sort: Priority / Due** is
 a per-viewer choice kept in `localStorage` (`ccr.orbit.sortBy`): with Due on, each lane
 lists its dated items first, soonest first, then the rest in the usual priority order.
@@ -3074,7 +3082,9 @@ minutes left. So the limits now have warning steps of their own, and these reach
   usage panel while it is current, never a figure from the history of readings, so an
   old low reading forgets nothing. A key that is live is never forgotten, and a dip
   that stays at 40% or over is still one telling. What the forgotten key still owed a
-  device goes with it. The caps below still hold after such a reset.
+  device goes with it, and the log says so once for the limit, naming it and nothing
+  else (`push: Current session read under 40%; its told warnings are forgotten`). The
+  caps below still hold after such a reset.
 - **A backstop under the keys.** Whatever the keys miss (a reset that starts to move off
   its 10-minute mark, a reading whose reset comes and goes) is held by two caps: a limit
   is told at most once in 30 minutes unless its step rises, and at most 12 times in any
@@ -3088,8 +3098,10 @@ minutes left. So the limits now have warning steps of their own, and these reach
   one, which would read as empty and tell every live alert again. What such a crash does
   leave is its temp file (`notified.json.tmp-<pid>-<random>`, 0600, holding what the
   file holds); the server removes those at start, before its first write, and logs how
-  many (`sweep`: names of exactly that pattern in that folder, a link removed and never
-  followed, the file itself untouched).
+  many (`sweep`: names of exactly that shape, a process id and 8 lower-case hex digits,
+  in that folder, left alone if changed in the last minute by their own `lstat` time,
+  since that may be a write still under way; a link removed and never followed, the file
+  itself untouched).
 - **Never from an old reading.** Like every push, only from a usage panel that is current
   (`ok`); and a reading whose window has already ended warns of nothing. No ack applies:
   only `cron` and `service` alerts can be acked.

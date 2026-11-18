@@ -34,7 +34,7 @@
 // THE TWO PAGE FILES THIS LOADS ARE SERVER CODE. web/src/lib/orbit/speech.js and the
 // markdown.js it imports run inside the server once read aloud is on: a change to
 // either needs the same review as a change under server/, and a restart to take
-// effect here. They must stay free of imports other than each other
+// effect here (loop 3's restart card counts them: SERVER_PATHS in heal-programs.mjs). They must stay free of imports other than each other
 // (test/chat-speech.test.mjs holds the import graph to exactly those two files).
 // server.mjs loads this module only when config has `chat.speech`, with `await
 // import()` in a try/catch, so a broken page file can turn read aloud off but never

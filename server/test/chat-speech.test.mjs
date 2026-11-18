@@ -20,6 +20,7 @@ import {
 import * as speechConfig from '../lib/chat-speech-config.mjs';
 import { speechText, SAMPLE_WORDS } from '../../web/src/lib/orbit/speech.js';
 import { makeChatEnv } from './helpers/chat-env.mjs';
+import { SERVER_PATHS } from '../lib/heal-programs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -1284,6 +1285,8 @@ test('what the server loads of the page: nothing at a plain start, and exactly t
   // With speech on: chat-speech.mjs reaches into web/ for the two files, and no further.
   const on = await staticGraph(join(SERVER, 'lib', 'chat-speech.mjs'));
   assert.deepEqual(on.filter(f => !f.startsWith('server/')), PAGE_FILES);
+  // Loop 3's restart card counts a change to each of them as server code (board 2703904f).
+  assert.deepEqual(SERVER_PATHS.filter(p => p !== 'server').sort(), on.filter(f => !f.startsWith('server/')), 'SERVER_PATHS names every page file the server runs');
   assert.deepEqual((await importsOf(join(SERVER, 'lib', 'chat-speech.mjs'))).fixed.filter(f => f.includes('web/')), ['../../web/src/lib/orbit/speech.js']);
   // The two page files import each other and nothing else: no package, no node module, nothing loaded later.
   assert.deepEqual((await importsOf(join(REPO, 'web/src/lib/orbit/speech.js'))), { fixed: ['./markdown.js'], lazy: [] });

@@ -684,7 +684,8 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
   the server reads its checkout's HEAD through git-read (`toPush.gitRead`); every 5
   minutes it reads the checkout (`status --porcelain=v2 --branch`) and, when `diff
   --name-only <start> <HEAD> -- server` lists files, shows **Restart the Control Room (N
-  merges)** in Needs you. A web/- or docs/-only merge opens nothing. A tap answers 202,
+  merges)** in Needs you (since board 2703904f, §15, also for the two page files read
+  aloud runs in the server). A web/- or docs/-only merge opens nothing. A tap answers 202,
   then 3 s later runs `/bin/launchctl kickstart -k gui/<uid>/<label>` (config's `self`
   target, which must be `XPC_SERVICE_NAME` with launchd as the parent) in its own process
   group; the new process closes the `verifying` line as healed ("restarted on the new
@@ -2772,10 +2773,11 @@ in the chat" and "Read aloud in the Mac's own voice" are updated and are the ref
   run and no web suite: nothing under `web/` changed. Nothing ran against :8322, the
   live config or the live `say` service.
 
-## 14. Cleanup batch: the first dashboard removed, and three limit-warning follow-ups (staged 2026-11-18 on `jos/cleanup-1118`)
+## 14. Cleanup batch: the first dashboard removed, and three limit-warning follow-ups (merged 2026-11-18 as main 6e1e5b3)
 
-**Staged, not committed, on `jos/cleanup-1118` (worktree `~/Projects/.worktrees/ccr-cleanup-1118`,
-from main cf00c20).** Two board items Jeff released on 2026-11-18. The README's opening,
+**Merged as main 6e1e5b3 (built on `jos/cleanup-1118` from main cf00c20); whether the web
+build and the restart below have happened, I have not checked.** Ultron's lows on it are
+done in §15. Two board items Jeff released on 2026-11-18. The README's opening,
 its panel table ("Shown" says page or mod), "The Orbit page" and "Limit warnings" are
 updated and are the reference.
 
@@ -2803,8 +2805,7 @@ updated and are the reference.
 - **What left the web with the old page, by design or by the plan:** this week by
   surface, by project and by model; recent sessions; the usage drivers; the sparkline
   and the pace line on each limit; the Projects list; the plan's price and seats;
-  grouping the board by tag; a free-text tag (the form's Area list offers the tags in
-  use, so a new tag can't be made on the page); and
+  grouping the board by tag; a free-text tag (back on the page with §15's **Other…**); and
   delete (the Orbit plan's decision 6, answered (a) by Jeff on 10-20). The mod still
   shows every one of the panels and still has delete. Nothing else the old page did is
   missing: adding an item (the Board tab's New item form: title, tag, details,
@@ -2862,3 +2863,76 @@ updated and are the reference.
   button. Not run: the mod's own tests (`claude plugin test`, which starts `claude`;
   the mod's only change is a comment). Nothing ran against :8322 but GETs of
   `/api/dashboard`.
+
+## 15. Follow-ups batch: Ultron's lows on §14, the restart card for the speech files, a new tag on the page (staged 2026-11-18 on `jos/followups-1118`)
+
+**Staged, not committed, on `jos/followups-1118` (worktree
+`~/Projects/.worktrees/ccr-followups-1118`, from main 6e1e5b3).** Three board items. The
+README's "Limit warnings", "Self-healing loops" (loop 3), "The board's items" and the
+Due paragraph of the Orbit page are updated and are the reference.
+
+- **Board 41c18bc0, Ultron's 11-18 lows on §14.** (a) When the under-40% rule forgets told
+  warnings that would otherwise have stayed, the notifier logs one line for that limit,
+  its label alone (`push: Current session read under 40%; its told warnings are
+  forgotten`; the label through `oneLine`, cut at 80). Keys that were going anyway (window
+  over, five-hour keep over), kept, live or unread name nothing. (`prune` takes an
+  optional `onReset`.) (b) The start-up sweep of `notified.json.tmp-*` now takes only the
+  exact shape a write makes (`<pid>-<8 lower-case hex>`) and leaves one whose own
+  `lstat` time is within the last minute (`SWEEP_MIN_AGE_MS`; a time ahead of the clock
+  counts as recent). (c) The registry's source test reads `then:` in any quote, with
+  digits, hyphens and underscores, and fails if any `then:` in server.mjs is not one it
+  read (a variable, say). (d) README: "No live screenshot is checked in", pointing at the
+  design handoff's pictures.
+- **Board 2703904f, the restart card and the speech files.** `SERVER_PATHS`
+  (`lib/heal-programs.mjs`) is now `server`, `web/src/lib/orbit/speech.js` and
+  `web/src/lib/orbit/markdown.js`, so a merge that changes either page file shows
+  **Restart the Control Room**. The git arguments change only by those two fixed paths
+  after `--` (no glob characters, no leading `:` or `-`, nothing from a caller; the two
+  hashes are still checked as 40 hex before anything runs). Checked with the real
+  git-read on the worktree: both reads answer. `chat-speech.test.mjs` ties the list to
+  the server's real import graph, so a third page file the server loads fails the suite
+  until it is added. Wording: the card's why line now says "change files the server
+  runs" (a web build), and the log line, the 409 and the cleared outcome say "the
+  server's files".
+- **Board 14a66582, a new tag on the page.** The Board tab's New item form ends its
+  Area list with **Other…**, which opens a **New area** box (focused, 44 px, as wide as
+  the list) with a line under it: a hint, why the name can't be used, or "Joins X,
+  already on the board." for a name in use in another case. Add stays off until the name
+  passes. **The server had no tag rule beyond "text"** (the brief assumed one), so this
+  batch adds it: at most 40 characters once trimmed, and none of `UNSAFE_CHARS` (the
+  title's rule), refused with 400 like every board field. The live board's 15 tags are
+  all 16 characters or under with no refused character (GET, 2026-11-18), so no current
+  write is affected. The page's copy of the rule (`TAG_MAX`, `TAG_UNSAFE`, `tagProblem`
+  in `web/src/lib/orbit/board.js`) is held to the server's by a test that compares the
+  two sets at every code point.
+- **Choices to defend.** (1) The two page files count as server code whether
+  `chat.speech` is on or not: the card can't know what config will say at the next
+  start, and a spare restart costs a few seconds. (2) The tag rule went on the server,
+  not only the page: any tailnet browser or writer could otherwise put a bidi character
+  into a chip, and the page's check is only a convenience. Jarvis's and the mod's writes
+  are bound by it too (the mod only offers tags in use). (3) 40 characters: the longest
+  tag in use is 16, and a chip of 40 still fits a phone. (4) Characters are checked
+  before trimming, as the server checks them (a tag ending in a newline is refused, not
+  trimmed). (5) Only the New item form has **Other…**; a card's Edit keeps the list of
+  tags in use (not in the board item). (6) The reset log line names the limit only; no
+  key, percent or time.
+- **To go live:** C&P and a merge. Then a restart (Vision's scope) for the log line, the
+  sweep, the restart card's paths and the server's tag rule; and `npm run build` in `web/`
+  of the main checkout for **Other…** and the card's new why line. **Build after the
+  restart, or together:** a page built first would let a too-long or odd tag through the
+  old server (harmless: the old server takes any text). **After the restart, check:** no
+  `registry:` line; the log has no `push: … read under 40%` line until a limit resets
+  early; a board write by Jarvis still answers 200.
+- **Checked:** server 1,468 tests (14 new, in four new files: `limit-reset-log`,
+  `sent-store-sweep-age`, `heal-restart-paths`, `board-new-tag`, plus changed lines in
+  `sent-store-sweep`, `registry-loop`, `heal-restart` and `chat-speech`), in local time
+  and `TZ=Asia/Tokyo`; web 324 tests (4 new in `orbit-board-tag`); `oxlint` clean; `vite
+  build` of the worktree to a scratch folder clean (the live `web/dist` untouched). 49
+  mutants on the changed lines: 48 caught; the survivor was an empty-tag guard the form
+  never reaches, removed. Headless Chromium (no WebKit on the mini, so Safari is
+  unchecked) at 390 and 1440 px on a scratch server with an invented board: 36 checks
+  pass (the list ends with Other…, the box takes the focus, typing stops at 40, a
+  direction character and spaces-only are refused with Add off, a name in use in
+  another case says it joins, the item saves with the new tag and the tag is offered
+  next time, no sideways scroll, no policy violation). Nothing ran against :8322 but a
+  GET of `/api/todos` (the tag lengths above).

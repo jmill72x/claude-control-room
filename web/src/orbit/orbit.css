@@ -612,6 +612,9 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px 20px; }
 .o-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .o-field-wide { grid-column: 1 / -1; }
+/* Under a field: a hint, or why what was typed can't be used (the New item form's new area). */
+.o-field-note { font-size: 13px; color: var(--sub); overflow-wrap: anywhere; }
+.o-field-note-bad { color: var(--accent-ink); font-weight: 600; }
 .o-input {
   min-height: 44px; padding: 0 12px; border: 1px solid var(--rule-strong); border-radius: 10px; background: #FFFFFF;
   color: var(--heading); font-size: 15px; max-width: 100%; min-width: 0;

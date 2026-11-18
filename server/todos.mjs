@@ -36,6 +36,11 @@ export class InvalidBoardError extends Error {
 // one is refused with the item and the field named, and a good one is stored as
 // sent. Lengths count characters, not UTF-16 units, so an emoji counts once.
 const chars = s => [...s].length;
+// A tag is a short name shown as a chip on the page and in the mod: at most TAG_MAX
+// characters once trimmed (the page trims, and unifyTags below), with none of
+// UNSAFE_CHARS (board 14a66582: the page's New item form now takes a typed tag, and
+// web/src/lib/orbit/board.js checks it by this same rule before it is sent).
+export const TAG_MAX = 40;
 const none = v => v === undefined || v === null || v === '';
 const ASK_KINDS = new Set(['decide', 'do']);
 const ASK_FIELDS = new Set(['what', 'why', 'kind', 'time']);
@@ -248,6 +253,8 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
       }
       if (typeof t.text !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: text must be text`);
       if (t.tag !== undefined && typeof t.tag !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag must be text, or left out`);
+      if (typeof t.tag === 'string' && chars(t.tag.trim()) > TAG_MAX) throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag must be at most ${TAG_MAX} characters`);
+      if (typeof t.tag === 'string' && UNSAFE_CHARS.test(t.tag)) throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag ${UNSAFE_SAYS}`);
       if (!LANES.has(t.lane)) throw new InvalidBoardError(`unknown lane: ${t.lane}`);
       if (t.priority != null && !PRIORITIES.has(t.priority)) throw new InvalidBoardError(`unknown priority: ${t.priority}`);
       if (t.due != null && t.due !== '' && !isDueDate(t.due)) {

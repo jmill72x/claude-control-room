@@ -8,7 +8,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, readdir, stat, lstat, mkdir, symlink, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSentStore } from '../lib/sent-store.mjs';
+import { createSentStore, SWEEP_MIN_AGE_MS } from '../lib/sent-store.mjs';
+
+// Every temp file here is made just now; the sweep leaves a recent one (the age and
+// name rules are in sent-store-sweep-age.test.mjs), so these stores look from later.
+const later = () => Date.now() + 2 * SWEEP_MIN_AGE_MS;
 
 const scratch = async t => {
   const dir = await mkdtemp(join(tmpdir(), 'sent-sweep-'));
@@ -23,12 +27,12 @@ const leftover = (dir, name, text = '{"limit:a": 5, "limit-step-st') => writeFil
 test('sweep: the temp files beside the file go, however many and whatever process wrote them, and it says how many', async t => {
   const dir = await scratch(t);
   const path = join(dir, 'notified.json');
-  const store = createSentStore(path);
+  const store = createSentStore(path, { now: later });
   await store.write({ 'limit:a': 5 });
   await leftover(dir, 'notified.json.tmp-123-0a1b2c3d');
   await leftover(dir, `notified.json.tmp-${process.pid}-ffffffff`, '');
   await leftover(dir, 'notified.json.tmp-99999-00000000', '{}');
-  await leftover(dir, 'notified.json.tmp-');
+  await leftover(dir, 'notified.json.tmp-1-abcdef01');
   assert.equal(await store.sweep(), 4);
   assert.deepEqual(await names(dir), ['notified.json']);
   assert.deepEqual(await store.read(), { 'limit:a': 5 }, 'the file itself is as it was');
@@ -39,21 +43,21 @@ test('sweep: the temp files beside the file go, however many and whatever proces
 test('sweep: only that name pattern, in that folder: the file, its neighbours and other stores\' temp files stay', async t => {
   const dir = await scratch(t);
   const path = join(dir, 'notified.json');
-  const store = createSentStore(path);
+  const store = createSentStore(path, { now: later });
   await writeFile(path, '{"limit:a": 5}', { mode: 0o600 });
-  const keep = ['acks.json', 'acks.json.tmp-1-aa', 'notified.json.bak', 'notified.json.tmpx', 'notified.jsonx.tmp-1-aa', 'xnotified.json.tmp-1-aa', 'notified.tmp-1-aa', '.notified.json.tmp-1-aa', 'todos.json.tmp-7'];
+  const keep = ['acks.json', 'acks.json.tmp-1-aaaaaaaa', 'notified.json.bak', 'notified.json.tmpx', 'notified.jsonx.tmp-1-aaaaaaaa', 'xnotified.json.tmp-1-aaaaaaaa', 'notified.tmp-1-aaaaaaaa', '.notified.json.tmp-1-aaaaaaaa', 'todos.json.tmp-7'];
   for (const name of keep) await leftover(dir, name);
   // A folder under the pattern's name is not a temp file: it and what it holds stay.
-  await mkdir(join(dir, 'notified.json.tmp-folder'));
-  await leftover(join(dir, 'notified.json.tmp-folder'), 'inside.json');
+  await mkdir(join(dir, 'notified.json.tmp-2-f01de400'));
+  await leftover(join(dir, 'notified.json.tmp-2-f01de400'), 'inside.json');
   // The same name one folder down is another folder's business.
   await mkdir(join(dir, 'deeper'));
-  await leftover(join(dir, 'deeper'), 'notified.json.tmp-1-aa');
-  await leftover(dir, 'notified.json.tmp-1-aa');
+  await leftover(join(dir, 'deeper'), 'notified.json.tmp-1-aaaaaaaa');
+  await leftover(dir, 'notified.json.tmp-1-aaaaaaaa');
   assert.equal(await store.sweep(), 1);
-  assert.deepEqual(await names(dir), [...keep, 'deeper', 'notified.json', 'notified.json.tmp-folder'].sort());
-  assert.deepEqual(await names(join(dir, 'notified.json.tmp-folder')), ['inside.json']);
-  assert.deepEqual(await names(join(dir, 'deeper')), ['notified.json.tmp-1-aa']);
+  assert.deepEqual(await names(dir), [...keep, 'deeper', 'notified.json', 'notified.json.tmp-2-f01de400'].sort());
+  assert.deepEqual(await names(join(dir, 'notified.json.tmp-2-f01de400')), ['inside.json']);
+  assert.deepEqual(await names(join(dir, 'deeper')), ['notified.json.tmp-1-aaaaaaaa']);
   assert.equal(await readFile(path, 'utf8'), '{"limit:a": 5}');
 });
 
@@ -63,10 +67,10 @@ test('sweep: a link under the name is removed, and what it points at is never to
   const target = join(elsewhere, 'precious.txt');
   await writeFile(target, 'keep me');
   const path = join(dir, 'notified.json');
-  await symlink(target, join(dir, 'notified.json.tmp-1-aa'));
-  await symlink(join(elsewhere, 'nothing-there'), join(dir, 'notified.json.tmp-2-bb'));
-  await symlink(elsewhere, join(dir, 'notified.json.tmp-3-cc'));
-  assert.equal(await createSentStore(path).sweep(), 3);
+  await symlink(target, join(dir, 'notified.json.tmp-1-aaaaaaaa'));
+  await symlink(join(elsewhere, 'nothing-there'), join(dir, 'notified.json.tmp-2-bbbbbbbb'));
+  await symlink(elsewhere, join(dir, 'notified.json.tmp-3-cccccccc'));
+  assert.equal(await createSentStore(path, { now: later }).sweep(), 3);
   assert.deepEqual(await names(dir), []);
   assert.equal(await readFile(target, 'utf8'), 'keep me');
   assert.deepEqual(await names(elsewhere), ['precious.txt']);
@@ -82,13 +86,13 @@ test('sweep: never throws and makes nothing: a missing folder, a folder that can
   // A folder that may not be changed: the temp file stays, and that is not an error.
   const locked = join(dir, 'locked');
   await mkdir(locked);
-  await leftover(locked, 'notified.json.tmp-1-aa');
+  await leftover(locked, 'notified.json.tmp-1-aaaaaaaa');
   await chmod(locked, 0o500);
   t.after(() => chmod(locked, 0o700).catch(() => {}));
-  const store = createSentStore(join(locked, 'notified.json'));
+  const store = createSentStore(join(locked, 'notified.json'), { now: later });
   if (process.getuid?.() !== 0) {
     assert.equal(await store.sweep(), 0, 'counted only when it went');
-    assert.deepEqual(await names(locked), ['notified.json.tmp-1-aa']);
+    assert.deepEqual(await names(locked), ['notified.json.tmp-1-aaaaaaaa']);
   }
   await chmod(locked, 0o700);
   assert.equal(await store.sweep(), 1);
@@ -101,7 +105,7 @@ test('after a sweep the next write is as ever: owner-only, through a new temp fi
   await writeFile(path, '{"limit:a": 5}', { mode: 0o644 });
   await chmod(path, 0o644);
   await leftover(dir, 'notified.json.tmp-123-0a1b2c3d');
-  const store = createSentStore(path, { suffix: () => '0a1b2c3d' });
+  const store = createSentStore(path, { suffix: () => '0a1b2c3d', now: later });
   assert.equal(await store.sweep(), 1);
   assert.equal(await mode(path), 0o644, 'the sweep does not rewrite the file');
   await store.write({ 'limit:b': 7 });

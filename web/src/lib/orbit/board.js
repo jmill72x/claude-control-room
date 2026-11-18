@@ -115,6 +115,41 @@ export function withDue(item, due) {
   return due ? { ...rest, due } : rest;
 }
 
+// ---- a new tag (the New item form's "Other…" choice, board 14a66582) ----
+//
+// The server's rule for a tag (server/todos.mjs): at most TAG_MAX characters once
+// trimmed, and none of server/lib/text.mjs's UNSAFE_CHARS (controls, invisible and
+// direction characters). The set is built from code points here, never typed as
+// escapes (a typed one has turned into the real character in this repo before), and
+// server/test/board-new-tag.test.mjs checks it against the server's, code point by
+// code point.
+export const TAG_MAX = 40;
+const TAG_UNSAFE_RANGES = [[0x00, 0x1f], [0x7f, 0x9f], [0x61c, 0x61c], [0x200b, 0x200b], [0x200e, 0x200f], [0x202a, 0x202e], [0x2060, 0x2060], [0x2066, 0x2069], [0xfeff, 0xfeff]];
+export const TAG_UNSAFE = new RegExp(`[${TAG_UNSAFE_RANGES.map(([a, b]) => {
+  const u = c => `\\u${c.toString(16).padStart(4, '0')}`;
+  return a === b ? u(a) : `${u(a)}-${u(b)}`;
+}).join('')}]`);
+// Why a typed tag can't be used, in words for the form, or null when it can. Empty is
+// a problem here: "Other…" with nothing typed would make an item with no area, which
+// the list's own "No area" says more plainly.
+// The characters are checked before trimming, as the server checks them.
+export function tagProblem(tag) {
+  const raw = String(tag ?? '');
+  const t = raw.trim();
+  if (!t) return 'Type a name for the new area.';
+  if (chars(t).length > TAG_MAX) return `At most ${TAG_MAX} characters.`;
+  if (TAG_UNSAFE.test(raw)) return 'No control, invisible or direction characters.';
+  return null;
+}
+// The tag in use that a typed one would join (the server folds case into the casing
+// already on the board), or null for a tag that is new. Asked only for a tag that
+// tagProblem passed, so never an empty one.
+export function existingTag(items, tag) {
+  const k = tagKey(tag);
+  for (const t of items ?? []) if (typeof t?.tag === 'string' && tagKey(t.tag) === k) return t.tag.trim();
+  return null;
+}
+
 // The Area choices: the tags in use, most used first, so an item tagged with a
 // rare tag keeps it when edited. The item's own tag is always offered.
 export function areaOptions(items, current = '') {

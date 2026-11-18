@@ -17,8 +17,8 @@
 //   lives to finish the request. It resolves only if launchctl exits 0 while this
 //   process is still here, which normally never happens.
 // - `createCheckoutReader({ gitRead, repo })` (loop 3): the checkout's HEAD, whether it
-//   is fit to restart onto (`checkout`, Ultron's M1), and what changed under server/
-//   between two commits, through the lead's read-only git-read (config's
+//   is fit to restart onto (`checkout`, Ultron's M1), and what changed in the server's
+//   code (SERVER_PATHS) between two commits, through the lead's read-only git-read (config's
 //   `toPush.gitRead`, checked at start), never git itself.
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { programArgs } from './heal.mjs';
@@ -107,10 +107,16 @@ export async function runSelfRestart(entry, { uid, label }, { spawn = nodeSpawn,
   });
 }
 
-// What loop 3 asks git-read, after the repo. `server` is the only folder whose change
-// needs a restart: the page (web/dist) is read from disk on every request.
+// What loop 3 asks git-read, after the repo. A change needs a restart when it is code
+// the server runs: `server/`, and the two page files lib/chat-speech.mjs loads once
+// `chat.speech` is on (board 2703904f; test/chat-speech.test.mjs holds the server to
+// exactly those two). They count whether speech is on or not: a restart then is
+// harmless, and the card can't know what config will say at the next start. The page
+// itself (web/dist) is read from disk on every request. Fixed paths, after `--`, with
+// no glob characters, so git reads each as itself; nothing from a caller or a file
+// reaches these arguments but two full hashes.
 const COMMIT = /^[0-9a-f]{40}$/;
-export const SERVER_PATHS = Object.freeze(['server']);
+export const SERVER_PATHS = Object.freeze(['server', 'web/src/lib/orbit/speech.js', 'web/src/lib/orbit/markdown.js']);
 export const headArgs = () => ['rev-list', '--max-count=1', 'HEAD'];
 export const filesArgs = (from, to) => ['diff', '--name-only', from, to, '--', ...SERVER_PATHS];
 export const mergesArgs = (from, to) => ['rev-list', '--first-parent', '--count', `${from}..${to}`, '--', ...SERVER_PATHS];
@@ -161,8 +167,8 @@ export function createCheckoutReader({ gitRead, repo, run = runGitRead }) {
       }
       return { head: st.head, why: null };
     },
-    // Between two full hashes: how many files under server/ differ, and how many commits
-    // on the first-parent line (the merges on main) touch it.
+    // Between two full hashes: how many of the server's files (SERVER_PATHS) differ, and
+    // how many commits on the first-parent line (the merges on main) touch them.
     async changed(from, to) {
       if (!COMMIT.test(from ?? '')) throw notCommit('from');
       if (!COMMIT.test(to ?? '')) throw notCommit('to');

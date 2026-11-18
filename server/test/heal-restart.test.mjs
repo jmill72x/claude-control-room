@@ -233,9 +233,11 @@ test("createCheckoutReader: git-read's rev-list and diff on server/ only, full h
   assert.deepEqual(asked[0], ['/opt/example/git-read', '/home/example/repo', ['rev-list', '--max-count=1', 'HEAD']]);
   answers.push('server/a.mjs\nserver/lib/b.mjs\n\n', '2\n');
   assert.deepEqual(await c.changed(START, H2), { files: 2, merges: 2 });
-  assert.deepEqual(asked[1][2], ['diff', '--name-only', START, H2, '--', 'server']);
-  assert.deepEqual(asked[2][2], ['rev-list', '--first-parent', '--count', `${START}..${H2}`, '--', 'server']);
-  assert.deepEqual(SERVER_PATHS, ['server']);
+  // The server's files (SERVER_PATHS; heal-restart-paths.test.mjs has the rest).
+  const paths = ['server', 'web/src/lib/orbit/speech.js', 'web/src/lib/orbit/markdown.js'];
+  assert.deepEqual(asked[1][2], ['diff', '--name-only', START, H2, '--', ...paths]);
+  assert.deepEqual(asked[2][2], ['rev-list', '--first-parent', '--count', `${START}..${H2}`, '--', ...paths]);
+  assert.deepEqual(SERVER_PATHS, paths);
   answers.push('', '0\n');
   assert.deepEqual(await c.changed(START, H3), { files: 0, merges: 0 });
   const before = asked.length;

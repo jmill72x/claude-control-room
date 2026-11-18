@@ -149,11 +149,17 @@ test('the log is console.error unless one is given, and the server\'s own regist
   assert.deepEqual(said, ['registry: a then a would loop (a > a); registered without it']);
   // server.mjs as written: every `then` it registers, followed to its end.
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
-  const links = new Map([...src.matchAll(/\bthen: '([a-zA-Z]+)'/g)].map(m => {
+  // Comment lines left out; any quote, and names with digits, hyphens or underscores
+  // (Ultron's 11-18 low c). Every `then:` must be one of these, so a `then` this
+  // pattern can't read (a variable, say) fails here instead of going unchecked.
+  const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const found = [...src.matchAll(/\bthen:\s*(['"`])([\w-]+)\1/g)];
+  assert.equal(found.length, (src.match(/\bthen\s*:/g) ?? []).length, 'every then: names a collector in quotes');
+  const links = new Map(found.map(m => {
     const before = src.slice(0, m.index);
-    return [before.slice(before.lastIndexOf("registry.register('")).match(/^registry\.register\('([a-zA-Z]+)'/)[1], m[1]];
+    return [before.slice(before.lastIndexOf('registry.register(')).match(/^registry\.register\(\s*(['"`])([\w-]+)\1/)[2], m[2]];
   }));
+  assert.equal(links.size, found.length, 'one then a collector');
   assert.deepEqual([...links], [['usage', 'notifier']]);
   for (const start of links.keys()) {
     const seen = new Set([start]);

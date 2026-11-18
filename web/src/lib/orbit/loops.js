@@ -172,7 +172,7 @@ function restartCard(p) {
     chip: 'Restart due',
     title: `Restart the Control Room${n ? ` (${n} merge${n === 1 ? '' : 's'})` : ''}`,
     what: `Restart it starts the Control Room again${onto}. The page drops for a few seconds; the new server checks it came back${onto} with a clean first pass, and the Loops panel shows the result. Not now leaves it until the next merge.`,
-    why: `${n ? `${n} merge${n === 1 ? '' : 's'}` : 'Merges'} since this server started${from ? ` (on ${from})` : ''} change files under server/, and the server only runs new code after a restart.`,
+    why: `${n ? `${n} merge${n === 1 ? '' : 's'}` : 'Merges'} since this server started${from ? ` (on ${from})` : ''} change files the server runs, and it only runs new code after a restart.`,
     owner: null,
     fallback: '⟳',
     meta: `${p.tier ?? 'T2'} · ${meta}`,

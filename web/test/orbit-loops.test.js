@@ -173,7 +173,7 @@ test('the Restart card: its merges, the commits, one Restart button, and its sta
   const [c] = healCards({ proposals: [restartProposal()] }, NOW);
   assert.deepEqual([c.key, c.group, c.chip, c.title], [`heal:${'b'.repeat(32)}`, 'heals', 'Restart due', 'Restart the Control Room (2 merges)']);
   assert.match(c.what, /again on b2b2b2b\. The page drops/);
-  assert.match(c.why, /^2 merges since this server started \(on a1a1a1a\) change files under server\//);
+  assert.match(c.why, /^2 merges since this server started \(on a1a1a1a\) change files the server runs, and it only runs new code after a restart\.$/);
   assert.deepEqual(c.heal.actions, [RESTART_ACTION]);
   assert.deepEqual(RESTART_ACTION, { action: 'restart-control-room', label: 'Restart it' });
   assert.equal(c.meta, 'T2 · pushed 11:00 PM');

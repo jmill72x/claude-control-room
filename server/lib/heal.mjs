@@ -38,7 +38,7 @@ export const VERB_FLOORS = Object.freeze({
   'job-status:read': 'T0',
   'missed-runs:read': 'T0',
   'git:rev-parse': 'T0',
-  // Loop 3: the checkout's HEAD, and what changed under server/ since this process began
+  // Loop 3: the checkout's HEAD, and what changed in the server's files since this process began
   // (git-read's rev-list and diff --name-only: reads).
   'git:read': 'T0',
   'log:read': 'T0',
@@ -136,7 +136,7 @@ export const CATALOG = Object.freeze([
     settleMs: SETTLE_MAX_MS
   }),
   // Loop 3, on the owner's tap only: restart this server, so it runs the code a merge put
-  // under server/. `kickstart -k` on its own launchd label (config's `self` target, which
+  // in its files (server/, and the two page files read aloud runs). `kickstart -k` on its own launchd label (config's `self` target, which
   // must be the label launchd started this process as), once per tap. Verified by the new
   // process: it came back on the commit the tap expected, and its first pass was clean.
   Object.freeze({
@@ -388,7 +388,7 @@ export const WHY_WORDS = Object.freeze({
   'not-self': "this server isn't running as the target's launchd job",
   'heals-off': 'heals were switched off before the restart ran',
   'back-on-start': 'the checkout is back on the commit this server runs',
-  'no-server-change': 'the new commits change nothing under server/',
+  'no-server-change': "the new commits change none of the server's files",
   'cap-restarts': `it was already restarted ${RESTARTS_PER_DAY} times in 24 hours`,
   'heals-off-unchecked': "heals were off or not set up when the server came back, so the restart wasn't checked",
   'not-main': "the checkout isn't on main (a feature branch, a rebase or a detached HEAD)",

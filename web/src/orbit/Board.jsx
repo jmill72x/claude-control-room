@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useTick } from '../hooks/useTick.js';
 import { localToday } from '../lib/due.js';
 import {
-  PRIORITIES, TITLE_MAX, cardTitle, cardDetail, editFields, applyEdit, newItem, withPriority, withDue, areaOptions,
+  PRIORITIES, TITLE_MAX, TAG_MAX, tagProblem, existingTag, cardTitle, cardDetail, editFields, applyEdit, newItem, withPriority, withDue, areaOptions,
   ownerOf, agentOf, ownerChips, boardView, priorityFilters, moves, dueLook, showingLine
 } from '../lib/orbit/board.js';
 import { agentColors } from '../lib/orbit/page.js';
@@ -167,17 +167,26 @@ function Card({ item, roster, today, open, onToggle, items, update, standalone =
 
 // ---- the New item form ----
 
-function NewItemForm({ areas, onAdd, onCancel }) {
-  const [f, setF] = useState(() => ({ title: '', detail: '', tag: areas[0] ?? '', priority: 'P2', due: '', lane: 'idea' }));
+// The Area list's "Other…" choice: a value no tag can have (areaOptions trims every
+// tag, so none starts with a space).
+const OTHER_AREA = ' other';
+
+function NewItemForm({ areas, items, onAdd, onCancel }) {
+  const [f, setF] = useState(() => ({ title: '', detail: '', tag: areas[0] ?? '', newTag: '', priority: 'P2', due: '', lane: 'idea' }));
   const [busy, setBusy] = useState(false);
+  const other = f.tag === OTHER_AREA;
+  // A typed tag is checked as the server checks one; the message shows once something is typed.
+  const tagWhy = other ? tagProblem(f.newTag) : null;
+  const joins = other && !tagWhy ? existingTag(items, f.newTag) : null;
   const empty = !f.title.trim();
   const set = key => e => { const v = e.target.value; setF(prev => ({ ...prev, [key]: v })); };
   const pick = (key, v) => () => setF(prev => ({ ...prev, [key]: v }));
   const submit = async e => {
     e.preventDefault();
-    if (empty || busy) return;
+    if (empty || busy || tagWhy) return;
     setBusy(true);
-    await onAdd(f);
+    const { newTag, ...form } = f;
+    await onAdd(other ? { ...form, tag: newTag.trim() } : form);
     setBusy(false);
   };
   return (
@@ -194,7 +203,19 @@ function NewItemForm({ areas, onAdd, onCancel }) {
             <select id="o-new-tag" className="o-input" value={f.tag} onChange={set('tag')}>
               {areas.length === 0 && <option value="">No area</option>}
               {areas.map(a => <option key={a} value={a}>{a}</option>)}
+              <option value={OTHER_AREA}>Other…</option>
             </select>
+            {other && (
+              <>
+                <label htmlFor="o-new-tag-other" className="o-mono o-field-label">New area</label>
+                <input id="o-new-tag-other" className="o-input" value={f.newTag} onChange={set('newTag')} maxLength={TAG_MAX}
+                  placeholder="Name it" autoComplete="off" autoCapitalize="words" enterKeyHint="done" autoFocus
+                  aria-invalid={Boolean(tagWhy && f.newTag)} aria-describedby="o-new-tag-note" />
+                <span id="o-new-tag-note" className={`o-field-note${tagWhy && f.newTag ? ' o-field-note-bad' : ''}`} aria-live="polite">
+                  {!f.newTag ? `Type a name, up to ${TAG_MAX} characters.` : tagWhy ?? (joins ? `Joins ${joins}, already on the board.` : 'A new area.')}
+                </span>
+              </>
+            )}
           </div>
           <div className="o-field o-field-wide">
             <label htmlFor="o-new-detail" className="o-mono o-field-label">Detail</label>
@@ -216,7 +237,7 @@ function NewItemForm({ areas, onAdd, onCancel }) {
           </div>
         </div>
         <div className="o-actions">
-          <button type="submit" className="o-btn o-btn-accent" disabled={empty || busy}>Add to the board</button>
+          <button type="submit" className="o-btn o-btn-accent" disabled={empty || busy || Boolean(tagWhy)}>Add to the board</button>
           <button type="button" className="o-btn o-btn-quiet" onClick={onCancel}>Cancel</button>
         </div>
       </form>
@@ -306,7 +327,7 @@ export function BoardTab({ board, roster, filters, focus, focusWhy, onOpen, onCl
         </div>
       )}
 
-      {form && <NewItemForm areas={areas} onAdd={add} onCancel={() => setForm(false)} />}
+      {form && <NewItemForm areas={areas} items={items} onAdd={add} onCancel={() => setForm(false)} />}
 
       <div className="o-showing">
         <span>{board.loaded ? showingLine(view.showing) : 'Loading the board…'}</span>

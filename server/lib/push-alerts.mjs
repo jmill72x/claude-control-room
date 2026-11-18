@@ -110,16 +110,23 @@ const ownedBy = (key, prefixes) => {
 // must not hide. `limits` is this pass's reading and nothing else: the notifier gives
 // the panel only while it is current, and the history store is never asked, so an
 // old low reading forgets nothing. A key that is live now is never forgotten.
-export function prune(alreadySent, alerts, observable, now = null, limits = null) {
+// `onReset` (optional) is given the label of each limit whose told keys this rule
+// forgot and nothing else would have (once per label a pass), for the service log
+// (Ultron's 11-18 low a): a forgotten key can warn again, and the log says why.
+export function prune(alreadySent, alerts, observable, now = null, limits = null, onReset = null) {
   const live = new Set((alerts ?? []).map(a => a?.key));
   const prefixes = [...(observable ?? [])];
   const reset = resetLabels(limits);
+  const forgot = new Set();
   const out = {};
   for (const [k, v] of Object.entries(alreadySent ?? {})) {
     const warning = Number.isFinite(now) ? keyParts(k) : null;
-    const stays = warning !== null && !reset.has(warning.label)
+    const inWindow = warning !== null
       && (warning.window !== null ? now < warning.window : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS);
+    const stays = inWindow && !reset.has(warning.label);
     if (live.has(k) || !ownedBy(k, prefixes) || stays) out[k] = v;
+    else if (inWindow) forgot.add(warning.label);
   }
+  if (typeof onReset === 'function') for (const label of forgot) onReset(label);
   return out;
 }

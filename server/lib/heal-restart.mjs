@@ -3,11 +3,13 @@
 //
 //   1. Detect. At start the server reads its checkout's HEAD (git-read, read-only): the
 //      commit this process runs. Every 5 minutes it reads the checkout again (git status:
-//      HEAD, the branch, tracked changes), and when files under server/ differ between
-//      the two commits, a restart is due. A merge that touches only web/ or docs/ opens
-//      nothing (the page is read from disk on every request).
+//      HEAD, the branch, tracked changes), and when the server's files differ between
+//      the two commits (server/, plus the two page files read aloud runs in the server:
+//      SERVER_PATHS in lib/heal-programs.mjs), a restart is due. A merge that touches
+//      only the rest of web/ or docs/ opens nothing (the page is read from disk on every
+//      request).
 //   2. Propose. One card in Needs you, "Restart the Control Room (N merges)", N being the
-//      commits on main's first-parent line since then that touch server/. A restart is
+//      commits on main's first-parent line since then that touch those files. A restart is
 //      offered only for a checkout that is fit to run (Ultron's M1, 11-15): on `main`,
 //      no tracked change or conflict, and HEAD a descendant of the running commit. One
 //      that isn't (a feature branch, a rebase, a conflicted merge, a reset) shows the
@@ -334,7 +336,7 @@ export function createRestartLoop({
         const fields = { head, merges: changed.merges, files: changed.files, blockedWhy: co.why ?? null };
         if (!card) {
           card = { id: randomBytes(16).toString('hex'), ...fields, state: 'waiting', detectedAt: at, announcedAt: null, pushWait: null };
-          log(`heal: a restart card: ${changed.merges} merge${changed.merges === 1 ? '' : 's'} since ${shortCommit(startCommit)} touch server/${co.why ? ` (blocked: ${co.why})` : ''}`);
+          log(`heal: a restart card: ${changed.merges} merge${changed.merges === 1 ? '' : 's'} since ${shortCommit(startCommit)} touch the server's files${co.why ? ` (blocked: ${co.why})` : ''}`);
         } else {
           Object.assign(card, fields);
         }
@@ -390,7 +392,7 @@ export function createRestartLoop({
       }
       if (changed.files === 0) {
         await closeCard('cleared', 'no-server-change', at, { expected: head });
-        return { status: 409, error: 'the new commits change nothing under server/, so no restart is needed', name: NAME };
+        return { status: 409, error: "the new commits change none of the server's files, so no restart is needed", name: NAME };
       }
       const moved = head !== c.head;
       Object.assign(c, { head, merges: changed.merges, files: changed.files, blockedWhy: co.why ?? null });
