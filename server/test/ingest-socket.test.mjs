@@ -38,7 +38,7 @@ const deps = () => {
     exact: []
   };
 };
-const handlerFor = d => createIngestHandler({ ...d, onBlock: v => { d.blocks.push(v); return true; }, onExact: v => { d.exact.push(v); return 'kept'; } });
+const handlerFor = d => createIngestHandler({ ...d, onBlock: v => { d.blocks.push(v); return true; }, onExact: v => { d.exact.push(v); return 'kept'; }, onRoutine: async v => ({ ok: true, id: 'm_test01', seq: 1, removed: v.removed }) });
 
 const post = (socketPath, path, payload, { method = 'POST', headers = {} } = {}) => new Promise((resolve, reject) => {
   const body = payload === undefined ? '' : typeof payload === 'string' ? payload : JSON.stringify(payload);
@@ -67,6 +67,7 @@ after(async () => { for (const s of opened) if (s.listening) await close(s); });
 const POSTS = {
   '/api/ingest/needs-you': { hook_event_name: 'Notification', session_id: SID, notification_type: 'permission_prompt' },
   '/api/ingest/exact-command': { hook_event_name: 'PermissionRequest', session_id: SID, tool_name: 'Bash', command: 'ls -la' },
+  '/api/ingest/routine-chat': { kind: 'brief', text: 'All jobs ran clean.' },
   '/api/ingest/crons': [{ name: 'cloud-job', ok: false, last: 'Failed · 1' }],
   '/api/ingest/projects': [{ name: 'a-project' }],
   '/api/ingest/credits': { balance: 12.5, updatedAt: '2026-11-01' }

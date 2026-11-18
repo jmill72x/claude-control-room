@@ -691,6 +691,88 @@ curl --unix-socket ~/.local/state/jarvis-os/ingest.sock -X POST http://localhost
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
 
+### A routine's message in the chat (the morning brief, the weekly digest; built, not live)
+
+The lead agent's routines run headless from launchd, outside its session, so they have no
+channel to reply through and their text reached Discord only. Since 2026-11-17 a routine
+can also post its text to the ingest socket, and it is added to the chat as one of the
+lead's messages: the paired devices see it, it is pushed like any reply ("New message",
+never its text), it counts on the tab and the icon badge, and read aloud works on it
+(`server/lib/routine-chat.mjs`; tested by `server/test/routine-chat.test.mjs` and
+`web/test/orbit-chat-routine.test.js`). No config key: it is on whenever the chat is, and
+the start says `routine-chat: on; …`.
+
+```bash
+jq -Rs '{kind: "brief", text: ., id: "2026-11-17"}' < brief.md |
+  curl -sS --unix-socket ~/.local/state/jarvis-os/ingest.sock http://localhost/api/ingest/routine-chat \
+    -H 'Content-Type: application/json' --data-binary @-
+# {"ok":true,"id":"m_…","seq":412,"removed":0}
+```
+
+**The call:** `POST /api/ingest/routine-chat` on the socket, `Content-Type:
+application/json`, body `{ "kind", "text", "id"? }` and no other field (a sender, a
+reply-to, files or meta are refused, not ignored):
+
+- `kind`: `"brief"` or `"digest"`, a fixed list in the code. The kind alone picks the bold
+  title that opens the message (**Morning brief**, **Weekly digest**); the caller sends none.
+- `text`: the Markdown body, 1 to 11,900 characters (so the Mac's voice, which reads
+  12,000, can always read it; a brief is about 3,000 and a digest about 4,500). The
+  request's body is capped at 96 KB.
+- `id`: optional, 1 to 40 letters, digits, dots, dashes or underscores; the routine sends
+  the run's date. A post whose id was seen before for its kind adds nothing and is
+  answered as a duplicate, so a retry after a timeout or a second run the same day never
+  doubles the message. With no id every post is a new message. The ids are kept as
+  client ids under the prefix `routine:`, which every other sender (the page, a Shortcut
+  key, the channel's reply) is refused, and only an earlier routine message of the same
+  kind makes a duplicate: an id some other message holds blocks nothing, the message
+  goes in without it and the log says so.
+
+**The answers:** 200 `{ ok: true, id, seq, removed }`, with `duplicate: true` for an id
+seen before (`removed` counts the characters taken out, below); 400 `{ error }` for a
+body that fails a check; 413 over the cap; 415 without the JSON content type; 429 with
+`Retry-After` (seconds) at the limit; 503 `the chat is off` when the chat is not running,
+or `routine messages are switched off (the kill file)`. No answer and no log line repeats
+any of the text: the log says only `routine-chat: the brief is in the chat (seq 412, 2697
+characters)` or why one was refused.
+
+**What keeps it narrow:**
+
+- **Local only.** The route is on the ingest socket alone (0600 in the owner's 0700
+  folder, above); the TCP port refuses it unread, like every other ingest post, whatever
+  `ingest.tcp` says. Only a process running as the owner can post.
+- **Display and push only.** The message is stored as the lead's own (`from: "jarvis"`,
+  kind `chat`, `meta: { routine: "<kind>" }`), and the channel's inbound stream carries
+  only the owner's messages, verdicts, events and stops, so it never reaches the lead's
+  session as a turn and can start no agent and no reply there. The mark also keeps it
+  from answering anything: the owner's unanswered messages stay unanswered for the
+  channel's catch-up and the page's "slow" state (`answersOwner` in
+  `server/lib/chat-store.mjs`), and their ticks stay at delivered (`tickFor` in
+  `web/src/lib/orbit/chat.js`). The channel's history call hands it to the lead as
+  `system`'s (`historyMessage` in `server/lib/chat-socket.mjs`), never as the lead's own
+  earlier words, so the channel shows it as data from outside.
+- **Told apart on the page.** The bubble carries a small "routine" mark, drawn from
+  `meta.routine` on one of the lead's chat messages and from nothing else (`routineWord`
+  in `web/src/lib/orbit/chat.js`): no text can draw it, and no sender sets meta.
+- **The text is data.** It is stored as text and drawn by the page's Markdown, which makes
+  no raw HTML and no link but an http(s) or mailto one. Before it is stored, line ends become
+  `\n`, and the hidden characters are taken out: the one shared set
+  (`server/lib/hidden-chars.mjs`: controls, direction marks, overrides and isolates,
+  zero-width characters, the byte-order mark, tag characters, whatever a renderer draws
+  as nothing), less tab, newline and the two characters emoji are made of, the
+  zero-width joiner and U+FE0F. Text shaped like a credential is refused, by the
+  pattern's name (`server/lib/secret-shape.mjs`).
+- **A limit.** At most 3 of a kind in any 24 hours (a run, a rerun and one to spare),
+  counted from the chat store itself, so a restart forgets nothing; posts are taken one
+  at a time. A duplicate is not counted.
+- **A kill file.** `touch ~/.local/state/jarvis-os/routine-chat-off` refuses every post at
+  once, with no restart; removing the file turns it back on.
+
+A routine in Python needs no client but the standard library: an
+`http.client.HTTPConnection` whose `connect()` opens an `AF_UNIX` socket to the path, one
+`POST` with a 10 s timeout, and the status read. The chat post is an extra: a failure
+(the server down, a 4xx, a 503) is noted in the routine's own log and must never fail
+the run, whose report is already in Discord.
+
 ### A session waiting on you
 
 `POST /api/ingest/needs-you` takes the JSON a Claude Code hook receives on stdin and

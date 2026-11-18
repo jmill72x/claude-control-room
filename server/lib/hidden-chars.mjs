@@ -63,6 +63,18 @@ export function revealHiddenChars(s, { keep = null, card = false } = {}) {
   });
 }
 
+// `s` with each hidden code point taken out, except the ones in `keep`, and how many
+// went: `{ text, removed }` (a routine's message for the chat, lib/routine-chat.mjs).
+export function stripHiddenChars(s, { keep = null, card = false } = {}) {
+  let removed = 0;
+  const text = String(s ?? '').replace(setFor(card).each, ch => {
+    if (keep?.has(ch.codePointAt(0))) return ch;
+    removed += 1;
+    return '';
+  });
+  return { text, removed };
+}
+
 // Whether `s` holds a hidden code point not in `keep` (`card` as above).
 export function hasHiddenChars(s, { keep = null, card = false } = {}) {
   const text = String(s ?? '');

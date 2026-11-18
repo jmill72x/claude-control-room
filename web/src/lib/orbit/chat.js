@@ -87,13 +87,14 @@ export const oldestId = list => { const first = list.find(m => Number.isInteger(
 // the channel hasn't; `delivered`: one tick; `answered`: two, once the lead's
 // next chat message (a higher seq) exists. Only the owner's chat messages have ticks.
 // The lead's reply to an event (its replyTo names one) answers the event, not the
-// owner, as the server's unanswered() reads it.
+// owner, as the server's unanswered() reads it; a routine's message (the morning
+// brief, the weekly digest: `meta.routine`) answers nothing either.
 export function tickFor(m, list) {
   if (!m || m.from !== 'jeff' || m.kind !== 'chat') return null;
   if (m.failed) return 'failed';
   if (!Number.isInteger(m.seq)) return 'sending';
   const toEvent = x => Boolean(x.replyTo) && list.some(e => e.id === x.replyTo && e.kind === 'event');
-  if (list.some(x => x.from === 'jarvis' && x.kind === 'chat' && Number.isInteger(x.seq) && x.seq > m.seq && !toEvent(x))) return 'answered';
+  if (list.some(x => x.from === 'jarvis' && x.kind === 'chat' && Number.isInteger(x.seq) && x.seq > m.seq && !toEvent(x) && !x.meta?.routine)) return 'answered';
   return m.state === 'delivered' ? 'delivered' : 'queued';
 }
 
@@ -359,6 +360,14 @@ export const ACCEPT = 'image/*,application/pdf';
 // A sent file is a picture to show, or a chip that downloads (a PDF, a text file).
 export const isPhotoType = type => typeof type === 'string' && type.toLowerCase().startsWith('image/');
 export const fileWord = type => (type === PDF_TYPE ? 'PDF' : type === 'text/plain' || type === 'text/markdown' ? 'text file' : 'file');
+
+// ---- routine messages (server/lib/routine-chat.mjs) ----
+
+// The small mark on a message a routine added (the morning brief, the weekly digest),
+// or null. Read from the server's `meta.routine` on one of the lead's chat messages,
+// never from the text: nothing a message says can draw it, and no sender sets meta.
+const ROUTINE_KINDS = new Set(['brief', 'digest']);
+export const routineWord = m => (m?.from === 'jarvis' && m.kind === 'chat' && ROUTINE_KINDS.has(m.meta?.routine) ? 'routine' : null);
 
 // ---- Shortcut keys (server/lib/shortcut-routes.mjs) ----
 

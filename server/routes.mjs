@@ -1,5 +1,6 @@
 import { buildAlerts } from './lib/alerts.mjs';
 import { validateIngest } from './lib/validate-ingest.mjs';
+import { checkRoutinePost, ROUTINE_BODY_MAX } from './lib/routine-chat.mjs';
 import { localCaller, PROXY_HEADERS } from './lib/local-caller.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
 import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
@@ -171,7 +172,7 @@ const NO_NEEDS_YOU = { view: () => [], record: null };
 // needs-you route while `ingest.tcp` is "legacy" (the default until the owner's hooks
 // have moved): that one keeps the loopback guard, and each post is reported to
 // `onIngestTcp` (logged and alerted, lib/ingest-socket.mjs).
-export const INGEST_ROUTES = new Set(['/api/ingest/needs-you', '/api/ingest/exact-command', '/api/ingest/crons', '/api/ingest/projects', '/api/ingest/credits']);
+export const INGEST_ROUTES = new Set(['/api/ingest/needs-you', '/api/ingest/exact-command', '/api/ingest/routine-chat', '/api/ingest/crons', '/api/ingest/projects', '/api/ingest/credits']);
 export const LEGACY_TCP_ROUTES = new Set(['/api/ingest/needs-you']);
 export const INGEST_TCP_MODES = Object.freeze(['legacy', 'off']);
 
@@ -208,7 +209,9 @@ const answerError = (res, path, err) => {
 // "kept", "other" (not the lead's session) or "off".
 // `onMoved` hears each needs-you event that is neither a block nor refused
 // (lib/answered-elsewhere.mjs closes the page's cards when the lead's session moved on).
-function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null }) {
+// `onRoutine` takes a routine's checked message for the chat (lib/routine-chat.mjs) and
+// resolves to what became of it; without one (the chat is off) the route answers 503.
+function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onRoutine = null }) {
   return async function ingest(req, res, path) {
     if (req.method !== 'POST' || !INGEST_ROUTES.has(path)) return false;
     // A Claude Code hook posting that a session waits for a person, or moved on
@@ -252,6 +255,20 @@ function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log,
       try { took = onExact ? onExact(checked.value) : 'off'; } catch { took = 'off'; }
       log(`exact-command: a Bash report, ${took === 'kept' ? 'from the lead\'s session, kept for 2 minutes' : took === 'other' ? 'not from the lead\'s session, dropped' : 'dropped (approvals for Bash are not in "exact" mode)'}`);
       json(res, 200, { ok: true, kept: took === 'kept' });
+      return true;
+    }
+
+    // A routine's message for the chat: the morning brief or the weekly digest
+    // (lib/routine-chat.mjs). Display and push only; the text is never logged, and an
+    // answer never repeats it.
+    if (path === '/api/ingest/routine-chat') {
+      guardWrite(req);
+      if (!onRoutine) throw new HttpError(503, 'the chat is off');
+      const checked = checkRoutinePost(await readBody(req, ROUTINE_BODY_MAX));
+      if (!checked.ok) throw new HttpError(400, checked.error);
+      const r = await onRoutine(checked.value);
+      if (!r.ok) json(res, r.status, { error: r.error }, r.retryAfter ? { 'Retry-After': String(r.retryAfter) } : {});
+      else json(res, 200, r);
       return true;
     }
 

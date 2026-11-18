@@ -51,6 +51,7 @@
 import { json, readBody, HttpError } from '../routes.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, MAX_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
+import { isRoutineMessage } from './routine-chat.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -96,6 +97,12 @@ export const MAX_FILES = 4;
 // A reply with four 10 MB files, base64, with room to spare.
 const REPLY_BODY_MAX = 4 * ATTACHMENT_MAX_BYTES * 1.4 + 64 * 1024;
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// What the history call hands the lead of one message. A routine's message (the
+// brief, the digest: lib/routine-chat.mjs) is stored as the lead's so the page pushes
+// and reads it, but the lead's session never wrote it: here it is `system`'s, so the
+// channel shows it as data from outside, never as the lead's own earlier words.
+export const historyMessage = m => (isRoutineMessage(m) ? { ...publicMessage(m), from: 'system' } : publicMessage(m));
 
 // What goes down the inbound stream: the owner's chat messages, verdicts and events
 // (lib/events.mjs). An event goes only when `eventOk(m)` says so at that moment: the
@@ -510,7 +517,7 @@ export function createSocketRouter({
         const limit = Number.parseInt(url.searchParams.get('limit') ?? '20', 10);
         if (before !== null && !isMessageId(before)) throw new HttpError(400, 'before must be a message id');
         const list = before === null ? store.list({ before: null, after: Math.max(0, store.seq - (Number.isInteger(limit) ? Math.min(100, Math.max(1, limit)) : 20)), limit }) : store.list({ before, limit });
-        return json(res, 200, { messages: list.map(publicMessage) });
+        return json(res, 200, { messages: list.map(historyMessage) });
       }
       const att = /^\/v1\/attachment\/([a-f0-9]{32})$/.exec(path);
       if (req.method === 'GET' && att) {

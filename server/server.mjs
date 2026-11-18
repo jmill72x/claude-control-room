@@ -42,6 +42,7 @@ import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
 import { createChatStore, ATTACHMENT_MAX_BYTES } from './lib/chat-store.mjs';
+import { createRoutineChat } from './lib/routine-chat.mjs';
 import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
@@ -339,6 +340,13 @@ const onExact = value => approvals?.noteExact(value) ?? 'off';
 // `onMoved` on both ingest handlers below.
 let answeredElsewhere = null;
 const onMoved = value => answeredElsewhere?.(value) ?? 0;
+// A routine's message for the chat (lib/routine-chat.mjs): the morning brief and the
+// weekly digest, posted to the ingest socket by the routine itself. Made once the chat
+// is on; until then the route answers 503. The kill file is beside the sockets.
+// Guarded by a source test (test/routine-chat.test.mjs): a merge must keep `onRoutine`
+// on the ingest socket's handler, and the chat's own store behind it.
+let routineChat = null;
+const onRoutine = value => routineChat?.post(value) ?? { ok: false, status: 503, error: 'the chat is off' };
 // The ingest is served on its own socket (below); the TCP port keeps only the
 // needs-you route while config's `ingest.tcp` is "legacy" (routes.mjs), each post
 // there logged and, once a day, alerted (lib/ingest-socket.mjs).
@@ -409,7 +417,7 @@ await chmod(stateDir, 0o700);
 // with its own alert words (INGEST_LOST_ALERT), once per run.
 const ingestSocket = startIngestSocket({
   path: ingestSocketPath,
-  handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved }),
+  handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved, onRoutine }),
   onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyMessage: 'The Control Room ingest socket is off: details in #pepper' })
 });
 ingestSocket.done.then(s => {
@@ -450,6 +458,11 @@ if (chatSettings.on && socketsReady) {
   // hour they go (lib/chat-store.mjs, pruneOrphans).
   const orphans = await chatStore.pruneOrphans();
   if (orphans) console.log(`chat: removed ${orphans} unsent upload${orphans === 1 ? '' : 's'} left from before the start`);
+  // The routines' messages (the brief, the digest) go into this store; `routine-chat-off`
+  // beside the sockets refuses them with no restart (lib/routine-chat.mjs).
+  const routineOffPath = join(stateDir, 'routine-chat-off');
+  routineChat = createRoutineChat({ store: chatStore, killed: () => existsSync(routineOffPath) });
+  console.log(`routine-chat: on${existsSync(routineOffPath) ? ' (the kill file is there: every post is refused)' : ''}; the brief and the digest post to the ingest socket`);
   // A revoked device takes the Shortcut keys it made with it (set below, once the
   // keys exist; lib/shortcut-keys.mjs, revokeMadeBy).
   let onDeviceRevoked = null;

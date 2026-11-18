@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { capField, parsePreview, shownHash, TOOL_MAX, LATE_AFTER_MS } from './approvals.mjs';
 import { secretShapes } from './secret-shape.mjs';
+import { isRoutineMessage, ROUTINE_ID_PREFIX } from './routine-chat.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 // `event` (lib/events.mjs): a templated line from `system` for the lead's session.
@@ -67,7 +68,9 @@ const MESSAGE_ID = /^m_[a-z0-9]{6,24}$/;
 const ATTACHMENT_ID = /^[a-f0-9]{32}$/;
 
 export const isMessageId = v => typeof v === 'string' && MESSAGE_ID.test(v);
-export const isClientId = v => typeof v === 'string' && CLIENT_ID.test(v);
+// What a sender may name (the page, a Shortcut key, the channel's reply): never an id
+// under the routines' prefix, which only lib/routine-chat.mjs writes.
+export const isClientId = v => typeof v === 'string' && CLIENT_ID.test(v) && !v.startsWith(ROUTINE_ID_PREFIX);
 export const isRequestId = v => typeof v === 'string' && REQUEST_ID.test(v);
 export const isAttachmentId = v => typeof v === 'string' && ATTACHMENT_ID.test(v);
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -198,7 +201,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (kind === 'stop' && (from !== 'jeff' || typeof device !== 'string' || !device)) throw new Error('only a paired device makes stops');
       if (typeof text !== 'string' || text.length > MAX_TEXT) throw new Error(`text must be a string of at most ${MAX_TEXT} characters`);
       if (replyTo !== null && !isMessageId(replyTo)) throw new Error('replyTo must be a message id');
-      if (clientId !== null && !isClientId(clientId)) throw new Error('clientId must be an id of at most 80 characters');
+      if (clientId !== null && !(typeof clientId === 'string' && CLIENT_ID.test(clientId))) throw new Error('clientId must be an id of at most 80 characters');
       if (clientId !== null && byClientId.has(clientId)) return byClientId.get(clientId);
       const at = now();
       const m = {
@@ -260,8 +263,9 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   // Whether one of the lead's messages answers the owner: a reply to an event
-  // (replyTo an event's id) answers the event, not anything the owner said.
-  const answersOwner = m => m.from === 'jarvis' && !(m.replyTo && byId.get(m.replyTo)?.kind === 'event');
+  // (replyTo an event's id) answers the event, not anything the owner said, and a
+  // routine's message (the brief, the digest: lib/routine-chat.mjs) answers nothing.
+  const answersOwner = m => m.from === 'jarvis' && !isRoutineMessage(m) && !(m.replyTo && byId.get(m.replyTo)?.kind === 'event');
 
   // The owner's messages after the lead's last answer to the owner, within 24 hours,
   // at most 10 messages or 8 KB of text: what the channel reads after a restart.

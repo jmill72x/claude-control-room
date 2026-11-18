@@ -17,7 +17,7 @@ import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
-  isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
+  isPhotoType, fileWord, viaWords, routineWord, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
 } from '../lib/orbit/chat.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -376,6 +376,7 @@ function Row({ m, list, lead, chat, onReply, onView, speaking, speechLoading, ca
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
           {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}
+          {routineWord(m) && <span className="o-chat-via o-chat-routine">{routineWord(m)}</span>}
           {tick && <span className={`o-chat-tick o-chat-tick-${tick}`} role="img" aria-label={TICK_WORDS[tick]}>{TICK_MARKS[tick]}</span>}
         </div>
         {m.failed && (

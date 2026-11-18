@@ -2546,10 +2546,10 @@ play/pause and a position bar (the audio is a real file now); pre-rendering the 
 reply when it arrives so the first tap is instant; splitting, only if a slower voice is
 ever picked; the Mac app's own check that Chrome plays it.
 
-## 11. Limit warnings: a push before a Claude limit runs out (board 1e2d7926; staged 2026-11-17, Ultron's six fixes in)
+## 11. Limit warnings: a push before a Claude limit runs out (board 1e2d7926; merged 2026-11-17 as main 151b5ff, Ultron's six fixes in)
 
-**Staged on `jos/limit-alert` (worktree `~/Projects/.worktrees/ccr-limit-alert`, from main
-404ec29), not committed, not live.** Jeff, 2026-11-17, after two agent runs took the session
+**Merged as main 151b5ff (built on `jos/limit-alert`, from main 404ec29); live per
+Jarvis's 11-17 brief, not checked from here.** Jeff, 2026-11-17, after two agent runs took the session
 limit from 3% to 100% in three hours and one died mid-fix: "so i guess we just bulled right
 into the session limit without a warning". The README's "Limit warnings" (under "Push
 notifications") is the reference; this is what is left and what to defend.
@@ -2624,3 +2624,82 @@ notifications") is the reference; this is what is left and what to defend.
   runs past 80%, say) is Jarvis's rule to write, not this server's. (e) `sw.js` files a
   limit push under the chat's tag on iOS before 18.4; it changes with the next web build
   that touches it.
+
+## 12. The morning brief and the weekly digest in the chat (board ebce2df9, "Spoken morning briefing"; staged 2026-11-17)
+
+**Staged on `jos/brief-chat` (worktree `~/Projects/.worktrees/ccr-brief-chat`, from main
+151b5ff), not committed, not live.** Jeff OK'd the item on 2026-11-12 ("Keep building
+jarvisos"): the weekday 07:30 brief and Monday's digest should also arrive in the Jarvis OS
+chat as a message from Jarvis, so he can tap the speaker and hear it in the Mac mini's
+voice. The README's "A routine's message in the chat" is the reference (the call, the
+answers, what keeps it narrow); this is what is left and what to defend.
+
+- **What was found first.** The brief reaches Discord only: `jarvis/routine.py` posts it
+  with `discord_post.post`, headless from launchd, outside Jarvis's session, so it has no
+  channel to reply through. The channel's own way in (`POST /v1/reply` on `channel.sock`)
+  needs the session token of the one channel holder, which a routine must never have. The
+  ingest socket (board ba1b8446, on main) is the existing local-only way in: 0600 in the
+  0700 folder, started whether or not the chat is on, refused on the TCP port.
+- **What is built.** One new route on that socket, `POST /api/ingest/routine-chat`, body
+  `{ kind: "brief" | "digest", text, id? }`, in `server/lib/routine-chat.mjs` (the check,
+  the cleaning, the limit, the kill file) with a short branch in `routes.mjs` and the
+  wiring in `server.mjs`. The message is stored as `from: "jarvis"`, kind `chat`, with
+  `meta: { routine: <kind> }` and the kind's title in bold on top, because that is the one
+  shape the page's stream, Web Push (`chat-push.mjs` pushes the lead's chat messages) and
+  read aloud (`chat-speech.mjs` reads only those) already take: no change to any of the
+  three. No config key; on whenever the chat is.
+- **Two side effects found and closed.** A message from the lead used to answer whatever
+  the owner had asked before it: a brief at 07:30 would have dropped an unanswered 07:25
+  message from the channel's catch-up after a restart (`unanswered()`), cleared the
+  page's "slow" state (`lastJarvisAt`), and shown two ticks on the page. `answersOwner`
+  in `chat-store.mjs` and `tickFor` in `web/src/lib/orbit/chat.js` now leave out a
+  message carrying the mark. The second is page code, so **the merge needs a web build**.
+- **Choices to defend.** (1) A route on the ingest socket, not a new socket or a token:
+  nothing to mint or leak, and the folder and file checks are already there. (2) The
+  characters that hide or reorder text are removed, not refused: one zero-width space in
+  a headline the digest quoted should not cost Jeff the whole message; the answer and the
+  log count what was removed. The zero-width joiner and U+FE0F stay, for emoji. (3) The limit
+  is 3 of a kind per 24 hours, counted from the store (a run, a rerun, one spare; two
+  07:30 runs can fall inside one 24-hour window). (4) `id` is optional: with the run's
+  date as the id a second run the same day adds nothing; without one a rerun adds a
+  second message. (5) Unknown body fields are refused, so nobody believes `from` or
+  `replyTo` does something. (6) The text cap is 11,900 characters, under the Mac voice's
+  12,000 with the title. (7) No CLI: the routine is Python and the call is one POST over
+  `AF_UNIX` with the standard library, with no `node` to find from launchd.
+- **What Jarvis wires (the jarvis repo, not touched here).** In `routine.py`, after the
+  Discord post succeeds for a kind in `discord_post.FEED_KINDS`: POST `{kind, text: body,
+  id: day}` to `~/.local/state/jarvis-os/ingest.sock` with a 10 s timeout, treat any
+  failure as a note in the run's detail (never a failed run), and skip it on a dry run.
+- **Go-live.** C&P, the merge with a web build, a service restart (Vision or Jeff). The
+  log then says `routine-chat: on; the brief and the digest post to the ingest socket`.
+  Off switch with no restart: `touch ~/.local/state/jarvis-os/routine-chat-off`.
+- **Tests.** `server/test/routine-chat.test.mjs` (22: the body, the cleaning, the store,
+  never down the channel's stream, the limit across a restart, five at once, the id and
+  an id held by another message, the prefix refused on the three other ways in, the
+  history call over a real channel socket, the kill file, the socket's answers, the TCP
+  refusal, a real encrypted push, a source test on the wiring),
+  `web/test/orbit-chat-routine.test.js` (4), one line each in `ingest-socket.test.mjs`'s
+  every-route list. Server 1,404 pass in local time and in `TZ=Asia/Tokyo`; web 320. 74
+  mutations of the first build, all caught (one first-pass survivor was a dead clamp,
+  removed), and 41 on the lines the fixes changed, all caught. A scratch socket run with
+  Python's `http.client` and with `curl` + `jq` answered as documented (first build).
+- **Not verified here (needs the live service and a device):** the brief showing on the
+  iPhone and iPad, the push arriving, and the speaker reading it in the Mac's voice. The
+  page was linted and built to a scratch folder, not run in a browser: the page changes
+  are the one condition in `tickFor` and the "routine" mark in the bubble's meta row,
+  whose look on a device is unseen.
+- **Ultron's 11-17 read: go to commit with four fixes, all made the same night.** (1) The
+  channel's history call answers a routine message as `from: "system"` (`historyMessage`
+  in `chat-socket.mjs`), since the channel prints the lead's messages as "me:"; the store
+  and the page keep it the lead's. (2) The bubble carries a small "routine" mark from
+  `meta.routine` alone (`routineWord` in web `chat.js`, one line in `Chat.jsx`, the
+  existing `.o-chat-via` style). (3) The hand-written character list is gone: the
+  shared `hidden-chars.mjs` set through a new `stripHiddenChars`, keeping tab, newline,
+  U+200D and U+FE0F, so the zero-width non-joiner, the soft hyphen and the other
+  variation selectors now go too. (4) A duplicate is only an earlier routine message of
+  the same kind, an id held by anything else blocks nothing, and `isClientId` (the page,
+  the Shortcut keys, the channel's reply) refuses the `routine:` prefix; the store's own
+  append still takes it. His re-read of these is pending.
+- **Follow-ups, not built:** (a) the channel can give routine messages its own label in
+  `historyLine` (the jarvis repo, Jarvis's). (b) The scout and the sweep are not on the
+  list of kinds; adding one is a line in `ROUTINE_KINDS` and one in the page's list.
