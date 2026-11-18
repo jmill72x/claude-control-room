@@ -159,8 +159,8 @@ export function staleLogOnly(entry) {
     typeof entry.reason === 'string' && LOG_AGE_ONLY.test(entry.reason);
 }
 
-// The crons panel's short word for a failed job, which the mod and the classic
-// page show as they always have.
+// The crons panel's short word for a failed job, which the mod shows as it
+// always has.
 function failedWord(entry) {
   if (entry.lastExit !== null && entry.lastExit !== 0) return `Failed · ${entry.lastExit}`;
   if (entry.state === 'not loaded') return 'Not loaded';
@@ -175,7 +175,7 @@ function failedWord(entry) {
 export const ANSWER_FRESH_MS = 3 * 60 * 1000;
 
 // One verdict everywhere (Orbit plan, Phase 2): the crons panel keeps its shape
-// for the mod, the classic page and the alerts, but a job that job-status
+// for the mod and the alerts, but a job that job-status
 // knows takes its verdict from there, plus `lastRunAt` for the Scheduled lane.
 export function overlayCrons(crons, answer, now) {
   if (!Array.isArray(crons) || !answer || !(now - answer.receivedAt <= ANSWER_FRESH_MS)) return crons;

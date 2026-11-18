@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 // The board for the Orbit page: read once for both tabs, and saved with the
-// classic page's protections (components/Lanes.jsx, which this copies while the
-// two pages live side by side):
+// protections the first dashboard's board had (its Lanes.jsx, removed with that
+// page on 2026-11-18; this is now their only copy on the web side):
 //   - every PUT carries the revision it was made from (If-Match), so a tab left
 //     open since this morning can't write its copy over newer boards;
 //   - saves go out one at a time, each with the revision the last one returned;
@@ -29,7 +29,8 @@ async function fetchBoard() {
 }
 
 // randomUUID exists only in a secure context, and the tailnet serves this page
-// over plain HTTP, so there is a fallback (see Lanes.jsx).
+// over plain HTTP, so there is a fallback: an id that is unique on this board,
+// which is all the server asks of one.
 export const newId = () =>
   globalThis.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 

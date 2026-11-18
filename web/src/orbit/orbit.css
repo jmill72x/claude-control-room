@@ -597,6 +597,10 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   border-radius: 999px; border: 1px solid var(--rule-strong); background: transparent; color: var(--heading); font-size: 13.5px; font-weight: 600;
 }
 .o-btn-solid { background: var(--navy); border-color: var(--navy); color: var(--paper); }
+/* The error boundary's panel (ErrorBoundary.jsx): what is drawn when the page itself throws. */
+.o-crash-title { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; color: var(--heading); }
+.o-crash-error { margin: 0; padding: 12px; border: 1px solid var(--rule); border-radius: 10px; background: var(--lane); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.o-crash-reload { align-self: flex-start; }
 .o-btn-accent { background: var(--accent); border-color: var(--accent); color: #FFFFFF; font-size: 14px; font-weight: 700; padding: 0 18px; }
 .o-btn-accent:disabled { background: #C9A592; border-color: #C9A592; }
 .o-board-error {

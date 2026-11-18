@@ -7,8 +7,12 @@
 // that can't be parsed reads as empty, and every live alert would be told again. The
 // temp file is made 0600 and must not exist yet (`wx`: a link planted under its name
 // is never written through), so the file is the owner's alone from the first write.
-import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+//
+// A write cut short between the two (the process killed, the machine switched off)
+// leaves its temp file behind: nothing reads it, and it holds what the real file
+// holds. `sweep` removes those at start.
+import { readFile, writeFile, rename, unlink, mkdir, readdir } from 'node:fs/promises';
+import { dirname, basename, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 // `suffix` names the temp file's random part (tests give their own).
@@ -31,6 +35,25 @@ export function createSentStore(path, { suffix = () => randomBytes(4).toString('
         await unlink(tmp).catch(() => {});
         throw err;
       }
+    },
+    // Removes the temp files an interrupted write left beside the file
+    // (`<name>.tmp-…`), and says how many went. For the server's start, before its
+    // first write: every one found then is stale, whatever process id its name
+    // carries (a restarted server can be given the old one's). Only names of exactly
+    // that pattern, in the file's own folder: the file itself and its neighbours stay.
+    // `unlink` removes a link and never follows it, and can't remove a folder, which
+    // is left as it is. It never throws: a folder that is missing or can't be listed
+    // is 0, and a file that won't go is not counted.
+    async sweep() {
+      const dir = dirname(path), prefix = `${basename(path)}.tmp-`;
+      let names;
+      try { names = await readdir(dir); } catch { return 0; }
+      let removed = 0;
+      for (const name of names) {
+        if (!name.startsWith(prefix)) continue;
+        try { await unlink(join(dir, name)); removed++; } catch { /* gone already, a folder, or not ours to remove */ }
+      }
+      return removed;
     }
   };
 }

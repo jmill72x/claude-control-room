@@ -1,15 +1,24 @@
 # Claude Control Room
 
-A single-screen operational dashboard for one person's Claude account: spend against
-limits, running projects and scheduled crons, and a personal backlog. Three equal
-columns, built to be read at a glance from a desk browser and an iPad. It runs as a
-background service on an always-on Mac and shows real data pulled from the local
-machine — nothing is faked, and anything that has no real source says so.
+An operational dashboard for one person's Claude account and the agents working on it:
+spend against limits, what the agents are doing, the scheduled jobs and services, what
+is waiting on the owner, and a personal board. One page, the Orbit page, with four tabs
+(Overview, Board, Chat, Feed), built to be read at a glance on a phone, an iPad and a
+desk browser. It runs as a background service on an always-on Mac and shows real data
+pulled from the local machine — nothing is faked, and anything that has no real source
+says so. The same server feeds a Claude Code mod (`mod/`), a side pane with the usage
+breakdowns, the projects and the board.
 
-![Control Room screenshot](design_handoff_claude_control_room/screenshots/control-room-full.png)
-
-*(This is the design reference the UI was built to match pixel-for-pixel — see
-[Fragility](#fragility) for why a live screenshot isn't checked in.)*
+No screenshot is checked in: a live one would show one person's account (see
+[Fragility](#fragility)). **The first dashboard is gone.** Until 2026-11-10 the page at
+`/` was a three-column dashboard (Usage, Projects, Ideas & to-dos); the Orbit page took
+its place that day (Orbit plan, Phase 5), the old one stayed at `/classic.html` for a
+week, and on 2026-11-18 its page, components, CSS and build entry were deleted.
+`design_handoff_claude_control_room/` is that first design's handoff, kept as history.
+What the old page showed and the Orbit page does not (this week by surface, project and
+model, recent sessions, the usage drivers, the sparklines and pace line on each limit,
+the Projects list, price and seats) is still served by `/api/dashboard` and drawn by the
+mod; the "Shown" column below says which is where.
 
 **This is a personal tool for one machine and one account.** The source is public so it
 can be read, learned from, and adapted, but it is not a product: it targets one person's
@@ -24,23 +33,29 @@ shows the last good data with a visible marker instead of silently going quiet, 
 `unavailable` panel shows its frame and heading with an explicit no-source state —
 never a zero or an empty bar standing in for missing data.
 
-| Panel | Source | Reality |
-|---|---|---|
-| Header countdown | `claude -p "/usage"` reset timestamp | Real |
-| Plan block — tier | `claude auth status --json` (`subscriptionType`) | Real, but coarse and can lag a plan change by days — see below |
-| Plan block — price, renews, seats | `config.json` | Static — no API exposes pricing, renewal date, or seat count |
-| Credits (included, promotional and cloud-session grants; usage-credit balance) | The CLI's cached usage response in `~/.claude.json` (`cachedUsageUtilization`), refreshed by every `/usage` poll; falls back to the `/api/ingest/credits` feed, then `config.json`, only when that cache cannot be read | Real, read automatically every minute. Undocumented cache with codenamed buckets — see below |
-| Three limit bars (session, weekly all-models, weekly per-model) | `claude -p "/usage"` | Real |
-| By surface · this week (Cowork / Code / Chat) | Session-log token sums under both transcript roots | Real for Cowork and Code; **Chat is permanently unmeasurable** — see below |
-| By project · this week | Same transcript roots, top 3 by tokens + Other | Real |
-| By model · this week | Same transcript roots | Real |
-| Recent sessions | Same transcript roots; percent = that session's share of the week's tokens | Real |
-| Pace tick + projection on each limit bar | `/usage` history (see below) plus an observed window length | Real, but the session bar has no fallback — see below |
-| Sparklines on each limit bar | Same history store | Real; needs at least two readings, else says so |
-| Usage drivers panel | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike every account-wide percentage above it in the same column, see below |
-| Projects (column 02) | Cowork session metadata + transcript logs + git branch | Real; no running/idle state since 2026-10-30 (the `claude agents --json` poll was dropped, see [How often the server starts `claude`](#how-often-the-server-starts-claude)) |
-| Scheduled crons | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| Ideas & to-dos (column 03) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Below 1024px wide it is the second column on screen, after Usage and ahead of Projects. Each item carries a stage, a free-text tag and an optional `P0`–`P3` priority; the column groups by stage or by tag and sorts by priority within each group, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done), and a per-viewer "Sort by Due" switch puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
+This table is the server's panels as `/api/dashboard` sends them, and "Shown" says what
+draws each since the first dashboard was removed (2026-11-18): the page (the Orbit
+page, described in [its own section](#the-orbit-page-the-page-at--since-phase-5), which
+also covers the panels made for it: the health strip, Needs you, the agents, Burn and
+the week's heat map) or the mod (`mod/README.md`).
+
+| Panel | Shown | Source | Reality |
+|---|---|---|---|
+| Session reset countdown | Page (inside the Usage rings), mod | `claude -p "/usage"` reset timestamp | Real |
+| Plan — tier | Page (a chip in Usage), mod | `claude auth status --json` (`subscriptionType`) | Real, but coarse and can lag a plan change by days — see below |
+| Plan — price, renews, seats | Page: days left to the renewal only; mod: all three | `config.json` | Static — no API exposes pricing, renewal date, or seat count |
+| Credits (included, promotional and cloud-session grants; usage-credit balance) | Page (the grants, as chips in Usage), mod | The CLI's cached usage response in `~/.claude.json` (`cachedUsageUtilization`), refreshed by every `/usage` poll; falls back to the `/api/ingest/credits` feed, then `config.json`, only when that cache cannot be read | Real, read automatically every minute. Undocumented cache with codenamed buckets — see below |
+| Three limits (session, weekly all-models, weekly per-model) | Page (rings), mod (bars) | `claude -p "/usage"` | Real |
+| By surface · this week (Cowork / Code / Chat) | Mod | Session-log token sums under both transcript roots | Real for Cowork and Code; **Chat is permanently unmeasurable** — see below |
+| By project · this week | Mod | Same transcript roots, top 3 by tokens + Other | Real |
+| By model · this week | Mod (the page's Burn splits the last 24 hours by model family instead) | Same transcript roots | Real |
+| Recent sessions | Mod | Same transcript roots; percent = that session's share of the week's tokens | Real |
+| Pace and projection on each limit | Mod (a line under each bar); on the page a projection past 100% is an alert-bar line | `/usage` history (see below) plus an observed window length | Real, but the session bar has no fallback — see below |
+| Sparklines on each limit | Mod | Same history store | Real; needs at least two readings, else says so |
+| Usage drivers | Mod | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike the account-wide limit percentages, see below |
+| Projects | Mod | Cowork session metadata + transcript logs + git branch | Real; no running/idle state since 2026-10-30 (the `claude agents --json` poll was dropped, see [How often the server starts `claude`](#how-often-the-server-starts-claude)) |
+| Scheduled jobs | Page (the Jobs chip, Today's routines, Next 24 hours), mod (the cron list) | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
+| The board (ideas, doing, done) | Page (the Board tab), mod (To-dos) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a tag and an optional `P0`–`P3` priority, and is sorted by priority within its lane, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done), and a per-viewer sort by due date puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes
@@ -196,16 +211,17 @@ unwritable, waiting fixes nothing.
 Every poll of `/usage` also prints a contributing-factors block — request and
 session counts plus behavioural percentages like "74% of your usage was at
 >150k context" — that earlier versions of this dashboard parsed and discarded.
-The drivers panel at the bottom of column 01 renders it instead, using the same
-name/track/percentage row idiom as the model breakdown above it, deliberately
+The server now sends it as the usage panel's drivers, and the mod's Usage tab lists
+them (the first dashboard drew them at the bottom of its Usage column; the Orbit page
+does not show them), one name and percentage a row, deliberately
 **not** as a stacked bar or pie: Anthropic's own output describes these as
 independent characteristics, not a breakdown, and they do not sum to 100.
 
-Unlike the account-wide limit percentages higher in the same column, this panel
+Unlike the account-wide limit percentages, this panel
 is **local-machine-only and approximate** — it reflects sessions on this
-machine only, not other devices and not claude.ai, and the panel says so
-visibly rather than leaving two figures of different provenance sitting in one
-column with no distinction between them. The factors block also parses
+machine only, not other devices and not claude.ai, and it is labelled so
+rather than leaving two figures of different provenance side by side
+with no distinction between them. The factors block also parses
 leniently, unlike the limit lines above it: a malformed or missing factors
 block yields an unavailable drivers panel without ever affecting the limit
 bars, which still parse strictly and throw on drift.
@@ -243,9 +259,10 @@ as few as it can:
 | `claude auth status --json` | hourly (1 an hour) | daily, and once at start |
 | **All** | **about 133 an hour** | **about 12 an hour**, plus one a day |
 
-The agents poll fed only the classic page's Projects column (and the mod's Projects
-tab), which now list projects with their last activity and no running/idle state. The
-Orbit page never used it; its "is the lead's session up" check reads `ps`.
+The agents poll fed only the first dashboard's Projects column (removed 2026-11-18) and
+the mod's Projects tab, which now lists projects with their last activity and no
+running/idle state. The Orbit page never used it; its "is the lead's session up" check
+reads `ps`.
 
 The `/usage` poll stays at five minutes on purpose. An hourly schedule (hourly, plus a
 reading on each side of every reset and every 15 minutes near a limit, about 1.5 runs
@@ -264,11 +281,17 @@ fresh, and it doesn't hold the drivers block either.
 
 A redesign ("Orbit", round 4) was approved on 2026-10-20, and its phased plan is
 `docs/superpowers/plans/2026-10-20-orbit-redesign.md`. Since Phase 5 (the flip,
-2026-11-10) it is the page at **`/`** (`web/index.html`), and the page this README
-describes elsewhere is at **`/classic.html`** (`web/classic.html`) until it is deleted a
-week later. `/orbit.html`, its address before the flip, has no file of its own: the
-server's single-page fallback answers it with the same page, so saved links and
-`#board/<id>` addresses keep working. Since the home merge (board f74ca819, built
+2026-11-10) it is the page at **`/`** (`web/index.html`), and since 2026-11-18, when
+the first dashboard was deleted (the plan's second half of Phase 5), it is the only
+page: `web/` builds one entry. `/orbit.html`, its address before the flip, has no file
+of its own: the server's single-page fallback answers it with the same page, so saved
+links and `#board/<id>` addresses keep working. `/classic.html`, the first dashboard's
+address for that last week, is now a missing path like any other: no file, no route, so
+the same fallback answers it with the Orbit page and an old bookmark lands there (not a
+404: this server answers every unknown path under the web root with the page). If the
+page itself throws while drawing, an error boundary (`web/src/orbit/ErrorBoundary.jsx`)
+says so in the page's own style, with the error's message and a Reload button, where
+the document would otherwise go blank. Since the home merge (board f74ca819, built
 2026-11-14 on `jos/home-merge`) its Overview has five sections where it had eleven
 (`web/src/lib/orbit/home.js`, tested by `web/test/orbit-home.test.js`): **Needs you**;
 **Agents**, one card with tabs Now (the live agents and their Stop buttons), Today (Today
@@ -524,7 +547,7 @@ Where the new figures come from:
   isn't `.`; a merge conflict and an untracked file aren't.
 - `crons[]` takes job-status's verdict for each job it knows (`ok`, `state` and `last`),
   from an answer at most 3 minutes old, plus `lastRunAt`, when the job's log was last
-  written. So the morning brief, this page, the classic page, the mod and the alerts
+  written. So the morning brief, this page, the mod and the alerts
   agree on every job. Without an answer, or for a job job-status doesn't cover, the
   verdict is launchd's own, as before.
 
@@ -551,11 +574,11 @@ claude-control-room/
     routes.mjs        /api/dashboard · /api/todos · /api/acks, and /api/ingest/* for the ingest socket (and server.mjs serves /avatars/<key>.png)
     acks.mjs           the acknowledgement file — see "Acknowledging a known miss"
     config.json        user-set values with no API source (gitignored, and so is a dated copy, config.json.bak-* — see config.example.json)
-    todos.json          the column 03 backlog (gitignored)
+    todos.json          the board (gitignored)
     todos-history/      the last 20 boards a write replaced (gitignored) — see "Undo a bad board write"
     data/              usage-history-YYYY-MM.jsonl, append-only, plus notified.json and acks.json; gitignored (runtime data, not source)
-  web/               React + Vite, two pages: index.html (the Orbit page) and classic.html (this page, until deleted);
-                     the server serves the built web/dist bundle
+  web/               React + Vite, one page: index.html (the Orbit page, src/orbit/ with its pure logic in
+                     src/lib/orbit/); the server serves the built web/dist bundle
   deploy/            launchd plist template for running the server as a background service
   mod/               Claude Code mod: the dashboard as a side pane, and /control-room summary
 ```
@@ -2453,8 +2476,8 @@ On the Orbit page, each ack-able alert in the red strip has an **Acknowledge** b
 that opens a two-field form (a note, and "until its next run" or "for 7 days"). The
 Jobs chip then reads "all OK · 1 ack" in grey, its details show the row in grey with
 "acknowledged by <who> until Fri 6:45 PM · <note>" and an **Un-ack** button, and a down
-service's details gain the same row. The classic page and the mod ignore the new
-fields and keep showing the job red.
+service's details gain the same row. The mod ignores the new
+fields and keeps showing the job red.
 
 ### Inside Claude Code: the mod
 
@@ -2479,9 +2502,9 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 1037 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 209 tests of the Orbit page's logic (node --test, nothing to install)
-cd web && npm run build    # produces web/dist (both pages), which the server serves
+cd server && npm test      # 1454 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 320 tests of the Orbit page's logic (node --test, nothing to install)
+cd web && npm run build    # produces web/dist (one page, index.html), which the server serves
 ```
 
 **Each build reloads open pages, once (2026-11-11).** The build gets an id, compiled into
@@ -2658,17 +2681,18 @@ Orbit page lists them after the dated ones. Because the server may add a `doneAt
 answer to a PUT can differ from what was sent, and its `ETag` is the revision of what was
 written.
 
-How the page shows `due`: a chip next to the tag reads `Due today`, `Due tomorrow` or
+How the page shows `due`: a chip on the card reads `Due today`, `Due tomorrow` or
 `Due Wed 10-21` (the year is added when it is not this year). Once the date has passed it
-reads `Overdue Thu 10-15` in red; due within 2 days it has a quiet amber outline; on a
-done item it is grey. "Today" is the viewer's date, re-checked every minute. Tapping an
-item's text opens its editor, which has a native date input and a Clear button; the add
-box of the Idea and Doing lanes has an optional date input beside it. When no date is
-picked the page writes no `due` key at all, and an item whose date is left alone keeps
-what it had (even `""`). **Sort by: Priority / Due** is a per-viewer switch kept in
-`localStorage` (`ccr.todos.sortBy`): with Due on, each lane (or tag group) lists its dated
-items first, soonest first, then the rest in the usual priority order; done items stay
-at the bottom of a tag group.
+reads `Overdue Thu 10-15` and is marked overdue; due within 2 days it is marked soon; on a
+done item it is plain. "Today" is the viewer's date, re-checked every minute. Opening a
+card shows a native date input and, when a date is set, a Clear button; the Board tab's
+**New item** form has the same optional Due field (with a title, a tag, details, a
+priority and a lane). When no date is picked the page writes no `due` key at all, and an
+item whose date is left alone keeps what it had (even `""`). **Sort: Priority / Due** is
+a per-viewer choice kept in `localStorage` (`ccr.orbit.sortBy`): with Due on, each lane
+lists its dated items first, soonest first, then the rest in the usual priority order.
+The page has no delete (the Orbit plan's decision 6: a dead item moves to Done); the
+mod's To-dos tab still has one, behind a confirmation.
 
 ### Remote access
 
@@ -2705,7 +2729,7 @@ by default). The WireGuard encryption still applies — this is "encrypted trans
 unencrypted inside it," not "unencrypted." One concrete consequence: the browser
 considers a plain-HTTP tailnet page a non-secure context, so `crypto.randomUUID()` is
 unavailable there and the to-do board's id generator falls back to a non-crypto
-alternative (see the comment in `web/src/components/Lanes.jsx`) — that fallback is
+alternative (see `newId` in `web/src/orbit/useBoard.js`) — that fallback is
 correct and this is exactly the scenario it exists for.
 
 **Upgrade path to a real cert and `https://`:** enable HTTPS certificates for the
@@ -2912,8 +2936,8 @@ plan change by at least a couple of days). The deliberate choice here is to show
 lagging real value rather than a hand-typed guess — "Pro" that was true until
 recently is still more honest than a tier that was never true. If the `plan` panel is
 `unavailable` (`claude` unreachable, or a response with no `subscriptionType`), the
-plan block says so via the same status-note treatment every other panel uses; it does
-not fall back to a config value, and there isn't one to fall back to.
+page leaves its tier chip out and the mod's plan line says the plan is unavailable;
+neither falls back to a config value, and there isn't one to fall back to.
 
 `plan.price` stays hand-entered because no local or remote source exposes pricing at
 all, and the code deliberately does not map tier → price, since Anthropic's pricing
@@ -3009,7 +3033,11 @@ minutes left. So the limits now have warning steps of their own, and these reach
   late as the poll (five minutes at most) and not the poll plus the tick. When the poll
   ends while a pass is already under way (the tick began a moment earlier, on the old
   reading), one more pass follows that one; a timer's own run that meets one under way
-  is skipped, as for every collector.
+  is skipped, as for every collector. A `then` that would loop is refused when it is
+  registered (a collector naming itself, or a chain that leads back to its start: each
+  run would start the next with no timer between them, `claude -p "/usage"` back to
+  back): the collector keeps its own interval, the link is dropped, and the log says
+  `registry: b then a would loop (b > a > b); registered without it`.
 - **The devices are owed it on their own.** Landing on the devices or on either alert
   channel marks a warning told, by the same rule as for any alert, so `#pepper` never
   gets it twice. But the device push is tracked apart: `limitWarning` answers `{ tried,
@@ -3035,9 +3063,18 @@ minutes left. So the limits now have warning steps of their own, and these reach
   5:30pm; every reset in three months of history sat within a minute of a 10-minute
   mark), so the window is named by its reset rounded to 10 minutes of local time; keyed
   on the printed minute, one window would warn again at every flip. A reading with no
-  reset has no time in its words, and its key is kept for five hours once told, or until
-  that limit is read under 40% (half the lowest step): that is a new window, and with no
-  reset time every window has the same key, so the old one would hide its warning.
+  reset has no time in its words, and its key is kept for five hours once told.
+- **Unless the limit has been reset.** Any told key, with a reset time in it or without,
+  is forgotten as soon as its limit is read under 40% (`RESET_BELOW_PCT`, half the
+  lowest step): that is a new window, whatever the printed reset says, and the old key
+  would hide its warning. With no reset time every window has the same key. With one, a
+  limit can be reset before its printed time (once in 85,254 readings: on 2026-10-19 a
+  weekly limit went from 93% to 0% eight and a half hours early; until 2026-11-18 its
+  key would have been kept those hours). Only the reading of this pass counts: the
+  usage panel while it is current, never a figure from the history of readings, so an
+  old low reading forgets nothing. A key that is live is never forgotten, and a dip
+  that stays at 40% or over is still one telling. What the forgotten key still owed a
+  device goes with it. The caps below still hold after such a reset.
 - **A backstop under the keys.** Whatever the keys miss (a reset that starts to move off
   its 10-minute mark, a reading whose reset comes and goes) is held by two caps: a limit
   is told at most once in 30 minutes unless its step rises, and at most 12 times in any
@@ -3048,7 +3085,11 @@ minutes left. So the limits now have warning steps of their own, and these reach
   `limit-step-state`, read strictly (anything not in shape is dropped). The file is
   written whole each pass through a temp file and a rename, mode 0600
   (`server/lib/sent-store.mjs`): a crash mid-write leaves the old file, never half a new
-  one, which would read as empty and tell every live alert again.
+  one, which would read as empty and tell every live alert again. What such a crash does
+  leave is its temp file (`notified.json.tmp-<pid>-<random>`, 0600, holding what the
+  file holds); the server removes those at start, before its first write, and logs how
+  many (`sweep`: names of exactly that pattern in that folder, a link removed and never
+  followed, the file itself untouched).
 - **Never from an old reading.** Like every push, only from a usage panel that is current
   (`ok`); and a reading whose window has already ended warns of nothing. No ack applies:
   only `cron` and `service` alerts can be acked.
@@ -3089,7 +3130,7 @@ problem and enforces. The service log, not an assumption, says which `Host` the 
 proxy passes. A refused request never reaches a route. A body that isn't JSON gets a
 fixed `invalid JSON`, never the parser's message, which quotes the body around the fault.
 
-Everything the static handler sends (both pages, their scripts, styles and fonts, the
+Everything the static handler sends (the page, its scripts, styles and fonts, the
 single-page fallback and its refusals) carries `Content-Security-Policy: default-src
 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none';
 form-action 'none'` (`script-src` spelled out since 2026-11-11, so widening `default-src`

@@ -65,8 +65,9 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   about 12 times an hour instead of about 133.** Jeff's "go" of 10-30. Open Claude Code
   bugs (#102265, #88583) show a short-lived `claude` that exits mid-renewal can blank the
   shared sign-in; a likely, unverified trigger of the 10-21 lapse. The 30 s
-  `claude agents --json` poll is gone (the classic page's and the mod's Projects list
-  projects with no running state, and say "N total"), and `claude auth status` runs
+  `claude agents --json` poll is gone (the mod's Projects tab lists projects with no
+  running state, and says "N total"; so did the first dashboard, removed 2026-11-18,
+  §14), and `claude auth status` runs
   daily. `/usage` stays every 5 minutes: an hourly schedule was built and Jeff rejected
   it the same day ("the usage bars can't be updating that infrequently with a 5 hr
   window"); its code is not in the change. README, "How often the server starts
@@ -74,8 +75,8 @@ The four review findings that used to be parked here were all fixed in `ee1e1df`
   2026-10-21 by sampling the live service's children starting `security`). Checks after
   the restart: `/api/dashboard` has no `agents` key; `usage`, `plan` and
   `accountCredits` read ok; ten minutes of sampling the service's children shows two
-  `claude -p /usage` and no `claude agents`. Needs `npm run build` in `web/` for the
-  classic page (a live deploy, so after the C&P).
+  `claude -p /usage` and no `claude agents`. It needed `npm run build` in `web/` for the
+  first dashboard's page (built 10-30; that page is gone since 11-18, §14).
 
 - **Done 2026-10-20 (`f16b659`, live since the 11:21 restart that day): token usage counts
   each API request once, not once per transcript line.** The week's new tokens read 3x
@@ -293,7 +294,8 @@ start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redes
 - Phase 2: the health strip.
 - Phase 3: the agent views.
 - Phase 4: Waiting on you.
-- Phase 5: the flip (live 2026-11-10, below).
+- Phase 5: the flip (live 2026-11-10, below), then the first dashboard's deletion
+  (built 2026-11-18, §14). The Orbit page is the only page.
 - Phase 6: the OpenTelemetry cross-check.
 
 Jeff approved the plan on 2026-10-20 (committed as `5c577e3`), and that evening answered
@@ -404,8 +406,9 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   and `/classic.html` at 390 and 1440: no policy violation, no console error. The one
   finding is old: the classic page scrolls sideways at 390 on the live data (440 px
   wide), with its CSS unchanged by the flip; it goes with the page. Safari is Jeff's
-  look. **Next, a week after it goes live:** delete `classic.html`, its components and
-  CSS (and the `classic` Vite entry), and rewrite README and this file for the new page.
+  look. **The second half, a week later, is built (2026-11-18, §14):** `classic.html`, its
+  components and CSS and the `classic` Vite entry are deleted, and the README describes
+  the Orbit page. The sideways scroll went with the page.
 
 ## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a built, staged; Phase 2 Feed staged 11-11)
 
@@ -415,7 +418,7 @@ design is `docs/design/2026-11-10-jarvis-os-home.md`; Jeff answered its decision
 (the doc's §9: all yes, approvals "both" buttons and Discord DMs, the product's name "Jarvis
 OS" if it comes off, and a new Phase 2 direction: messaging with Jarvis inside Jarvis OS,
 replacing Discord, pending Shuri's research). Step 0 was the Phase 5 flip (§9); its second
-half (the classic page's deletion, about 11-17) is still open.
+half (the first dashboard's deletion) was built 2026-11-18 (§14).
 
 **Home merge (board f74ca819): eleven Overview sections become five, built 2026-11-14
 overnight on `jos/home-merge` (worktree `~/Projects/.worktrees/ccr-home-merge`, from main
@@ -2628,9 +2631,10 @@ notifications") is the reference; this is what is left and what to defend.
   its window is kept until the printed reset even when the limit is reset early. It has
   happened once in 85,254 readings (2026-10-19: a weekly limit went from 93% to 0% eight
   and a half hours before its printed reset); had it climbed back to 90% in those hours,
-  no warning would have gone out. The fix would be §13's rule (forget a told key once its
+  no warning would have gone out. The fix is §13's rule (forget a told key once its
   limit is read under 40%) for every warning key, not only the ones with no reset time.
-  Not built: it changes choice (6) above, so it is Ultron's and Jeff's to weigh.
+  **Built 2026-11-18 (board b468ff61, Ultron in favour; §14).** Of the list above, (a) to
+  (e) stay open.
 
 ## 12. The morning brief and the weekly digest in the chat (board ebce2df9, "Spoken morning briefing"; staged 2026-11-17)
 
@@ -2749,7 +2753,7 @@ in the chat" and "Read aloud in the Mac's own voice" are updated and are the ref
   stored is unchanged.
 - **Choices to defend.** (1) 40% is a constant, not half of each key's own step: one
   number for "this window is new". (2) (a) is for `:-` keys only, as asked; follow-up (f)
-  in §11 is the same rule for the rest. (3) A try held by the gap counts as `skipped` in
+  in §11 is the same rule for the rest (built 2026-11-18, §14). (3) A try held by the gap counts as `skipped` in
   the pass's result and uses up none of the three. (4) An unreadable `at` is 0, "long
   ago", so the next pass tries. (5) `sent-store` takes the temp file's suffix as an
   option, only so a test can plant a link under the name. A link planted there is
@@ -2767,3 +2771,94 @@ in the chat" and "Read aloud in the Mac's own voice" are updated and are the ref
   anyway). Two redundant guards found while listing them were removed, not tested. No browser
   run and no web suite: nothing under `web/` changed. Nothing ran against :8322, the
   live config or the live `say` service.
+
+## 14. Cleanup batch: the first dashboard removed, and three limit-warning follow-ups (staged 2026-11-18 on `jos/cleanup-1118`)
+
+**Staged, not committed, on `jos/cleanup-1118` (worktree `~/Projects/.worktrees/ccr-cleanup-1118`,
+from main cf00c20).** Two board items Jeff released on 2026-11-18. The README's opening,
+its panel table ("Shown" says page or mod), "The Orbit page" and "Limit warnings" are
+updated and are the reference.
+
+- **The first dashboard is deleted (board bf5f1bf1; Orbit plan, Phase 5, second half).**
+  Gone: `web/classic.html`, `web/src/main.jsx`, `web/src/App.jsx`, the 18 components
+  under `web/src/components/` that only it used, `web/src/styles/` (`app.css`,
+  `tokens.css`), the Archivo font (only `tokens.css` loaded it) and the `classic` entry
+  in `web/vite.config.js`, which now builds one page. Kept, because the Orbit page uses
+  them: the three hooks, `lib/due.js` and `lib/format.js` (each cut to what it still
+  exports: `byDue`, `hasDue` and every formatter but `envelopeOf` went), the Geist
+  fonts, and the error boundary, which moved to `web/src/orbit/ErrorBoundary.jsx`.
+  Nothing on the server changed but three comments: every panel the old page read is
+  still sent, because the mod draws them.
+- **`/classic.html` is not a 404.** The brief expected one "like any missing page", but
+  this server answers every unknown path under the web root with the page (the
+  single-page fallback that keeps `/orbit.html` and `#board/<id>` links alive), so an
+  old bookmark to `/classic.html` now opens the Orbit page. No route or redirect names
+  it. A test pins both halves (the fallback's answer, and that no server code, page
+  entry, manifest or service worker names `classic.html`). A real 404 would need a
+  special case for one dead address; say so if it is wanted.
+- **Fixed on the way: the error boundary was unreadable on the Orbit page.** It was
+  styled with the old page's tokens, which `orbit.css` never defined: no padding, and a
+  Reload button whose label was navy on navy. It has been that way at `/` since the
+  flip (and on `/orbit.html` before). It now uses the Orbit page's own classes.
+- **What left the web with the old page, by design or by the plan:** this week by
+  surface, by project and by model; recent sessions; the usage drivers; the sparkline
+  and the pace line on each limit; the Projects list; the plan's price and seats;
+  grouping the board by tag; a free-text tag (the form's Area list offers the tags in
+  use, so a new tag can't be made on the page); and
+  delete (the Orbit plan's decision 6, answered (a) by Jeff on 10-20). The mod still
+  shows every one of the panels and still has delete. Nothing else the old page did is
+  missing: adding an item (the Board tab's New item form: title, tag, details,
+  priority, due date, lane), moving, editing, priority and due dates all work on `/`.
+- **Limit warnings (board b468ff61), three changes, server only.** (1) Any told warning
+  key, with a reset time in it or without, is forgotten once its limit is read under
+  40% (`prune` in `lib/push-alerts.mjs`; `RESET_BELOW_PCT`), so a limit that is reset
+  before its printed time can warn again in the hours that printed window has left (§11
+  f, the 2026-10-19 case). Only this pass's reading counts (the notifier gives the
+  panel only while it is current; the history store is never asked), and a key that is
+  live is never forgotten. What the forgotten key still owed a device goes with it.
+  (2) At start the server removes `notified.json.tmp-*` files an interrupted write left
+  (`sweep` in `lib/sent-store.mjs`, awaited in `server.mjs` before any collector runs),
+  and logs a count. `notified.json` itself is untouched and stays 0600. (3) The
+  registry refuses a `then` that would loop (a collector naming itself, or two or more
+  leading back to the first): the collector is registered and keeps its own timer, the
+  link is dropped, and one line says so (`registry: b then a would loop (b > a > b);
+  registered without it`).
+- **Choices to defend.** (1) The fallback's answer for `/classic.html`, above. (2) The
+  error boundary moved and was restyled: not in the brief, but it was the one shared
+  file still written for the old page. (3) `format.js` and `due.js` lost their unused
+  exports instead of keeping them "for the mod": the mod has its own copies
+  (`mod/hooks/model.js`) and never imported these. (4) `design_handoff_claude_control_room/`
+  (672 KB, the first design's handoff, with the screenshot the README used to show) is
+  kept as history; the board item did not name it. (5) After an early reset the 30-minute
+  and 12-a-day caps still apply, so a climb back to a step inside 30 minutes of the last
+  telling waits for the cap (a higher step never waits). (6) One misread under 40% in
+  the middle of a window would cost one repeated warning, held by the same caps; the
+  history has no such reading. (7) A looping `then` is dropped with a log line, not
+  thrown: a throw at registration would stop the whole server at start, over a link
+  whose only job is to save a few minutes. (8) The sweep removes every
+  `notified.json.tmp-*` at start, its own process id's included: a restarted server can
+  be given the old one's id, and nothing of this run has written yet.
+- **To go live:** C&P and a merge. Then, for the page: `npm run build` in `web/` of the
+  main checkout (a live deploy by itself, no restart; the build empties `web/dist`, so
+  the old `classic.html` and its assets go from disk then). For the limit warnings: a
+  restart of the server (Vision's scope). The two are independent and either order
+  works. **After the build, check:** `ls web/dist` shows one `index.html` and no
+  `classic.html`; `/` loads on the iPhone and the iPad (they reload themselves once for
+  the new build id). **After the restart, check:** the log has no `registry:` line; a
+  `notifier: removed N temp file…` line appears only if a write had been cut short; and
+  `ls -l server/data/notified.json` still shows `-rw-------`.
+- **Checked:** server 1,454 tests (25 new, in `static.test.mjs` and three new files:
+  `limit-early-reset`, `sent-store-sweep`, `registry-loop`), in local time and
+  `TZ=Asia/Tokyo`; web 320 tests; `oxlint` clean; `npm run build` in the worktree's
+  `web/` writes one page (the live `web/dist` was not touched). 45 mutants on the changed
+  lines: 44 caught, and the one survivor was a guard that changed nothing, removed with
+  its test. Headless Chromium (no WebKit on the mini, so Safari is unchecked) on a
+  scratch server at 390 and 1440 px, the worktree's build over the live dashboard's
+  figures (read by GET) and an invented board: 42 checks pass. `/` draws its four
+  Overview sections with no sideways scroll, no policy violation and no console error;
+  the Board tab adds an item through New item and moves it, and both reach the scratch
+  board's file; Chat and Feed draw; `/classic.html` answers with the Orbit page; the
+  error boundary, on a page built to throw, shows its message and a readable Reload
+  button. Not run: the mod's own tests (`claude plugin test`, which starts `claude`;
+  the mod's only change is a comment). Nothing ran against :8322 but GETs of
+  `/api/dashboard`.

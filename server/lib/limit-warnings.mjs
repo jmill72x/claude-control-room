@@ -8,7 +8,9 @@
 //
 // Each step is told once per window. The key holds the window's reset time, and the
 // notifier keeps a told key until that time has passed (lib/push-alerts.mjs, prune),
-// so a reading that dips under the step and comes back tells nothing twice.
+// so a reading that dips under the step and comes back tells nothing twice. A limit
+// read under RESET_BELOW_PCT has been reset, whatever its printed time says, and its
+// told keys are forgotten then, so the window that follows can warn.
 //
 // `/usage` prints a window's reset a minute apart from one poll to the next (5:29pm,
 // then 5:30pm; every reset in three months of history sat within a minute of a
@@ -76,10 +78,13 @@ export const DAY_MS = 24 * 3600e3;
 // A told key with no reset in it is kept this long (lib/push-alerts.mjs, prune): about
 // one session window, so a reading that comes and goes is one telling.
 export const NO_RESET_KEEP_MS = 5 * 3600e3;
-// ...unless its limit is read under this meanwhile: the window has reset, and the key
-// would hide the next window's warning (with no reset time, every window has the one
-// key). Half the lowest step: in the history no limit that had reached a step was
-// read this low again inside the same window, but for one that was reset early.
+// A told key, with a reset time in it or without, is forgotten once its limit is read
+// under this: the limit has been reset, and the key would hide the next window's
+// warning. With no reset time every window has the one key; with one, a limit reset
+// before its printed time keeps the old key's window (once in 85,254 readings,
+// 2026-10-19). Half the lowest step: in the history no limit that had reached a step
+// was read this low again inside the same window, but for that early reset. A dip
+// that stays at or over it forgets nothing.
 export const RESET_BELOW_PCT = 40;
 // How many later tries a device gets that the push service did not take a warning for,
 // and how far apart at least: two passes can be seconds apart (one follows each usage
@@ -89,6 +94,7 @@ export const DEVICE_RETRIES = 3;
 export const DEVICE_RETRY_GAP_MS = 4 * 60e3;
 
 // The limits read under RESET_BELOW_PCT now, by label: those whose window has reset.
+// From the readings given and nothing else: never from the history of readings.
 export function resetLabels(limits) {
   return new Set((Array.isArray(limits) ? limits : []).filter(l => Number.isFinite(l?.pct) && l.pct < RESET_BELOW_PCT).map(l => l.label));
 }

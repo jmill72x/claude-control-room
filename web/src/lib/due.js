@@ -14,8 +14,6 @@ export const dayNumber = s => {
   return Number.isFinite(ms) ? Math.round(ms / 86400000) : null;
 };
 
-export const hasDue = t => dayNumber(t?.due) !== null;
-
 // Today on the viewer's clock, as YYYY-MM-DD. Jeff's devices and the mini are
 // all on US Eastern, so this is the mini's date too.
 export function localToday(now = new Date()) {
@@ -43,16 +41,4 @@ export function dueChip(due, lane, today) {
   else if (diff === 1) label = 'Due tomorrow';
   else label = `Due ${weekday} ${date}`;
   return { label, state, title: `Due ${weekday} ${due}` };
-}
-
-// "Sort by due" within a group: dated items first, soonest first, then the
-// undated ones. Array.prototype.sort is stable, so run this over a list already
-// in its usual order and ties (the same date, or no date) keep that order.
-export function byDue(a, b) {
-  const da = dayNumber(a.due);
-  const db = dayNumber(b.due);
-  if (da === null && db === null) return 0;
-  if (da === null) return 1;
-  if (db === null) return -1;
-  return da - db;
 }

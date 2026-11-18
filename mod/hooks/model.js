@@ -1,6 +1,7 @@
 // Pure functions over the Control Room server's JSON: no `$`, no I/O, so the
 // pane and the text summary share one set of rules and every rule is unit
-// tested. The rules are the web page's (web/src), carried over as they are:
+// tested. The rules are the first web dashboard's, carried over as they were
+// (that page was removed on 2026-11-18, so this file is now their only home):
 // a value the server could not read is said to be unknown, never drawn as 0.
 
 export const PRIORITIES = ['P0', 'P1', 'P2', 'P3']

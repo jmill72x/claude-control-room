@@ -1,13 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
-// Two pages, built side by side: the Orbit page (index.html, served at /) and the
-// classic dashboard (classic.html), kept for a week after the flip (Orbit Phase 5),
-// then deleted. /orbit.html, the Orbit page's address before the flip, has no file
-// of its own: the server's single-page fallback answers it with index.html.
-const page = name => fileURLToPath(new URL(name, import.meta.url));
+// One page: the Orbit page (index.html, served at /). The first dashboard, kept at
+// /classic.html for a week after the flip (Orbit Phase 5), was removed 2026-11-18.
+// Neither /orbit.html (the Orbit page's address before the flip) nor /classic.html
+// has a file: the server's single-page fallback answers both with index.html.
 
 // Each build gets an id, compiled into the page as __BUILD_ID__ and written beside
 // it as build.json. The page compares the two and reloads itself once when they
@@ -28,11 +26,6 @@ export default defineConfig(({ command }) => {
       }
     ],
     define: { __BUILD_ID__: JSON.stringify(id) },
-    server: { proxy: { '/api': 'http://127.0.0.1:8322' } },
-    build: {
-      rolldownOptions: {
-        input: { main: page('./index.html'), classic: page('./classic.html') }
-      }
-    }
+    server: { proxy: { '/api': 'http://127.0.0.1:8322' } }
   };
 });

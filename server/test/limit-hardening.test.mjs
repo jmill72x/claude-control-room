@@ -71,10 +71,14 @@ test('prune: a told key with no reset time is forgotten as soon as its own limit
   assert.deepEqual(prune(both, [], USAGE, soon, [{ label: WEEK, pct: 2 }, { label: SESSION, pct: 2 }]), {});
 });
 
-test('prune: a key that names its window is kept until that reset, whatever is read meanwhile', () => {
+// Until 2026-11-18 a key that named its window was kept to the printed reset whatever
+// was read meanwhile. A reading under the mark now forgets it too (an early reset;
+// limit-early-reset.test.mjs has that rule). What stays true is here: a dip keeps it.
+test('prune: a key that names its window is kept until that reset through any reading at or over the mark', () => {
   const sent = { [KEY80]: T0, [KEY95]: T0 };
-  assert.deepEqual(prune(sent, [], USAGE, W1 - 1, [{ label: SESSION, pct: 0 }]), sent);
-  assert.deepEqual(prune(sent, [], USAGE, W1, [{ label: SESSION, pct: 0 }]), {});
+  for (const pct of [RESET_BELOW_PCT, 60, 79, 100]) assert.deepEqual(prune(sent, [], USAGE, W1 - 1, [{ label: SESSION, pct }]), sent, String(pct));
+  assert.deepEqual(prune(sent, [], USAGE, W1 - 1, [{ label: WEEK, pct: 0 }]), sent, 'another limit\'s reading is not this one\'s');
+  assert.deepEqual(prune(sent, [], USAGE, W1, [{ label: SESSION, pct: 60 }]), {});
 });
 
 test('with no reset time, the next window still warns: a low reading between the two forgets the key, and what it owed', async () => {

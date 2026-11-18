@@ -1,5 +1,17 @@
-export function createRegistry(cache, timers = { setInterval, clearInterval }) {
+export function createRegistry(cache, timers = { setInterval, clearInterval }, { log = console.error } = {}) {
   const collectors = new Map();
+  // The collectors a run of `name` would lead back to itself through, were it to be
+  // followed by `then`: [name, then, …, name], or null when the chain ends elsewhere.
+  // Links are followed as registered so far. The walk always ends: no loop is ever
+  // registered (register, below), so a chain of links runs out.
+  const loopThrough = (name, then) => {
+    const path = [name];
+    for (let next = then; next; next = collectors.get(next)?.then) {
+      path.push(next);
+      if (next === name) return path;
+    }
+    return null;
+  };
   const handles = [];
   // The first pass (self-healing loop 3, lib/heal-restart.mjs): every collector's first
   // run since startAll, and which of them failed. A restarted server is checked by it.
@@ -15,7 +27,18 @@ export function createRegistry(cache, timers = { setInterval, clearInterval }) {
     // collector is already running (its own tick began a moment before, on the old
     // value), the run is not stacked on it and not lost either: one more run follows
     // the one under way, however many asked meanwhile.
+    // A `then` that would loop is refused: one that names its own collector, or that
+    // leads back to it through the others' (a then b, b then a). Each run would start
+    // the next with no timer between them, for good: `claude -p "/usage"` back to
+    // back. The collector is still registered and runs on its own interval; only the
+    // link is dropped, with one line in the log. (Every loop is caught, whatever the
+    // order of the calls: its last link to be registered closes it.)
     register(name, fn, intervalMs, { then = null } = {}) {
+      const loop = loopThrough(name, then);
+      if (loop) {
+        log(`registry: ${name} then ${then} would loop (${loop.join(' > ')}); registered without it`);
+        then = null;
+      }
       collectors.set(name, { fn, intervalMs, running: false, again: false, then });
       // Tell the cache what this collector's own interval is so its
       // staleness budget can never be shorter than the interval the data is

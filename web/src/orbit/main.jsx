@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ErrorBoundary } from '../components/ErrorBoundary.jsx';
+import { ErrorBoundary } from './ErrorBoundary.jsx';
 import { OrbitApp } from './OrbitApp.jsx';
 import './orbit.css';
 import { registerWorker, resync } from './pushApi.js';

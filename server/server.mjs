@@ -290,7 +290,11 @@ registry.register('sessions', async () => {
 registry.register('board', async () => ({ bytes: await todos.size(), cap: BOARD_MAX_BODY }), 60 * 1000);
 
 // What the notifier has told (lib/sent-store.mjs): written through a temp file, 0600.
+// A write the last run was stopped in the middle of left its temp file; those go now,
+// before this run's first write. Guarded by a source test (test/sent-store-sweep.test.mjs).
 const sentStore = createSentStore(join(HERE, 'data', 'notified.json'));
+const staleSentTemps = await sentStore.sweep();
+if (staleSentTemps > 0) console.log(`notifier: removed ${staleSentTemps} temp file${staleSentTemps === 1 ? '' : 's'} an interrupted write left beside the notifier's file`);
 
 // Events (lib/events.mjs): made from the notifier's alerts after acks, once the chat
 // is on (below). Until then, and with the chat off, the hook is absent.

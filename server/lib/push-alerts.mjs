@@ -102,9 +102,14 @@ const ownedBy = (key, prefixes) => {
 // With `now` (the notifier gives it), a limit warning's key is also kept until its
 // window's reset has passed: a step is told once per window, even when a reading dips
 // under it and comes back, or the limit moves on to its next step. A key with no reset
-// in it is kept for a fixed time after it was told (its value), so it can't flap; but
-// only until its limit is read well under every step (`limits`, the usage panel's
-// readings now): that is a new window, whose warning the old key must not hide.
+// in it is kept for a fixed time after it was told (its value), so it can't flap.
+// Either kind is kept only until its limit is read well under every step (`limits`,
+// the usage panel's readings now, under RESET_BELOW_PCT): the limit has been reset,
+// at its printed time or before it (2026-10-19: a weekly limit went from 93% to 0%
+// eight and a half hours early), and that is a new window, whose warning the old key
+// must not hide. `limits` is this pass's reading and nothing else: the notifier gives
+// the panel only while it is current, and the history store is never asked, so an
+// old low reading forgets nothing. A key that is live now is never forgotten.
 export function prune(alreadySent, alerts, observable, now = null, limits = null) {
   const live = new Set((alerts ?? []).map(a => a?.key));
   const prefixes = [...(observable ?? [])];
@@ -112,8 +117,8 @@ export function prune(alreadySent, alerts, observable, now = null, limits = null
   const out = {};
   for (const [k, v] of Object.entries(alreadySent ?? {})) {
     const warning = Number.isFinite(now) ? keyParts(k) : null;
-    const stays = warning !== null && (warning.window !== null ? now < warning.window
-      : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS && !reset.has(warning.label));
+    const stays = warning !== null && !reset.has(warning.label)
+      && (warning.window !== null ? now < warning.window : Number.isFinite(v) && now - v < NO_RESET_KEEP_MS);
     if (live.has(k) || !ownedBy(k, prefixes) || stays) out[k] = v;
   }
   return out;

@@ -1,7 +1,8 @@
 import { basename } from 'node:path';
 import { formatRelative } from './humanize.mjs';
 
-// Projects for the classic page's column 02, from transcripts and Cowork
+// Projects for the mod's Projects tab (and, until 2026-11-18, the first web
+// dashboard's column 02), from transcripts and Cowork
 // session metadata only. Whether a project is running used to come from
 // `claude agents --json`, polled every 30 s; that poll was dropped on
 // 2026-10-30 because each run started a short-lived `claude` that loads the

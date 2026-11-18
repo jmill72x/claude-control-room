@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve, sep, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer, get as httpGet } from 'node:http';
 import { resolveStaticPath, createStaticHandler, CONTENT_SECURITY_POLICY, PAGE_HEADERS, API_POLICY, setBaseHeaders } from '../lib/static.mjs';
 
@@ -129,14 +130,39 @@ test('an unknown in-root path falls back to the SPA shell, not to a 403', async 
 // included, which the browser keeps) must still get the Orbit page, not a 404.
 test('/orbit.html, the Orbit page before the flip, still answers with the page at /', async () => {
   const { dist } = fixture();
-  writeFileSync(join(dist, 'classic.html'), '<!doctype html>classic');
   const root = await get(dist, '/');
   const old = await get(dist, '/orbit.html');
   assert.equal(old.statusCode, 200);
   assert.equal(old.headers['Content-Type'], 'text/html');
   assert.equal(old.body, root.body);
+});
+
+// The first dashboard lived at /classic.html for a week after the flip and was removed
+// on 2026-11-18. The server has no route for it and the build writes no such file, so
+// the address is a missing path like any other: the single-page fallback answers it
+// with the page at /, and an old bookmark lands on the Orbit page.
+test('/classic.html is a missing path like any other: no file, no route, the page at / answers', async () => {
+  const { dist } = fixture();
+  assert.equal(existsSync(join(dist, 'classic.html')), false);
+  const root = await get(dist, '/');
+  const other = await get(dist, '/no-such-page.html');
   const classic = await get(dist, '/classic.html');
-  assert.equal(classic.body, '<!doctype html>classic');
+  assert.equal(classic.statusCode, 200);
+  assert.equal(classic.body, root.body);
+  assert.deepEqual(classic.headers, other.headers);
+  // With no build there is nothing to fall back to, and it is a plain 404.
+  const empty = mkdtempSync(join(tmpdir(), 'ccr-static-noclassic-'));
+  assert.equal((await get(empty, '/classic.html')).statusCode, 404);
+  // Nothing that runs names it: no server code (a route or a redirect for a page
+  // that is gone), no page entry, no manifest and no service worker.
+  const serverDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const webDir = join(serverDir, '..', 'web');
+  const code = dir => readdirSync(join(serverDir, dir)).filter(f => f.endsWith('.mjs')).map(f => join(serverDir, dir, f));
+  const files = [...code('.'), ...code('lib'), ...code('collectors'), ...['index.html', 'public/sw.js', 'public/manifest.webmanifest'].map(f => join(webDir, f))];
+  assert.ok(files.length > 50, 'the scan found the server code');
+  for (const file of files) assert.doesNotMatch(readFileSync(file, 'utf8'), /classic\.html/i, file);
+  assert.equal(existsSync(join(webDir, 'classic.html')), false, 'web/classic.html is gone');
+  assert.doesNotMatch(readFileSync(join(webDir, 'vite.config.js'), 'utf8'), /rolldownOptions|input:/, 'the build has one entry, index.html');
 });
 
 test('resolved paths never leave the web root', () => {
@@ -203,9 +229,8 @@ test('every answer carries a policy: the API none, the pages their own, an attac
   } finally { await new Promise(r => server.close(r)); }
 });
 
-test('every answer carries the policy and nosniff: both pages, their assets, the fallback and the refusals', async () => {
+test('every answer carries the policy and nosniff: the page, its assets, the fallback and the refusals', async () => {
   const { dist } = fixture();
-  writeFileSync(join(dist, 'classic.html'), '<!doctype html>classic');
   writeFileSync(join(dist, 'assets', 'app.css'), 'body{}');
   writeFileSync(join(dist, 'assets', 'font.woff2'), 'wOF2');
   const types = {
