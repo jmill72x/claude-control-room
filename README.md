@@ -839,6 +839,148 @@ A routine in Python needs no client but the standard library: an
 (the server down, a 4xx, a 503) is noted in the routine's own log and must never fail
 the run, whose report is already in Discord.
 
+### A local script's alert: Jarvis down without Discord (board 5f892918; built, not live)
+
+The lead's start script (`bin/jarvis-start` in the Jarvis repo) and its routines alert to
+Discord first. Every fallback after Discord has a weak spot: an ntfy topic is only as good
+as its setup on the machine, and an inbox only the lead reads is no help when the lead is
+the thing that is down. So a local script can also post an alert to the ingest socket, and
+the server pushes it to every paired device (the same Web Push as "Jarvis is offline") and
+shows it in the page's alert strip and in Needs you (`server/lib/local-alerts.mjs`; tested
+by `server/test/local-alerts.test.mjs` and `web/test/orbit-local-alerts.test.js`). No
+config key: the route is on whenever the server runs, and the push whenever the chat's
+push is on.
+
+```bash
+printf '%s' '{"title":"Jarvis failed to start","body":"The Discord plugin did not load. Log: ~/.local/state/jarvis/start.log","severity":"critical","kind":"jarvis-down"}' |
+  curl -sS --max-time 20 --unix-socket ~/.local/state/jarvis-os/ingest.sock \
+    -H 'Content-Type: application/json' --data-binary @- http://localhost/api/ingest/local-alert
+# {"ok":true,"id":"4483d6a405de","key":"local:jarvis-down:4483d6a405de","push":"on","devices":{"tried":2,"reached":2}}
+```
+
+Build the body with `jq -n --arg title "$t" --arg body "$b" '{title: $title, body: $body,
+severity: "critical", kind: "jarvis-down"}'` when the words come from a variable, so a
+quote in them can't break the JSON.
+
+**The call:** `POST /api/ingest/local-alert` on the ingest socket
+(`~/.local/state/jarvis-os/ingest.sock`, or `JARVIS_OS_INGEST_SOCKET`), `Content-Type:
+application/json`, body `{ "title", "body"?, "severity"?, "kind"? }` and no other field:
+
+- `title`: required. One plain line: line breaks, tabs and the line separators become
+  spaces, hidden characters are taken out (the shared set, `server/lib/hidden-chars.mjs`),
+  runs of spaces become one. At most **120** characters (code points); longer is cut with
+  an ellipsis, not refused, so a failing script's alert still arrives. Empty after
+  cleaning is refused. The title names the condition: it is half of the alert's key.
+- `body`: optional. Plain text that keeps its line breaks (CRLF and the separators become
+  `\n`, tabs spaces, hidden characters out, trailing spaces off each line, at most one
+  blank line in a row). At most **1,000** characters, cut the same way. The request is
+  capped at 16 KB.
+- `severity`: `"info"`, `"warning"` (the default) or `"critical"`. Info pushes at normal
+  urgency; the other two at high. The card's chip says Critical, Warning or Notice.
+- `kind`: `"jarvis-down"` (the lead is not running, or started degraded) or `"other"`
+  (the default). A `jarvis-down` alert gets the "Bring Jarvis Back" button in the strip
+  and on its card, its chip reads "Jarvis down", and it has a reserve under every limit
+  below.
+
+Text shaped like a credential (`server/lib/secret-shape.mjs`, checked before the cut so a
+token the cut would split is still found) is withheld: the body becomes "The text was
+withheld: it looked like a GitHub token. The script's own log has it." (and the title "Local
+alert (its title was withheld)" when the title was the one), and the answer names the
+pattern in `withheld`, never the match.
+
+**One alert per condition.** Its key is `local:<kind>:<the first 12 hex digits of the
+SHA-256 of the cleaned title>`. A repeat with the same kind and title updates the one
+entry (its body, severity and time) and moves it to the front; its `since`, what an ack is
+keyed on, stays the first time it was raised. So **one Acknowledge covers every repeat**
+until the ack runs out (24 hours) or the alert has been quiet for 24 hours and is
+forgotten: a repeat of an acknowledged alert is shown (under `acked`) and never pushed.
+
+**The answers:** 200 `{ ok: true, id, key, push, devices: { tried, reached } }`, where
+`push` is `on`, `off` (the chat or its push is off), `pending` (the pushes were still
+going after 15 s; they go on), `failed`, `acked` (an ack covers it), `killed` (the kill
+file) or `capped` (over a push limit), with `withheld` when it applies; in every case the
+alert is on the page. 200 `{ ok: true, id, key, duplicate: true, push, devices }` for a
+duplicate, with the earlier post's push outcome and counts. 429 with `Retry-After`
+(seconds) and `{ error, id, key, shown: true }` over the hour's intake: the alert is still
+on the page, not pushed. 400 `{ error }` for a body that fails a check, in fixed words that
+never repeat the text; 403 for a request carrying any proxy header, or an `Origin` not its
+own; 413 over the cap; 415 without the JSON content type; 503 when the server has no store
+(not the case in `server.mjs`). On the TCP port, from loopback too: 403, `the ingest takes
+posts on its Unix socket only`, unread.
+
+**What keeps it narrow:**
+
+- **Local only, and the socket is the secret.** The route is on the ingest socket alone
+  (0600 in the owner's 0700 folder, "What the ingest endpoints require" above); the TCP
+  port that Tailscale Serve shares refuses it unread, from loopback too, whatever
+  `ingest.tcp` says. A shared-secret file was the other option, as it was for the ingest
+  (2026-11-12): any process that could read a 0600 token file runs as the owner and can
+  open the 0600 socket as well, so a token would add a secret to keep and rotate and no
+  protection. On top of that the route refuses a request that carries any header a proxy
+  adds (the loopback guard's list: `Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`,
+  `Tailscale-User-*`, `Tailscale-Funnel-Request`, `Tailscale-Headers-Info`), even empty,
+  before reading it, so a forwarder put in front of the socket can't pass a tailnet
+  request through. The log line names the header, never its value.
+- **Limits, in memory** (a restart starts them again):
+  - *Duplicates:* the same kind, title, severity and body within 10 minutes of the post
+    that was taken is a duplicate, answered with that post's push outcome, only when that
+    push reached a device. One that reached nobody (push off, failed, capped, killed) is
+    taken again, so it gets another try.
+  - *Intake:* at most **10** taken in any hour, of which **2** only a `jarvis-down` alert
+    may use, so a chatty routine can't starve the start script. Past that: 429, and the
+    alert is still shown, with no push. Duplicates and refusals are not counted.
+  - *Pushes,* below the intake: at most **3** an hour and **12** a day, of which **1** an
+    hour and **3** a day only `jarvis-down` may use. Past them the alert is shown and the
+    answer says `capped`. A script that repeats an alert every 10 minutes all night
+    therefore pushes at most 3 times an hour, and not at all once it is acknowledged.
+  - Duplicates and refusals are logged at most once a minute.
+- **A kill file.** `touch ~/.local/state/jarvis-os/local-alerts-off` stops every local
+  alert's push at once, with no restart; the alerts are still taken and shown. Removing
+  the file turns the pushes back on. It is checked on every post.
+- **Kept in memory only:** at most 20, each for 24 hours after it was last raised, or
+  until acknowledged. A restart forgets them. The body is never logged or written to a
+  file: the log says `local-alert: jarvis-down critical alert 4483d6a405de taken; pushed
+  to 2 of 2 devices` (or why it was not pushed) and `push: a local alert went to 2 of 2
+  devices`. The notifier never sees these alerts, so neither `data/notified.json`, ntfy,
+  `#pepper` nor the events do: the caller's own Discord post is the other path.
+- **On the page.** `/api/dashboard` lists them first in `alerts` (the one raised last
+  first), as kind `local` with `text` (the title), `body`, `severity`, `about` (the
+  request's `kind`), `since` (first raised) and `at` (last raised). The strip shows the
+  title and the time it was last raised ("Jarvis failed to start · 2:05 PM", so an old one
+  reads as old); Needs you has a card in Alerts with the chip, the body in its own lines,
+  "a local script · raised 2:05 PM", and Acknowledge (one choice, 24 hours; the notice goes
+  out like any ack's). Nothing is parsed as Markup: React draws it as text. With config's
+  `showAlertBanner` off, the page shows none of them (the push still goes). The mod's pane
+  and the `/control-room` summary add "(local script)" to its line.
+- **The push** (`server/lib/chat-push.mjs`, `localAlert`): to every paired device at
+  once, looking or not, at any hour. The notification's title is the fixed marker
+  "Local alert: " and the alert's title, so a script's words can never pass for one of the
+  server's own lines; its body is the alert's body, cut (by whole code points, with an
+  ellipsis) to keep the JSON under 3,072 bytes, one record; no Topic, so two alerts never
+  replace each other at the push service; a TTL of 6 hours for a phone that is off; a tap
+  opens the Overview; no badge (the badge counts chat messages). A device that misses one
+  is not tried again: the strip still holds it. Before iOS 18.4 the service worker
+  (`web/public/sw.js`) shows it under a tag of its own (`jos-local`), never the approval's
+  or the chat's, and a tap opens the Chat tab.
+
+**For a caller** (the Jarvis repo's `bin/jarvis-start` and `bin/routine`, a separate
+job):
+
+- Post after the Discord attempt, not instead of it, with `--max-time 20` (the server
+  answers within 15 s even when the push is slow).
+- **The body never carries a log tail, command output or a URL with parameters:** only
+  fixed words and the path of the log, such as "The Discord plugin did not load. Log:
+  ~/.local/state/jarvis/start.log". The text goes to Apple's push service (encrypted)
+  and onto a lock screen, and output can hold anything.
+- Keep the title fixed for one condition ("Jarvis failed to start", "Jarvis started
+  degraded", "Routine morning-brief failed"), so repeats share one key and one ack.
+- Send `kind: "jarvis-down"` from the start script's `fail()` and its "Jarvis started
+  degraded" alert, and `"other"` from a routine's failure.
+- **`reached` under 1 means not delivered:** a 200 with `devices.reached` of 0 (push off,
+  failed, pending, acked, killed or capped), any 4xx or 5xx, a 429, or no answer at all
+  (the server or the socket down) is "not delivered" for the next fallback, and never a
+  reason to fail the run.
+
 ### A session waiting on you
 
 `POST /api/ingest/needs-you` takes the JSON a Claude Code hook receives on stdin and
@@ -2633,8 +2775,10 @@ An ack covers **one instance of one condition**: the alert's `key` plus `since` 
 cron's `lastRunAt`, a service's `downSince`), both taken from the alert's own source,
 never from the caller. If the job runs again and fails again, `since` moves and the
 alert is red again. `ok` stays `false` and `state` stays `failed` throughout; the page
-sets the row aside in grey instead of painting it green. Only `cron` and `service`
-alerts can be acked; a limit, a projection or a credit expiry moves on its own.
+sets the row aside in grey instead of painting it green. Only `cron`, `service` and
+`local` alerts can be acked (a local script's alert: its `since` is when it was taken, so
+the ack puts it away; "A local script's alert" above); a limit, a projection or a credit
+expiry moves on its own.
 
 - `POST /api/acks` with `{ "key", "note"?, "until"?, "by"? }`: the key must name an
   alert raised **now**, so nothing can be acked in advance. `until` is a time in
@@ -3226,7 +3370,9 @@ render as unknown rather than a guess.
 
 ## Push notifications
 
-Alerts (the same ones the on-page alert bar shows) can also be pushed to a phone via
+Alerts (the same ones the on-page alert bar shows, except a local script's alert, which
+is pushed to the paired devices by its own route: "A local script's alert" above) can
+also be pushed to a phone via
 [ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a cron job failing reaches
 you when you are not looking at the dashboard. This is off by default: with no topic
 configured, nothing goes to ntfy and the rest of the dashboard is completely

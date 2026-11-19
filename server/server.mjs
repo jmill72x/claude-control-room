@@ -73,6 +73,7 @@ import { createStepUp, deviceEvent } from './lib/stepup.mjs';
 import { createAgentStop } from './lib/agent-stop.mjs';
 import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
+import { createLocalAlerts, KILL_FILE as LOCAL_ALERTS_KILL_FILE } from './lib/local-alerts.mjs';
 
 // Before anything logs, so every line in the service log carries its time.
 installLogStamps();
@@ -354,6 +355,21 @@ const onMoved = value => answeredElsewhere?.(value) ?? 0;
 // on the ingest socket's handler, and the chat's own store behind it.
 let routineChat = null;
 const onRoutine = value => routineChat?.post(value) ?? { ok: false, status: 503, error: 'the chat is off' };
+// A local script's alert (lib/local-alerts.mjs): posted to the ingest socket, shown in
+// the strip and Needs you from the moment the server starts, and pushed to the paired
+// devices once the chat's push is on (`localAlertPush`, set below). Guarded by a source
+// test (test/local-alerts.test.mjs): a merge must keep `onLocalAlert` on the ingest
+// socket's handler and `localAlerts` on the TCP handler's view. An acknowledged alert
+// is never pushed again (an ack covers its repeats: one key per condition), and the kill
+// file `local-alerts-off` beside the sockets stops every push at once, no restart; the
+// alerts are still shown.
+let localAlertPush = null;
+const localAlerts = createLocalAlerts({
+  push: () => localAlertPush,
+  killed: () => existsSync(join(stateDir, LOCAL_ALERTS_KILL_FILE)),
+  isAcked: async alert => matchingAck(alert, await ackStore.read(Date.now()), Date.now()) !== null
+});
+const onLocalAlert = value => localAlerts.post(value);
 // The ingest is served on its own socket (below); the TCP port keeps only the
 // needs-you route while config's `ingest.tcp` is "legacy" (routes.mjs), each post
 // there logged and, once a day, alerted (lib/ingest-socket.mjs).
@@ -369,7 +385,7 @@ const ackNotices = createAckNotices({
   onError: err => console.error('ack: the notice failed', err?.code ?? err?.name ?? 'error')
 });
 const api = createHandler({
-  cache, todos, config, acks: ackStore, needsYou, onBlock, onExact, onMoved, onIngestTcp: ingestTcpNotice,
+  cache, todos, config, acks: ackStore, needsYou, localAlerts, onBlock, onExact, onMoved, onIngestTcp: ingestTcpNotice,
   // Each ack and renewal (lib/acks.mjs, ackNotice; notify.mjs, sendAckPepper and
   // sendAckNtfy): #pepper gets the details, limited per alert key (the first at once,
   // later ones for the key in 10 minutes counted and sent with the next or at the
@@ -426,7 +442,7 @@ await chmod(stateDir, 0o700);
 // with its own alert words (INGEST_LOST_ALERT), once per run.
 const ingestSocket = startIngestSocket({
   path: ingestSocketPath,
-  handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved, onRoutine }),
+  handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved, onRoutine, onLocalAlert }),
   onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyMessage: 'The Control Room ingest socket is off: details in #pepper' })
 });
 ingestSocket.done.then(s => {
@@ -538,6 +554,7 @@ if (chatSettings.on && socketsReady) {
   if (vapid) console.log('push: notifications on');
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
   limitPush = body => push.limitWarning(body);
+  localAlertPush = alert => push.localAlert(alert);
   const shortcutSettings = readShortcutsConfig(config);
   for (const problem of shortcutSettings.problems) console.error(`config: ${problem}`);
   // Stop buttons (war room slice 2, lib/agent-stop.mjs): the rows come from the

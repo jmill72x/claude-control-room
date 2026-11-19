@@ -94,6 +94,19 @@ test('sw.js: no fetch handler, and every push shows a notification inside waitUn
   assert.deepEqual(w.badges, [1, 1, 1, 1]);
 });
 
+test('sw.js: a local script\'s alert has its own tag, never the approval\'s or the chat\'s, whatever its body says', async () => {
+  const w = loadWorker();
+  const data = obj => ({ json: () => obj });
+  const local = (title, body) => data({ web_push: 8030, notification: { title, body, navigate: 'https://mini.example.ts.net/#overview' } });
+  await w.fire('push', { data: local('Local alert: Jarvis failed to start', 'Jarvis needs an approval') });
+  await w.fire('push', { data: local('Local alert', 'Open the Control Room for the details.') });
+  await w.fire('push', { data: local('Local alert: x', 'New message') });
+  // A title that only looks like the marker is not one, and an approval needs the title Jarvis.
+  await w.fire('push', { data: local('Local alerts are fine', 'Jarvis needs an approval') });
+  assert.deepEqual(w.shown.map(n => n.tag), ['jos-local', 'jos-local', 'jos-local', 'jos-chat']);
+  assert.equal(w.shown[0].title, 'Local alert: Jarvis failed to start');
+});
+
 test('sw.js: a tap opens /#chat, or brings an open page forward and tells it to switch tabs', async () => {
   const w = loadWorker();
   let closed = 0;

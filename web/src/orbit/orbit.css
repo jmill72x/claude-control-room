@@ -498,6 +498,8 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-wcard-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .o-wcard-h { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--w-sub); }
 .o-wcard-col p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--w-ink); overflow-wrap: anywhere; }
+/* A local script's alert keeps the line breaks of its body. */
+.o-wcard-col p.o-wcard-pre { white-space: pre-line; }
 .o-wcard-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
 /* A heal card's buttons (loop 2): its actions and Not now, wrapping on a phone. */
 .o-heal-actions { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }

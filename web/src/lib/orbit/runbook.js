@@ -78,8 +78,11 @@ export const isLeadServiceKey = (key, services, leadName) => {
 
 // Whether an alert strip entry is "<lead> is not running" (server/lib/alerts.mjs: kind
 // `service`, key `service:<the service's key>`), five minutes into the lead's
-// session being down. Then the strip carries the link, on every tab.
+// session being down, or a local script's alert of the "jarvis-down" kind (the lead's
+// start script failed or started degraded; server/lib/local-alerts.mjs). Then the strip
+// carries the link, on every tab.
 export function isLeadDownAlert(alert, services, leadName) {
+  if (alert?.kind === 'local') return alert.about === 'jarvis-down';
   if (alert?.kind !== 'service' || typeof alert.key !== 'string') return false;
   // No health services to match against (the panel unread or unavailable): the
   // alert's own key says it is a session's, and the lead's is the only one set up.

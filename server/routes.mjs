@@ -10,6 +10,7 @@ import {
 } from './lib/acks.mjs';
 import { checkNeedsYou, needsYouLogLine, BLOCK_EVENTS } from './lib/needs-you.mjs';
 import { checkExactReport } from './lib/exact-commands.mjs';
+import { checkLocalAlert, proxyHeaderOf, LOCAL_ALERT_ROUTE, LOCAL_ALERT_BODY_MAX } from './lib/local-alerts.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -162,6 +163,8 @@ export const ACK_WRITES_PER_MINUTE = 10;
 const NO_ACKS = { read: async () => [], add: null, remove: null };
 // The waits (lib/needs-you.mjs) without a store: none, and the ingest says so.
 const NO_NEEDS_YOU = { view: () => [], record: null };
+// Local alerts (lib/local-alerts.mjs) without a store: none raised.
+const NO_LOCAL_ALERTS = { view: () => [] };
 
 // The ingest (README "What the ingest endpoints require"). What it takes becomes
 // alerts, pushes and the approvals gate's inputs, so since 2026-11-12 it is served on
@@ -172,7 +175,7 @@ const NO_NEEDS_YOU = { view: () => [], record: null };
 // needs-you route while `ingest.tcp` is "legacy" (the default until the owner's hooks
 // have moved): that one keeps the loopback guard, and each post is reported to
 // `onIngestTcp` (logged and alerted, lib/ingest-socket.mjs).
-export const INGEST_ROUTES = new Set(['/api/ingest/needs-you', '/api/ingest/exact-command', '/api/ingest/routine-chat', '/api/ingest/crons', '/api/ingest/projects', '/api/ingest/credits']);
+export const INGEST_ROUTES = new Set(['/api/ingest/needs-you', '/api/ingest/exact-command', '/api/ingest/routine-chat', LOCAL_ALERT_ROUTE, '/api/ingest/crons', '/api/ingest/projects', '/api/ingest/credits']);
 export const LEGACY_TCP_ROUTES = new Set(['/api/ingest/needs-you']);
 export const INGEST_TCP_MODES = Object.freeze(['legacy', 'off']);
 
@@ -211,7 +214,9 @@ const answerError = (res, path, err) => {
 // (lib/answered-elsewhere.mjs closes the page's cards when the lead's session moved on).
 // `onRoutine` takes a routine's checked message for the chat (lib/routine-chat.mjs) and
 // resolves to what became of it; without one (the chat is off) the route answers 503.
-function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onRoutine = null }) {
+// `onLocalAlert` takes a checked local alert (lib/local-alerts.mjs, post) and resolves to
+// `{ status, body, headers? }`; without one the route answers 503.
+function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onRoutine = null, onLocalAlert = null }) {
   return async function ingest(req, res, path) {
     if (req.method !== 'POST' || !INGEST_ROUTES.has(path)) return false;
     // A Claude Code hook posting that a session waits for a person, or moved on
@@ -272,6 +277,27 @@ function createIngestRoutes({ cache, needsYou = NO_NEEDS_YOU, log = console.log,
       return true;
     }
 
+    // A local script's alert for the paired devices and the page (lib/local-alerts.mjs),
+    // when Discord can't be counted on. Never from behind a proxy, even on the socket:
+    // refused unread, and the line names the header, never its value. The text is
+    // never logged, and an answer never repeats it.
+    if (path === LOCAL_ALERT_ROUTE) {
+      const proxied = proxyHeaderOf(req);
+      if (proxied) {
+        log(`local-alert: refused a post that came through a proxy (${proxied})`);
+        const refused = new HttpError(403, 'a local alert never comes through a proxy');
+        refused.close = true;
+        throw refused;
+      }
+      guardWrite(req);
+      if (!onLocalAlert) throw new HttpError(503, 'local alerts are not set up on this server');
+      const checked = checkLocalAlert(await readBody(req, LOCAL_ALERT_BODY_MAX));
+      if (!checked.ok) throw new HttpError(400, checked.error);
+      const r = await onLocalAlert(checked.value);
+      json(res, r.status, r.body, r.headers ?? {});
+      return true;
+    }
+
     const feed = path.slice('/api/ingest/'.length);
     guardWrite(req);
     const body = await readBody(req);
@@ -308,7 +334,9 @@ export function createIngestHandler(deps) {
 // the answer, and a failure is logged. `clock` is the write limit's time, for the tests.
 // `loops()` is the heal runner's view (lib/heal-runner.mjs), read-only: GET /api/loops,
 // and `loops` in /api/dashboard. Without it, both say the loops are not set up.
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now() }) {
+// `localAlerts` is lib/local-alerts.mjs's store: its `view(now)` joins the raised alerts
+// (the strip, Needs you and acks); posts reach it on the ingest socket only.
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, localAlerts = NO_LOCAL_ALERTS, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now() }) {
   const emptyLoops = (status, why) => ({ status, why, open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
   // A view that throws must not take /api/dashboard down with it (Ultron's L5, 11-13): the
   // panel says the view failed, and the log says so once until it works again.
@@ -335,8 +363,10 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
     payload.needsYou = needsYou.view(now);
     return payload;
   };
-  // The alerts as raised, before any acknowledgement, from the panels alone.
-  const rawAlerts = now => buildAlerts(panels(now), config, now);
+  // The alerts as raised, before any acknowledgement: the local scripts' alerts first
+  // (newest first; lib/local-alerts.mjs), then the panels'.
+  const raisedFrom = (payload, now) => [...localAlerts.view(now), ...buildAlerts(payload, config, now)];
+  const rawAlerts = now => raisedFrom(panels(now), now);
   // An ingest post on this port is refused before its body is read, and answered with
   // Connection: close (like a 413), so the unread body is never drained. Each route and
   // reason is logged once, the first 20, so a flood doesn't fill the log; the line
@@ -429,7 +459,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
         // with its ack, and the covered cron, job and service entries gain `ack`.
         // Their verdicts don't change: `ok` stays false, `state` stays failed.
         const active = await acks.read(now);
-        const { alerts, acked } = applyAcks(buildAlerts(payload, config, now), active, now);
+        const { alerts, acked } = applyAcks(raisedFrom(payload, now), active, now);
         payload = decoratePayload(payload, acked, readRoster(config).jobs);
         payload.alerts = config.showAlertBanner ? alerts : [];
         payload.acked = config.showAlertBanner ? acked : [];

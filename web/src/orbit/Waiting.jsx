@@ -102,7 +102,7 @@ function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged, services, 
           <div className="o-wcard-cols">
             <div className="o-wcard-col">
               <h3 className="o-mono o-wcard-h">What you do</h3>
-              <p>{card.what}</p>
+              <p className={card.preLine ? 'o-wcard-pre' : undefined}>{card.what}</p>
             </div>
             {card.why && (
               <div className="o-wcard-col">

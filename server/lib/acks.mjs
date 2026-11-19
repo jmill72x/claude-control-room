@@ -15,9 +15,11 @@ import { oneLine } from './chat-events.mjs';
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
 
-// Ack-able kinds: a failed job and a down service. Never a limit, a projection or
-// a credit expiry, which move on their own and would only hide money or a wall.
-export const ACKABLE_KINDS = new Set(['cron', 'service']);
+// Ack-able kinds: a failed job, a down service, and a local script's alert
+// (lib/local-alerts.mjs: its `since` is when it was taken, so an ack is its dismissal).
+// Never a limit, a projection or a credit expiry, which move on their own and would
+// only hide money or a wall.
+export const ACKABLE_KINDS = new Set(['cron', 'service', 'local']);
 // At most this many acks on file; the oldest go first when there are more.
 export const ACK_MAX = 50;
 // How far ahead an ack may reach, whatever the caller asks.
@@ -277,7 +279,8 @@ export const noticeTime = ms => new Date(ms).toLocaleString('en-US', {
 const age = ms => (ms >= 2 * DAY ? `${Math.floor(ms / DAY)} days` : `${Math.max(0, Math.floor(ms / HOUR))} h`);
 const KIND_WORDS = {
   cron: { what: 'a failed job', since: 'failing since', which: 'Which job' },
-  service: { what: 'a down service', since: 'down since', which: 'Which service' }
+  service: { what: 'a down service', since: 'down since', which: 'Which service' },
+  local: { what: "a local script's alert", since: 'raised', which: 'Which alert' }
 };
 
 // How an ack arrived, for its notice (Ultron's 11-12 low): `by` is the caller's own word,

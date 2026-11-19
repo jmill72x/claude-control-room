@@ -373,13 +373,20 @@ function todoBlock(todos) {
   return lines.join('\n')
 }
 
+// An alert's words for the pane and the summary. A local script's alert (kind `local`,
+// server/lib/local-alerts.mjs) carries a script's own title, so it says where it came
+// from: "Jarvis failed to start (local script)" (Ultron's L2, 2026-11-19).
+export const alertLabel = a => (typeof a?.text === 'string' && a.text !== ''
+  ? (a.kind === 'local' ? `${a.text} (local script)` : a.text)
+  : '')
+
 // The board as markdown, for where no pane draws: `claude -p`, and the Claude
 // app over Remote Control, which draws the command's row and no mod pane. The
 // first line reads on after the "control-room:" prefix Claude Code adds. Claude
 // reads it too, so it stays short.
 export function summaryText({ payload, todos, now, url, error = null, fetchedAt = null }) {
   if (error && !payload) return `**Control Room unreachable** at ${url}: ${error}`
-  const alerts = Array.isArray(payload?.alerts) ? payload.alerts.map(a => a?.text).filter(Boolean) : []
+  const alerts = Array.isArray(payload?.alerts) ? payload.alerts.map(alertLabel).filter(Boolean) : []
   const head = error
     ? `**Control Room unreachable** at ${url}: ${error}. Last reading, from ${Number.isFinite(fetchedAt) ? formatAgo(now - fetchedAt) : 'an unknown time'}:`
     : `as of ${clockTime(now)} · ${alerts.length ? `**${plural(alerts.length, 'alert')}**` : 'no alerts'}`

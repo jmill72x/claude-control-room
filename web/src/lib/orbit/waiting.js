@@ -8,6 +8,7 @@ import { PRIORITIES, rank, cardTitle, ownerOf, agentOf } from './board.js';
 import { clock, ago, unavailable } from './page.js';
 import { canAck } from './acks.js';
 import { healCards } from './loops.js';
+import { isLocalAlert, localChip, localWhat, localMeta } from './local-alerts.js';
 
 export const WAIT_SHOWN = 9;
 export const DUE_SOON_DAYS = 7;
@@ -133,6 +134,24 @@ function alertWhat(alert) {
 }
 
 function alertCard(alert, acked = false) {
+  // A local script's alert (local-alerts.js): its own body, kept in its lines.
+  if (isLocalAlert(alert)) {
+    return {
+      key: `alert:${alert.key}`,
+      group: 'alerts',
+      look: 'alert',
+      chip: localChip(alert),
+      title: alert.text,
+      what: localWhat(alert),
+      preLine: true,
+      why: null,
+      owner: null,
+      fallback: '!',
+      meta: localMeta(alert),
+      itemId: null,
+      alert: canAck(alert) ? alert : null
+    };
+  }
   return {
     key: `alert:${alert.key}`,
     group: 'alerts',

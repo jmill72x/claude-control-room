@@ -3,6 +3,7 @@ import { canAck, untilChoices, ackBody } from '../lib/orbit/acks.js';
 import { ack } from './ackApi.js';
 import { isLeadDownAlert } from '../lib/orbit/runbook.js';
 import { RunbookLink } from './Runbook.jsx';
+import { stripText } from '../lib/orbit/local-alerts.js';
 
 // Acknowledging a known miss (docs/design/2026-11-10-jarvis-os-home.md, §6). The
 // red strip under the header keeps its alerts; a failed job or a down service gets
@@ -69,7 +70,7 @@ export function AlertStrip({ alerts, now, onChanged, services = null, leadName =
         <span className="o-mono o-alerts-tag">Attention</span>
         {alerts.map((a, i) => (
           <span key={a.key ?? i} className="o-alert">
-            <span>{a.text}</span>
+            <span>{stripText(a)}</span>
             {isLeadDownAlert(a, services, leadName) && <RunbookLink className="o-ack-btn o-runbook-btn" />}
             {canAck(a) && open !== a.key && (
               <button type="button" className="o-ack-btn" onClick={() => setOpen(a.key)}>Acknowledge</button>

@@ -8,7 +8,7 @@
 import {
   heat, paceNote, formatTokens, formatUntil, formatAgo, formatDate, daysUntil, money, bar, sparkline,
   envelopeOf, staleNote, cronState, cronList, cronSummary, projectList, creditsView,
-  groupTodos, tagChoices, nextLaneTitle, clip, PRIORITIES
+  groupTodos, tagChoices, nextLaneTitle, clip, PRIORITIES, alertLabel
 } from './model.js'
 
 export const NO_TAG = '__none__'
@@ -69,7 +69,7 @@ export function paneTree(el, st, act, ctx) {
   }
 
   const alerts = Array.isArray(payload?.alerts)
-    ? payload.alerts.filter(a => a?.text).map((a, i) => keyed(`alert-${i}`, [text(`▲ ${a.text}`, { color: 'error', bold: true })]))
+    ? payload.alerts.filter(a => alertLabel(a)).map((a, i) => keyed(`alert-${i}`, [text(`▲ ${alertLabel(a)}`, { color: 'error', bold: true })]))
     : []
 
   // --- Usage ---

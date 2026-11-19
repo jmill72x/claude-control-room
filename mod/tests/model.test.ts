@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   heat, paceNote, formatTokens, formatUntil, formatAgo, formatDate, bar, sparkline,
   envelopeOf, cronState, cronList, cronSummary, projectList, creditsView,
-  groupTodos, cyclePriority, advanceStage, makeTodo, updateItem, summaryText
+  groupTodos, cyclePriority, advanceStage, makeTodo, updateItem, summaryText, alertLabel
 } from '../hooks/model.js'
 import { NOW, PAYLOAD, TODOS, clone } from './fixtures.ts'
 
@@ -154,6 +154,17 @@ test('the summary is markdown: alerts first, a limits table, one bullet per pane
   expect(text.indexOf('- **P0** Retire the old NAS · Infra')).toBeLessThan(text.indexOf('- **P1** Offsite backup to B2 · Pi'))
   // A table must not touch the paragraph above it, or it renders as text.
   expect(text).toContain('\n\n| Limit |')
+})
+
+test('a local script\'s alert says where it came from, in the summary and the pane\'s label', () => {
+  const p = clone(PAYLOAD) as any
+  p.alerts = [{ text: 'Jarvis failed to start', kind: 'local', key: 'local:jarvis-down:0123456789ab', about: 'jarvis-down' }, ...p.alerts]
+  const text = summaryText({ payload: p, todos: TODOS, now: NOW, url: 'u' })
+  expect(text).toContain('- **Jarvis failed to start (local script)**')
+  expect(text).toContain('- **Weekly · all models at 90%**')
+  expect(alertLabel(p.alerts[0])).toBe('Jarvis failed to start (local script)')
+  expect(alertLabel(p.alerts[1])).toBe('Weekly · all models at 90%')
+  expect(alertLabel({ kind: 'local' })).toBe('')
 })
 
 test('no alerts reads as such on the first line', () => {

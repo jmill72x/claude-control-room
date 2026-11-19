@@ -3283,10 +3283,10 @@ on (per Jarvis's notes; I did not check the log). What follows is how it was sta
   "all models"); nights (quiet by default, `quietHours: false` for overnight builds); the
   back-off (1, 2, 4 hours, or a flat hour).
 
-## 19. "Bring Jarvis Back" on the page (board 52ee3f17, P0; staged 2026-11-19 on `jos/runbook-link`)
+## 19. "Bring Jarvis Back" on the page (board 52ee3f17, P0; live 2026-11-19 as main c8ecec8)
 
-**Staged, not committed, on `jos/runbook-link` (worktree `~/Projects/.worktrees/ccr-runbook`,
-from main c66ca3e, no upstream).** Jeff, 11-19, after a 14-minute Jarvis outage: keep the
+**Merged as main c8ecec8 and built live 2026-11-19 12:22 (the live `web/dist` holds the
+link; branch `jos/runbook-link`, worktree `~/Projects/.worktrees/ccr-runbook`).** Jeff, 11-19, after a 14-minute Jarvis outage: keep the
 run sheet (a private claude.ai page, pinned in his sidebar) in Jarvis OS too. Page only:
 no server change. The README's bullet "Bring Jarvis Back, the run sheet, from the page"
 is the reference for where the link shows and when.
@@ -3358,3 +3358,109 @@ is the reference for where the link shows and when.
   tenth of the size"; a GC or scheduling pause), then passed six times. A ratio of two
   single timings is the trap; a median of several runs, or a cap on work rather than on
   milliseconds, would hold. Asked for as a board item.
+
+## 20. Jarvis-down alerts without Discord: a local script's alert to the paired devices (board 5f892918, P0; staged 2026-11-19 on `jos/alert-push`, Ultron's review folded in)
+
+**Staged, not committed, on `jos/alert-push` (worktree `~/Projects/.worktrees/ccr-alertpush`,
+from main c8ecec8, no upstream).** Jeff decided 2026-11-19 that the backup path for
+Jarvis-down alerts is the Control Room's own Web Push, which already works for "Jarvis is
+offline". The Jarvis repo's `bin/jarvis-start` (`fail()` and the new "Jarvis started
+degraded") and `bin/routine` alert to Discord first, and every fallback after it has a weak
+spot: an ntfy topic depends on its setup on the machine, and the inbox is read by the lead,
+who may be the thing that is down. This is the Control Room side: `POST
+/api/ingest/local-alert` on the ingest socket. The README's "A local script's alert: Jarvis
+down without Discord" is the call contract, with the curl and the rules for a caller; the
+Jarvis side (calling it from `bin/jarvis-start` and `bin/routine`) is a separate job.
+
+- **What it does.** A local script posts `{ title, body?, severity?, kind? }`; the server
+  pushes it to every paired device ("Local alert: " and its title, its body, urgent unless
+  `info`, no Topic, TTL 6 h, a tap to the Overview) and lists it first in `alerts`, so the
+  strip shows "<title> · <time>" and Needs you has a card (chip "Jarvis down" or the
+  severity, the body in its lines, Acknowledge). `kind: "jarvis-down"` adds "Bring Jarvis
+  Back" to both (`isLeadDownAlert` in `web/src/lib/orbit/runbook.js`). The mod's pane and
+  `/control-room` summary add "(local script)".
+- **Ultron's review (11-19: ship with nits, 1 medium, 7 low), all folded into the same
+  staged change:**
+  - **M1, a repeating caller pushed all night with no off switch:** each repeat had a new
+    random key, so an ack never covered it. Now the key is `local:<kind>:<12 hex of the
+    SHA-256 of the cleaned title>`, a repeat updates the one entry and keeps its `since`,
+    so one ack covers every repeat (server.mjs hands the store `matchingAck` over the ack
+    file), and an acked alert is shown and never pushed. A kill file,
+    `~/.local/state/jarvis-os/local-alerts-off`, checked on every post, stops every push
+    and leaves the alerts on the page. Pushes have their own caps below the intake: 3 an
+    hour, 12 a day; extra alerts stay on the page (`push: "capped"`).
+  - **L1:** the push title always starts "Local alert: ", and the service worker gives a
+    local alert its own tag (`jos-local`); the approval tag now needs the title "Jarvis"
+    as well as the approval's body.
+  - **L5:** `jarvis-down` has a reserve under each limit: 2 of the hour's 10 intakes, 1 of
+    the 3 hourly pushes, 3 of the 12 daily ones.
+  - **L3/L4:** a duplicate answers with the earlier post's push outcome and device counts,
+    and an alert whose push reached nobody is never deduped against (it gets another try);
+    an alert over the intake limit is a 429 but stays on the page, with no push; the
+    README says `reached` under 1 means not delivered.
+  - **L6:** the README and this section give the ntfy reasoning in general terms, with no
+    claim about this machine's setup.
+  - **L2:** "(local script)" on the alert's line in the mod (`alertLabel` in
+    `mod/hooks/model.js`, used by the summary and `view.js`).
+  - **L7:** the README's "For a caller" says the body never carries a log tail, command
+    output or a URL with parameters: only fixed words and the log's path.
+- **Choices to defend:** (1) **the ingest socket, not the TCP port plus a token file.**
+  The brief allowed "whatever pattern the server already uses for local callers", and that
+  is the socket (0600 in the owner's 0700 folder), chosen over a per-install token on
+  2026-11-12 for the same reason: anything that can read a 0600 token file can open the
+  0600 socket. The TCP port refuses the route unread from loopback too, and the route also
+  refuses any proxy header on the socket. (2) **Cut, never refuse, an over-long title or
+  body,** and **withhold, never refuse, a credential-shaped text:** a failing script's
+  alert should still arrive. (3) **The key is the title alone, not the body or severity,**
+  so a body that names a changing detail is still one condition with one ack; a caller
+  keeps its titles fixed (README). (4) **Dedupe counts 10 minutes from the post that was
+  taken,** and a duplicate still refreshes the entry's time. (5) **The push caps count
+  every push tried** (a failed or still-pending one too), not only delivered ones, so a
+  failing push service can't be retried past them; push off counts nothing. (6) **In
+  memory only:** the body is never in a file or a log; a restart forgets the alerts, the
+  limits and the caps. (7) **Ack-able for 24 hours only.** (8) **Not through the
+  notifier:** no ntfy, `#pepper` or event, because the caller posts to Discord itself.
+- **To go live:** C&P, then **a restart of the server** (Needs Jeff: the LaunchAgent is
+  Vision's; the route and the push are server code), then `cd web && npm run build` in
+  the main checkout (strip, card and the service worker's tag). The build alone is safe
+  before the restart (today's server sends no `local` alerts). The mod's change reaches
+  Claude Code when the mod is next loaded. Then the Jarvis side can start calling it.
+- **After the restart, check (Jarvis can, from the mini):** the start log has no new
+  problem; a test post `printf '%s' '{"title":"Test alert from the Control Room","body":"A check after the 11-19 change. Acknowledge it.","severity":"info"}' | curl -sS --max-time 20 --unix-socket ~/.local/state/jarvis-os/ingest.sock -H 'Content-Type: application/json' --data-binary @- http://localhost/api/ingest/local-alert`
+  answers `push: "on"` with `reached` equal to the paired devices; Jeff's iPhone and iPad
+  show "Local alert: Test alert from the Control Room" (locked too), a tap opens the
+  Overview, the strip and the Needs you card show it, Acknowledge puts it away, and the
+  same post again answers `duplicate: true` (within 10 minutes) or `push: "acked"` (after).
+  This posts to Jeff's real devices, so only with his OK.
+- **Checked (2026-11-19, after Ultron's fixes):** server 1,658 tests (1,618 on main; 37
+  new in `local-alerts.test.mjs`, 3 in `mod-alert-label.test.mjs`, one route added to
+  `ingest-socket.test.mjs`), under umask 022, in local time and `TZ=Asia/Tokyo`; web 359
+  (351 on main; 7 in `orbit-local-alerts.test.js`, 1 in `orbit-push.test.js` for the
+  service worker's tag), both time zones; the mod's harness test in `mod/tests/model.test.ts`
+  added, not run (harness only); oxlint clean on every changed file (older warnings in
+  `server.mjs`, `chat-push.mjs` and `mod/hooks/model.js` are not this branch's). 156 of
+  156 mutants caught (one by hanging the run), covering the request checks and cleaning,
+  the cuts, the credential check, the key, `since`, repeats, the ack check and its
+  wiring, the kill file, both push caps and their reserves, the intake limit and its
+  reserve, Retry-After, the windows' rolling, dedupe and its "reached nobody" rule, the
+  concurrent post, keeping and expiry, the push wait, the route's proxy refusal and
+  guards, the TCP refusal, the dashboard's order, the payload's marker, fit, urgency,
+  Topic and TTL, the service worker's tag, the mod's label in the summary and the pane,
+  the page's chip, text, strip time, ack choice and run-sheet rule, and the README's two
+  caller rules and the ntfy wording. The README's curl, exactly, against a scratch server
+  on the real ingest socket code (socket under `~/.local/state/jarvis/scratch-alertpush`,
+  port 8397, push recorded, no device): taken, a repeat answered as a duplicate with the
+  first push's outcome, proxy header 403, TCP 403. Headless Chromium against that server
+  at 390 (light) and 1440 (dark), 35 of 35 checks: two alerts in the strip, last raised
+  first, with their time; Bring Jarvis Back on the jarvis-down one only, in the strip and
+  on its card; chips "Jarvis down" and "Warning"; the body in its two lines; the meta
+  line; Acknowledge offers one choice, "For 24 hours", and Save takes the alert off the
+  strip; no sideways scroll, no policy violations, no page errors.
+  **Unverified:** a real push through Apple to Jeff's devices (the post-restart check
+  above), Safari and the installed app (no WebKit on the mini), iOS before 18.4 on a real
+  device, and the mod's pane in Claude Code (its `alertLabel` is tested in node and in
+  `mod/tests/model.test.ts`, which runs only in the mod harness).
+- **Follow-ups (asked for as board items):** a way for the start script to clear its own
+  alert when Jarvis comes back (`{"clear": "jarvis-down"}` or similar), so the strip
+  doesn't keep "Jarvis failed to start" until it is acked or a day passes; and the Jarvis
+  side's calls (`bin/jarvis-start`, `bin/routine`), which this contract is for.

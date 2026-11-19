@@ -19,6 +19,12 @@
 //   looking or not, at any hour. The one push whose body is not a fixed line: it is
 //   the usage panel's own numbers in a fixed shape (WARNING_BODY), and a body that is
 //   not in that shape is not sent. A tap opens the Overview. Titled "Control Room".
+// - A local alert (lib/local-alerts.mjs; the ingest socket's local-alert route calls
+//   localAlert): "Local alert: " and a script's own title, its body, already cleaned and bounded there, to
+//   every device at once, looking or not, at any hour; urgent unless its severity is
+//   "info". No Topic, so two alerts never replace each other at the push service, and
+//   kept there ALERT_TTL_S for a phone that is away. The body is cut to fit one record
+//   (ALERT_PAYLOAD_MAX). A tap opens the Overview, where the strip and Needs you hold it.
 //
 // `notice`s (the channel's restart line), verdicts, edits and the owner's own
 // messages never push. A subscription the push service calls gone (404 or 410) is
@@ -38,6 +44,18 @@ export const SEND_QUEUE_MAX = 16;
 export const OFFLINE_AFTER_MS = 5 * 60e3;
 export const OFFLINE_CHECK_MS = 30e3;
 export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: 'Jarvis is offline' });
+// A local alert: how long the push service keeps it for a device that is away, the
+// most its JSON may take (one record is 4,096 bytes less the tag and the delimiter),
+// and the words for an empty title or body.
+export const ALERT_TTL_S = 6 * 3600;
+export const ALERT_PAYLOAD_MAX = 3072;
+// Every local alert's notification title starts with this fixed marker (Ultron's L1), so
+// a script's words can never pass for one of the server's own lines ("Jarvis needs an
+// approval"); sw.js keys its tag on it too.
+export const ALERT_TITLE_PREFIX = 'Local alert: ';
+export const ALERT_FALLBACK_TITLE = 'Local alert';
+export const ALERT_FALLBACK_BODY = 'Open the Control Room for the details.';
+const ELLIPSIS = String.fromCodePoint(0x2026);
 const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat', limit: 'jos-limit' };
 // What a limit warning says when its body is not in the fixed shape (payloadFor is
 // exported; limitWarning refuses such a body before it gets here).
@@ -83,10 +101,27 @@ export async function loadVapid({ config, read = readVapidKey } = {}) {
   }
 }
 
+// A local alert's message: its title and body, the body cut (by code points, with an
+// ellipsis) until the JSON fits ALERT_PAYLOAD_MAX bytes. No badge: it counts chat messages.
+export function alertPayload(site, alert) {
+  const title = typeof alert?.title === 'string' && alert.title !== '' ? `${ALERT_TITLE_PREFIX}${alert.title}` : ALERT_FALLBACK_TITLE;
+  const text = typeof alert?.body === 'string' && alert.body !== '' ? alert.body : ALERT_FALLBACK_BODY;
+  const make = body => ({ web_push: 8030, notification: { title, body, navigate: `${site}/#overview` } });
+  const chars = [...text];
+  let n = chars.length;
+  let payload = make(text);
+  while (n > 0 && Buffer.byteLength(JSON.stringify(payload)) > ALERT_PAYLOAD_MAX) {
+    n = Math.max(0, n - 16);
+    payload = make(chars.slice(0, n).join('').trimEnd() + ELLIPSIS);
+  }
+  return payload;
+}
+
 // The declarative Web Push message (iOS 18.4+; sw.js shows the same for older
 // iOS): a title, one of three bodies, where a tap goes, and the badge.
 export function payloadFor(kind, origin, body = null) {
   const site = typeof origin === 'string' && NAV_ORIGIN.test(origin) ? origin : '';
+  if (kind === 'alert') return alertPayload(site, body);
   // A limit warning: its own title, the Overview on a tap, and no badge (the badge
   // counts unseen chat messages).
   if (kind === 'limit') {
@@ -113,9 +148,11 @@ export function createPushService({
 
   async function send(target, kind, body = null) {
     if (!vapid) return { outcome: 'off' };
+    const urgent = kind === 'approval' || kind === 'limit' || (kind === 'alert' && body?.severity !== 'info');
     const r = await sendPush({
       subscription: target.push, payload: payloadFor(kind, target.push.origin, body), vapid,
-      urgency: kind === 'approval' || kind === 'limit' ? 'high' : 'normal', topic: TOPICS[kind], now: now(), fetchImpl, testHosts
+      urgency: urgent ? 'high' : 'normal', topic: TOPICS[kind] ?? null, now: now(), fetchImpl, testHosts,
+      ...(kind === 'alert' ? { ttl: ALERT_TTL_S } : {})
     });
     if (r.outcome === 'gone') {
       if (await devices.dropPush(target.id, target.push.endpoint)) log(`push: ${target.name}'s subscription is gone (${r.status}); removed`);
@@ -170,6 +207,19 @@ export function createPushService({
     const missed = targets.filter((_, i) => results[i]?.outcome !== 'sent' && results[i]?.outcome !== 'gone').map(target => target.id);
     log(`push: a limit warning went to ${reached} of ${targets.length} device${targets.length === 1 ? '' : 's'}`);
     return { tried: targets.length, reached, missed };
+  }
+
+  // A local alert (lib/local-alerts.mjs) to every paired device: `{ title, body,
+  // severity }`, checked there. Resolves to `{ tried, reached }`, or `{ off: true }`
+  // with zeros while push is off. A device the queue drops is not tried again: the
+  // page's strip still holds the alert, and the caller has its own Discord post.
+  async function localAlert(alert) {
+    if (!vapid) return { tried: 0, reached: 0, off: true };
+    const targets = devices.pushTargets();
+    const results = await Promise.all(targets.map(target => enqueue(target, 'alert', alert) ?? { outcome: 'dropped' }));
+    const reached = results.filter(r => r?.outcome === 'sent').length;
+    log(`push: a local alert went to ${reached} of ${targets.length} device${targets.length === 1 ? '' : 's'}`);
+    return { tried: targets.length, reached };
   }
 
   // An approval held for `ms`: then pushed if the device is still paired and a
@@ -262,6 +312,7 @@ export function createPushService({
     testHosts,
     checkOffline,
     limitWarning,
+    localAlert,
     idle: async () => { while (sending.size) await Promise.allSettled([...sending]); },
     stop: () => { unsubscribe(); clearInterval(offlineTimer); for (const w of waiting.values()) clearTimer(w.timer); waiting.clear(); for (const t of heldApproval.values()) clearTimer(t); heldApproval.clear(); }
   };

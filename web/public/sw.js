@@ -18,6 +18,15 @@ function readPayload(data) {
   return FALLBACK;
 }
 
+// The notification's tag: a local script's alert (its title starts "Local alert",
+// server/lib/chat-push.mjs) has its own, so it never takes the approval's place or
+// the chat's; an approval is the server's own line under the title "Jarvis".
+function tagFor(n) {
+  const title = String(n.title || '');
+  if (title === 'Local alert' || title.startsWith('Local alert: ')) return 'jos-local';
+  return title === 'Jarvis' && n.body === 'Jarvis needs an approval' ? 'jos-approval' : 'jos-chat';
+}
+
 // Only this site's own #chat, whatever a payload says.
 function chatUrl() {
   return new URL('/#chat', self.location.origin).href;
@@ -30,7 +39,7 @@ self.addEventListener('push', event => {
   const n = readPayload(event.data);
   const shown = self.registration.showNotification(String(n.title || 'Jarvis'), {
     body: String(n.body || ''),
-    tag: n.body === 'Jarvis needs an approval' ? 'jos-approval' : 'jos-chat',
+    tag: tagFor(n),
     data: { url: chatUrl() }
   });
   const badge = typeof self.navigator?.setAppBadge === 'function' ? self.navigator.setAppBadge(Number(n.app_badge) || 1).catch(() => {}) : Promise.resolve();

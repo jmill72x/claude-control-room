@@ -12,7 +12,9 @@ export const AFTER_NEXT_MS = 2 * HOUR;
 // hours, so the form offers no 7-day choice and the default says 24 hours when the
 // next run is further off than that.
 export const UNKNOWN_SINCE_CAP_MS = 24 * HOUR;
-export const ACKABLE = new Set(['cron', 'service']);
+// A local script's alert (server/lib/local-alerts.mjs) too: acking it is how it is put
+// away before its 24 hours are up.
+export const ACKABLE = new Set(['cron', 'service', 'local']);
 export const MAX_NOTE = 200;
 
 export const canAck = alert => Boolean(alert) && ACKABLE.has(alert.kind) && typeof alert.key === 'string' && alert.key !== '';
@@ -25,7 +27,8 @@ export function untilChoices(alert, now) {
   let next = Number.isFinite(alert?.nextRunAt) && alert.nextRunAt > now ? alert.nextRunAt : null;
   if (next !== null && !known && next + AFTER_NEXT_MS > now + UNKNOWN_SINCE_CAP_MS) next = null;
   const first = { id: 'next', label: next ? `Until its next run (${when(next + AFTER_NEXT_MS, now)})` : 'For 24 hours', until: undefined };
-  if (!known) return [first];
+  // A local alert leaves on its own 24 hours after it was raised: 7 days would hide nothing more.
+  if (!known || alert?.kind === 'local') return [first];
   return [first, { id: 'week', label: `For 7 days (${when(now + WEEK_MS, now)})`, until: now + WEEK_MS }];
 }
 
