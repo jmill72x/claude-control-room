@@ -3066,10 +3066,11 @@ quiet hours, go-live). README, "The proactive check", has the mechanism.
   the real channel, Safari, and a real 07:00 timer.
 - **Questions for Jeff (in the report):** the login expiry source; the thresholds.
 
-## 17. Fix run: nine boards of Ultron's lows in one branch (staged 2026-11-19 on `jos/fixrun-1119`)
+## 17. Fix run: nine boards of Ultron's lows in one branch (merged as main 46f9ea6, seen 2026-11-19)
 
-**Staged, not committed, on `jos/fixrun-1119` (worktree
-`~/Projects/.worktrees/ccr-fixrun-1119`, from main 9d3c2bb, no upstream).** Jeff's 11-19
+**Merged as main 46f9ea6 (seen 2026-11-19); the rest of this section is how it was staged.
+Whether its restart and web build ran, I did not check.** Staged on `jos/fixrun-1119` (worktree
+`~/Projects/.worktrees/ccr-fixrun-1119`, from main 9d3c2bb, no upstream). Jeff's 11-19
 principle for the healing loops ("I want the team proactively finding and fixing our
 gaps"), run as one batch: every fix has a test, and Ultron reads the branch before C&P.
 The README is updated for each behaviour and is the reference.
@@ -3156,9 +3157,10 @@ The README is updated for each behaviour and is the reference.
   real restart of the service (the server.mjs lines rest on source tests), Safari, and the
   ack notice and #pepper log on the real poster.
 
-## 18. A projection from the recent rate, and the idle wake-up (staged 2026-11-19 on `jos/dynamic-projection`)
+## 18. A projection from the recent rate, and the idle wake-up (merged as main c66ca3e; live 2026-11-19 16:05 ET)
 
-**Staged, not committed, on `jos/dynamic-projection` (worktree
+**Merged as main c66ca3e and live since 2026-11-19 16:05 ET with `proactive.idle.enabled`
+on (per Jarvis's notes; I did not check the log). What follows is how it was staged.** Staged on `jos/dynamic-projection` (worktree
 `~/Projects/.worktrees/ccr-dyn-1119`, from main 46f9ea6, no upstream). Ultron's review
 (11-19): GO to commit; his M1 and L1-L5 are fixed in the same staged change (below).** Two of Jeff's
 11-19 asks: board f66a4a7e ("the projections need to be more dynamic") and board 5ffd0041
@@ -3280,3 +3282,79 @@ The README is updated for each behaviour and is the reference.
 - **Questions for Jeff (in the report):** the weekly gate (every weekly limit, or only
   "all models"); nights (quiet by default, `quietHours: false` for overnight builds); the
   back-off (1, 2, 4 hours, or a flat hour).
+
+## 19. "Bring Jarvis Back" on the page (board 52ee3f17, P0; staged 2026-11-19 on `jos/runbook-link`)
+
+**Staged, not committed, on `jos/runbook-link` (worktree `~/Projects/.worktrees/ccr-runbook`,
+from main c66ca3e, no upstream).** Jeff, 11-19, after a 14-minute Jarvis outage: keep the
+run sheet (a private claude.ai page, pinned in his sidebar) in Jarvis OS too. Page only:
+no server change. The README's bullet "Bring Jarvis Back, the run sheet, from the page"
+is the reference for where the link shows and when.
+
+- **What it does.** The address is `RUNBOOK_URL` in `web/src/lib/orbit/runbook.js`, the one
+  place. Quiet and always there: the Overview's foot ("Jarvis down? Bring Jarvis Back"),
+  the Chat ⋮ menu, and the lead's health-chip details. Loud when he is down, from state
+  the page already had: the alert strip's "Jarvis is not running" (the server's five-minute
+  rule) and its Needs you card get a button; the Chat banner gets an orange button when
+  the channel is offline (heartbeat gone) or **stuck** (a message of Jeff's still
+  `queued` after two minutes of this page watching it with the stream open and the channel
+  connected, a new banner state worked out on the page);
+  "Delivered N m ago, no answer yet" (ten minutes) gets a quiet link.
+- **Choices to defend:** (1) no new probe and no server change: the health strip's session
+  state, the server's alert, and the chat status already say "down"; (2) the alert strip
+  waits the server's five minutes, while the red "Jarvis down" chip and its details link
+  are there at once; (3) stuck at two minutes: the channel acks a message within seconds
+  whenever it is connected, measured on the device's clock from when the page first saw
+  it queued while watching (not from the server's `at`), so leaving the page, a closed
+  stream or an offline channel starts every clock again; (4) stuck outranks slow but not offline or "waiting on you"
+  (an open request proves the channel relays); (5) the slow banner's link stays quiet,
+  because ten minutes without an answer is often just a long turn; (6) six places, all
+  through one component, so a new address is a one-line change.
+- **Ultron's review (11-19, board ed663682, fixed in the same staged change):** **Medium**,
+  a false stuck alarm after a background resume: `useChat` reopens the stream with
+  `?after=<last seq>`, the server replays only newer messages and never a state change
+  (`chat-routes.mjs` stream, `chat-store.mjs` `ack`), so a message the channel took while
+  the page was away stayed `queued` and the loud button invited restarting a working
+  Jarvis. Fixed twice over: every stream open (the browser's reconnects too) fetches the
+  latest page and merges it with `mergeFresh` (a live state never goes back to `queued`, a
+  newer live edit is kept, an answer for an older stream is dropped), and `stuckSince`
+  skips a queued message when the thread holds a later one of Jeff's that is `delivered`
+  (acks are cumulative) or any later one from the lead. One choice beyond his words: a
+  routine's message (`meta.routine`, the morning brief) does not count as the lead's,
+  because launchd posts it, not the channel. **Low**, the device clock compared with the
+  server's `at`: the page now keeps when it first saw each message queued (`noteQueued`).
+- **Not covered:** the Control Room itself down. The page then doesn't load at all (no
+  service-worker cache, on purpose), so the claude.ai pin is the fallback. A stream that
+  can't reach the server shows "reconnecting…" as before, with no link.
+- **To go live:** C&P, then `cd web && npm run build` in the main checkout. **No restart**:
+  the server is unchanged and the page reads only fields today's server already sends
+  (checked against the live payload's shape: `health.data.services[]` with
+  `kind: "session"`, `name: "Jarvis"`, key `session:Jarvis`). Open pages pick the build up
+  by themselves (build-id reload).
+- **After the build, check (Jeff's iPhone and iPad):** the Overview's foot link opens the
+  run sheet in a new tab or Safari sheet, signed in; the ⋮ menu item does the same from the
+  Chat tab; tapping the Jarvis chip shows "Not answering? Bring Jarvis Back". The down
+  states can only be seen on the next outage (or a scratch server).
+- **Checked (2026-11-19, after Ultron's fixes):** web 351 tests (337 on main; 14 new in
+  `orbit-runbook.test.js`, one existing banner assertion updated), in local time and
+  `TZ=Asia/Tokyo`; server 1,618 (unchanged code; run under umask 022); oxlint clean on
+  every changed file; 34 of 34 mutants caught (each rule of `stuckSince`, `noteQueued`,
+  the skip rule and its routine exception, `mergeFresh`, the refetch and its stale-stream
+  guard, the watching condition, `leadService`, `isLeadDownAlert`, `isLeadServiceKey`, the
+  banner's link states, the new-tab link, the health link). Headless Chromium against a
+  fake read-only scratch server (no :8322 at all) at 390 and 1440, light and dark, 136 of
+  136 checks: the foot, the chip details (and not the Tunnel's), the menu item opens a new
+  tab with no opener and closes the menu, the stuck banner not at first sight nor at 90 s
+  but at 2.5 min (page clock moved), Ultron's resume case (the server delivers and answers,
+  the stream drops, the reconnect's refetch brings the answer and the tick, and no stuck
+  banner three minutes on), the slow and offline banners, the strip and card buttons beside
+  Acknowledge, 44 px targets, no sideways scroll, no page errors. The same check on a build
+  without the refetch fails the resume case (12 failures), so it reproduces his finding. Safari
+  and the installed iPhone app are unverified (no WebKit on the mini): how a new tab opens
+  from the home-screen app is the device check above.
+- **Found on the way, not fixed (pre-existing, not this branch's code):** the web test
+  "pathological input parses in linear time" (`web/test/orbit-markdown.test.js:244`) is
+  timing-flaky: it failed once in seven runs on 11-19 ("open strong: 31.2 ms vs 0.6 ms at a
+  tenth of the size"; a GC or scheduling pause), then passed six times. A ratio of two
+  single timings is the trap; a median of several runs, or a cap on work rather than on
+  milliseconds, would hold. Asked for as a board item.

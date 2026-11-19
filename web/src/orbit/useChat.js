@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, rememberDismissed, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, mergeFresh, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, rememberDismissed, PAGE } from '../lib/orbit/chat.js';
 import { reachStep, singleFlight, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
@@ -90,7 +90,17 @@ export function useChat({ active }) {
     // with each stream: one answered while the page was away doesn't linger.
     setPermissions(new Map());
     const parse = e => { try { return JSON.parse(e.data); } catch { return null; } };
-    es.addEventListener('open', () => setStream('open'));
+    // On every open, the browser's own reconnects included: the latest page again. A
+    // resumed stream replays only newer messages and no state changes, so a message the
+    // channel took meanwhile would read `queued` here, and the banner call it stuck
+    // (lib/orbit/chat.js, mergeFresh; Ultron 2026-11-19). A failed fetch changes nothing.
+    es.addEventListener('open', () => {
+      setStream('open');
+      api.latestMessages(PAGE).then(page => {
+        if (!aliveRef.current || esRef.current !== es) return;
+        setMessages(list => mergeFresh(list, page?.messages));
+      }).catch(() => {});
+    });
     es.addEventListener('status', e => { const s = parse(e); if (s) applyStatus(s); });
     es.addEventListener('message', e => { const m = parse(e); if (m) setMessages(list => mergeMessages(list, m)); });
     es.addEventListener('edit', e => { const m = parse(e); if (m) setMessages(list => applyEdit(list, m)); });

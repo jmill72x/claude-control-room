@@ -19,6 +19,8 @@ import {
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
   isPhotoType, fileWord, viaWords, routineWord, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
 } from '../lib/orbit/chat.js';
+import { RunbookLink } from './Runbook.jsx';
+import { noteQueued } from '../lib/orbit/runbook.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
 // holds no cookie, else the thread with the owner on the right and the lead on
@@ -228,7 +230,13 @@ function Thread({ chat, now, lead, onSettings }) {
     return () => clearTimeout(t);
   }, [found]);
 
-  const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now);
+  // When this page first saw each of the owner's messages queued, on this device's
+  // clock, while the stream is open and the channel connected (lib/orbit/runbook.js,
+  // noteQueued); the stuck banner measures from there, never from the server's `at`.
+  const queuedRef = useRef(null);
+  const watching = chat.stream === 'open' && chat.status?.channelConnected === true && chat.status?.state !== 'offline';
+  queuedRef.current = noteQueued(queuedRef.current, messages, now, watching);
+  const banner = bannerFor(effectiveStatus(chat.status, chat.permissions, now), now, messages, queuedRef.current);
   // Every card but a closed one past its time (lib/orbit/chat.js, cardGone): an
   // answered card stays to say what was sent, until dismissed.
   const approvalContext = { approver: chat.device?.approver === true, approvals: chat.status?.approvals ?? null };
@@ -241,7 +249,13 @@ function Thread({ chat, now, lead, onSettings }) {
       <div className="o-chat-wrap">
         <div className={`o-chat-banner o-chat-banner-${banner.tone}`} role="status">
           <span className="o-chat-banner-dot" aria-hidden="true" />
-          <span className="o-chat-banner-text">{banner.text}</span>
+          <span className="o-chat-banner-text">
+            {banner.text}
+            {/* "Bring Jarvis Back" (lib/orbit/runbook.js): a button under the words when
+                the channel is gone or stuck, a quiet link after them when he is silent. */}
+            {banner.runbook === 'loud' && <RunbookLink className="o-chat-runbook o-chat-runbook-loud" />}
+            {banner.runbook === 'quiet' && <> · Silent too long? <RunbookLink className="o-chat-runbook" /></>}
+          </span>
           {chat.stream !== 'open' && <span className="o-chat-banner-sub">reconnecting…</span>}
           <span className="o-chat-menuwrap">
             <button ref={menuBtnRef} type="button" className="o-chat-iconbtn o-chat-menubtn" aria-label="Chat menu" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(v => !v)}>
@@ -306,6 +320,7 @@ function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
     <div ref={ref} className="o-chat-menu" role="menu" aria-label="Chat menu">
       <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSearch}>Search messages</button>
       <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSettings}>Chat settings</button>
+      <RunbookLink className="o-chat-menuitem o-chat-menulink" role="menuitem" onClick={onClose} />
     </div>
   );
 }

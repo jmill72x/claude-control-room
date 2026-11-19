@@ -16,6 +16,7 @@ import { HeadsUp } from './HeadsUp.jsx';
 import { headsUpView } from '../lib/orbit/headsup.js';
 import { youEvents } from '../lib/orbit/waiting.js';
 import { useFold } from './useFold.js';
+import { RunbookFoot } from './Runbook.jsx';
 
 const DAY = 24 * 3600 * 1000;
 const money = v => (Number.isFinite(v) ? `$${Number.isInteger(v) ? v : v.toFixed(2)}` : null);
@@ -285,5 +286,11 @@ export function Overview({ payload, now, roster, board, waiting, setWaiting, onO
     schedule: null, // drawn in Usage's row
     loops: <Loops key="loops" payload={payload} now={now} />
   };
-  return <main className="o-wrap o-main">{homeSections(payload?.loops, heads !== null).map(k => parts[k])}</main>;
+  // The run sheet's link closes the page (board 52ee3f17): always there, never in the way.
+  return (
+    <main className="o-wrap o-main">
+      {homeSections(payload?.loops, heads !== null).map(k => parts[k])}
+      <RunbookFoot />
+    </main>
+  );
 }

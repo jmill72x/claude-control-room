@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { healthChips, healthDetail } from '../lib/orbit/health.js';
 import { unavailable } from '../lib/orbit/page.js';
+import { isLeadServiceKey } from '../lib/orbit/runbook.js';
+import { RunbookLink } from './Runbook.jsx';
 
 // The health strip under the title (Orbit plan, Phase 2): Jobs, then each
 // always-on service, from the server's `health` panel. A chip opens its
@@ -22,7 +24,9 @@ export function HealthChips({ env, fresh, open, onToggle, detailId }) {
 
 // `onUnack(key)` deletes an acknowledgement (server/lib/acks.mjs) and refreshes;
 // a row with `ack` shows the button. A failed un-ack is said in the panel's note.
-export function HealthDetail({ env, fresh, open, now, id, onUnack }) {
+// The lead's session (`leadName`, the roster's first) ends with the link to "Bring
+// Jarvis Back", up or down: a session can run and still not answer.
+export function HealthDetail({ env, fresh, open, now, id, onUnack, leadName = null }) {
   const [problem, setProblem] = useState(null);
   const [busy, setBusy] = useState(null);
   const d = healthDetail(env, open, fresh, now);
@@ -49,6 +53,9 @@ export function HealthDetail({ env, fresh, open, now, id, onUnack }) {
           )}
         </div>
       ))}
+      {isLeadServiceKey(open, env?.data?.services, leadName) && (
+        <p className="o-health-runbook">Not answering? <RunbookLink className="o-runbook-link o-runbook-night" /></p>
+      )}
     </section>
   );
 }

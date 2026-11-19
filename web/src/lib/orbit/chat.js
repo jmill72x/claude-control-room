@@ -4,6 +4,7 @@
 // components in src/orbit/Chat.jsx only render what these return.
 
 import { markdownPlain } from './markdown.js';
+import { stuckSince } from './runbook.js';
 
 // A card's window when the server sends no `expiresAt` (an older server): the old
 // 10 minutes. A server now sends how long the channel holds the request, up to 12 h.
@@ -66,6 +67,26 @@ export function mergeMessages(list, incoming, { pendingId = null, clientId = nul
   return [...[...bySeq.values()].sort((a, b) => a.seq - b.seq), ...keep];
 }
 
+// A page of the thread fetched again when a stream (re)opens (useChat): a resumed
+// stream replays only messages after the page's last seq and never a state change, so
+// a message the channel took while this page was away would stay `queued` here
+// (Ultron, 2026-11-19, board ed663682). The fetched copy wins, except where a live
+// event already moved past it while the fetch was on its way: a state never goes back
+// from `delivered` or `undelivered` to `queued`, and a later edit is kept.
+const SETTLED = new Set(['delivered', 'undelivered']);
+export function mergeFresh(list, page) {
+  const have = new Map(list.filter(m => Number.isInteger(m.seq)).map(m => [m.seq, m]));
+  const fresh = (Array.isArray(page) ? page : []).map(m => {
+    const old = m && have.get(m.seq);
+    if (!old || old.id !== m.id) return m;
+    let out = m;
+    if (SETTLED.has(old.state) && m.state === 'queued') out = { ...out, state: old.state };
+    if (Number.isFinite(old.editedAt) && !(Number.isFinite(m.editedAt) && m.editedAt >= old.editedAt)) out = { ...out, text: old.text, editedAt: old.editedAt };
+    return out;
+  });
+  return mergeMessages(list, fresh);
+}
+
 // An edit or a state event names one message; the rest stay as they were.
 export function applyEdit(list, { id, text, editedAt }) {
   return list.map(m => (m.id === id ? { ...m, text, editedAt: editedAt ?? m.editedAt ?? null } : m));
@@ -123,18 +144,28 @@ export function afterStreamRefusal(err) {
 // ---- the status banner (§2.6) ----
 
 // What the strip over the composer says. `status` is /api/chat/status's answer
-// (or the `status` SSE event); null while unknown.
-export function bannerFor(status, now = Date.now()) {
+// (or the `status` SSE event); null while unknown. `messages` is the thread and
+// `queuedSeen` when this page first saw each of them queued with the channel
+// connected (lib/orbit/runbook.js, noteQueued), for a message the channel has left
+// queued (stuckSince).
+// `runbook` says how the strip offers "Bring Jarvis Back" (lib/orbit/runbook.js):
+// `loud`, a button, when the channel is gone or not taking messages; `quiet`, a
+// plain link, when he has had a message ten minutes and said nothing (the run
+// sheet's "running but silent"); absent otherwise.
+export function bannerFor(status, now = Date.now(), messages = [], queuedSeen = null) {
   if (!status) return { tone: 'quiet', text: 'Connecting…' };
   const state = status.state;
   if (state === 'offline') {
     const since = Number.isFinite(status.since) ? ` since ${hhmm(status.since)}` : '';
-    return { tone: 'offline', text: `Jarvis is offline${since}. Messages wait here and reach him when he's back.` };
+    return { tone: 'offline', text: `Jarvis is offline${since}. Messages wait here and reach him when he's back.`, runbook: 'loud' };
   }
+  // An open permission request proves the channel works: it relayed the request.
   if (state === 'waiting on you') return { tone: 'waiting', text: 'Jarvis is waiting on you: a permission request is open.' };
+  const stuck = stuckSince(messages, now, queuedSeen);
+  if (stuck !== null) return { tone: 'stuck', text: `Your message from ${hhmm(stuck.at)} hasn't reached Jarvis: his channel isn't taking messages.`, runbook: 'loud' };
   if (state === 'slow') {
     const mins = Number.isFinite(status.since) ? Math.max(1, Math.floor((now - status.since) / 60e3)) : null;
-    return { tone: 'slow', text: `Delivered ${mins === null ? 'a while' : `${mins} m`} ago, no answer yet` };
+    return { tone: 'slow', text: `Delivered ${mins === null ? 'a while' : `${mins} m`} ago, no answer yet`, runbook: 'quiet' };
   }
   return { tone: 'online', text: 'Jarvis is online' };
 }

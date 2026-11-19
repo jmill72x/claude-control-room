@@ -1105,7 +1105,8 @@ three pieces, each with its own router:
   never doubles a message. The banner over the thread follows `/api/chat/status` and the
   stream's `status` events: online (a dot), "Jarvis is offline since HH:MM. Messages wait
   here and reach him when he's back.", "Delivered N m ago, no answer yet", or "waiting on
-  you", which the open cards decide on the page between pings (offline wins over it). An open permission request
+  you", which the open cards decide on the page between pings (offline wins over it), or
+  stuck (a message the channel hasn't taken in two minutes; "Bring Jarvis Back" below). An open permission request
   is a card pinned over the composer (see "Approvals as buttons" below for its layout and
   rules). The settings sheet (the dots button in the banner) lists the
   paired devices with "this device" marked, a two-tap Revoke, and a field to approve
@@ -1122,6 +1123,37 @@ three pieces, each with its own router:
   pending list lives in memory, so at start any file in `data/chat/files` that no message
   carries and that is over an hour old is deleted too (an upload left unsent at the last
   stop), with a `chat: removed N unsent uploads` line.
+- **"Bring Jarvis Back", the run sheet, from the page** (board 52ee3f17, 2026-11-19). The
+  run sheet for a Jarvis outage is a private claude.ai page; its address is
+  `RUNBOOK_URL` in `web/src/lib/orbit/runbook.js` and nowhere else (a test walks
+  `web/src` to hold that). Every link to it is `RunbookLink` (`web/src/orbit/Runbook.jsx`),
+  which opens it in a new tab (`noopener noreferrer`). It shows in six places, and only
+  the chat's banner and the alert strip are loud. **Always there, quiet:** a "Jarvis down?
+  Bring Jarvis Back" line at the foot of the Overview, a "Bring Jarvis Back" item in the
+  Chat's ⋮ menu, and a "Not answering?" line in the lead's health-chip details (the
+  `session` service named like the roster's lead, else the only one). **When he is down,
+  from state the page already has, with no new probe:** (1) the alert strip's "<lead> is
+  not running", which the server raises after the lead's session has been gone five minutes
+  (`lib/alerts.mjs`), gets a white "Bring Jarvis Back" button beside Acknowledge, on every
+  tab, and the same alert's Needs you card gets one too; (2) the Chat banner adds an orange
+  "Bring Jarvis Back" button under "Jarvis is offline since HH:MM…" (the channel's
+  heartbeat is gone: `chatState` in `lib/chat-routes.mjs`) and under a new **stuck** line,
+  "Your message from HH:MM hasn't reached Jarvis: his channel isn't taking messages.", shown
+  when one of the owner's messages has sat `queued` (not acked by the channel) for two
+  minutes of this page watching it with the stream open and the channel connected
+  (`noteQueued` keeps when it first saw each one, on the device's own clock, never the
+  server's `at`; `stuckSince`, `STUCK_AFTER_MS`). A queued message is never stuck when the
+  thread holds a later message of the owner's that is `delivered` (the channel's acks are
+  cumulative) or a later one from the lead that isn't a routine's. Because a resumed
+  stream replays only newer messages and no state changes, every stream open (the
+  browser's own reconnects too) fetches the latest page again and merges it with
+  `mergeFresh` (`web/src/lib/orbit/chat.js`), which never moves a state back to `queued`
+  or undoes a newer live edit. Stuck outranks slow but not offline, and not "waiting on
+  you", since an open permission request proves the channel relays; (3) "Delivered N m ago, no answer yet" (ten minutes, the run sheet's
+  "running but silent") ends with a quiet "Silent too long? Bring Jarvis Back" link. The
+  page can do nothing when the Control Room itself is down (no service-worker cache, on
+  purpose), so the pinned claude.ai page stays the fallback. Logic tested by
+  `web/test/orbit-runbook.test.js`.
 - **Read aloud and search in the Chat tab** (2026-11-15). Each of the lead's chat bubbles
   has a speaker button at the start of its time line. A tap reads the message in the
   Mac's own voice where the server offers it (the next bullet), and otherwise with the

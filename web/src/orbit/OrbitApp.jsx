@@ -157,7 +157,7 @@ export function OrbitApp() {
             </span>
           </div>
           {chip && chip !== 'now' && <HealthDetail env={payload?.health} fresh={fresh} open={chip} now={now} id="o-health-detail"
-            onUnack={async key => { await unack(key); await refresh(); }} />}
+            leadName={lead?.name ?? null} onUnack={async key => { await unack(key); await refresh(); }} />}
           {nowChip && (
             <div className="o-nowrow">
               <NowChip chip={nowChip} open={chip === 'now'} detailId="o-now-detail" onToggle={() => setChip(open => (open === 'now' ? null : 'now'))} />
@@ -168,7 +168,7 @@ export function OrbitApp() {
         </div>
       </header>
 
-      <AlertStrip alerts={alerts} now={now} onChanged={refresh} />
+      <AlertStrip alerts={alerts} now={now} onChanged={refresh} services={payload?.health?.data?.services} leadName={lead?.name ?? null} />
 
       {isChat && <ChatTab chat={chat} now={now} lead={lead} />}
       {isFeed && <FeedTab feed={feed} now={now} roster={roster} filter={feedFilter} setFilter={setFeedFilter} />}

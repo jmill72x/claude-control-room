@@ -4,6 +4,8 @@ import { waitingCards, waitingView } from '../lib/orbit/waiting.js';
 import { tapDone, RESTART_ACTION, RESTART_RELOAD_MS } from '../lib/orbit/loops.js';
 import { Avatar } from './Avatar.jsx';
 import { AckForm } from './Acks.jsx';
+import { isLeadDownAlert } from '../lib/orbit/runbook.js';
+import { RunbookLink } from './Runbook.jsx';
 import { approveHeal, declineHeal } from './healApi.js';
 
 // Needs you, at the top of the Overview (Orbit plan, Phase 4 as Waiting on you;
@@ -78,7 +80,9 @@ function HealActions({ heal, onChanged }) {
   );
 }
 
-function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
+// `services` and `leadName` pick out "<lead> is not running", whose card also offers
+// "Bring Jarvis Back" (lib/orbit/runbook.js).
+function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged, services, leadName }) {
   const bodyId = domId(card.key);
   const tone = card.look === 'hot' ? 'night' : 'day';
   return (
@@ -114,6 +118,7 @@ function WaitCard({ card, open, onToggle, onOpenItem, now, onChanged }) {
               <b>{card.owner?.name ?? (card.group === 'alerts' || card.group === 'heals' ? 'Control Room' : 'No owner')}</b>
               <span>{card.meta}</span>
             </span>
+            {card.alert && isLeadDownAlert(card.alert, services, leadName) && <RunbookLink className="o-btn o-btn-accent o-runbook-btn" />}
             {card.alert && <AckAction alert={card.alert} now={now} onChanged={onChanged} />}
             {card.answerUrl && (
               <a className="o-btn o-wcard-board" href={card.answerUrl}>
@@ -177,6 +182,7 @@ export function Waiting({ board, payload, roster, now, state, setState, onOpenIt
           <div className="o-wcards">
             {view.shown.map(c => (
               <WaitCard key={c.key} card={c} open={state.open === c.key} onOpenItem={onOpenItem} now={now} onChanged={onChanged}
+                services={payload?.health?.data?.services ?? null} leadName={roster?.agents?.[0]?.name ?? null}
                 onToggle={() => setState(s => ({ ...s, open: s.open === c.key ? null : c.key }))} />
             ))}
             {view.empty && (

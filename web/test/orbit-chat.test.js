@@ -105,7 +105,7 @@ test('the banner says what the status means, in local time', () => {
   assert.equal(off.tone, 'offline');
   assert.equal(off.text, "Jarvis is offline since 08:07. Messages wait here and reach him when he's back.");
   assert.equal(bannerFor({ state: 'offline', since: null }, now).text, "Jarvis is offline. Messages wait here and reach him when he's back.");
-  assert.deepEqual(bannerFor({ state: 'slow', since: now - 10 * 60e3 - 5000 }, now), { tone: 'slow', text: 'Delivered 10 m ago, no answer yet' });
+  assert.deepEqual(bannerFor({ state: 'slow', since: now - 10 * 60e3 - 5000 }, now), { tone: 'slow', text: 'Delivered 10 m ago, no answer yet', runbook: 'quiet' });
   assert.equal(bannerFor({ state: 'slow', since: now - 1000 }, now).text, 'Delivered 1 m ago, no answer yet', 'never 0 m');
   assert.equal(bannerFor({ state: 'slow' }, now).text, 'Delivered a while ago, no answer yet');
   assert.equal(bannerFor({ state: 'waiting on you' }, now).tone, 'waiting');

@@ -217,6 +217,20 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   background: transparent; color: #FFFFFF; font-size: 12.5px; font-weight: 600;
 }
 .o-ack-btn:disabled { opacity: 0.6; }
+/* "Bring Jarvis Back" beside Acknowledge on "<lead> is not running" (Acks.jsx,
+   Waiting.jsx): white on the red strip, the accent in a card. */
+.o-runbook-btn { display: inline-flex; align-items: center; text-decoration: none; }
+.o-alerts .o-runbook-btn { background: #FFFFFF; border-color: #FFFFFF; color: var(--accent-ink); }
+/* The quiet link at the foot of the home screen and in the lead's health details. */
+.o-runbook-foot { margin: 0; padding-top: 4px; text-align: center; font-size: 13px; color: var(--sub); }
+.o-runbook-link {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; color: var(--heading); font-weight: 600;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.o-runbook-night { color: var(--paper); }
+/* A margin, not a space: a flex link (the buttons, the menu item) drops a leading space. */
+.o-runbook-arrow { margin-left: 0.25em; }
+.o-health-runbook { margin: 0; padding-top: 4px; border-top: 1px solid rgba(248, 247, 243, 0.08); font-size: 13px; color: var(--night-sub); }
 .o-ack-save { background: #FFFFFF; border-color: #FFFFFF; color: var(--accent-ink); }
 .o-ack-form {
   flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 0 4px;
@@ -827,6 +841,18 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-chat-banner-waiting { color: var(--c-ink); }
 .o-chat-banner-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .o-chat-banner-sub { flex: none; font-size: 0.85em; }
+/* "Bring Jarvis Back" in the banner (lib/orbit/runbook.js): a button on its own line
+   when the channel is gone or stuck, a plain link after the words when he is silent. */
+.o-chat-banner-stuck { color: var(--c-ink); }
+.o-chat-banner-stuck .o-chat-banner-dot { background: var(--c-bad); }
+.o-chat-runbook { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+.o-chat-runbook-loud {
+  display: flex; align-items: center; width: fit-content; min-height: 44px; margin: 6px 0 4px; padding: 0 16px; border-radius: 999px;
+  background: var(--c-bad); color: #FFFFFF; text-decoration: none; font-size: 1.05em;
+}
+.o-chat-runbook-loud:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
+/* The dark theme's --c-bad is a light orange: white on it is too faint, navy reads. */
+@media (prefers-color-scheme: dark) { .o-chat-runbook-loud { color: #0B1324; } }
 
 /* the thread */
 .o-chat-list { flex: 1 1 auto; list-style: none; margin: 0; padding: 12px 0 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -1051,6 +1077,7 @@ ul.o-md-list { list-style-type: disc; }
   font-size: 1.1em; font-weight: 600; text-align: left; white-space: nowrap;
 }
 .o-chat-menuitem:hover, .o-chat-menuitem:focus-visible { background: var(--c-quote); }
+.o-chat-menulink { display: flex; align-items: center; text-decoration: none; }
 .o-chat-jumpnote {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-top: 8px; padding: 0 0 0 12px;
   border-radius: 12px; background: var(--c-quote); font-size: 0.85em; color: var(--c-sub);
