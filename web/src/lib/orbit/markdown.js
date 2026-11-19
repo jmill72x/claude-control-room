@@ -48,14 +48,20 @@ export function linkTarget(raw) {
 
 export const safeHref = raw => linkTarget(raw)?.href ?? null;
 
-// Characters that change how a label reads without showing: the bidi embeddings,
-// overrides and isolates (U+202A-202E, U+2066-2069) and the zero-width ones (U+200B-
-// 200D, U+FEFF). They are dropped from a link's label. Built from code points, so no
-// invisible character sits in this file.
-const INVISIBLE = new Set([0x200b, 0x200c, 0x200d, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff]);
+// The shared set of hidden characters, the page's copy of server/lib/hidden-chars.mjs's
+// line set (boards 32769ce5, e6178bb9): Unicode's controls (Cc), format characters (Cf:
+// direction marks, overrides and isolates, zero-width characters, the soft hyphen, the
+// tag characters), the line and paragraph separators (Zl, Zp), a lone surrogate (Cs)
+// and Default_Ignorable_Code_Point (variation selectors, Hangul fillers, the combining
+// grapheme joiner). Built from property escapes, never typed characters. One character
+// at a time (no `g` flag, so `test` keeps no state). Dropped from a link's label here,
+// and refused in a new tag (board.js). server/test/board-new-tag.test.mjs holds it
+// to the server's set at every code point; the browser's tables are its own engine's,
+// so a character newer than one side's tables may differ (the server decides a tag).
+export const HIDDEN_CHAR = new RegExp('[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}\\p{Default_Ignorable_Code_Point}]', 'u');
 const dropInvisible = str => {
   let out = '';
-  for (let k = 0; k < str.length; k++) if (!INVISIBLE.has(str.charCodeAt(k))) out += str[k];
+  for (const ch of str) if (!HIDDEN_CHAR.test(ch)) out += ch;
   return out;
 };
 const cleanLabel = nodes => nodes.flatMap(n => {

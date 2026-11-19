@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import {
   activeAcks, matchingAck, applyAcks, checkAckRequest, makeAck, addAck, removeAck, decoratePayload, sameSince, ambiguousNames,
   ACK_MAX, ACK_CAP_MS, ACK_AFTER_NEXT_MS, ACK_NO_NEXT_MS, ACK_UNKNOWN_SINCE_CAP_MS, SINCE_TOLERANCE_MS, PAGE_BY, LOCAL_BY, ackLogLine,
-  unackLogLine, ackNotice, noticeTime, renewalsOf, NTFY_ACK_WORDS, NTFY_RENEW_WORDS
+  unackLogLine, ackNotice, noticeTime, renewalsOf, NTFY_ACK_WORDS, NTFY_RENEW_WORDS, VIA_WORDS
 } from '../lib/acks.mjs';
 import { createAckStore } from '../acks.mjs';
 import { createCache } from '../cache.mjs';
@@ -623,6 +623,58 @@ test('a new ack makes one notice: who, the kind, how long it has failed and unti
   assert.match(ackNotice({ ...ack(), since: null, renewals: 0 }, NOW).message, /\(when it began is unknown\)/);
 });
 
+// Ultron's 11-12 lows: the notice says how the ack arrived, since `by` is the caller's
+// word; and a re-ack after an un-ack of the same failure counts on.
+test('the notice says how the ack arrived: from the page, from a script, or from a heal card; nothing for anything else', () => {
+  const base = { ...ack(), renewals: 0 };
+  assert.match(ackNotice(base, NOW, { via: 'page' }).message, /^jeff acknowledged a failed job \(failing since .*, 11 days ago; from the page\): it is off/);
+  assert.match(ackNotice({ ...base, by: 'jeff' }, NOW, { via: 'script' }).message, /^jeff acknowledged a failed job \(failing since .*; from a script, not the page\):/);
+  assert.match(ackNotice({ ...base, by: 'heal' }, NOW, { via: 'heal-card' }).message, /; from a heal card on the page\):/);
+  for (const via of [null, undefined, 'toString', 'PAGE', 7]) assert.equal(ackNotice(base, NOW, { via }).message, ackNotice(base, NOW).message, String(via));
+  assert.deepEqual(Object.keys(VIA_WORDS).sort(), ['heal-card', 'page', 'script']);
+});
+
+test('over the route: the notice says page for a request with Origin, script for one without', async () => {
+  const d = noticeDeps();
+  const h = createHandler(d);
+  assert.equal((await call(h, 'POST', '/api/acks', { key: KEY, by: 'jeff' })).statusCode, 200);
+  await settle();
+  assert.match(d.notices[0].message, /^jeff acknowledged .*; from a script, not the page\)/, 'a script that names the owner is still a script');
+  assert.equal((await call(h, 'DELETE', `/api/acks/${encodeURIComponent(KEY)}`)).statusCode, 200);
+  assert.equal((await call(h, 'POST', '/api/acks', { key: KEY }, { origin: 'http://127.0.0.1:8322' })).statusCode, 200);
+  await settle();
+  assert.match(d.notices.at(-1).message, /; from the page\)/);
+});
+
+test('the store: a re-ack of the same failure after an un-ack counts on; after the old ack would have run out, or for a new failure, it starts again', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'acks-renew-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const store = createAckStore(join(dir, 'acks.json'));
+  const counts = list => list.map(a => renewalsOf(a));
+  assert.deepEqual(counts(await store.add(ack(), NOW)), [0]);
+  assert.deepEqual(counts(await store.add(ack({ at: NOW + 1 }), NOW + 1)), [1]);
+  assert.deepEqual(await store.remove(KEY, NOW + 2), []);
+  assert.deepEqual(counts(await store.add(ack({ at: NOW + 3 }), NOW + 3)), [2], 'counts on from the removed one');
+  // Removed again; then a new failure (another since) starts at 0.
+  await store.remove(KEY, NOW + 4);
+  assert.deepEqual(counts(await store.add(ack({ at: NOW + 5, since: SINCE + 7 * DAY_MS }), NOW + 5)), [0]);
+  // Removed again; past the removed ack's until it starts at 0 too.
+  await store.remove(KEY, NOW + 6);
+  const later = NEXT + ACK_AFTER_NEXT_MS + 1;
+  assert.deepEqual(counts(await store.add(ack({ at: later, since: SINCE + 7 * DAY_MS, until: later + DAY_MS }), later)), [0]);
+  // A removal of a key with no ack remembers nothing; nothing reaches the file but live acks.
+  await store.remove('cron:launchd:other', later + 1);
+  const file = JSON.parse(await readFile(join(dir, 'acks.json'), 'utf8'));
+  assert.equal(file.length, 1);
+  // The pure function: a removed entry of another key, a lapsed one or none counts nothing.
+  const gone = { ...ack(), renewals: 3 };
+  assert.equal(addAck([], ack({ at: NOW + 1 }), NOW + 1, { removed: gone })[0].renewals, 4);
+  assert.equal(addAck([], ack({ at: NOW + 1, key: 'cron:launchd:x' }), NOW + 1, { removed: gone })[0].renewals, 0);
+  assert.equal(addAck([], ack({ at: NOW + 1 }), NOW + 1, { removed: { ...gone, until: NOW } })[0].renewals, 0);
+  assert.equal(addAck([], ack({ at: NOW + 1 }), NOW + 1, { removed: { ...gone, since: SINCE + DAY_MS } })[0].renewals, 0);
+  assert.equal(addAck([], ack({ at: NOW + 1 }), NOW + 1)[0].renewals, 0);
+});
+
 test('a renewal makes one notice that says renewed and how many times, in #pepper and on ntfy', () => {
   const once = ackNotice({ ...ack(), by: 'local', renewals: 1 }, NOW);
   assert.match(once.message, /^local renewed the acknowledgement of a failed job \(failing since .*, 11 days ago\), renewed 1 time for this failure: it is off the alerts until /);
@@ -699,20 +751,21 @@ test('over the route: a new ack sends one notice, each renewal one more that say
   assert.match(d.notices[3].message, /^local acknowledged a failed job/, 'after an un-ack, an ack is new again, and says so');
 });
 
-test('over the route: a note with a line separator lands, but the notice never carries it and stays one line', async () => {
-  const d = noticeDeps();
-  const h = createHandler(d);
-  // U+2028 and U+2029 pass the board's character rule (text.mjs), so the route accepts them.
-  const note = `fine${String.fromCodePoint(0x2028)}jarvis renewed nothing${String.fromCodePoint(0x2029)}`;
-  const res = await call(h, 'POST', '/api/acks', { key: KEY, note });
-  assert.equal(res.statusCode, 200, res.body);
-  await settle();
-  assert.equal(d.notices.length, 1);
-  const { message } = d.notices[0];
-  assert.ok(!message.includes('fine') && !message.includes('renewed nothing'), 'the note is never in the notice');
-  assert.ok(!BREAKS.test(message));
-  assert.equal(d.logged.length, 1);
-  assert.ok(!BREAKS.test(d.logged[0]));
+test('over the route: a note with a line separator is refused, and nothing is noticed or logged', async () => {
+  // Board 32769ce5 (2026-11-19): U+2028 and U+2029 are refused by the board's character
+  // rule (text.mjs) since, so a note can no longer carry one. Before, it landed and the
+  // notice left the note out (which the notice still does, by another test).
+  for (const sep of [0x2028, 0x2029]) {
+    const d = noticeDeps();
+    const h = createHandler(d);
+    const note = `fine${String.fromCodePoint(sep)}jarvis renewed nothing`;
+    const res = await call(h, 'POST', '/api/acks', { key: KEY, note });
+    assert.equal(res.statusCode, 400, res.body);
+    assert.match(res.body, /note must not hold control characters/);
+    await settle();
+    assert.equal(d.notices.length, 0);
+    assert.ok(d.logged.every(l => !BREAKS.test(l)));
+  }
 });
 
 test('over the route: a notice that fails is logged, and the ack still answers 200', async () => {

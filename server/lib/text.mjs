@@ -9,6 +9,11 @@
 // one read as something else, and an invisible character can hide text inside it.
 // The joiners U+200C and U+200D stay allowed: U+200D sits inside combined emoji (a
 // person and a laptop make one picture), so refusing it would bounce an ordinary
-// edit. The detail text may hold any of them.
-export const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
+// edit. The detail text may hold any of them. Since board 32769ce5 (2026-11-19) the
+// line and paragraph separators (U+2028, U+2029) are refused too: a one-line label
+// has no use for a line break, and some readers (JavaScript source, some log viewers)
+// break the line there. The wider shared set (lib/hidden-chars.mjs) is for tags and
+// log lines; a title keeps this narrower one so an emoji with a joiner or a
+// variation selector still saves.
+export const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2028\u2029\u2066-\u2069\ufeff]/;
 export const UNSAFE_SAYS = 'must not hold control characters, invisible characters or characters that change text direction';

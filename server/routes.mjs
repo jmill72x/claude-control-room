@@ -309,7 +309,22 @@ export function createIngestHandler(deps) {
 // `loops()` is the heal runner's view (lib/heal-runner.mjs), read-only: GET /api/loops,
 // and `loops` in /api/dashboard. Without it, both say the loops are not set up.
 export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now() }) {
-  const loopsView = () => (loops ? loops() : { status: 'unset', why: 'this server has no heal runner', open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
+  const emptyLoops = (status, why) => ({ status, why, open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
+  // A view that throws must not take /api/dashboard down with it (Ultron's L5, 11-13): the
+  // panel says the view failed, and the log says so once until it works again.
+  let loopsFailed = false;
+  const loopsView = () => {
+    if (!loops) return emptyLoops('unset', 'this server has no heal runner');
+    try {
+      const view = loops();
+      loopsFailed = false;
+      return view;
+    } catch (err) {
+      if (!loopsFailed) log(`loops: the view failed (${err?.code ?? err?.name ?? 'error'}); the dashboard goes on without it`);
+      loopsFailed = true;
+      return emptyLoops('off', "the heal runner's view failed; the server log has the error");
+    }
+  };
   const ingest = createIngestRoutes({ cache, needsYou, log, onBlock, onExact, onMoved });
   const ingestTcp = readIngestConfig(config).tcp;
   const panels = now => {
@@ -458,7 +473,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
           log(ackLogLine(stored));
           if (onAckNotice) {
             Promise.resolve()
-              .then(() => onAckNotice(ackNotice(stored, now), stored.key))
+              .then(() => onAckNotice(ackNotice(stored, now, { via: req.headers?.origin ? 'page' : 'script' }), stored.key))
               .catch(err => log(`ack: the notice failed (${err?.code ?? err?.name ?? 'error'})`));
           }
           return json(res, 200, list);

@@ -271,6 +271,28 @@ test('a burst within 60 s is one event at the window\'s end; one pass\'s failure
   } finally { await env.done(); }
 });
 
+// The notifier's heal hold asks this (Ultron's L4, 11-13).
+test('knows(key): a key made or waiting out a window is known; a cleared one, another one or a non-text one is not', async () => {
+  const env = await setup();
+  try {
+    const a = cronAlert('com.example.backup');
+    assert.equal(env.events.knows(a.key), false);
+    await env.events.fromAlerts([a], env.ctx);
+    assert.equal(env.events.knows(a.key), true, 'made');
+    env.clock.t += 20e3;
+    const b = cronAlert('com.example.sync');
+    assert.equal((await env.events.fromAlerts([a, b], env.ctx)).waiting, 1);
+    assert.equal(env.events.knows(b.key), true, 'waiting out the window');
+    assert.equal(env.events.knows('cron:launchd:com.example.other'), false);
+    assert.equal(env.events.knows('toString'), false, 'an inherited name is no key');
+    assert.equal(env.events.knows(null), false);
+    env.clock.t += 60e3;
+    await env.events.flushNow('launchd');
+    await env.events.fromAlerts([], env.ctx);
+    assert.equal(env.events.knows(a.key), false, 'cleared and forgotten');
+  } finally { await env.done(); }
+});
+
 test('quiet hours hold events that are not failures until 07:00; failures go at once', async () => {
   const night = new Date(2026, 10, 11, 23, 30).getTime();
   assert.equal(isQuiet(night), true);

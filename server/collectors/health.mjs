@@ -14,6 +14,26 @@ const exec = promisify(execFile);
 // a 10 s timeout of its own, so 19 jobs could take minutes. This bounds the
 // whole call (the 2026-10-21 security review); it answers in about 0.1 s.
 export const JOB_STATUS_TIMEOUT_MS = 20 * 1000;
+// How long the first health pass waits for the crons panel's first pass (board
+// 20620d37): the crons pass waits up to job-status's timeout and 5 s for the first
+// answer, then reads launchd and runs the heal pass; past this the strip goes out alone.
+export const FIRST_CRONS_WAIT_MS = 60 * 1000;
+
+// Settles true once `key` has been through its collector once (data or an error in the
+// cache), or false after `timeoutMs`. Polled: it runs only on the first pass after a
+// start, for a few seconds at most, and its timers never hold the process open.
+export function untilCached(cache, key, { timeoutMs = FIRST_CRONS_WAIT_MS, everyMs = 200, clock = () => Date.now() } = {}) {
+  const there = () => { const e = cache?.get?.(key); return Boolean(e) && (e.fetchedAt !== null || e.error !== null); };
+  const until = clock() + timeoutMs;
+  return new Promise(resolve => {
+    const look = () => {
+      if (there()) return resolve(true);
+      if (clock() >= until) return resolve(false);
+      setTimeout(look, everyMs).unref?.();
+    };
+    look();
+  });
+}
 
 // What runs, every minute: job-status in its narrow mode (only `launchctl
 // print` per job and a read of each plist: no network, Keychain, tmux or
@@ -92,8 +112,14 @@ export function createHealth({
   // Whose processes count as the lead's session: the user this server runs as.
   uid = process.getuid(),
   // The heal runner's quiet marks (lib/heal-runner.mjs, quietOf), for the Jobs list.
-  quietOf = () => null
+  quietOf = () => null,
+  // What the first pass waits for before it builds the Jobs list (board 20620d37): the
+  // crons panel's first pass. The page marks an acked job by the crons panel's alert, so
+  // a strip that went out first showed the acked job as failed, red, until the next
+  // request. Null (the tests' default) waits for nothing.
+  firstCrons = null
 }) {
+  let firstDone = false;
   let answer = null;
   // Settled once the first collect has asked job-status, answered or not. The
   // crons collector starts beside it, and its overlay without an answer has no
@@ -164,9 +190,17 @@ export function createHealth({
     whenAsked: () => firstAsk,
 
     async collect() {
-      const at = now();
+      let at = now();
       const error = await askJobStatus(at);
       markAsked();
+      // Only after markAsked: the crons pass waits for that, so waiting first would hang.
+      if (!firstDone) {
+        firstDone = true;
+        if (firstCrons) {
+          try { await firstCrons(); } catch { /* the strip goes out as it would have */ }
+          at = now();
+        }
+      }
       const unanswered = !settings.jobStatus ? 'job-status is not set up' : error ? `job-status ${error}` : null;
       const byLabel = new Map((answer?.jobs ?? []).map(j => [j.label, j]));
       const crons = cache?.get('crons', at)?.data;

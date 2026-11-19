@@ -14,7 +14,7 @@ import { reachProblem } from '../lib/orbit/chat-search.js';
 import { pushView } from '../lib/orbit/push.js';
 import { clock } from '../lib/orbit/page.js';
 import {
-  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
+  threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, spacesMark, spacesLabel, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
   isPhotoType, fileWord, viaWords, routineWord, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
@@ -451,7 +451,8 @@ function PermissionCard({ p, chat, now }) {
       {p.why && <p className="o-chat-card-why">{p.why}</p>}
       {exact.length > 0 && (
         // The command's exact text, from Claude Code's hook: one row per line, each
-        // line break and tab drawn, so two lines never read as one. Text nodes only.
+        // line break and tab drawn, so two lines never read as one, and runs of spaces
+        // marked with their count. Text nodes only.
         <div className="o-chat-card-field">
           <span className="o-chat-card-key">Exact command, {exact.length === 1 ? 'one line' : `${exact.length} lines`}</span>
           <div className="o-mono o-chat-card-input o-chat-card-exact" role="group" tabIndex={0} aria-label={`The exact command, ${exact.length === 1 ? 'one line' : `${exact.length} lines`}`}>
@@ -459,7 +460,9 @@ function PermissionCard({ p, chat, now }) {
               <div key={i} className="o-chat-card-line">
                 {row.parts.map((part, j) => (part.tab
                   ? <span key={j} className="o-chat-card-break" role="img" aria-label="tab">⇥</span>
-                  : <span key={j}>{part.text}</span>))}
+                  : part.spaces
+                    ? <span key={j} className="o-chat-card-break" role="img" aria-label={spacesLabel(part.spaces)}>{spacesMark(part.spaces)}</span>
+                    : <span key={j}>{part.text}</span>))}
                 {row.end && <span className="o-chat-card-break" role="img" aria-label="line break">↵</span>}
               </div>
             ))}

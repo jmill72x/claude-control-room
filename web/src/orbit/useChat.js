@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, PAGE } from '../lib/orbit/chat.js';
+import { mergeMessages, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, rememberDismissed, PAGE } from '../lib/orbit/chat.js';
 import { reachStep, singleFlight, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
@@ -45,8 +45,9 @@ export function useChat({ active }) {
   }, [unsent]);
   const esRef = useRef(null);
   // The cards the viewer dismissed, kept across streams: the server replays a request
-  // that timed out here for an hour, and a dismissed one must not come back.
-  const dismissedRef = useRef(new Set());
+  // that timed out here for an hour, and a dismissed one must not come back. Kept two
+  // hours, at most DISMISSED_MAX of them (rememberDismissed).
+  const dismissedRef = useRef(new Map());
   const reopenRef = useRef(null);
   const aliveRef = useRef(true);
   const reachGateRef = useRef(null); // one jump to a search result at a time
@@ -325,7 +326,7 @@ export function useChat({ active }) {
     }
   }, [unpaired, device]);
   const dismissPermission = useCallback(requestId => {
-    dismissedRef.current.add(requestId);
+    dismissedRef.current = rememberDismissed(dismissedRef.current, requestId, Date.now());
     setPermissions(map => { const next = new Map(map); next.delete(requestId); return next; });
   }, []);
 

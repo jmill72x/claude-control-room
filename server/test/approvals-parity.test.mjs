@@ -111,6 +111,43 @@ test('parity: a hidden character keeps the card Deny-only, as text, as the mark 
   assert.deepEqual(parity(req('Bash', { command: 'echo plain' })), []);
 });
 
+// Ultron's parity L1 and L2 (11-12): a hidden character at any depth, and one in the
+// tool's name, keep the card Deny-only too.
+test('parity L1: a hidden character any depth into the preview keeps the card Deny-only, and a deep plain one does not', () => {
+  for (const depth of [1, 20, 21, 22, 200, 5000]) {
+    let v = `x${RLO}y`;
+    for (let i = 0; i < depth; i++) v = i % 2 ? [v] : { k: v };
+    assert.deepEqual(parity(req('Bash', { command: 'ls', deep: v })), [HIDDEN], `depth ${depth}`);
+    assert.deepEqual(guarded(req('Bash', { command: 'ls', deep: v })).includes(HIDDEN), true, `guarded, depth ${depth}`);
+    let plain = 'xy';
+    for (let i = 0; i < depth; i++) plain = i % 2 ? [plain] : { k: plain };
+    assert.deepEqual(parity(req('Bash', { command: 'ls', deep: plain })), [], `plain, depth ${depth}`);
+  }
+  // Wide as well as deep: the last of many.
+  assert.deepEqual(parity(req('Bash', { command: 'ls', list: [...Array(60).fill('x'), { k: [`a${RLO}`] }] })), [HIDDEN]);
+  // In a key, deep down, too.
+  let key = { [`a${ZWSP}b`]: 1 };
+  for (let i = 0; i < 30; i++) key = { k: key };
+  assert.deepEqual(parity(req('Bash', { command: 'ls', deep: key })), [HIDDEN]);
+});
+
+test('parity L2: a hidden character in the tool\'s name, as the store marks it, keeps the card Deny-only; "allow" lifts it', () => {
+  for (const tool of ['Re⟦U+202E⟧ad', '⟦U+200B⟧Bash', 'Bash⟦U+E0041⟧']) {
+    assert.deepEqual(parity(req(tool, { command: 'ls' })), [HIDDEN], tool);
+    assert.deepEqual(parity(req(tool, { command: 'ls' }), { hidden: 'allow' }), [], tool);
+    assert.ok(guarded(req(tool, { command: 'ls' })).includes(HIDDEN), `guarded too: ${tool}`);
+  }
+  assert.deepEqual(parity(req('Bash', { command: 'ls' })), []);
+});
+
+// Ultron's parity L3 (11-12): look-alike letters are visible, and not marked (a note in
+// lib/approvals.mjs says why); this pins that choice.
+test('parity L3: a look-alike letter from another script is shown as written and not marked', () => {
+  const cyrillicA = String.fromCodePoint(0x430);
+  assert.deepEqual(parity(req('Bash', { command: `c${cyrillicA}t notes.md` })), []);
+  assert.ok(!guarded(req('Bash', { command: `c${cyrillicA}t notes.md` })).includes(HIDDEN));
+});
+
 // ---- the gate ----
 
 const READ = { tool: 'Read', description: 'd', inputPreview: '{"file_path":"/home/owner/Projects/app/a"}', state: 'open', denyOnly: [] };
@@ -452,6 +489,16 @@ test('the needs-you ingest logs a block by what became of it: the window, parity
 });
 
 // ---- server.mjs, read as source (it can't run in a test) ----
+
+// Ultron's parity L6 (11-12): a comment in server.mjs named a test file that isn't there.
+test('every test file a comment in server.mjs names is there', async () => {
+  const src = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
+  const named = [...new Set([...src.matchAll(/test\/[A-Za-z0-9_.-]+\.test\.mjs/g)].map(m => m[0]))];
+  assert.ok(named.includes('test/approvals-parity.test.mjs'), 'the onMoved guard is named by its real file');
+  const missing = [];
+  for (const f of named) { try { await readFile(new URL(`../${f}`, import.meta.url)); } catch { missing.push(f); } }
+  assert.deepEqual(missing, []);
+});
 
 test('server.mjs: both ingest handlers get onMoved, the close counts only the lead\'s session by name, and the gate gets config\'s rules and hidden values', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');

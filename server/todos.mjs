@@ -3,6 +3,7 @@ import { dirname, join, basename, resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { AGENT_KEY } from './lib/roster.mjs';
 import { UNSAFE_CHARS, UNSAFE_SAYS } from './lib/text.mjs';
+import { hasHiddenChars } from './lib/hidden-chars.mjs';
 
 const LANES = new Set(['idea', 'doing', 'done']);
 // Priority is optional: absent or null means "not set", and the UI renders
@@ -37,9 +38,12 @@ export class InvalidBoardError extends Error {
 // sent. Lengths count characters, not UTF-16 units, so an emoji counts once.
 const chars = s => [...s].length;
 // A tag is a short name shown as a chip on the page and in the mod: at most TAG_MAX
-// characters once trimmed (the page trims, and unifyTags below), with none of
-// UNSAFE_CHARS (board 14a66582: the page's New item form now takes a typed tag, and
-// web/src/lib/orbit/board.js checks it by this same rule before it is sent).
+// characters once trimmed (the page trims, and unifyTags below), with none of the
+// shared hidden characters (lib/hidden-chars.mjs's line set: board e6178bb9, Ultron
+// 11-18; the title's UNSAFE_CHARS let a soft hyphen or a tag character make a
+// look-alike area). The page's New item form (board 14a66582) checks it by this same
+// set before it is sent (web/src/lib/orbit/board.js). Titles keep UNSAFE_CHARS, which
+// allows the emoji joiner.
 export const TAG_MAX = 40;
 const none = v => v === undefined || v === null || v === '';
 const ASK_KINDS = new Set(['decide', 'do']);
@@ -254,7 +258,7 @@ export function createTodoStore(path, { historyDir = join(dirname(path), 'todos-
       if (typeof t.text !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: text must be text`);
       if (t.tag !== undefined && typeof t.tag !== 'string') throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag must be text, or left out`);
       if (typeof t.tag === 'string' && chars(t.tag.trim()) > TAG_MAX) throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag must be at most ${TAG_MAX} characters`);
-      if (typeof t.tag === 'string' && UNSAFE_CHARS.test(t.tag)) throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag ${UNSAFE_SAYS}`);
+      if (typeof t.tag === 'string' && hasHiddenChars(t.tag)) throw new InvalidBoardError(`item ${JSON.stringify(t.id)}: tag ${UNSAFE_SAYS}`);
       if (!LANES.has(t.lane)) throw new InvalidBoardError(`unknown lane: ${t.lane}`);
       if (t.priority != null && !PRIORITIES.has(t.priority)) throw new InvalidBoardError(`unknown priority: ${t.priority}`);
       if (t.due != null && t.due !== '' && !isDueDate(t.due)) {

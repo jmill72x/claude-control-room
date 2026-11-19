@@ -1,7 +1,7 @@
 // The proactive check's event (lib/events.mjs, `proactive`): one event per call, source
 // "proactive" and type "heads-up", its words built from checked typed fields only; no
 // alert keys in the events ledger; never held by quiet hours (the check holds its own);
-// the caps, the coalesce window and the kill switch as for any source. Each test has its
+// the caps and the kill switch as for any source; no coalesce window (Ultron's N2). Each test has its
 // own temp store; everything is invented, and nothing touches :8322 or data/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createChatStore } from '../lib/chat-store.mjs';
-import { createEvents, readEventsConfig, heldText, PER_SOURCE_HOURLY, COALESCE_MS, DAILY_TOTAL, PROACTIVE_DAILY } from '../lib/events.mjs';
+import { createEvents, readEventsConfig, heldText, PER_SOURCE_HOURLY, DAILY_TOTAL, PROACTIVE_DAILY } from '../lib/events.mjs';
 import { toInbound } from '../lib/chat-socket.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN;
@@ -24,23 +24,32 @@ async function setup({ clockAt = at(18, 10) } = {}) {
   const store = createChatStore({ dir: join(dir, 'chat'), now: () => clock.t });
   await store.load();
   const killSwitchPath = join(dir, 'events-off');
+  // A store whose append can be made to refuse, as a full disk would.
+  let refuse = false;
+  const shown = new Proxy(store, {
+    get(t, k) {
+      if (k === 'append' && refuse) return async () => { throw Object.assign(new Error('refused'), { code: 'EFAKE' }); };
+      const v = t[k];
+      return typeof v === 'function' ? v.bind(t) : v;
+    }
+  });
   const events = createEvents({
-    store, ledgerPath: join(dir, 'events.json'), killSwitchPath, clock: () => clock.t, log: () => {},
+    store: shown, ledgerPath: join(dir, 'events.json'), killSwitchPath, clock: () => clock.t, log: () => {},
     setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }
   });
   await events.load();
   const eventsOf = () => store.list({ after: 0, limit: 100 }).filter(m => m.kind === 'event');
-  return { dir, clock, timers, store, events, eventsOf, killSwitchPath, done: () => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
+  return { dir, clock, timers, store, events, eventsOf, killSwitchPath, failAppend: v => { refuse = v; }, done: () => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
 }
 
 test('one call is one event: source proactive, type heads-up, the typed words, a count per hit', async () => {
   const s = await setup();
   try {
-    const r = await s.events.proactive([due('aa11aa11', { title: HOSTILE, key: 'due:aa11aa11' }), { rule: 'fails', job: 'Evening digest', count: 3 }]);
+    const r = await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001', { title: HOSTILE, key: 'due:aa11aa11-0000-4000-8000-000000000001' }), { rule: 'fails', job: 'Evening digest', count: 3 }]);
     assert.deepEqual(r, { status: 'made' });
     const [m] = s.eventsOf();
     assert.equal(m.from, 'system');
-    assert.equal(m.text, 'Heads up (2): 1 board item past due: aa11aa11 (P2, due 2026-11-17); job Evening digest failed 3 times in 14 days');
+    assert.equal(m.text, 'Heads up (2): 1 board item past due: aa11aa11-0000-4000-8000-000000000001 (P2, due 2026-11-17); job Evening digest failed 3 times in 14 days');
     assert.deepEqual(m.meta.event, { v: 1, source: 'proactive', type: 'heads-up', count: 2, keys: [], live: false });
     assert.deepEqual(s.events.ledger.keys, {}, 'no key of the check\'s in the events ledger');
     assert.equal(s.events.deliverable(m), true);
@@ -63,26 +72,36 @@ test('nothing that is not a known hit is made: refused, and no event', async () 
 test('in quiet hours it is made at once: the check has already held it to 07:00', async () => {
   const s = await setup({ clockAt: at(18, 23) });
   try {
-    assert.deepEqual(await s.events.proactive([due('aa11aa11')]), { status: 'made' });
+    assert.deepEqual(await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001')]), { status: 'made' });
     assert.equal(s.eventsOf().length, 1);
     assert.equal(s.events.ledger.quiet.length, 0);
   } finally { await s.done(); }
 });
 
-test('within 60 s of its last event a second call waits out the window, then is said in the same words', async () => {
+// Ultron's N2 (11-18): a coalesced batch was told before its event existed, and the
+// window's end could still hold it, drop it or fail. Heads-ups skip the window.
+test('within 60 s of its last event a second call is made at once, never left waiting out a window', async () => {
   const s = await setup();
   try {
-    await s.events.proactive([due('aa11aa11')]);
+    await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001')]);
     s.clock.t += 10e3;
-    assert.deepEqual(await s.events.proactive([due('bb22bb22'), { rule: 'session', pct: 77, resetsAt: null }]), { status: 'coalescing' });
-    assert.equal(s.timers.length, 1);
-    assert.equal(s.timers[0].ms, COALESCE_MS - 10e3);
-    s.clock.t += 50e3;
-    await s.timers[0].fn();
-    await s.events.flushNow('proactive');
+    assert.deepEqual(await s.events.proactive([due('bb22bb22-0000-4000-8000-000000000002'), { rule: 'session', pct: 77, resetsAt: null }]), { status: 'made' });
+    assert.equal(s.timers.length, 0, 'no window timer');
     const texts = s.eventsOf().map(m => m.text);
     assert.equal(texts.length, 2);
-    assert.equal(texts[1], 'Heads up (2): 1 board item past due: bb22bb22 (P2, due 2026-11-17); Claude session at 77%');
+    assert.equal(texts[1], 'Heads up (2): 1 board item past due: bb22bb22-0000-4000-8000-000000000002 (P2, due 2026-11-17); Claude session at 77%');
+  } finally { await s.done(); }
+});
+
+test('a store that refuses the heads-up throws to the check, counts nothing and keeps no window', async () => {
+  const s = await setup();
+  try {
+    s.failAppend(true);
+    await assert.rejects(s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001')]));
+    assert.equal(s.events.ledger.made.length, 0);
+    s.failAppend(false);
+    assert.deepEqual(await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001')]), { status: 'made' });
+    assert.equal(s.eventsOf().length, 1);
   } finally { await s.done(); }
 });
 
@@ -95,13 +114,13 @@ test('the caps: the seventh in an hour is held, and nothing is counted, since th
     }
     // Offered on three passes: no held-back count, so no summary that counts it thrice.
     for (let i = 0; i < 3; i++) {
-      assert.deepEqual(await s.events.proactive([due('a77b4757'), due('b77b4757')]), { status: 'held' });
+      assert.deepEqual(await s.events.proactive([due('a77b4757-0000-4000-8000-000000000005'), due('b77b4757-0000-4000-8000-000000000006')]), { status: 'held' });
       s.clock.t += 5 * MIN;
     }
     assert.equal(Object.hasOwn(s.events.ledger.held, 'proactive'), false);
     assert.equal(s.eventsOf().length, PER_SOURCE_HOURLY);
     s.clock.t += HOUR;
-    assert.deepEqual(await s.events.proactive([due('a77b4757'), due('b77b4757')]), { status: 'made' });
+    assert.deepEqual(await s.events.proactive([due('a77b4757-0000-4000-8000-000000000005'), due('b77b4757-0000-4000-8000-000000000006')]), { status: 'made' });
     assert.equal(s.eventsOf().length, PER_SOURCE_HOURLY + 1, 'no held-back summary');
     // A summary for heads-ups (only from a coalesced batch held at its window's end)
     // names their own day cap.
@@ -141,11 +160,11 @@ test('the kill switch: nothing made and nothing counted (the check offers it aga
   const s = await setup();
   try {
     await writeFile(s.killSwitchPath, '');
-    for (let i = 0; i < 3; i++) assert.deepEqual(await s.events.proactive([due('aa11aa11'), due('bb22bb22')]), { status: 'off' });
+    for (let i = 0; i < 3; i++) assert.deepEqual(await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001'), due('bb22bb22-0000-4000-8000-000000000002')]), { status: 'off' });
     assert.equal(s.eventsOf().length, 0, 'no suppressed line');
     assert.equal(s.events.ledger.suppressed.n, 0);
     await rm(s.killSwitchPath);
-    assert.deepEqual(await s.events.proactive([due('aa11aa11'), due('bb22bb22')]), { status: 'made' });
+    assert.deepEqual(await s.events.proactive([due('aa11aa11-0000-4000-8000-000000000001'), due('bb22bb22-0000-4000-8000-000000000002')]), { status: 'made' });
   } finally { await s.done(); }
 });
 

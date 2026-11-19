@@ -160,9 +160,13 @@ export function makeAck(alert, request, now) {
 // (`renewals`), so the notice can say how often this failure has been put off; one
 // for a new instance starts at 0. Counted here, inside the store's one-at-a-time
 // write, so two renewals at once can't both read the same count.
-export function addAck(list, ack, now) {
+// `removed` (optional) is the entry an un-ack took away for this key: a re-ack of the
+// same failure before that entry would have run out counts on from it, so ack, un-ack,
+// ack reads as a renewal, not a first ack (Ultron's 11-12 low).
+export function addAck(list, ack, now, { removed = null } = {}) {
   const active = activeAcks(list, now);
-  const prev = active.find(a => a.key === ack.key && sameSince(a.since, ack.since));
+  const earlier = removed && activeAcks([removed], now).length === 1 && removed.key === ack.key && sameSince(removed.since, ack.since) ? removed : null;
+  const prev = active.find(a => a.key === ack.key && sameSince(a.since, ack.since)) ?? earlier;
   const kept = active.filter(a => a.key !== ack.key);
   kept.push({ ...ack, renewals: prev ? renewalsOf(prev) + 1 : 0 });
   kept.sort((a, b) => a.at - b.at);
@@ -276,9 +280,15 @@ const KIND_WORDS = {
   service: { what: 'a down service', since: 'down since', which: 'Which service' }
 };
 
+// How an ack arrived, for its notice (Ultron's 11-12 low): `by` is the caller's own word,
+// so the notice also says what the server saw. A browser sends Origin on every POST
+// (`page`); a request without one is a script (`script`); loop 2's Ack until its next run
+// is a tap on a heal card (`heal-card`). Anything else says nothing.
+export const VIA_WORDS = Object.freeze({ page: 'from the page', script: 'from a script, not the page', 'heal-card': 'from a heal card on the page' });
+
 // The notice for an ack as stored (addAck's entry, with `renewals`), at `now`:
-// `{ message, ntfyMessage, priority }`, the message one line.
-export function ackNotice(ack, now) {
+// `{ message, ntfyMessage, priority }`, the message one line. `via` is how it arrived.
+export function ackNotice(ack, now, { via = null } = {}) {
   const words = KIND_WORDS[ack.kind] ?? { what: 'an alert', since: 'raised since', which: 'Which one' };
   const n = renewalsOf(ack);
   const since = Number.isFinite(ack.since)
@@ -286,8 +296,9 @@ export function ackNotice(ack, now) {
     : 'when it began is unknown';
   const did = n ? `renewed the acknowledgement of ${words.what}` : `acknowledged ${words.what}`;
   const count = n ? `, renewed ${n} time${n === 1 ? '' : 's'} for this failure` : '';
+  const how = typeof via === 'string' && Object.hasOwn(VIA_WORDS, via) ? `; ${VIA_WORDS[via]}` : '';
   return {
-    message: oneLine(`${ack.by} ${did} (${since})${count}: it is off the alerts until ${noticeTime(ack.until)}. ${words.which}, and any note, are on the dashboard.`),
+    message: oneLine(`${ack.by} ${did} (${since}${how})${count}: it is off the alerts until ${noticeTime(ack.until)}. ${words.which}, and any note, are on the dashboard.`),
     ntfyMessage: n ? NTFY_RENEW_WORDS : NTFY_ACK_WORDS,
     priority: ACK_NOTICE_PRIORITY
   };

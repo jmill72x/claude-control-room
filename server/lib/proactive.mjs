@@ -37,8 +37,10 @@ export const STATE_VERSION = 1;
 export const BOARD_MISSES_SAID = 3;
 // What events.proactive answers when it took the hits (Ultron's L1, 11-18). `held` (the
 // caps) and `off` (the kill switch) took nothing, so those hits stay unsent and are
-// offered again on the next pass.
-export const SENT_STATUSES = Object.freeze(['made', 'coalescing']);
+// offered again on the next pass. `coalescing` no longer counts (Ultron's N2, 11-18): a
+// batch waiting out a window could still be held, dropped or fail, and the events module
+// no longer coalesces heads-ups anyway, so only an event that exists is sent.
+export const SENT_STATUSES = Object.freeze(['made']);
 
 const OPEN_LANES = new Set(['idea', 'doing']);
 // A launchd job's alert key's prefix (lib/alerts.mjs): `cron:launchd:<label>`.
@@ -322,7 +324,8 @@ export function createProactive({
   let boardSaid = false;
   let checkedAt = null;
   let lastDelivery = null;
-  // The last status that left hits unsent, so the log says each spell once.
+  // The last status that left hits unsent (or 'error' when the event could not be
+  // made), so the log says each spell once (Ultron's N3, 11-18, for the error).
   let unsentSaid = null;
   let current = [];
   let queue = Promise.resolve();
@@ -451,15 +454,16 @@ export function createProactive({
             const r = await ev.proactive(due.map(checkHit));
             status = typeof r?.status === 'string' ? r.status : 'unknown';
           } catch (err) {
-            // Unsent: the next pass tries again.
-            log(`proactive: the event was not made (${err?.code ?? err?.name ?? 'error'}); tried again next pass`);
+            // Unsent: the next pass tries again. Said once a spell, not every 5 minutes.
+            if (unsentSaid !== 'error') log(`proactive: the event was not made (${err?.code ?? err?.name ?? 'error'}); tried again each pass`);
+            unsentSaid = 'error';
           }
           if (status !== null) {
             lastDelivery = { at: now, count: due.length, status };
             const n = `${due.length} heads-up${due.length === 1 ? '' : 's'}`;
             if (SENT_STATUSES.includes(status)) {
-              // Sent means handed to the events module, which made the event or will at
-              // its coalesce window's end; not that the lead has read it.
+              // Sent means the events module made the event (it is stored and goes to
+              // the lead's channel), not that the lead has read it.
               for (const h of due) Object.assign(state.hits.get(h.key), { toldAt: now, heldAt: null });
               told = due.length;
               unsentSaid = null;

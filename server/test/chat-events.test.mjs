@@ -45,8 +45,19 @@ test('oneLine: a line over LINE_MAX code points keeps its start and says how muc
   assert.equal(oneLine('x'.repeat(LINE_MAX)), 'x'.repeat(LINE_MAX));
   const long = oneLine('😀'.repeat(LINE_MAX + 5));
   assert.equal(long, '😀'.repeat(LINE_MAX) + ' ⋯ 5 more cut', 'counted in code points');
-  // A marker counts as what it shows, so a flood of line breaks is cut too.
-  assert.ok(oneLine(LF.repeat(1000)).endsWith(' more cut'));
+  // A marker counts as what it shows, so a flood of line breaks is cut too (Ultron's
+  // 11-12 low: they once counted one each, and 600 of them made a 4,800-character line).
+  const flood = oneLine(LF.repeat(1000));
+  assert.equal(flood, '⟦U+000A⟧'.repeat(75) + ' ⋯ 925 more cut', '75 markers of 8 fill 600');
+  assert.ok([...flood].length <= LINE_MAX + 20);
+  // A marker that doesn't fit whole is left out whole, and a line exactly at the cap is kept.
+  assert.equal(oneLine('x'.repeat(LINE_MAX - 7) + LF), 'x'.repeat(LINE_MAX - 7) + ' ⋯ 1 more cut');
+  assert.equal(oneLine('x'.repeat(LINE_MAX - 8) + LF), 'x'.repeat(LINE_MAX - 8) + '⟦U+000A⟧', 'exactly at the cap');
+  assert.equal(oneLine('x'.repeat(LINE_MAX - 9) + cp(0xe0041)), 'x'.repeat(LINE_MAX - 9) + '⟦U+E0041⟧', 'five hex digits, 9 in all');
+  assert.equal(oneLine('x'.repeat(LINE_MAX - 8) + cp(0xe0041)), 'x'.repeat(LINE_MAX - 8) + ' ⋯ 1 more cut');
+  // A tab is one space.
+  assert.equal(oneLine('x'.repeat(LINE_MAX - 1) + TAB), 'x'.repeat(LINE_MAX - 1) + ' ');
+  assert.equal(oneLine('ab', 1), 'a ⋯ 1 more cut');
 });
 
 test('every alerted kind has its own words, on one line, whatever its fields carry', () => {

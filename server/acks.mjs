@@ -39,9 +39,28 @@ export function createAckStore(path) {
     return list;
   }
 
+  // What the last un-ack of each key took away, so a re-ack of the same failure counts
+  // as a renewal (lib/acks.mjs, addAck; Ultron's 11-12 low). In memory only, and dropped
+  // once that ack would have run out: kept in the file, an older server reading it (a
+  // rollback) would take it for a live ack. So the count survives an un-ack, not a restart.
+  const removed = new Map();
+  const forgetLapsed = now => { for (const [k, a] of removed) if (!(a.until > now)) removed.delete(k); };
+
   return {
     read: async (now = Date.now()) => activeAcks(await load(), now),
-    add: (ack, now = Date.now()) => serial(async () => persist(addAck(await load(), ack, now))),
-    remove: (key, now = Date.now()) => serial(async () => persist(removeAck(await load(), key, now)))
+    add: (ack, now = Date.now()) => serial(async () => {
+      forgetLapsed(now);
+      const list = await persist(addAck(await load(), ack, now, { removed: removed.get(ack.key) ?? null }));
+      removed.delete(ack.key);
+      return list;
+    }),
+    remove: (key, now = Date.now()) => serial(async () => {
+      forgetLapsed(now);
+      const list = await load();
+      const gone = activeAcks(list, now).find(a => a.key === key);
+      const kept = await persist(removeAck(list, key, now));
+      if (gone) removed.set(key, gone);
+      return kept;
+    })
   };
 }

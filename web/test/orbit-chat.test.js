@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, mergeMessages, applyEdit, applyState, lastSeq, oldestId, tickFor, TICK_MARKS, bannerFor,
-  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, changedCard, withStatus, cardFields, exactRows, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, armedCopy, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
+  fileKind, transferFiles, dragHasFiles, intake, MAX_FILES, FILE_MAX_BYTES, ACCEPT, permissionView, upsertPermission, changedCard, withStatus, cardFields, exactRows, spacesMark, spacesLabel, SPACES_SHOWN, markerSegments, hasMarker, shownInput, sha256Hex, allowArmed, armedCopy, ALLOW_ARM_MS, sentLine, phaseFor, afterStreamRefusal, effectiveStatus, resizeTarget, fileSize, dayLabel, threadRows, quoted, quoteLine, PERMISSION_TTL_MS,
   isPhotoType, fileWord, viaWords, keyLine, keyRows, keyGone, pairedSince, codeState, KEY_IDLE_DAYS
 } from '../src/lib/orbit/chat.js';
 import { parseRoute, routeHash } from '../src/lib/orbit/page.js';
@@ -341,6 +341,30 @@ test('the exact command: the hash covers it, and its rows keep every line break 
   assert.deepEqual(exactRows('\n'), [{ parts: [], end: true }]);
   assert.deepEqual(exactRows('<b>x</b>'), [{ parts: [{ text: '<b>x</b>' }], end: false }], 'text stays text');
   for (const none of [null, undefined, '', 7, ['ls']]) assert.deepEqual(exactRows(none), []);
+  // Ultron's L6 (11-13): runs of spaces are marked with their count, like tabs: two or
+  // more anywhere, any at a line's start or end; one between words stays text.
+  assert.deepEqual(exactRows('rm  -rf x'), [{ parts: [{ text: 'rm' }, { spaces: 2 }, { text: '-rf x' }], end: false }]);
+  assert.deepEqual(exactRows(' ls'), [{ parts: [{ spaces: 1 }, { text: 'ls' }], end: false }], 'leading');
+  assert.deepEqual(exactRows('ls '), [{ parts: [{ text: 'ls' }, { spaces: 1 }], end: false }], 'trailing');
+  assert.deepEqual(exactRows('   '), [{ parts: [{ spaces: 3 }], end: false }], 'nothing but spaces');
+  assert.deepEqual(exactRows('a b c'), [{ parts: [{ text: 'a b c' }], end: false }]);
+  assert.deepEqual(exactRows('a \tb'), [{ parts: [{ text: 'a ' }, { tab: true }, { text: 'b' }], end: false }], 'a single space by a tab is not a line edge');
+  assert.deepEqual(exactRows('a\t  b'), [{ parts: [{ text: 'a' }, { tab: true }, { spaces: 2 }, { text: 'b' }], end: false }]);
+  assert.deepEqual(exactRows('a\t b'), [{ parts: [{ text: 'a' }, { tab: true }, { text: ' b' }], end: false }], 'nor after one');
+  assert.deepEqual(exactRows('echo x \n  cd y'), [
+    { parts: [{ text: 'echo x' }, { spaces: 1 }], end: true },
+    { parts: [{ spaces: 2 }, { text: 'cd y' }], end: false }
+  ], 'per line');
+  assert.deepEqual(exactRows('a' + ' '.repeat(40) + 'b').map(r => r.parts), [[{ text: 'a' }, { spaces: 40 }, { text: 'b' }]]);
+  // Drawn as open boxes, the count past eight, and named for a screen reader.
+  const box = String.fromCodePoint(0x2423);
+  assert.equal(spacesMark(1), box);
+  assert.equal(spacesMark(SPACES_SHOWN), box.repeat(8));
+  assert.equal(spacesMark(9), `${box}${String.fromCodePoint(0xd7)}9`);
+  assert.equal(spacesLabel(1), '1 space');
+  assert.equal(spacesLabel(40), '40 spaces');
+  // The text the card hashes is the exact text, untouched (shownInput), whatever is drawn.
+  assert.ok(shownInput({ tool: 'Bash', exact: 'rm  -rf x' }).includes('rm  -rf x'));
 });
 
 test('Allow once is armed by the first tap for 4 seconds; the "sent" line never says done', () => {

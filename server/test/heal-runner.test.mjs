@@ -6,14 +6,14 @@
 // name and figure here is invented; nothing here runs launchctl.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, stat, readdir, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, stat, readdir, mkdir, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer, get, request } from 'node:http';
 import { createHealRunner, isStaleLogCandidate, QUIET_WORDS } from '../lib/heal-runner.mjs';
 import { createHealLedger } from '../lib/heal-ledger.mjs';
-import { readHealConfig, CATALOG, SETTLE_MAX_MS, INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS, PER_TARGET_DAY } from '../lib/heal.mjs';
+import { readHealConfig, CATALOG, SETTLE_MAX_MS, INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS, PER_TARGET_DAY, judgeReadings, killFileThere } from '../lib/heal.mjs';
 import { createHealth } from '../collectors/health.mjs';
 import { readHealthConfig } from '../lib/health.mjs';
 import { buildCron } from '../lib/parse-launchd.mjs';
@@ -27,7 +27,8 @@ const NOW = new Date(2026, 10, 11, 23, 30).getTime();
 const L = 'com.example.nas-mount';
 const SINCE = NOW - 10 * H;
 
-const printed = ({ runs, exit = 0, interval = 180, state = 'not running' }) => [
+// `signal` adds a last terminating signal beside the exit line (Ultron's L6, 11-13).
+const printed = ({ runs, exit = 0, interval = 180, state = 'not running', signal = null }) => [
   `gui/501/${L} = {`,
   '\tactive count = 0',
   `\tstate = ${state}`,
@@ -36,6 +37,7 @@ const printed = ({ runs, exit = 0, interval = 180, state = 'not running' }) => [
   '\t}',
   `\truns = ${runs}`,
   exit === null ? '\tlast terminating signal = Killed: 9' : `\tlast exit code = ${exit}`,
+  signal === null ? '' : `\tlast terminating signal = ${signal}`,
   interval ? `\trun interval = ${interval} seconds` : '',
   '}'
 ].join('\n');
@@ -171,13 +173,32 @@ test('a crash loop raises the counter but not with exit 0: red', async t => {
   assert.deepEqual(env.ledger.lines().map(l => l.why), ['exit']);
 });
 
-test('a job ended by a signal has no exit code: red', async t => {
+test('a job ended by a signal has no exit code: red, said as the signal', async t => {
   const env = await setup({ script: { [L]: [printed({ runs: 147 }), printed({ runs: 148, exit: null })] } });
   t.after(env.done);
   await env.runner.pass([staleCron()]);
   at(env, NOW + 4 * MIN);
   assert.equal(cronOf(await env.runner.pass([staleCron()])).state, 'failed');
-  assert.deepEqual(env.ledger.lines().map(l => l.why), ['exit']);
+  assert.deepEqual(env.ledger.lines().map(l => l.why), ['signal']);
+});
+
+// L6 (Ultron, 11-13): a signal on record fails the check at either reading, even beside
+// a last exit of 0.
+test('a last terminating signal beside an exit of 0 is red, at the first reading or the second', async t => {
+  const first = await setup({ script: { [L]: [printed({ runs: 147, signal: 'Terminated: 15' })] } });
+  t.after(first.done);
+  assert.equal(cronOf(await first.runner.pass([staleCron()])).state, 'failed');
+  assert.deepEqual(first.ledger.lines().map(l => [l.outcome, l.why]), [['escalated', 'signal']]);
+  const second = await setup({ script: { [L]: [printed({ runs: 147 }), printed({ runs: 148, signal: 'Killed: 9' })] } });
+  t.after(second.done);
+  await second.runner.pass([staleCron()]);
+  at(second, NOW + 4 * MIN);
+  assert.equal(cronOf(await second.runner.pass([staleCron()])).state, 'failed');
+  assert.deepEqual(second.ledger.lines().map(l => [l.outcome, l.why]), [['escalated', 'signal']]);
+  assert.equal(judgeReadings({ runs: 1, lastExit: 0, lastSignal: 9 }, { runs: 2, lastExit: 0, lastSignal: null }), 'signal');
+  assert.equal(judgeReadings({ runs: 1, lastExit: 0, lastSignal: null }, { runs: 2, lastExit: 0, lastSignal: 15 }), 'signal');
+  assert.equal(judgeReadings({ runs: 1, lastExit: 0, lastSignal: null }, { runs: 2, lastExit: 0, lastSignal: null }), 'clean');
+  assert.equal(judgeReadings({ runs: 1, lastExit: 0 }, { runs: 2, lastExit: 0 }), 'clean', 'no signal line at all');
 });
 
 test('a counter that went back (the job was loaded again) proves nothing: red', async t => {
@@ -427,6 +448,122 @@ test('restarts: each new run re-checks the same instance from scratch, and never
   assert.equal(JSON.parse(await readFile(path, 'utf8')).length, PER_TARGET_DAY + 2);
 });
 
+// L1 (Ultron, 11-13): one attempt per instance holds across a restart, rebuilt from the
+// ledger at load.
+test('L1: after a restart, an instance that escalated or relapsed is not tried again that day; another one is', async t => {
+  for (const outcome of ['escalated', 'relapsed']) {
+    const dir = await mkdtemp(join(tmpdir(), 'heal-l1-'));
+    t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+    const path = join(dir, 'heals.json');
+    const line = { at: NOW - 2 * H, class: 'stale-log', action: 'mark-quiet', tier: 'T1', target: 'nas-mount', detectedAt: NOW - 2 * H, outcome, why: 'flat', runs: [1, 1], since: SINCE };
+    // Another action's line on the same target is not this loop's past.
+    const other = { ...line, at: NOW - H, action: 'rerun-job', class: 'missed-run', tier: 'T2', outcome: 'escalated', since: SINCE + 7 * H };
+    await writeFile(path, JSON.stringify([line, other]));
+    const env = await setup({ ledgerPath: path });
+    t.after(env.done);
+    assert.equal(cronOf(await env.runner.pass([staleCron()])).state, 'failed', outcome);
+    assert.deepEqual(env.launchctlPrint.calls, [], `${outcome}: no second attempt for the same instance`);
+    assert.equal(env.ledger.lines().length, 2, 'and no new line');
+    assert.equal(cronOf(await env.runner.pass([staleCron({ lastRunAt: SINCE + 30e3 })])).holdUntil, undefined, 'the same instance within the tolerance');
+    assert.deepEqual(env.launchctlPrint.calls, []);
+    // The other action's instance is not closed for this loop.
+    await env.runner.pass([staleCron({ lastRunAt: SINCE + 7 * H })]);
+    assert.deepEqual(env.launchctlPrint.calls, [L], `${outcome}: another instance is tried`);
+    // A day after that line, the record has gone.
+    const env2 = await setup({ ledgerPath: path });
+    t.after(env2.done);
+    at(env2, NOW - 2 * H + 24 * H + MIN);
+    await env2.runner.pass([staleCron()]);
+    assert.deepEqual(env2.launchctlPrint.calls, [L], `${outcome}: tried again a day on`);
+  }
+  // A line stamped ahead of this clock (a clock that went back) still closes its instance.
+  const dir = await mkdtemp(join(tmpdir(), 'heal-l1c-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const path = join(dir, 'heals.json');
+  await writeFile(path, JSON.stringify([{ at: NOW + 2 * H, class: 'stale-log', action: 'mark-quiet', tier: 'T1', target: 'nas-mount', detectedAt: NOW + 2 * H, outcome: 'escalated', why: 'flat', runs: [1, 1], since: SINCE }]));
+  const ahead = await setup({ ledgerPath: path });
+  t.after(ahead.done);
+  await ahead.runner.pass([staleCron()]);
+  assert.deepEqual(ahead.launchctlPrint.calls, [], 'closed, though stamped ahead');
+});
+
+test('L1: after a restart, a target whose last line is a heal holds another instance off for the hour; the same one is checked again', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'heal-l1b-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const path = join(dir, 'heals.json');
+  const healed = { at: NOW - 5 * H, class: 'stale-log', action: 'mark-quiet', tier: 'T1', target: 'nas-mount', detectedAt: NOW - 5 * H, outcome: 'healed', why: 'clean', runs: [1, 3], since: SINCE };
+  await writeFile(path, JSON.stringify([healed]));
+  // The same instance: re-checked from scratch, and quiet again.
+  const same = await setup({ ledgerPath: path });
+  t.after(same.done);
+  await same.runner.pass([staleCron()]);
+  at(same, NOW + 4 * MIN);
+  assert.equal(cronOf(await same.runner.pass([staleCron()])).state, 'quiet');
+  // Another instance within the hour of the restart: held off, as a comeback.
+  await writeFile(path, JSON.stringify([healed]));
+  const other = await setup({ ledgerPath: path });
+  t.after(other.done);
+  at(other, NOW + 30 * MIN);
+  assert.equal(cronOf(await other.runner.pass([staleCron({ lastRunAt: NOW - 20 * MIN })])).state, 'failed');
+  assert.deepEqual(other.launchctlPrint.calls, []);
+  assert.deepEqual(other.ledger.lines().map(l => [l.outcome, l.why]), [['healed', 'clean'], ['escalated', 'came-back']]);
+  // An hour after the restart: another instance is healed as usual.
+  await writeFile(path, JSON.stringify([healed]));
+  const later = await setup({ ledgerPath: path });
+  t.after(later.done);
+  at(later, NOW + H + MIN);
+  await later.runner.pass([staleCron({ lastRunAt: NOW })]);
+  at(later, NOW + H + 5 * MIN);
+  assert.equal(cronOf(await later.runner.pass([staleCron({ lastRunAt: NOW })])).state, 'quiet');
+  // A target whose last line is not a heal (it relapsed since) holds nothing off.
+  await writeFile(path, JSON.stringify([healed, { ...healed, at: NOW - 4 * H, outcome: 'relapsed', why: 'flat' }]));
+  const relapsed = await setup({ ledgerPath: path });
+  t.after(relapsed.done);
+  at(relapsed, NOW + 30 * MIN);
+  await relapsed.runner.pass([staleCron({ lastRunAt: NOW - 20 * MIN })]);
+  assert.deepEqual(relapsed.launchctlPrint.calls, [L]);
+});
+
+// L2 (Ultron, 11-13): a loop's candidate that drops while its run is unchanged did not
+// clear: the job still fails, for another reason.
+test('L2: a candidate that turns into another failure on the same run closes as escalated or relapsed, never cleared', async t => {
+  const notStale = (extra = {}) => staleCron({ staleLog: false, last: 'Exit 1', exit: 1, ...extra });
+  // Checking: escalated, and not tried again once it reads as stale-log only.
+  const env = await setup();
+  t.after(env.done);
+  await env.runner.pass([staleCron()]);
+  at(env, NOW + MIN);
+  await env.runner.pass([notStale()]);
+  assert.deepEqual(env.ledger.lines().map(l => [l.outcome, l.why]), [['escalated', 'not-stale-log']]);
+  at(env, NOW + 10 * MIN);
+  await env.runner.pass([staleCron()]);
+  assert.equal(env.launchctlPrint.calls.length, 1, 'that instance had its one attempt');
+  // Quiet: relapsed, and the quiet mark is lifted.
+  const q = await setup();
+  t.after(q.done);
+  await q.runner.pass([staleCron()]);
+  at(q, NOW + 4 * MIN);
+  assert.equal(cronOf(await q.runner.pass([staleCron()])).state, 'quiet');
+  at(q, NOW + 5 * MIN);
+  const out = await q.runner.pass([notStale()]);
+  assert.equal(cronOf(out).state, 'failed');
+  assert.equal(q.runner.quietOf(L, SINCE), null);
+  assert.deepEqual(q.ledger.lines().map(l => [l.outcome, l.why]), [['healed', 'clean'], ['relapsed', 'not-stale-log']]);
+  // A new run (another since) or a job that reads ok again is still a clear-up.
+  const c = await setup();
+  t.after(c.done);
+  await c.runner.pass([staleCron()]);
+  at(c, NOW + MIN);
+  await c.runner.pass([notStale({ lastRunAt: SINCE + H })]);
+  assert.deepEqual(c.ledger.lines().map(l => [l.outcome, l.why]), [['cleared', 'log-written']]);
+  const ok = await setup();
+  t.after(ok.done);
+  await ok.runner.pass([staleCron()]);
+  at(ok, NOW + MIN);
+  await ok.runner.pass([{ ...staleCron(), ok: true, state: 'ok', staleLog: false }]);
+  assert.deepEqual(ok.ledger.lines().map(l => [l.outcome, l.why]), [['cleared', 'log-written']]);
+});
+
 test("a ledger that can't be read keeps heals off; one that can't be written leaves the alert red", async t => {
   const dir = await mkdtemp(join(tmpdir(), 'heal-bad-'));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
@@ -452,6 +589,28 @@ test("a ledger that can't be read keeps heals off; one that can't be written lea
   assert.equal(env2.runner.quietOf(L, SINCE), null);
   assert.deepEqual(env2.ledger.lines(), [], 'a line that never reached the disk is not kept');
   assert.ok(env2.logs.some(l => l.startsWith('heal: the ledger line could not be written')));
+});
+
+// L3 (Ultron, 11-13): the kill file is read by lstat; only "no such file" means off.
+test('L3: the kill file counts when it is a file, a folder or a dangling link, and when it cannot be read', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'heal-kill-'));
+  t.after(async () => { await chmod(join(dir, 'locked'), 0o700).catch(() => {}); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  assert.equal(killFileThere(join(dir, 'heal-off')), false, 'absent');
+  await writeFile(join(dir, 'heal-off'), '');
+  assert.equal(killFileThere(join(dir, 'heal-off')), true, 'a file');
+  await mkdir(join(dir, 'as-folder'));
+  assert.equal(killFileThere(join(dir, 'as-folder')), true, 'a folder');
+  await symlink(join(dir, 'gone'), join(dir, 'dangling'));
+  assert.equal(killFileThere(join(dir, 'dangling')), true, 'a link whose target is gone (existsSync says no)');
+  await writeFile(join(dir, 'plain'), '');
+  assert.equal(killFileThere(join(dir, 'plain', 'heal-off')), true, 'a file where the folder should be (ENOTDIR)');
+  await mkdir(join(dir, 'locked'));
+  await chmod(join(dir, 'locked'), 0o000);
+  assert.equal(killFileThere(join(dir, 'locked', 'heal-off')), true, 'a folder that cannot be searched (EACCES)');
+  const err = code => () => { throw Object.assign(new Error(code), { code }); };
+  assert.equal(killFileThere('x', err('ENOENT')), false);
+  assert.equal(killFileThere('x', err('EIO')), true);
+  assert.equal(killFileThere('x', () => ({})), true);
 });
 
 test('a refused catalog keeps heals off and says so', async () => {
@@ -586,12 +745,14 @@ test('the runner reads launchd only through `launchctl print`, and server.mjs wi
   const wired = [
     [/const healLedger = createHealLedger\(\{ path: join\(HERE, 'data', 'heals\.json'\) \}\);/, 'one ledger, in data/'],
     [/createHealRunner\(\{\s*settings: healSettings,\s*ledger: healLedger,\s*launchctlPrint: runLaunchctlPrint,/, 'the runner gets runLaunchctlPrint'],
-    [/killed:\s*\(\)\s*=>\s*existsSync\(healOffPath\)/, 'the kill switch is the file'],
+    [/killed:\s*\(\)\s*=>\s*killFileThere\(healOffPath\)/, 'the kill switch is the file, read by lstat (L3)'],
     [/const healOffPath = join\(homedir\(\), '\.local', 'state', 'jarvis-os', 'heal-off'\)/, 'the kill switch path'],
     [/out = await heal\.pass\(overlaid,/, 'the crons pass goes through the runner'],
     [/return out;\s*\}, 60 \* 1000\);/, 'and the panel goes out as the runner left it'],
     [/loops:\s*\(\)\s*=>\s*withLoopParts\(heal\.view\(\), \[missed\.view\(\), restartLoop\.view\(\)\]\)/, 'the routes get the view'],
-    [/quietOf:\s*\(label, since\)\s*=>\s*heal\.quietOf\(label, since\)/, 'the Jobs list gets the quiet marks']
+    [/quietOf:\s*\(label, since\)\s*=>\s*heal\.quietOf\(label, since\)/, 'the Jobs list gets the quiet marks'],
+    [/eventKnown:\s*key\s*=>\s*Boolean\(events\?\.knows\(key\)\)/, 'the heal hold asks the events ledger (L4)'],
+    [/ackNotice\(stored, Date\.now\(\), \{ via: 'heal-card' \}\)/, "a heal card's ack notice says it came from a heal card"]
   ];
   for (const [re, what] of wired) assert.ok(re.test(server), what);
   for (const f of ['heal.mjs', 'heal-runner.mjs', 'heal-ledger.mjs', 'heal-missed.mjs', 'heal-routes.mjs', 'heal-restart.mjs']) {
@@ -604,6 +765,32 @@ test('the runner reads launchd only through `launchctl print`, and server.mjs wi
       .replaceAll("Object.freeze(['kickstart', 'gui/{uid}/{label}'])", '').replaceAll("Object.freeze(['kickstart', '-k', 'gui/{uid}/{label}'])", '');
     assert.ok(!/kickstart|bootstrap|bootout|launchctl (load|unload)/.test(code), `${f} names no launchctl write outside the floor table and the catalog's program`);
   }
+});
+
+// L5 (Ultron, 11-13): a view that throws leaves the dashboard up.
+test('L5: a loops view that throws: /api/dashboard and /api/loops still answer 200, the panel says off, the log says it once a spell', async t => {
+  const cache = createCache();
+  const logs = [];
+  let fail = true;
+  const loops = () => {
+    if (fail) throw Object.assign(new Error('boom /Users/someone/secret'), { code: 'EBOOM' });
+    return { status: 'on', why: null, open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: NOW };
+  };
+  const server = await listen(createHandler({ cache, todos: { read: async () => [] }, config: { present: true }, loops, log: l => logs.push(l) }));
+  t.after(() => new Promise(r => { server.closeAllConnections(); server.close(r); }));
+  const port = server.address().port;
+  const dash = await fetchJson(port, '/api/dashboard');
+  assert.equal(dash.status, 200);
+  assert.deepEqual([dash.body.loops.status, dash.body.loops.open, dash.body.loops.recent], ['off', [], []]);
+  assert.match(dash.body.loops.why, /view failed/);
+  const res = await fetchJson(port, '/api/loops');
+  assert.deepEqual([res.status, res.body.status], [200, 'off']);
+  assert.deepEqual(logs, ['loops: the view failed (EBOOM); the dashboard goes on without it'], 'once, by its code, never its message');
+  fail = false;
+  assert.equal((await fetchJson(port, '/api/loops')).body.status, 'on');
+  fail = true;
+  await fetchJson(port, '/api/loops');
+  assert.equal(logs.length, 2, 'a new spell is said again');
 });
 
 test('GET /api/loops without a runner says not set up; nothing else on the path answers 200', async t => {

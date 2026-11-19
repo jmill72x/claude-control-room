@@ -17,11 +17,14 @@ const okOnly = snapshot => {
 };
 
 // The alerts a heal loop is checking (`holdUntil` still ahead; lib/heal-runner.mjs),
-// unless their key was pushed before: Jeff already knows of those, and holding one
-// would only make the event hook forget it and wake Jarvis again once the hold ends.
-export function heldAlerts(alerts, alreadySent, now) {
+// unless their key was pushed before, or is in the events ledger (`eventKnown`, Ultron's
+// L4, 11-13: the lead was told, though the push may not have gone): someone already
+// knows of those, and holding one would only make the event hook forget it and wake
+// Jarvis again once the hold ends.
+export function heldAlerts(alerts, alreadySent, now, eventKnown = () => false) {
+  const known = key => { try { return eventKnown(key) === true; } catch { return false; } };
   return new Set((alerts ?? [])
-    .filter(a => Number.isFinite(a?.holdUntil) && a.holdUntil > now && !Object.hasOwn(alreadySent ?? {}, a.key))
+    .filter(a => Number.isFinite(a?.holdUntil) && a.holdUntil > now && !Object.hasOwn(alreadySent ?? {}, a.key) && !known(a.key))
     .map(a => a.key));
 }
 
@@ -87,7 +90,8 @@ const owedAfter = result => (result?.devices?.failed ? { missed: null }
 // `events` (optional): `(alerts, { observable }) => Promise`, the event
 // hook (lib/events.mjs), given the alerts after acks. It keeps a ledger of its own and
 // runs in its own try, so a failed push and a failed event never block each other.
-export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [], events = null, log = console.error }) {
+// `eventKnown(key)` (optional): whether that hook's ledger already has the key.
+export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [], events = null, eventKnown = () => false, log = console.error }) {
   // An acknowledged alert (lib/acks.mjs) is not pushed. Its key is then forgotten
   // by the rule below, so when the ack lapses with the condition still live, the
   // alert is new again and pushed again: an expiry re-notifies, which is its job.
@@ -109,7 +113,7 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
   const limitState = readLimitState(rawLimitState, now);
   for (const key of Object.keys(limitState.owed)) if (!Object.hasOwn(alreadySent, key)) delete limitState.owed[key];
   // A held alert gets no push and no event this pass (self-healing loop 1).
-  const held = heldAlerts(alerts, alreadySent, now);
+  const held = heldAlerts(alerts, alreadySent, now, eventKnown);
   const told = held.size ? alerts.filter(a => !held.has(a.key)) : alerts;
   let eventsOut = null;
   if (events) {

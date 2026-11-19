@@ -18,6 +18,7 @@
 //   its one launchctl write verb's reviewed argument list (PROGRAM_ARGS), exactly. So
 //   the act and the verb list can't disagree (design §8).
 // - Targets come from config's `heal.targets` only, looked up by own keys.
+import { lstatSync } from 'node:fs';
 import { LAUNCHD_LABEL, jobDisplayName } from './health.mjs';
 import { sameSince } from './acks.mjs';
 
@@ -324,15 +325,31 @@ export function parseRunInterval(raw) {
   return s >= 10 && s <= 31 * 24 * 3600 ? s : null;
 }
 
+// Whether a kill file is there (Ultron's L3, 11-13): by lstat, so a link counts even when
+// what it points at is gone, and only "no such file" means it isn't. Any other error (a
+// folder that can't be read, a file where a folder should be) counts as there: when the
+// switch can't be read, heals stay off.
+export function killFileThere(path, lstat = lstatSync) {
+  try {
+    lstat(path);
+    return true;
+  } catch (err) {
+    return err?.code !== 'ENOENT';
+  }
+}
+
 // Two readings of one job: is there proof that it ran, and ran clean, in between?
-//   clean       the run counter rose and the last exit was 0 at both
+//   clean       the run counter rose, the last exit was 0 and no signal was on record at both
 //   unreadable  either reading has no counter
+//   signal      either reading names a last terminating signal (Ultron's L6, 11-13: a
+//               run killed by a signal must never pass, whatever the exit line says)
 //   exit        a last exit that isn't 0 (a signal reads as no exit, so not 0 either)
 //   reset       the counter went down: launchd loaded the job again in between
 //   flat        the counter didn't move: no run since the first reading
 // A crash-looping job raises the counter too, which is why the exit counts at both.
 export function judgeReadings(a, b) {
   if (!Number.isInteger(a?.runs) || !Number.isInteger(b?.runs)) return 'unreadable';
+  if (a.lastSignal != null || b.lastSignal != null) return 'signal';
   if (a.lastExit !== 0 || b.lastExit !== 0) return 'exit';
   if (b.runs < a.runs) return 'reset';
   if (b.runs === a.runs) return 'flat';
@@ -356,6 +373,8 @@ export const WHY_WORDS = Object.freeze({
   clean: "launchd's run counter rose and its last exit was 0",
   unreadable: "launchd couldn't be read",
   exit: 'its last exit was not 0',
+  signal: 'launchd recorded a terminating signal for its last run',
+  'not-stale-log': 'it is still failing, now for another reason than its log\'s age',
   flat: "launchd's run counter didn't move",
   reset: 'launchd loaded it again in between, so the counter proves nothing',
   'no-schedule': 'no schedule to check it against',

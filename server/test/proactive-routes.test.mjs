@@ -10,7 +10,7 @@ import { createProactiveRoutes, PROACTIVE_PATH } from '../lib/proactive-routes.m
 import { makeChatEnv } from './helpers/chat-env.mjs';
 
 const SERVE = { 'x-forwarded-for': '100.64.0.9', 'x-forwarded-host': 'mini.example-tailnet.ts.net', 'x-forwarded-proto': 'https' };
-const VIEW = { status: 'on', hits: [{ id: '0123456789abcdef', rule: 'due', item: 'aa11aa11', priority: 'P2', due: '2026-11-17', late: 1 }] };
+const VIEW = { status: 'on', hits: [{ id: '0123456789abcdef', rule: 'due', item: 'aa11aa11-0000-4000-8000-000000000001', priority: 'P2', due: '2026-11-17', late: 1 }] };
 
 async function env(t, { devices = true, login = null, view = () => VIEW } = {}) {
   const e = await makeChatEnv();

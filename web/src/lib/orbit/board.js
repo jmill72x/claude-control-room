@@ -1,6 +1,7 @@
 // The Orbit page's board logic: plain functions over the board's items, with no
 // React and no DOM, so `node --test` checks them (web/test/orbit-board.test.js).
 import { dueChip } from '../due.js';
+import { HIDDEN_CHAR } from './markdown.js';
 
 export const PRIORITIES = ['P0', 'P1', 'P2', 'P3'];
 export const rank = p => (PRIORITIES.includes(p) ? PRIORITIES.indexOf(p) : PRIORITIES.length);
@@ -118,17 +119,14 @@ export function withDue(item, due) {
 // ---- a new tag (the New item form's "Other…" choice, board 14a66582) ----
 //
 // The server's rule for a tag (server/todos.mjs): at most TAG_MAX characters once
-// trimmed, and none of server/lib/text.mjs's UNSAFE_CHARS (controls, invisible and
-// direction characters). The set is built from code points here, never typed as
-// escapes (a typed one has turned into the real character in this repo before), and
-// server/test/board-new-tag.test.mjs checks it against the server's, code point by
-// code point.
+// trimmed, and none of the shared hidden characters (server/lib/hidden-chars.mjs's
+// line set; board e6178bb9, Ultron 11-18: the title's narrower rule let a soft hyphen,
+// tag characters, separators, variation selectors and Hangul fillers through, so
+// "Vision" and a soft hyphen made a look-alike area). The page's copy of the set is
+// markdown.js's HIDDEN_CHAR; server/test/board-new-tag.test.mjs checks it against the
+// server's, code point by code point.
 export const TAG_MAX = 40;
-const TAG_UNSAFE_RANGES = [[0x00, 0x1f], [0x7f, 0x9f], [0x61c, 0x61c], [0x200b, 0x200b], [0x200e, 0x200f], [0x202a, 0x202e], [0x2060, 0x2060], [0x2066, 0x2069], [0xfeff, 0xfeff]];
-export const TAG_UNSAFE = new RegExp(`[${TAG_UNSAFE_RANGES.map(([a, b]) => {
-  const u = c => `\\u${c.toString(16).padStart(4, '0')}`;
-  return a === b ? u(a) : `${u(a)}-${u(b)}`;
-}).join('')}]`);
+export const TAG_UNSAFE = HIDDEN_CHAR;
 // Why a typed tag can't be used, in words for the form, or null when it can. Empty is
 // a problem here: "Other…" with nothing typed would make an item with no area, which
 // the list's own "No area" says more plainly.

@@ -44,12 +44,16 @@ How each source is read, and why:
   pass in a row the log says so once, by the error's code (`ENOENT`, `SyntaxError`, `not a
   list`), and again once it can be read. server.mjs names the file once (`TODOS_PATH`), for
   the store and the check alike.
-- **A board id is said only in an opaque shape** (`OPAQUE_ID`): a UUID, a 13-digit time and
-  a short random part, 8 hex, or a number of at most 9 digits, all lower case. The board
-  takes any non-empty id, and a plain-looking one (`Jarvis-system-note.approve-pending-pairing`)
-  would otherwise reach the lead verbatim. Any other id is still tracked by its key but said
-  as "an item (…; see Heads up)", and the page shows it as "A board item" with no link. All
-  241 open items had an opaque id on 2026-11-18.
+- **A board id is kept only in an opaque shape** (`OPAQUE_ID`): a UUID, or a 13-digit time
+  and a short random part (the mod's fallback), all lower case. The board takes any
+  non-empty id, and a plain-looking one (`Jarvis-system-note.approve-pending-pairing`) would
+  otherwise reach the lead verbatim. The event says a UUID whole and the mod's shape by its
+  13-digit time only (`saidId`: "the item whose id starts 1763452800000"), since the random
+  part has room for a 12-letter word (Ultron's N1, 2026-11-18 re-read); the page's view
+  keeps the whole id for its link. The 8-hex and short-number shapes went with N1: no
+  writer makes them. Any other id is still tracked by its key but said as "an item (…; see
+  Heads up)", and the page shows it as "A board item" with no link. Every open item on the
+  live board was a UUID (226) or the mod's shape (17) on 2026-11-19.
 - **Nothing counted job failures over time,** so the check counts them: a failed run is a
   crons-panel row with `ok: false` and no heal hold ahead (`holdUntil`), one per distinct
   `lastRunAt` (two times within 2 minutes are the same run: job-status's times wobble by up
@@ -115,11 +119,12 @@ once, whether or not a pass has run since.
   rule's boundary with "and more on the page".
 - **The events path's limits, with a day cap of its own**: 6 an hour, and 8 heads-up events a
   day that count toward neither the others' 30 nor anyone else's, so heads-ups never push
-  out a job failure or an outage; the 60 s coalescing, the kill switch `events-off`, and
-  the 2-hour life at delivery. The items carry no alert key, so liveness is not checked and
+  out a job failure or an outage; the kill switch `events-off` and the 2-hour life at
+  delivery. Not the 60 s coalescing (Ultron's N2): one pass is already one event, and a
+  batch waiting out a window was marked told before its event existed. The items carry no alert key, so liveness is not checked and
   the events ledger never holds the check's keys (it would never forget them).
-- **Sent means taken.** A hit is marked sent only when `events.proactive` answers `made` or
-  `coalescing`. `held` (a cap) and `off` (the kill switch) take nothing and count nothing
+- **Sent means taken.** A hit is marked sent only when `events.proactive` answers `made`
+  (`coalescing` no longer counts, and no longer happens: N2). `held` (a cap) and `off` (the kill switch) take nothing and count nothing
   (no held-back or suppressed line, which would count the same hits every 5 minutes), so
   the hits stay unsent and the next pass offers them again; the log says so once a spell
   (`proactive: N heads-ups not sent (held); offered again each pass`). A refused store
@@ -190,6 +195,10 @@ migration: `proactive.json` is only read by this code).
   runs then, and the line says so (§4).
 - **L6**: the board path was written twice and an unreadable board was silent; one
   constant, and one log line after 3 unreadable passes (§2).
+
+**The re-read's lows (N1 to N3, fixed 2026-11-19 on `jos/fixrun-1119`):** N1, the mod's id
+shape said by its time only (§2); N2, no coalesce window for heads-ups and `coalescing` not
+sent (§4); N3, an event the store refused is logged once a spell, not every pass.
 
 ## 9. Open questions for the owner
 

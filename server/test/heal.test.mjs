@@ -307,6 +307,15 @@ test('held alerts: hold still ahead, and never one already pushed', () => {
   assert.deepEqual([...heldAlerts(alerts, Object.create({ a: 1 }), NOW)], ['a', 'd'], 'an inherited key is not a sent one');
 });
 
+// L4 (Ultron, 11-13): a key the events ledger has is not held either.
+test('held alerts: never one the events ledger has, and a lookup that throws holds as before', () => {
+  const alerts = [{ key: 'a', holdUntil: NOW + 1 }, { key: 'd', holdUntil: NOW + 1 }];
+  assert.deepEqual([...heldAlerts(alerts, {}, NOW, k => k === 'd')], ['a']);
+  assert.deepEqual([...heldAlerts(alerts, {}, NOW, () => 'yes')], ['a', 'd'], 'only a real true counts');
+  assert.deepEqual([...heldAlerts(alerts, {}, NOW, () => { throw new Error('x'); })], ['a', 'd']);
+  assert.deepEqual([...heldAlerts(alerts, {}, NOW)], ['a', 'd'], 'no lookup given');
+});
+
 const harness = (initial = {}) => {
   const store = { ...initial };
   const sent = [];
@@ -345,6 +354,15 @@ test('a hold never re-pushes or forgets a key already pushed (a restart re-detec
   assert.equal(out.held, undefined, 'not held: Jeff already has it');
   assert.ok(Object.hasOwn(h.store, 'cron:launchd:com.example.nas-mount'), 'still remembered as sent');
   assert.deepEqual(h.evented, [['cron:launchd:com.example.nas-mount']], 'the event hook keeps seeing it, so it does not fire again');
+});
+
+test('L4: a hold skips a key the events ledger has: the hook keeps seeing it, so it never fires again, and the push goes', async () => {
+  const h = harness();
+  const key = 'cron:launchd:com.example.nas-mount';
+  const out = await runNotifier({ snapshot: heldSnap(NOW + 5 * MIN), config: {}, now: NOW, eventKnown: k => k === key, ...h });
+  assert.equal(out.held, undefined, 'not held: the lead was told');
+  assert.deepEqual(h.evented, [[key]]);
+  assert.equal(out.sent, 1, 'never pushed before, so it goes now');
 });
 
 test('an alert that went quiet is no alert at all: no push, no event', async () => {

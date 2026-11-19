@@ -2,7 +2,7 @@
 // as the page shows them (src/lib/orbit/chat.js). Every request here is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { permissionView, sentLine, cardGone, keepCard, effectiveStatus, withStatus, upsertPermission, CLOSED_CARD_MS, ELSEWHERE_CARD_MS, DENY_ONLY_LEAD, PERMISSION_TTL_MS } from '../src/lib/orbit/chat.js';
+import { permissionView, sentLine, cardGone, keepCard, rememberDismissed, DISMISSED_KEEP_MS, DISMISSED_MAX, effectiveStatus, withStatus, upsertPermission, CLOSED_CARD_MS, ELSEWHERE_CARD_MS, DENY_ONLY_LEAD, PERMISSION_TTL_MS } from '../src/lib/orbit/chat.js';
 
 const T0 = new Date(2026, 10, 12, 10, 37).getTime();
 const P = { requestId: 'abcde', tool: 'Bash', description: 'list', inputPreview: '{"command":"ls"}', openedAt: T0, relayedAt: T0, expiresAt: T0 + PERMISSION_TTL_MS, state: 'open', canAllow: true, denyOnly: [] };
@@ -47,6 +47,30 @@ test('a dismissed card stays gone when a new stream sends it again, unless it is
   assert.equal(keepCard({ ...P, state: 'expired' }, null), true);
   assert.equal(keepCard({ state: 'open' }, dismissed), false, 'no id, no card');
   assert.equal(keepCard(null, dismissed), false);
+});
+
+// Ultron's parity L7 (11-12): the dismissed ids were never forgotten.
+test('dismissed ids are kept two hours and at most DISMISSED_MAX, the oldest going first; keepCard reads the Map', () => {
+  assert.equal(DISMISSED_KEEP_MS, 2 * 3600e3);
+  let d = rememberDismissed(new Map(), 'abcde', T0);
+  assert.equal(keepCard({ ...P, state: 'expired' }, d), false, 'a Map works as the set did');
+  d = rememberDismissed(d, 'fghij', T0 + DISMISSED_KEEP_MS - 1);
+  assert.deepEqual([...d.keys()], ['abcde', 'fghij'], 'still within its two hours');
+  d = rememberDismissed(d, 'klmno', T0 + DISMISSED_KEEP_MS);
+  assert.deepEqual([...d.keys()], ['fghij', 'klmno'], 'two hours on, the first is forgotten');
+  assert.equal(keepCard({ ...P, state: 'expired' }, d), true, 'and its card may show again');
+  // Dismissed again: moved to the newest, with its new time.
+  d = rememberDismissed(d, 'fghij', T0 + DISMISSED_KEEP_MS + 5);
+  assert.deepEqual([...d.entries()], [['klmno', T0 + DISMISSED_KEEP_MS], ['fghij', T0 + DISMISSED_KEEP_MS + 5]]);
+  // The cap.
+  let big = new Map();
+  for (let i = 0; i < DISMISSED_MAX + 3; i++) big = rememberDismissed(big, `id${i}`, T0 + i);
+  assert.equal(big.size, DISMISSED_MAX);
+  assert.equal([...big.keys()][0], 'id3', 'the oldest three went');
+  assert.equal(big.has(`id${DISMISSED_MAX + 2}`), true);
+  // A bad time or a missing list is forgotten, never thrown on.
+  assert.deepEqual([...rememberDismissed(new Map([['x', NaN]]), 'y', T0).keys()], ['y']);
+  assert.deepEqual([...rememberDismissed(null, 'y', T0).keys()], ['y']);
 });
 
 test('a card closed elsewhere is not "waiting on you", and a status that counts no open request leaves it for its minute', () => {

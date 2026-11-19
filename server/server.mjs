@@ -13,8 +13,8 @@ import { collectUsage } from './collectors/usage.mjs';
 import { collectPlan, PLAN_INTERVAL_MS } from './collectors/plan.mjs';
 import { collectSessions } from './collectors/sessions.mjs';
 import { collectCrons } from './collectors/crons.mjs';
-import { createHealth, JOB_STATUS_TIMEOUT_MS, runLaunchctlPrint } from './collectors/health.mjs';
-import { readHealConfig, withLoopParts } from './lib/heal.mjs';
+import { createHealth, JOB_STATUS_TIMEOUT_MS, runLaunchctlPrint, untilCached } from './collectors/health.mjs';
+import { readHealConfig, withLoopParts, killFileThere } from './lib/heal.mjs';
 import { createHealLedger } from './lib/heal-ledger.mjs';
 import { createHealRunner } from './lib/heal-runner.mjs';
 import { createMissedRunLoops } from './lib/heal-missed.mjs';
@@ -157,7 +157,7 @@ const heal = createHealRunner({
   settings: healSettings,
   ledger: healLedger,
   launchctlPrint: runLaunchctlPrint,
-  killed: () => existsSync(healOffPath),
+  killed: () => killFileThere(healOffPath),
   jobNames: roster.jobs
 });
 // Loop 2 (lib/heal-missed.mjs): a run missed during a restart gets a card in Needs you,
@@ -177,7 +177,7 @@ const missed = createMissedRunLoops({
   notify: async (message, { priority = 'default' } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, priority }),
   onAck: stored => {
     console.log(ackLogLine(stored));
-    ackNotices.notice(stored.key, ackNotice(stored, Date.now()));
+    ackNotices.notice(stored.key, ackNotice(stored, Date.now(), { via: 'heal-card' }));
   }
 });
 if (missed.catalogProblem()) console.error(`heal: loop 2's catalog entries were refused (${missed.catalogProblem()}); no missed-run cards`);
@@ -208,7 +208,9 @@ if (heal.catalogProblem()) console.error(`heal: the catalog was refused (${heal.
   const { status, why } = heal.status();
   console.log(`heal: ${status}${why ? ` (${why})` : ''}, ${healSettings.targets.size} target${healSettings.targets.size === 1 ? '' : 's'}; missed-runs ${healSettings.missedRuns ? 'set' : 'not set, so no missed-run cards'}`);
 }
-const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT, quietOf: (label, since) => heal.quietOf(label, since) });
+// Its first pass waits for the crons panel's first (untilCached, capped), so the first
+// payload after a start already marks an acked job (board 20620d37).
+const health = createHealth({ settings: healthSettings, jobNames: roster.jobs, cache, startedAt: STARTED_AT, quietOf: (label, since) => heal.quietOf(label, since), firstCrons: () => untilCached(cache, 'crons') });
 // The first crons pass waits for job-status's first answer (whenAsked), or its
 // overlay misses the times an ack is matched by; the timeout is job-status's own.
 // Then the heal runner sees the overlaid panel (an acked instance opens no loop).
@@ -325,7 +327,9 @@ registry.register('notifier', async () => {
     writeSent: sentStore.write,
     acks: await ackStore.read(now),
     send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message }), devices: limitPush }),
-    events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys }))
+    events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys })),
+    // A heal hold skips a key the events ledger has (Ultron's L4, 11-13).
+    eventKnown: key => Boolean(events?.knows(key))
   });
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);
@@ -339,7 +343,7 @@ const onBlock = value => approvals?.noteBlock(value) ?? false;
 const onExact = value => approvals?.noteExact(value) ?? 'off';
 // The lead's session moved on (lib/answered-elsewhere.mjs): the page's cards for the
 // prompts before that moment close. Made once the chat is on; a no-op until then.
-// Guarded by a source test (test/answered-elsewhere.test.mjs): a merge must keep
+// Guarded by a source test (test/approvals-parity.test.mjs): a merge must keep
 // `onMoved` on both ingest handlers below.
 let answeredElsewhere = null;
 const onMoved = value => answeredElsewhere?.(value) ?? 0;

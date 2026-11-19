@@ -207,15 +207,34 @@ export const parityStartLine = ({ hidden } = {}) =>
 // and a request that carries one is Deny-only (the marker, MARKERS below).
 // The cards take the wider set (`card: true`): the non-ASCII spaces, the braille blank,
 // private-use and unassigned code points too (Ultron's 11-12 low).
+// Not marked, by design (Ultron's parity L3, 11-12): look-alike letters from other
+// scripts (a Cyrillic "а" or a Greek "ο" in a Latin word). They are visible characters,
+// one each, and the card shows them as written; marking them would mark every card in
+// another language, and the Claude app, which parity follows, does not mark them. The
+// command's own text is what runs, so a look-alike changes a name, not what is shown.
 const CARD_KEEPS = new Set([0x09, 0x0a]);
 export const revealHidden = s => revealHiddenChars(s, { keep: CARD_KEEPS, card: true });
 const hasHidden = s => hasHiddenChars(s, { keep: CARD_KEEPS, card: true });
 // Whether any text inside a parsed value, keys included, carries a hidden character.
-function anyHidden(v, depth = 0) {
-  if (typeof v === 'string') return hasHidden(v);
-  if (depth > 20 || v === null || typeof v !== 'object') return false;
-  if (Array.isArray(v)) return v.some(x => anyHidden(x, depth + 1));
-  return Object.entries(v).some(([k, x]) => hasHidden(k) || anyHidden(x, depth + 1));
+// Every level is read (Ultron's parity L1, 11-12: a depth cut at 20 let one deeper
+// through): a list of what is left to read, not recursion, so no depth can overflow
+// the stack. A value from JSON.parse has no cycles.
+function anyHidden(v) {
+  const todo = [v];
+  while (todo.length > 0) {
+    const x = todo.pop();
+    if (typeof x === 'string') {
+      if (hasHidden(x)) return true;
+      continue;
+    }
+    if (x === null || typeof x !== 'object') continue;
+    if (Array.isArray(x)) { todo.push(...x); continue; }
+    for (const [k, y] of Object.entries(x)) {
+      if (hasHidden(k)) return true;
+      todo.push(y);
+    }
+  }
+  return false;
 }
 const HIDDEN_REASON = 'it carries invisible or direction characters';
 
@@ -549,12 +568,14 @@ export function denyOnlyReasons(req, {
   if (rules === 'parity') {
     const text = `${req?.description ?? ''}\n${req?.inputPreview ?? ''}`;
     for (const p of patterns) if (text.toLowerCase().includes(p)) add('it matches a Deny-only pattern in config');
-    if (hidden !== 'allow' && (HIDDEN_MARK.test(text) || parsePreview(req?.inputPreview)?.hidden === true)) add(HIDDEN_REASON);
+    // The tool's name too (Ultron's parity L2, 11-12): the store marks a hidden
+    // character in it as it does in the other fields.
+    if (hidden !== 'allow' && (HIDDEN_MARK.test(`${req?.tool ?? ''}\n${text}`) || parsePreview(req?.inputPreview)?.hidden === true)) add(HIDDEN_REASON);
     return reasons;
   }
   const tool = String(req?.tool ?? '');
   if (req?.cut) add('it was cut short');
-  for (const field of [req?.description, req?.inputPreview]) for (const r of markerReasons(field)) add(r);
+  for (const field of [req?.tool, req?.description, req?.inputPreview]) for (const r of markerReasons(field)) add(r);
   const lowered = `${req?.description ?? ''}\n${req?.inputPreview ?? ''}`.toLowerCase();
   for (const p of patterns) if (lowered.includes(p)) add('it matches a Deny-only pattern in config');
   const parsed = parsePreview(req?.inputPreview);

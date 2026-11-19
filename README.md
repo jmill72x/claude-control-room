@@ -307,8 +307,10 @@ to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   2026-11-11, see "The Feed" below) and "Updated N s ago",
   which turns amber past 3 minutes and red when the last poll failed. The tab is kept in
   the address (`#overview`, `#board`, `#board/<id>`, which opens the board on one item,
-  `#chat` and `#feed`), so Back works. On a phone (420 px and under) the tabs are tighter,
-  so all four fit one row at 375 px with a three-digit board count and a "99+" badge. The alert bar's lines show in a strip under the header.
+  `#chat` and `#feed`), so Back works. On a phone (520 px and under) the tabs are tighter,
+  and under 370 px one step tighter again (11 px type, no tracking, 2 px gaps, a smaller
+  badge; board 5c266d65), so all four fit one row from 320 px up, in the header and
+  pinned, with a three-digit board count and a "99+" badge, each tab still 44 px each way. The alert bar's lines show in a strip under the header.
   Three ways between the tabs since 2026-11-11 (`web/src/lib/orbit/nav.js`, tested by
   `web/test/orbit-nav.test.js`, and `useSwipeTabs.js`): once the tabs' place in the header
   scrolls away, the same nav is pinned to the top of the screen (fixed, below the status
@@ -1024,8 +1026,10 @@ three pieces, each with its own router:
   rebuilt it, not as typed (a look-alike host in punycode, `。` as a dot, a backslash as
   a slash, a bidi override in the path percent-encoded); a written label is followed by
   the real host, muted ("the board (evil.example)", with its port if any), unless the
-  label is the href itself; bidi controls (U+202A-202E, U+2066-2069) and zero-width
-  characters (U+200B-200D, U+FEFF) are dropped from a label; and a `mailto` keeps only
+  label is the href itself; the shared hidden characters (the one-line guard's set,
+  `HIDDEN_CHAR` in `markdown.js`: controls, bidi and zero-width characters, the soft
+  hyphen, tag characters, variation selectors, separators; boards 32769ce5 and e6178bb9)
+  are dropped from a label; and a `mailto` keeps only
   its address (no `?subject=…&body=…`), which is also its suffix. Raw HTML is shown
   as the text it is, and images (`![alt](url)`) stay text. The parser returns plain objects
   and the component builds React elements from them, so every character reaches the page
@@ -1330,7 +1334,8 @@ the handler live in `server/lib/chat-events.mjs` (tested in `chat-events.test.mj
 to end over the real routes). A verdict reads "a permission was denied|allowed from
 <device> (<tool>)". Each event is exactly one line: the whole line, and every log line of
 the chat's page routes, goes through `oneLine`, which shows a line break, a control or a
-direction character as `⟦U+XXXX⟧`. That matters for names pairing never cleaned (one read
+direction character as `⟦U+XXXX⟧`, and cuts at 600 code points of what it shows, markers
+included (8 or 9 each), never inside a marker. That matters for names pairing never cleaned (one read
 back from `devices.json`) and for the channel's tool name, which keeps its line breaks.
 At start the chat folder and its files
 folder are set to 0700 whether or not they existed, and each socket path is checked
@@ -1430,7 +1435,10 @@ parsed from its JSON, the command, file path or address first, each in a monospa
 that wraps, never cut by the page; then the description under "Jarvis's own summary", in a
 quieter style. When the server matched the hook's report to a Bash request, the card
 shows an "Exact command" block first: each line on its own row with a `↵` where it ends
-and a `⇥` for a tab, so two lines can never read as one. Every field is a text node,
+and a `⇥` for a tab, so two lines can never read as one; a run of two or more spaces, and
+any space at a line's start or end, is drawn as `␣` per space (`␣×N` past 8) and named
+with its count for a screen reader (board 8b77e6e2, Ultron's L6). What the card hashes is
+the exact text itself, never the drawing. Every field is a text node,
 never Markdown or a link. When a classifier
 block for the same tool came just before (see the hook below), the card says why it is
 asking ("Auto mode refused this Read call (Data Exfiltration), so Claude Code is asking
@@ -2137,26 +2145,36 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   `launchctl print gui/<uid>/<label>` (read-only; the same call the health strip makes),
   then again one interval later (launchd's own `run interval`, plus a minute), or for a
   calendar job two minutes after its next due time. If the run counter rose and the last
-  exit was 0 at both readings, the ledger gets a line and the alert is marked **quiet**:
+  exit was 0 at both readings, with no last terminating signal on record at either
+(Ultron's L6, 11-13), the ledger gets a line and the alert is marked **quiet**:
   the crons entry reads `ok: true`, `state: "quiet"`, `last: "Quiet · ran clean"`, the
   Jobs list's row reads `quiet` in grey, and nothing is pushed or sent as an event. While
   quiet, the same check repeats every interval or due time; a failed one lifts the quiet
-  (`relapsed`) and the alert goes red and pushes.
-- **"Can't tell" never acts.** No counter, a last exit that isn't 0 (a signal counts), a
+  (`relapsed`) and the alert goes red and pushes. A loop whose job is still failing on the
+  same run, but no longer for its log's age alone, closes as `escalated` (or `relapsed`,
+  if quiet) with the reason `not-stale-log`, never as `cleared` (Ultron's L2).
+- **"Can't tell" never acts.** No counter, a last terminating signal (reason `signal`), a
+  last exit that isn't 0, a
   counter that went back (launchd loaded the job again), no schedule to check against, or a
   ledger line that can't be written each leave the alert red, escalated, with the reason in
   the ledger. A calendar job is judged by the counter across its due time, not by
   `missed-runs`, which judges by the same log time that is stale.
 - **The hold.** While a loop is checking, its crons entry carries `holdUntil` (10 minutes
   after it was seen at most), the alert carries it too, and the notifier holds that alert's
-  push and event until then. A key that was pushed before is never held (Jeff already has
-  it, and a hold would make the event ledger forget it and wake the lead again). So a heal
+  push and event until then. A key that was pushed before, or that the events ledger
+  already has (the lead was told; `events.knows`, Ultron's L4), is never held (someone
+  already has it, and a hold would make the event ledger forget it and wake the lead
+  again). So a heal
   that works costs no push and no wake; one that fails pushes as soon as it fails, or when
   the 10 minutes are up.
 - **Limits.** One attempt per instance (an escalated or relapsed one is never healed
-  again); at most 3 heals of one target and 20 in all in 24 hours, counted by instance, so a
+  again that day, and since Ultron's L1 that holds across a restart: at start the ledger's
+  escalated and relapsed lines of the last 24 hours are read back); at most 3 heals of one target and 20 in all in 24 hours, counted by instance, so a
   restart that re-checks the same instance (the quiet marks live in memory) is no second
-  heal; and no heal of another instance of a target within an hour of its last one.
+  heal; and no heal of another instance of a target within an hour of its last one, or of
+  when its quiet ended. When that end isn't known (a restart: the quiet marks live in
+  memory), a target whose last line is a heal counts as ended at the start, so another
+  instance waits the hour; the same instance is checked again as usual.
 - **The catalog and the floor check.** Each catalog entry declares its verbs; every verb
   has a floor tier (`VERB_FLOORS`: reads T0, `alert:mark-quiet` T1, every `launchctl` write,
   deploy, commit, delete, ack and remote action T2), and the loader refuses the whole
@@ -2168,7 +2186,9 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   config's target id, the instance, outcome (`healed`, `escalated`, `relapsed`,
   `cleared`), a reason key and the two counter readings. A ledger that exists but can't be
   read keeps heals off for the run and is never written over.
-- **The kill switch.** While `~/.local/state/jarvis-os/heal-off` exists, nothing is read or
+- **The kill switch.** While `~/.local/state/jarvis-os/heal-off` exists (read with
+  `lstat`, so a dangling link counts, and any error but "no such file" counts as there:
+  Ultron's L3), nothing is read or
   marked, every quiet mark is lifted at once (the alert goes red and pushes as it always
   has), the targets show as held, and loop 2's cards stay with their buttons off (a tap
   answers 503). It is checked at each pass and again before each
@@ -2343,10 +2363,13 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   damaged one aside). server.mjs names the file once (`TODOS_PATH`) for both. A source test
   in `test/proactive-routes.test.mjs` holds that. A board unreadable on 4 passes in a row is
   logged once by its error's code, and once more when it can be read again.
-- **Opaque ids only.** The board takes any non-empty id, so a board id is said (in the event
-  and in the view) only when it is a UUID, a 13-digit time and a short random part, 8 hex,
-  or a number of at most 9 digits (`OPAQUE_ID` in proactive-text.mjs). Any other is "an
-  item (…; see Heads up)"; it is still tracked by its key.
+- **Opaque ids only.** The board takes any non-empty id, so a board id is kept (for the
+  page's link) only when it is a UUID or the mod's 13-digit time and short random part
+  (`OPAQUE_ID` in proactive-text.mjs), and the lead's event says a UUID whole and the
+  mod's shape by its 13-digit time only ("the item whose id starts 1763452800000"), since
+  its random part has room for a word (`saidId`; Ultron's N1). Any other id, the empty
+  board's seed numbers included, is "an item (…; see Heads up)"; it is still tracked by
+  its key.
 - **Once per hit.** A hit's key names its subject (`due:<id>`, `stale:<id>`, `ask:<id>`,
   `fails:<hash>`, `heals:<target>`, `week:<limit>:<window>`, `session:<window>`,
   `key-expiry:<id>`). It is told once, until it clears (forgotten) or changes materially
@@ -2363,9 +2386,11 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   (an opaque board id, a priority, a lane, whole numbers, a date, a name from config, a
   limit's fixed name), at most 5 named per rule and 1,200 characters in all; the lead reads
   titles from the board. Caps: 6 an hour, and 8 heads-up events a day of their own, outside
-  the others' 30; the 60 s coalescing, `events-off` and the 2-hour life apply. The items
-  carry no alert key, so the events ledger never holds one of the check's keys. A hit is
-  marked sent only when the events module answers `made` or `coalescing`; `held` (a cap),
+  the others' 30; `events-off` and the 2-hour life apply, but not the 60 s coalescing
+  (Ultron's N2: a batch waiting out a window was marked told before its event existed),
+  so the event is made at once or not at all. The items carry no alert key, so the events
+  ledger never holds one of the check's keys. A hit is marked sent only when the events
+  module answers `made`; `held` (a cap),
   `off` (the kill switch) and a refused store write take nothing and count nothing, so the
   next pass offers the hits again. "Sent" means handed to the events path, not read.
 - **Quiet hours, 22:00 to 07:00 local.** A hit found then is held; at 07:00 (a timer for the
@@ -2390,9 +2415,10 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   restart. With the chat off no pass runs (there is no events path and no paired device).
   The start line reads `proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events
   on`, `proactive: on in config, but no passes run: the chat is off, …` or `proactive:
-  unset|off`. A sent batch logs `proactive: N heads-ups to the lead's event
-  (made|coalescing)`; an unsent one `proactive: N heads-ups not sent (held|off|…); offered
-  again each pass`, once a spell; never a key or an item.
+  unset|off`. A sent batch logs `proactive: N heads-ups to the lead's event (made)`; an
+  unsent one `proactive: N heads-ups not sent (held|off|…); offered again each pass`, and
+  an event the store refused `proactive: the event was not made (<code>); tried again each
+  pass`, each once a spell (Ultron's N3); never a key or an item.
 - **The channel** names only the event types it knows, so until it learns `heads-up` the
   lead's tag reads `event="unknown"`; the words still arrive (`source="proactive"`).
 
@@ -2509,9 +2535,14 @@ alerts can be acked; a limit, a projection or a credit expiry moves on its own.
 
 **Every ack and renewal is pushed, at low priority** (board a37d853e), so an ack nobody
 meant can't hide an outage quietly. An ack for a failure that already has a live ack
-(same key, same `since`) is a **renewal**, and `renewals` counts them; a new failure, an
-un-ack or a lapse starts again at 0. #pepper gets who, the kind, how long it has been
-failing and until when, e.g. `jarvis renewed the acknowledgement of a down service (down
+(same key, same `since`) is a **renewal**, and `renewals` counts them; a new failure or a
+lapse starts again at 0. An un-ack does not: a re-ack of the same failure before the
+removed ack would have run out counts on from it (kept in memory only, so a restart does
+start again at 0; in the file, a rolled-back server would read it as a live ack). #pepper
+gets who, the kind, how long it has been failing, how the ack arrived (`from the page`
+for a request with an Origin header, `from a script, not the page` for one without,
+`from a heal card on the page` for loop 2's tap: `by` is the caller's own word) and until
+when, e.g. `jarvis renewed the acknowledgement of a down service (down
 since Mon, Nov 9, 8:00 AM EST, 2 days ago), renewed 1 time for this failure: it is off the
 alerts until …`. ntfy, which shows on a lock screen, gets only "An alert on the Control
 Room was acknowledged: details in #pepper" (for a renewal, "An acknowledgement on the
@@ -2569,7 +2600,10 @@ that opens a two-field form (a note, and "until its next run" or "for 7 days"). 
 Jobs chip then reads "all OK · 1 ack" in grey, its details show the row in grey with
 "acknowledged by <who> until Fri 6:45 PM · <note>" and an **Un-ack** button, and a down
 service's details gain the same row. The mod ignores the new
-fields and keeps showing the job red.
+fields and keeps showing the job red. A Jobs row is marked from the crons panel's alert,
+so right after a start the health strip's first pass waits for the crons panel's first
+(`untilCached`, at most a minute; board 20620d37): the first payload with a strip already
+reads "all OK · 1 ack", where it once showed "1 failed" for a minute.
 
 ### Inside Claude Code: the mod
 
@@ -2740,7 +2774,7 @@ edit of `todos.json` changes it like any other write.
 | `id` | yes | non-empty text or a number, unique on the board (the page makes a UUID) |
 | `text` | yes | free text (it may be empty) |
 | `lane` | yes | `idea`, `doing` or `done` |
-| `tag` | no | text of at most 40 characters once trimmed, or left out (not `null`); tags that differ only by case are unified on every write |
+| `tag` | no | text of at most 40 characters once trimmed, with none of the shared hidden characters (below), or left out (not `null`); tags that differ only by case are unified on every write |
 | `priority` | no | `P0` to `P3`; absent or `null` means none |
 | `due` | no | a plain local date `YYYY-MM-DD` (US Eastern, the mini's clock), no time of day; absent, `null` or `""` means none |
 | `title` | no | a short label for the card, at most 120 characters; absent or `""` means none. Without one, the Orbit page shows the first sentence of `text`, cut at a word to 72 characters |
@@ -2752,11 +2786,17 @@ The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`
 and `doneAt` on every write. A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
 `P4`, a due date like `10/21` or `2026-02-30`, an `ask` whose `kind` is `maybe`) is refused
 with **400** and a message naming the item and the field, and nothing is written. `title`,
-`tag`, `ask.what` and `ask.why` may not hold control characters (a newline or a tab included),
-the characters that reorder text (U+202A to U+202E and U+2066 to U+2069), the zero-width
-space (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF) or the direction
-marks (U+200E, U+200F and U+061C); `text` may. The joiners U+200C and U+200D are allowed,
-since U+200D sits inside combined emoji. Every field is stored and returned exactly as
+`ask.what` and `ask.why` (and an ack's note) may not hold control characters (a newline or
+a tab included), the characters that reorder text (U+202A to U+202E and U+2066 to U+2069),
+the zero-width space (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF), the
+direction marks (U+200E, U+200F and U+061C) or, since 2026-11-19 (board 32769ce5), the line
+and paragraph separators (U+2028, U+2029); `text` may. The joiners U+200C and U+200D are
+allowed, since U+200D sits inside combined emoji. A `tag` takes the wider shared set
+(`server/lib/hidden-chars.mjs`, the one-line guard's: Unicode's controls, format and
+default-ignorable characters, separators and lone surrogates, so also the soft hyphen, tag
+characters, variation selectors and Hangul fillers; board e6178bb9), because a chip with
+an invisible character can pass for another area ("Vision" and a soft hyphen); no tag on
+the live board held one (checked 2026-11-19). Every field is stored and returned exactly as
 sent, except `doneAt`; other fields an item carries are kept too.
 
 A board PUT may carry up to **1 MiB**, since every write sends every item ever kept, Done
@@ -2781,7 +2821,9 @@ card shows a native date input and, when a date is set, a Clear button; the Boar
 **New item** form has the same optional Due field (with a title, a tag, details, a
 priority and a lane). Its Area list offers the tags in use and, last, **Other…**, which
 opens a box for a new tag: checked as the server checks one (at most 40 characters, none
-of the refused characters above) before Add is allowed, and a name that matches a tag in
+of the shared hidden characters, the page's copy being `HIDDEN_CHAR` in
+`web/src/lib/orbit/markdown.js`, held to the server's at every code point by
+`server/test/board-new-tag.test.mjs`) before Add is allowed, and a name that matches a tag in
 use in another case says it joins that tag. When no date is picked the page writes no `due` key at all, and an
 item whose date is left alone keeps what it had (even `""`). **Sort: Priority / Due** is
 a per-viewer choice kept in `localStorage` (`ccr.orbit.sortBy`): with Due on, each lane

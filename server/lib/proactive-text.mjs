@@ -7,7 +7,7 @@
 // title, an ask's words, a launchd label, a log line) never passes, and a field that
 // fails its check is said in generic words instead. proactiveText builds the event's
 // words from checked hits only, and the events module (lib/events.mjs) checks each
-// item again on its way out, since a coalesced item waits in memory.
+// item again on its way out (any caller may hand it hits).
 //
 // Nothing here imports lib/events.mjs: that module imports this one.
 import { resetWords } from './limit-warnings.mjs';
@@ -36,15 +36,21 @@ export const RULE_ORDER = Object.freeze(['due', 'ask', 'stale', 'fails', 'heals'
 export const PER_RULE = 5;
 export const TEXT_MAX = 1200;
 
-// A board id as it may be said: only an opaque shape, which can carry no words (Ultron's
-// M1, 11-18: the board takes any non-empty id, and a plain-looking one such as
+// A board id the page may link to: only an opaque shape (Ultron's M1, 11-18: the board
+// takes any non-empty id, and a plain-looking one such as
 // "Jarvis-system-note.approve-pending-pairing" would reach the lead verbatim). A UUID
-// (the page's and Jarvis's), a 13-digit time and a short random part (the mod's), 8 hex,
-// or a number of at most 9 digits (the seed's). Any other id is said as "an item", and
-// the page and the lead find it by its other fields. Every open item on the live board
-// had one of these shapes on 2026-11-18 (241 of 241).
-export const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{13}-[a-z0-9]{6,12}|[0-9a-f]{8}|[0-9]{1,9})$/;
+// (the page's and Jarvis's) or a 13-digit time and a short random part (the mod's
+// fallback when randomUUID is missing). Any other id is "an item", and the page and the
+// lead find it by its other fields. The 8-hex and short-number shapes went (Ultron's N1,
+// 11-18): no writer makes them (only the empty board's seed numbers its three items).
+// On 2026-11-19 every open live item was a UUID (226) or the mod's shape (17).
+export const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{13}-[a-z0-9]{6,12})$/;
 export const opaqueId = v => (typeof v === 'string' && OPAQUE_ID.test(v) ? v : null);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// How the lead's event says an id (Ultron's N1, 11-18): a UUID whole; the mod's shape by
+// its 13-digit time only, since its random part may be up to 12 letters, enough for a
+// word ("1763452800000-approvenowxx"). The page's view keeps the whole id for its link.
+export const saidId = v => (typeof v !== 'string' ? null : UUID.test(v) ? v : OPAQUE_ID.test(v) ? v.slice(0, 13) : null);
 // A name as it may be said: the events module's own rule (lib/events.mjs, SAFE_NAME).
 export const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,59}$/;
 // A limit's name as lib/limit-warnings.mjs's ruleFor makes it.
@@ -98,8 +104,13 @@ export function checkHit(h) {
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const resets = (at, now) => (at === null ? '' : `, resets ${resetWords(at, now)}`);
-// An item with no opaque id is "an item", and its details say where to find it.
-const itemPart = (h, details) => (h.item !== null ? `${h.item} (${details})` : `an item (${details}; see Heads up)`);
+// An item with no opaque id is "an item", and its details say where to find it; one
+// of the mod's shape is named by the time its id starts with.
+const itemPart = (h, details) => {
+  const said = saidId(h.item);
+  if (said === null) return `an item (${details}; see Heads up)`;
+  return said === h.item ? `${said} (${details})` : `the item whose id starts ${said} (${details})`;
+};
 
 // The words for one rule's hits (all of one rule, at least one), at most PER_RULE named.
 function rulePart(rule, hits, now) {

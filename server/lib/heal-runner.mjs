@@ -6,15 +6,24 @@
 // config lists as a heal target, opens a loop for that instance (its alert key plus
 // `since`, the same pair an ack uses):
 //
-//   1. First reading: `launchctl print` (read-only). Its run counter, and a last exit
-//      of 0. No counter, or another exit, escalates at once.
+//   1. First reading: `launchctl print` (read-only). Its run counter, a last exit of 0
+//      and no last terminating signal. No counter, another exit or a signal escalates
+//      at once.
 //   2. Second reading, one interval later (launchd's own `run interval`, plus a
 //      minute), or for a calendar job after its next due time (plus two minutes).
-//   3. The counter rose and the last exit was 0 at both: the ledger gets a line, then
-//      the alert is marked quiet ("ran clean, its log is old"). Anything else escalates:
-//      the alert stays as it was, red, and pushes.
+//   3. The counter rose, the last exit was 0 and no signal was recorded at both: the
+//      ledger gets a line, then the alert is marked quiet ("ran clean, its log is old").
+//      Anything else escalates: the alert stays as it was, red, and pushes.
 //   4. While quiet, the same check repeats at every interval or due time. A failed
 //      re-check lifts the quiet (`relapsed`), and that instance is never healed again.
+//   An instance that stays failing on the same run but no longer for its log's age
+//   alone is no clear-up: it closes as escalated (or relapsed, if quiet), not cleared
+//   (Ultron's L2, 11-13).
+//
+// One attempt per instance holds across restarts (Ultron's L1, 11-13): at load, the
+// ledger's escalated and relapsed lines of the last day rebuild that record, and a
+// target whose last line is a heal counts as having ended its quiet at the restart
+// (when it really ended isn't on file; "can't tell" holds a comeback off for the hour).
 //
 // While a loop is checking, its alert carries `holdUntil` (at most 10 minutes after it
 // was detected), and the notifier holds its push and event until then
@@ -56,7 +65,7 @@ export function createHealRunner({
   let tools = null;
   const loops = new Map(); // label -> the open or quiet loop of its current instance
   const closed = new Map(); // label -> { since, at, outcome }: one attempt per instance
-  const ended = new Map(); // target id -> when its last quiet loop ended
+  const ended = new Map(); // target id -> { at, since }: when its last quiet loop ended, and its instance
   let ledgerOk = false;
   let held = [];
 
@@ -88,7 +97,7 @@ export function createHealRunner({
     try {
       const raw = await tools['launchctl:print'](label);
       const p = parseLaunchctlPrint(raw);
-      return { runs: p.runs, lastExit: p.lastExit, interval: parseRunInterval(raw) };
+      return { runs: p.runs, lastExit: p.lastExit, lastSignal: p.lastSignal, interval: parseRunInterval(raw) };
     } catch {
       return null;
     }
@@ -140,6 +149,28 @@ export function createHealRunner({
     return changed ? out.sort(cronOrder) : crons;
   }
 
+  // L1 (Ultron, 11-13): what the ledger says of this loop's past, after a restart. The
+  // escalated and relapsed lines are `closed` again (one attempt per instance; the pass
+  // forgets those over a day old, as it does any), and a target whose last mark-quiet line
+  // is a heal may still have been quiet when the server stopped: when that quiet ended
+  // isn't on file, so it counts as ended now, for another instance (the same one checked
+  // again is no comeback). A line stamped ahead of this clock is read like any other: a
+  // closed instance stays closed ("can't tell" never acts).
+  function rebuild(at) {
+    if (!entry) return;
+    const labelOf = new Map();
+    for (const [label, t] of settings?.targets ?? []) if (typeof t?.id === 'string') labelOf.set(t.id, label);
+    const last = new Map();
+    for (const l of ledger.lines()) {
+      if (l.action !== entry.id) continue;
+      last.set(l.target, l);
+      const label = labelOf.get(l.target);
+      if (label === undefined) continue;
+      if (l.outcome === 'escalated' || l.outcome === 'relapsed') closed.set(label, { since: Number.isFinite(l.since) ? l.since : null, at: l.at, outcome: l.outcome });
+    }
+    for (const [target, l] of last) if (l.outcome === 'healed') ended.set(target, { at, since: Number.isFinite(l.since) ? l.since : null });
+  }
+
   const targetOf = c => {
     const t = settings?.targets?.get?.(c.label) ?? null;
     return t && t.actions.has(entry?.id) ? t : null;
@@ -151,6 +182,7 @@ export function createHealRunner({
       try {
         const n = await ledger.load();
         ledgerOk = true;
+        rebuild(now());
         return n;
       } catch (err) {
         ledgerOk = false;
@@ -187,9 +219,16 @@ export function createHealRunner({
       for (const [label, loop] of [...loops]) {
         const c = candidates.find(x => x.label === label);
         if (c && sameSince(loop.since, c.lastRunAt)) continue;
+        // Still failing on the same run, but no longer for its log's age alone: not a
+        // clear-up (L2). It closes as a failed check would, and is never tried again.
+        const row = crons.find(x => x?.label === label);
+        if (row && row.ok === false && sameSince(loop.since, row.lastRunAt)) {
+          await close(loop, loop.state === 'quiet' ? 'relapsed' : 'escalated', 'not-stale-log', at);
+          continue;
+        }
         if (loop.state === 'quiet') {
           loops.delete(label);
-          ended.set(loop.target, at);
+          ended.set(loop.target, { at, since: loop.since });
         } else {
           await close(loop, 'cleared', 'log-written', at);
         }
@@ -209,12 +248,14 @@ export function createHealRunner({
         let loop = loops.get(c.label);
         if (!loop) {
           loop = { label: c.label, target: target.id, since: c.lastRunAt, detectedAt: at, state: 'checking', a: null, dueAt: null, checkedAt: null };
-          const stop = capStop(ledger.lines(), target.id, at, ended.get(target.id), c.lastRunAt);
+          const end = ended.get(target.id);
+          const stop = capStop(ledger.lines(), target.id, at, end && !sameSince(end.since, c.lastRunAt) ? end.at : null, c.lastRunAt);
           if (stop) { await close(loop, 'escalated', stop, at); continue; }
           if (isKilled()) { loops.clear(); return crons; }
           const a = await read(c.label);
           loop.a = a;
           if (!a || !Number.isInteger(a.runs)) { await close(loop, 'escalated', 'unreadable', at); continue; }
+          if (a.lastSignal != null) { await close(loop, 'escalated', 'signal', at); continue; }
           if (a.lastExit !== 0) { await close(loop, 'escalated', 'exit', at); continue; }
           loop.dueAt = nextDue(a, c, at);
           if (loop.dueAt === null) { await close(loop, 'escalated', 'no-schedule', at); continue; }

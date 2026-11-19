@@ -1213,6 +1213,11 @@ else" describe both parts; the header of `server/lib/approvals.mjs` has the rule
   follow the relay)` and the card after it still has Allow; a prompt answered in the
   Claude app closes its card when the turn ends (`chat: 1 permission card closed, …`);
   `touch ~/.local/state/jarvis-os/approvals-off` still hides the next card (then `rm`).
+  **C3 (Ultron, 11-12; added 2026-11-19, board bcde53ea), still owed as a live check:**
+  Deny a harmless prompt in the Claude app (or Discord) while its card is open on the
+  page, then tap Allow on the page before the card closes: the command must not run (the
+  channel no longer holds the request, so the page's Allow is refused or ignored), and
+  the card ends as answered elsewhere or with the refusal, never "allowed".
 - *Rollback:* remove `approvalsRules` and restart (the page's own rules again, `deny` or
   `exact` Bash as config says); at once, without a restart: the kill file, or
   `rm ~/.local/state/jarvis-os/approvals-allow` (Deny only at the channel).
@@ -2865,10 +2870,10 @@ updated and are the reference.
   the mod's only change is a comment). Nothing ran against :8322 but GETs of
   `/api/dashboard`.
 
-## 15. Follow-ups batch: Ultron's lows on §14, the restart card for the speech files, a new tag on the page (staged 2026-11-18 on `jos/followups-1118`)
+## 15. Follow-ups batch: Ultron's lows on §14, the restart card for the speech files, a new tag on the page (merged as main 2dd66c9, seen 2026-11-19)
 
-**Staged, not committed, on `jos/followups-1118` (worktree
-`~/Projects/.worktrees/ccr-followups-1118`, from main 6e1e5b3).** Three board items. The
+**Merged as main 2dd66c9 (seen 2026-11-19); built on `jos/followups-1118`.** Whether its
+restart and web build ran, I have not checked. Three board items. The
 README's "Limit warnings", "Self-healing loops" (loop 3), "The board's items" and the
 Due paragraph of the Orbit page are updated and are the reference.
 
@@ -2938,11 +2943,14 @@ Due paragraph of the Orbit page are updated and are the reference.
   next time, no sideways scroll, no policy violation). Nothing ran against :8322 but a
   GET of `/api/todos` (the tag lengths above).
 
-## 16. The proactive check: wake the lead only on a hit (board a77b4757; staged 2026-11-18 on `jos/proactive`, Ultron's seven fixes in the same night)
+## 16. The proactive check: wake the lead only on a hit (board a77b4757; merged as main 9d3c2bb, seen 2026-11-19; Ultron's re-read lows N1-N3 in §17)
 
-**Built overnight 2026-11-18 (Jeff: "Keep building something big overnight"), staged on
-`jos/proactive` (worktree `~/Projects/.worktrees/ccr-proactive`, from main 2dd66c9, no
-upstream), not committed, not live, off by default.** Shuri's 11-11 survey pick 5, which
+**Built overnight 2026-11-18 (Jeff: "Keep building something big overnight") on
+`jos/proactive`, merged as main 9d3c2bb (seen 2026-11-19), off by default; whether the
+config flag, the restart and the web build happened, I have not checked.** Ultron's
+re-read lows N1 to N3 are fixed in §17, which changes two lines below: a board id is
+said only as a UUID or the mod's 13-digit time (no 8-hex or short-number shapes), and
+`coalescing` is gone (heads-ups skip the window). Shuri's 11-11 survey pick 5, which
 Jeff said yes to on 11-12, and Jarvis OS pillar 7 (anticipation) as a daily habit; one of
 the three things Jeff wants running before pillar 2. Design note:
 `docs/design/2026-11-18-proactive-check.md` (rules, thresholds, keys, state, delivery,
@@ -3057,3 +3065,93 @@ quiet hours, go-live). README, "The proactive check", has the mechanism.
   server (only `node --check` and the source test: a full server starts the collectors),
   the real channel, Safari, and a real 07:00 timer.
 - **Questions for Jeff (in the report):** the login expiry source; the thresholds.
+
+## 17. Fix run: nine boards of Ultron's lows in one branch (staged 2026-11-19 on `jos/fixrun-1119`)
+
+**Staged, not committed, on `jos/fixrun-1119` (worktree
+`~/Projects/.worktrees/ccr-fixrun-1119`, from main 9d3c2bb, no upstream).** Jeff's 11-19
+principle for the healing loops ("I want the team proactively finding and fixing our
+gaps"), run as one batch: every fix has a test, and Ultron reads the branch before C&P.
+The README is updated for each behaviour and is the reference.
+
+| Board | Item | Done | What changed |
+|---|---|---|---|
+| 82ce877b | Proactive N1-N3 | fixed | N1: a board id is kept only as a UUID or the mod's `\d{13}-[a-z0-9]{6,12}` (the 8-hex and short-number shapes went; no writer makes them), and the lead's event says the mod's shape by its 13-digit time only ("the item whose id starts 1763452800000"), `saidId`; the page's view keeps the whole id for its link. N2: heads-ups skip the 60 s coalesce window (`events.proactive` appends at once) and `coalescing` no longer counts as sent. N3: "the event was not made" is logged once a spell. |
+| e6178bb9 + 32769ce5 | Hidden characters | fixed | Tags take `lib/hidden-chars.mjs`'s line set on the server (`todos.mjs`) and the page (`board.js` `TAG_UNSAFE` is `markdown.js`'s new `HIDDEN_CHAR`, held to the server's at every code point). The page's link-label filter drops that same set (was a list of 13). The board text rule (`text.mjs` `UNSAFE_CHARS`, for titles, asks and ack notes) now refuses U+2028 and U+2029; U+200C and U+200D stay allowed. Titles keep their narrower rule. The optional nits (registry `then:` shorthand keys; the New area box's UTF-16 `maxLength`) were not done. |
+| 9a688206 | acks test by time of day | already fixed | Fixed on main since 0b09e2d/800b70a (the route tests place the next run from `Date.now()`). Proven 11-19 with a Date-shifting preload: the old file (f8cd1b1) fails at 12:55Z 11-13, the current one passes at eight times across a day and into December. No code change. |
+| cece359f | Loop 1 L1-L6 | fixed | L1: at start the ledger's escalated and relapsed mark-quiet lines of the last 24 h rebuild one-attempt-per-instance, and a target whose last line is a heal counts its quiet as ended at the start (another instance waits the hour). L2: a loop whose job still fails on the same run, but not for its log's age alone, closes `escalated`/`relapsed` (`not-stale-log`), not `cleared`. L3: the kill file is read with `lstat` (`killFileThere`): only ENOENT is "not there". L4: the heal hold skips a key the events ledger has (`events.knows`). L5: a loops view that throws leaves `/api/dashboard` up ("off", logged once a spell). L6: a last terminating signal at either reading fails the check (`signal`). |
+| bcde53ea | Parity L1, L2, L3, L6, L7 + C3 | fixed | L1: the preview's hidden-character scan reads every depth (a list, not recursion with a cut at 20). L2: the tool's name counts (parity and guarded). L3: a comment in `approvals.mjs` says why look-alike letters are not marked, with a test pinning it. L6: the server.mjs comment names `test/approvals-parity.test.mjs`, and a test checks every test file server.mjs names exists. L7: dismissed card ids are kept 2 h, at most 500 (`rememberDismissed`). C3 is in §10's parity checks as a live check still owed. |
+| d921a9c9 | Control Room lows bundle | fixed (umask: already) | `oneLine` cuts at 600 code points of what it shows, markers included; a #pepper copy the poster refused (exit 2) or couldn't post (3) is logged with its exit, never the message; the ack notice says how it arrived (`from the page`, `from a script, not the page`, `from a heal card on the page`); a re-ack after an un-ack of the same failure counts on (in memory only, until the removed ack would have run out). `ingest.sock` under umask 077 was already on main. The "more invisible ranges" half was already in (oneLine uses the shared set). |
+| 5c266d65 | Tabs at 320 px | fixed | Measured, the row ran up to 50 px over at 320 (header and pinned) and 5-10 px at 360, with "Board · 238" and a "99+" badge. A second step under 370 px: 11 px type, no tracking, 6 px padding, 2 px gaps, a smaller badge, each tab at least 44 px. |
+| 20620d37 | Acked job red after a restart | fixed | Reproduced at the route: with the health strip in and the crons panel not yet, the acked job's row had no ack. cb4f470 made the crons pass wait for job-status, but the strip still went out first. Now the health collector's first pass waits for the crons panel's first (`untilCached`, at most 60 s), and reads the clock again after. |
+| 8b77e6e2 | Exact rows: spaces | fixed | A run of two or more spaces, or any at a line's start or end, is drawn as `␣` per space (`␣×N` past 8) with its count for a screen reader. The L1 wording was already on main. |
+
+- **Skipped:** nothing that needs Jeff, a launchd or Vision change, or a channel release
+  came up. Not done: e6178bb9's two optional nits (above).
+- **Choices to defend:** (1) N1 keeps the mod's shape for the page's link and says it by its
+  time in the event, rather than "an item"; (2) N2 does both (no window and `coalescing`
+  not sent); (3) a tag refuses U+200D and U+FE0F (an emoji tag with a joiner is refused: a
+  joiner can make a look-alike area), titles still take them; (4) the page's hidden set
+  sits in `markdown.js`, already in the server's import graph, so no third page file joins
+  `SERVER_PATHS`; (5) loop 1's restart guess holds another instance off for an hour after a
+  start when the target's last line is a heal ("can't tell" never acts); (6) the renewal
+  count across an un-ack lives in memory: a tombstone in `acks.json` would read as a live
+  ack to a rolled-back server; (7) item 8 waits in the health collector, since health rows
+  carry no times to match an ack's instance; (8) the ack notice's "how it arrived" is the
+  Origin header, which a script can send too, so it says what the server saw, not who.
+- **To go live:** Ultron's read; C&P; a restart (Vision's scope, Jeff's OK) for every server
+  change; `npm run build` in `web/` of the main checkout for the tabs, the tag rule, the
+  link labels, the exact rows and the dismissed ids. Either order is safe: the old page's
+  tag check is looser than the new server's (a refused tag answers 400 and the page says
+  so), and the new page only refuses more. `markdown.js` is in `SERVER_PATHS`, so loop 3's
+  Restart card shows after the merge anyway. Proactive N1-N3 matter only once
+  `proactive.enabled` is on.
+- **After the restart, check:** the start lines as before (`heal: on, … targets`, no
+  `config:` line, no `loops: the view failed`); a board write by Jarvis answers 200 (the
+  live board's tags, titles and asks held none of the newly refused characters on
+  2026-11-19, read from the file); with an acked failing job on the Jobs chip, the first
+  load after the restart reads "all OK · 1 ack" (it may show nothing for the first seconds,
+  never red); the next ack notice in #pepper ends its parenthesis with "; from the page";
+  on Jeff's smallest phone the four tabs sit in one row. C3 (§10) is still owed.
+- **Undo:** revert the commit; nothing is migrated (no file format changed).
+- **For Ultron:** `lib/proactive-text.mjs` (`OPAQUE_ID`, `saidId`, `itemPart`) and
+  `events.proactive` (no window, `append` at once) with `SENT_STATUSES` and the error spell
+  in `lib/proactive.mjs`; `lib/text.mjs` (`UNSAFE_CHARS` + U+2028/2029), the tag line in
+  `todos.mjs`, `HIDDEN_CHAR` in `web/src/lib/orbit/markdown.js` and `TAG_UNSAFE` in
+  `board.js`; `lib/heal-runner.mjs` (`rebuild`, the `not-stale-log` branch, the first
+  reading's signal check, `ended` with its instance), `judgeReadings` and `killFileThere`
+  in `lib/heal.mjs`; `heldAlerts` in `collectors/notifier.mjs` and `events.knows`;
+  `loopsView` in `routes.mjs`; `anyHidden` and the tool's name in `lib/approvals.mjs`;
+  `rememberDismissed` in `web/src/lib/orbit/chat.js` and its use in `useChat.js`;
+  `oneLine` in `lib/chat-events.mjs`; `sendAlert`'s log in `notify.mjs`; `ackNotice`'s
+  `via`, `addAck`'s `removed` and the store's in-memory removals (`server/acks.mjs`);
+  `untilCached` and the first pass's wait in `collectors/health.mjs`; `spaceParts` in
+  `chat.js` and its drawing in `Chat.jsx`; the 370 px step in `orbit.css`; the server.mjs
+  lines (`killFileThere`, `eventKnown`, `via: 'heal-card'`, `firstCrons`), each held by a
+  source test.
+- **Checked (2026-11-19):** server 1,559 tests (1,536 on main; 23 new, and assertions added
+  in existing ones), web 335 (333), both in local time and `TZ=Asia/Tokyo`; `oxlint` on
+  every changed file shows only the four warnings main has. Mutation: 99 mutants over the
+  new code, then 11 more (the 3 that never ran, rebuilt from code points, and the
+  replacements below). On the final code every one that still applies is caught; on the
+  way, 6 survived and 3 never ran (a typed `\u2028` escape in the mutant list became
+  the real character): two survivors showed test
+  gaps (an object posing as a UUID to `saidId`; a single space after a tab), two showed
+  redundant checks, removed (the rebuild's day limit, which the pass already applies; the
+  discord log's `sent` test, since a sent post has no reason), one a weak mutant (replaced
+  by the old recursive scan, caught by depth 21, and a wide-list test), and one a guard
+  dropped on purpose (a ledger line stamped ahead now stays closed, with a test). Headless
+  Chromium (no WebKit on the mini, so Safari is unchecked) on scratch servers (8396, 8397;
+  never :8322): the tabs at 15 widths from 320 to 1440, light and dark, in the header and
+  pinned, with "Board · 238" and a "99+" badge: all in their box, no sideways scroll,
+  every tab 44 px (before the fix: 50 px over at 320, 10 at 360); the permission card from
+  a throwaway build of the real `PermissionCard` at 320, 390 (light and dark) and 1440: the
+  rows read `[2 spaces:␣␣]rm[2 spaces:␣␣]-rf build[1 space:␣]↵`, `echo[12 spaces:␣×12]done↵`
+  and `a b⇥c`, marks in their own colour, no policy violation; the Orbit page at 320, 390
+  and 1440: Overview and Board with no sideways scroll, the New item form refusing a soft
+  hyphen and a zero-width joiner with Add off, taking a plain new tag, which is saved. The
+  restart flash was reproduced at the route before the fix (`repro-flash.mjs`: health in,
+  crons not, no ack) and is held by an end-to-end test over the real registry, cache,
+  health collector and routes, which shows the flash without the wait. **Unverified:** a
+  real restart of the service (the server.mjs lines rest on source tests), Safari, and the
+  ack notice and #pepper log on the real poster.

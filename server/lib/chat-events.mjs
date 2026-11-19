@@ -23,17 +23,24 @@ export const LINE_MAX = 600;
 export const NTFY_WORDS = 'A chat security event on the Control Room: details in #pepper';
 
 // The one-line set from lib/hidden-chars.mjs (no `card`): controls, separators and the
-// invisible and direction characters. Tab becomes a space before the check.
+// invisible and direction characters. Tab becomes a space before the check. The cap is
+// on what the line shows, in code points, markers included (Ultron's 11-12 low: a
+// marker is 8 or 9 of them, so 600 hidden characters made a line of about 5,000). A
+// marker is never split: the cut comes before one that doesn't fit, and says how many
+// of the input's characters were left out.
 export function oneLine(s, max = LINE_MAX) {
-  const out = [];
-  for (const ch of String(s ?? '')) {
-    const c = ch.codePointAt(0);
-    if (c === 0x09) out.push(' ');
-    else if (isHiddenCodePoint(c)) out.push(`⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧`);
-    else out.push(ch);
+  const chars = [...String(s ?? '')];
+  let out = '';
+  let used = 0;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i].codePointAt(0);
+    const piece = c === 0x09 ? ' ' : isHiddenCodePoint(c) ? `⟦U+${c.toString(16).toUpperCase().padStart(4, '0')}⟧` : chars[i];
+    const size = piece === chars[i] || piece === ' ' ? 1 : [...piece].length;
+    if (used + size > max) return `${out} ⋯ ${chars.length - i} more cut`;
+    out += piece;
+    used += size;
   }
-  if (out.length <= max) return out.join('');
-  return out.slice(0, max).join('') + ` ⋯ ${out.length - max} more cut`;
+  return out;
 }
 
 // The kinds that push as well as log.

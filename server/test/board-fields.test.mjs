@@ -268,6 +268,23 @@ test('a title or an ask may not hold a zero-width space, word joiner, byte-order
   }
 });
 
+// Board 32769ce5 (2026-11-19): the line and paragraph separators break a one-line label
+// in some readers, so a title, an ask and an ack note refuse them; the detail text keeps
+// them, as it keeps newlines.
+test('a title or an ask may not hold a line or paragraph separator; the text may', async () => {
+  for (const c of [0x2028, 0x2029]) {
+    const ch = String.fromCodePoint(c);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', title: `Pay${ch}the bill` }], /item "a": title must not hold control characters/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: `Pay${ch}the bill`, kind: 'do' } }], /item "a": ask\.what must not hold/);
+    await refused([{ id: 'a', text: 'x', lane: 'idea', ask: { what: 'Pay', why: `It${ch}lapses`, kind: 'do' } }], /item "a": ask\.why must not hold/);
+    assert.equal((await createTodoStore(tmp()).write([{ id: 'b', text: `one${ch}two`, lane: 'idea', title: 'Fine' }])).length, 1);
+  }
+  // Their neighbours are fine (a figure dash's block: U+2027 and U+202F).
+  for (const c of [0x2027, 0x202f]) {
+    assert.equal((await createTodoStore(tmp()).write([{ id: 'b', text: 'x', lane: 'idea', title: `A${String.fromCodePoint(c)}B` }])).length, 1, c.toString(16));
+  }
+});
+
 test('the joiners stay fine in a title or an ask, so combined emoji and joined letters can be typed', async () => {
   // U+200D joins a person and a laptop into one emoji; U+200C keeps two letters apart.
   const coder = '\u{1f9d1}\u200d\u{1f4bb}';

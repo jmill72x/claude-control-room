@@ -140,6 +140,22 @@ test('bidi controls and zero-width characters are dropped from a link label', ()
   assert.deepEqual(parseInline(`plain${RLO}text`), [t(`plain${RLO}text`)], 'outside a link label, text is left as written');
 });
 
+// Boards 32769ce5 and e6178bb9 (2026-11-19): the label filter takes the shared hidden set
+// (server/lib/hidden-chars.mjs's line set), not a hand-made list.
+test('a link label also drops the rest of the shared hidden set', () => {
+  const cp = c => String.fromCodePoint(c);
+  for (const c of [0x00, 0x09, 0x0a, 0x85, 0xad, 0x34f, 0x61c, 0x115f, 0x180b, 0x200e, 0x2028, 0x2029, 0x2060, 0x2061, 0x206a, 0x3164, 0xfe0f, 0xffa0, 0xe0001, 0xe0041, 0xe007f, 0xe0100]) {
+    assert.deepEqual(parseInline(`[a${cp(c)}b](https://x.example/)`), [link('https://x.example/', 'ab', 'x.example')], c.toString(16));
+  }
+  // A lone surrogate (JSON's "\ud800") is dropped too, and a whole emoji is kept.
+  assert.deepEqual(parseInline(`[a${String.fromCharCode(0xd800)}b](https://x.example/)`), [link('https://x.example/', 'ab', 'x.example')]);
+  assert.deepEqual(parseInline(`[a${cp(0x1f331)}b](https://x.example/)`), [link('https://x.example/', `a${cp(0x1f331)}b`, 'x.example')]);
+  // Their visible neighbours stay.
+  for (const c of [0xa0, 0xae, 0x2010, 0x202f, 0x3165]) {
+    assert.deepEqual(parseInline(`[a${cp(c)}b](https://x.example/)`), [link('https://x.example/', `a${cp(c)}b`, 'x.example')], c.toString(16));
+  }
+});
+
 test('a mailto link keeps only its address', () => {
   assert.deepEqual(parseInline('[mail](mailto:a@b.example?subject=hi&body=x)'), [link('mailto:a@b.example', 'mail', 'a@b.example')]);
   assert.deepEqual(parseInline('[mail](mailto:a@b.example#x)'), [link('mailto:a@b.example', 'mail', 'a@b.example')]);

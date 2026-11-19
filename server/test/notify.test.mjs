@@ -189,6 +189,31 @@ test('the caller attempts both channels', async () => {
   assert.equal(result.sent, false);
 });
 
+// Ultron's 11-12 low: a #pepper copy the poster refused went unlogged while ntfy carried it.
+test('sendAlert logs a #pepper copy the poster refused or could not post, by its exit and never the message', async () => {
+  const lines = [];
+  const ok = async () => ({ sent: true, reason: null });
+  const run = async (discordResult, ntfy = ok) => sendAlert({ topic: 't', title: 'Control Room', message: 'Job sk-live-looking-name failed', ntfy, discord: async () => discordResult, logError: l => lines.push(l) });
+  let r = await run({ sent: false, reason: 'discord-post exited 2' });
+  assert.equal(r.sent, true, 'ntfy carried it');
+  r = await run({ sent: false, reason: 'discord-post exited 3' }, async () => ({ sent: false, reason: 'no topic configured' }));
+  assert.equal(r.sent, false);
+  await run({ sent: false, reason: 'discord-post exited 1' });
+  assert.deepEqual(lines, [
+    'push: the #pepper copy of an alert was not sent (discord-post exited 2: refused: secret-shaped text, or no webhook stored)',
+    'push: the #pepper copy of an alert was not sent (discord-post exited 3: Discord or the network failed)',
+    'push: the #pepper copy of an alert was not sent (discord-post exited 1)'
+  ]);
+  for (const l of lines) assert.ok(!l.includes('sk-live'), 'never the message');
+  // Sent, not installed (the normal state elsewhere) or a poster that logged its own line: nothing.
+  lines.length = 0;
+  await run({ sent: true, reason: null });
+  await run({ sent: false, reason: `jarvis discord-post not found at ${DISCORD_POSTER}` });
+  await run({ sent: false, reason: 'discord-post failed (SIGTERM)' });
+  await run({ sent: false, reason: 'discord-post exited 2x' });
+  assert.deepEqual(lines, []);
+});
+
 test('the default runner settles with the exit code, even when the poster leaves stdin unread', async () => {
   // System stand-ins, never the real poster: true and false exit without
   // reading stdin. A megabyte overfills the pipe, so the write fails with

@@ -8,7 +8,10 @@ import { symlink } from 'node:fs/promises';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHealth, readStateToken, runJobStatus, runPs, JOB_STATUS_TIMEOUT_MS } from '../collectors/health.mjs';
+import { createHealth, readStateToken, runJobStatus, runPs, JOB_STATUS_TIMEOUT_MS, untilCached, FIRST_CRONS_WAIT_MS } from '../collectors/health.mjs';
+import { createCache } from '../cache.mjs';
+import { createRegistry } from '../collectors/registry.mjs';
+import { createHandler } from '../routes.mjs';
 import { readHealthConfig, findSession } from '../lib/health.mjs';
 
 const NOW = Date.parse('2026-10-21T15:00:00Z');
@@ -339,4 +342,110 @@ test('whenAsked settles after the first job-status ask, answered or not, so the 
   await health.whenAsked();
   assert.ok(Number.isFinite(health.overlay(crons, NOW)[0].lastRunAt), 'lastRunAt once asked');
   await first;
+});
+
+// Board 20620d37 (Jeff 11-11): right after a restart the acked Friday job showed as
+// "1 failed" for a minute. The page marks an acked job from the crons panel's alert, and
+// the health strip's first pass went out before the crons panel's first.
+test('untilCached: true once the key has been through its collector (data or an error), false at the limit', async () => {
+  const cache = createCache();
+  const p = untilCached(cache, 'crons', { timeoutMs: 5000, everyMs: 5 });
+  setTimeout(() => cache.set('crons', []), 30);
+  assert.equal(await p, true);
+  const failing = createCache();
+  const q = untilCached(failing, 'crons', { timeoutMs: 5000, everyMs: 5 });
+  setTimeout(() => failing.fail('crons', new Error('x')), 30);
+  assert.equal(await q, true, 'a first pass that failed counts: the strip need not wait the whole limit');
+  const started = Date.now();
+  assert.equal(await untilCached(createCache(), 'crons', { timeoutMs: 60, everyMs: 5 }), false);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(await untilCached(null, 'crons', { timeoutMs: 20, everyMs: 5 }), false);
+  assert.equal(FIRST_CRONS_WAIT_MS, 60e3);
+  // Its timer never holds the process open.
+  const before = process.getActiveResourcesInfo().filter(r => r === 'Timeout').length;
+  const pending = untilCached(createCache(), 'crons', { timeoutMs: 200, everyMs: 50 });
+  assert.equal(process.getActiveResourcesInfo().filter(r => r === 'Timeout').length, before, 'unref\'d');
+  await pending;
+});
+
+test('the first pass waits for firstCrons after whenAsked has settled, then reads the crons panel; later passes do not wait', async () => {
+  let release;
+  let waits = 0;
+  let crons = [];
+  const firstCrons = () => { waits++; return new Promise(r => { release = r; }); };
+  const { health } = harness({ firstCrons, cache: { get: () => ({ data: crons }) } });
+  let done = false;
+  const first = health.collect().then(out => { done = true; return out; });
+  await health.whenAsked();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(done, false, 'held until the crons panel is in');
+  assert.equal(waits, 1);
+  crons = [{ label: 'com.example.brief', schedule: 'Every day, 07:30' }];
+  release(true);
+  const out = await first;
+  assert.equal(out.jobs.list.find(j => j.name === 'Morning brief').schedule, 'Every day, 07:30', 'the crons panel read after the wait');
+  await health.collect();
+  assert.equal(waits, 1, 'only the first pass waits');
+  // A wait that throws costs nothing but the wait.
+  const broken = harness({ firstCrons: async () => { throw new Error('x'); } });
+  assert.equal((await broken.health.collect()).jobs.status, 'ok');
+  // The clock is read again after the wait: a service found down is stamped from then.
+  let t = NOW;
+  const down = JSON.stringify({ generated_at: new Date(NOW).toISOString(), jobs: [entry('com.example.tunnel', { state: 'not running', last_exit: 1, max_age_hours: null, ok: false, reason: 'not running' })] });
+  const late = createHealth({
+    settings: readHealthConfig({ health: { jobStatus: '/x/job-status', services: [{ kind: 'launchd', name: 'Tunnel', label: 'com.example.tunnel' }] } }),
+    jobStatus: async () => down, ps: async () => '', launchctlPrint: async () => '', log: () => {}, now: () => t,
+    firstCrons: async () => { t += 60e3; }
+  });
+  assert.equal((await late.collect()).services[0].downSince, NOW + 60e3);
+});
+
+test('end to end: after a start, the first payload with a health strip already marks the acked job', async () => {
+  const label = 'com.example.friday';
+  const now = Date.now();
+  const since = now - 3 * 864e5;
+  const ack = { key: `cron:launchd:${label}`, kind: 'cron', since, by: 'jeff', note: null, at: now - 3600e3, until: now + 2 * 864e5, renewals: 0 };
+  const report = JSON.stringify({ generated_at: new Date(now).toISOString(), jobs: [entry(label, { ok: false, reason: 'Overdue', log_age_hours: 72, max_age_hours: 26 * 7 })] });
+  for (const wait of [true, false]) {
+    const cache = createCache();
+    const registry = createRegistry(cache, { setInterval: () => 0, clearInterval: () => {} }, { log: () => {} });
+    const health = createHealth({
+      settings: readHealthConfig({ health: { jobStatus: '/x/job-status', services: [] } }), jobNames: { [label]: { name: 'Friday fantasy' } }, cache,
+      jobStatus: async () => report, ps: async () => '', launchctlPrint: async () => '', log: () => {},
+      ...(wait ? { firstCrons: () => untilCached(cache, 'crons', { timeoutMs: 5000, everyMs: 5 }) } : {})
+    });
+    registry.register('health', () => health.collect(), 60e3);
+    // The crons pass as server.mjs runs it: it waits for job-status's first answer, then
+    // takes a while (launchd, the heal pass).
+    registry.register('crons', async () => {
+      await health.whenAsked();
+      await new Promise(r => setTimeout(r, 80));
+      return [{ name: 'friday', label, ok: false, state: 'failed', last: 'Overdue', lastRunAt: since, nextRunAt: now + 864e5, schedule: 'Fridays' }];
+    }, 60e3);
+    const h = createHandler({ cache, todos: { readState: async () => ({ todos: [], revision: null }) }, config: { present: true, jobs: { [label]: { name: 'Friday fantasy' } } }, acks: { read: async () => [ack] } });
+    const get = async () => {
+      let body = '';
+      const res = { writeHead() { this.headersSent = true; }, headersSent: false, setHeader() {}, end(b) { body = b ?? ''; } };
+      await h({ method: 'GET', url: '/api/dashboard', headers: {} }, res);
+      return JSON.parse(body);
+    };
+    registry.startAll();
+    let seen = null;
+    for (let i = 0; i < 400 && !seen; i++) {
+      const d = await get();
+      if (d.health?.status === 'ok') seen = d;
+      else await new Promise(r => setTimeout(r, 2));
+    }
+    assert.ok(seen, 'the strip came');
+    const row = seen.health.data.jobs.list.find(j => j.name === 'Friday fantasy');
+    assert.equal(row.state, 'failed');
+    if (wait) assert.equal(row.ack?.by, 'jeff', 'marked acked in the very first strip');
+    else assert.equal(row.ack, undefined, 'without the wait, the first strip has no ack: the red flash');
+  }
+});
+
+test('server.mjs: the health strip waits for the crons panel\'s first pass', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(/createHealth\(\{[^}]*firstCrons:\s*\(\)\s*=>\s*untilCached\(cache, 'crons'\)/.test(src));
 });

@@ -128,7 +128,7 @@ export function eventText(source, items, { title = null } = {}) {
   // again here: a candidate held overnight comes back from the ledger's file.
   if (source === 'limit') return listed(items, c => (typeof c.words === 'string' && WARNING_BODY.test(c.words) ? c.words : LIMIT_WORDS));
   // The proactive check's hits (lib/proactive-text.mjs): typed fields only, checked
-  // again here, since a coalesced item waits in memory before it is said.
+  // again here, whoever handed them in.
   if (source === PROACTIVE_SOURCE) return proactiveText(items.map(c => c.hit), { now: items[0]?.since ?? Date.now() }) ?? 'Heads up';
   if (source === PRESENCE_SOURCE) {
     if (n === 1) return `Presence: ${presencePart(items[0])}`;
@@ -528,25 +528,29 @@ export function createEvents({
   // The proactive check's new hits of one pass (lib/proactive.mjs), as one event. Each
   // hit is kept only as its checked typed fields (checkHit) and carries no alert key: the
   // check keeps its own keys, so this ledger never holds one it could not forget, and
-  // liveness is not checked at delivery (the 2-hour life is). Marked immediate: the check
-  // holds its own hits through quiet hours and tells them at 07:00. The coalesce window
-  // applies. With the kill switch on (`off`) or the caps reached (`held`) nothing is
-  // taken and nothing is counted, neither suppressed nor held back: the check marks a hit
-  // sent only on `made` or `coalescing` and offers the rest again on its next pass
-  // (Ultron's L1, 11-18), so counting them here would count one hit every 5 minutes.
+  // liveness is not checked at delivery (the 2-hour life is). The check holds its own
+  // hits through quiet hours and tells them at 07:00, so quiet hours don't apply here,
+  // and neither does the 60 s coalesce window (Ultron's N2, 11-18): a coalesced batch
+  // was marked told before its event existed, and the window's end could still hold it
+  // (caps), drop it (kill switch) or fail. One pass is already one event, and the check
+  // runs every 5 minutes, so the event is made now or not at all. With the kill switch
+  // on (`off`) or the caps reached (`held`) nothing is taken and nothing is counted,
+  // neither suppressed nor held back: the check marks a hit sent only on `made` and
+  // offers the rest again on its next pass (Ultron's L1, 11-18), so counting them here
+  // would count one hit every 5 minutes. A store that refuses the event throws, and the
+  // check offers those hits again too.
   function proactive(hits) {
     return serial(async () => {
       const at = clock();
       const items = (Array.isArray(hits) ? hits : []).map(checkHit).filter(Boolean)
-        .map(hit => ({ source: PROACTIVE_SOURCE, failure: false, immediate: true, hit, since: at }));
+        .map(hit => ({ source: PROACTIVE_SOURCE, failure: false, hit, since: at }));
       if (items.length === 0) return { status: 'refused' };
       if (killed()) return { status: 'off' };
       if (capped(PROACTIVE_SOURCE, at)) return { status: 'held' };
-      const r = await admit(PROACTIVE_SOURCE, items);
-      const status = r.made ? 'made' : r.held ? 'held' : r.waiting ? 'coalescing' : 'quiet';
+      await append({ source: PROACTIVE_SOURCE, type: 'heads-up', text: eventText(PROACTIVE_SOURCE, items), items });
       await release();
       await save();
-      return { status };
+      return { status: 'made' };
     });
   }
 
@@ -578,6 +582,9 @@ export function createEvents({
 
   return {
     load, fromAlerts, post, presence, proactive, deliverable, takeTriage, killed,
+    // Whether an alert's key is in the ledger, or waits out a coalesce window: the lead
+    // has been, or is about to be, told of it (the notifier's heal hold, Ultron's L4).
+    knows: key => typeof key === 'string' && (Object.hasOwn(ledger.keys, key) || isPending(key)),
     flushNow: source => flushSource(source),
     release: () => serial(async () => { const n = await release(); await save(); return n; }),
     get ledger() { return ledger; }

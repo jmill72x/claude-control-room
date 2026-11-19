@@ -212,17 +212,45 @@ export const hasMarker = p => cardFields(p).some(([, v]) => MARKER.test(v)) || M
 // dispute hashed like the card before either).
 export const shownInput = p => JSON.stringify([p?.tool ?? '', p?.description ?? '', p?.inputPreview ?? '', ...(typeof p?.exact === 'string' ? [p.exact] : []), ...(typeof p?.exactNote === 'string' ? [{ note: p.exactNote }] : [])]);
 
+// Spaces the eye can't count (Ultron's L6, 11-13): a run of two or more, or any at a
+// line's start or end, become `{ spaces: n }`, drawn as a mark like a tab. A single space
+// between words stays text. `atStart`/`atEnd`: whether this piece begins or ends its line
+// (a piece between tabs does neither).
+function spaceParts(t, atStart, atEnd) {
+  const out = [];
+  let last = 0;
+  for (const m of t.matchAll(/ +/g)) {
+    const n = m[0].length;
+    const edge = (atStart && m.index === 0) || (atEnd && m.index + n === t.length);
+    if (n < 2 && !edge) continue;
+    if (m.index > last) out.push({ text: t.slice(last, m.index) });
+    out.push({ spaces: n });
+    last = m.index + n;
+  }
+  if (last < t.length) out.push({ text: t.slice(last) });
+  return out;
+}
+
+// How a run of spaces is drawn: one open box per space, or the count past 8, and its
+// name for a screen reader.
+export const SPACES_SHOWN = 8;
+export const spacesMark = n => (n <= SPACES_SHOWN ? '␣'.repeat(n) : `␣×${n}`);
+export const spacesLabel = n => `${n} space${n === 1 ? '' : 's'}`;
+
 // The exact command as rows the card draws with every line break and tab visible:
 // one row per line, `end` true where a line break follows it, each row's text split
-// at its tabs. A last row left empty by a final line break is not drawn: the mark on
-// the row before it says the break is there.
+// at its tabs, and runs of spaces marked (spaceParts). A last row left empty by a final
+// line break is not drawn: the mark on the row before it says the break is there.
 export function exactRows(text) {
   if (typeof text !== 'string' || text === '') return [];
   const lines = text.split('\n');
-  const rows = lines.map((line, i) => ({
-    parts: line.split('\t').flatMap((t, j) => [...(j > 0 ? [{ tab: true }] : []), ...(t !== '' ? [{ text: t }] : [])]),
-    end: i < lines.length - 1
-  }));
+  const rows = lines.map((line, i) => {
+    const pieces = line.split('\t');
+    return {
+      parts: pieces.flatMap((t, j) => [...(j > 0 ? [{ tab: true }] : []), ...spaceParts(t, j === 0, j === pieces.length - 1)]),
+      end: i < lines.length - 1
+    };
+  });
   if (rows.length > 1 && rows[rows.length - 1].parts.length === 0) rows.pop();
   return rows;
 }
@@ -296,6 +324,23 @@ export function cardGone(p, now = Date.now()) {
 // stays gone when a new stream replays it (a request that timed out here is replayed
 // for an hour), unless it is open, which has no Dismiss.
 export const keepCard = (p, dismissed) => Boolean(p?.requestId) && (p.state === 'open' || !dismissed?.has?.(p.requestId));
+
+// The dismissed cards' ids, kept only as long as a replay can bring one back (Ultron's
+// parity L7, 11-12: the list grew for as long as the page stayed open). The server
+// replays a request that timed out for at most CARD_REPLAY_MS (50 min) past its
+// 10-minute window (server/lib/chat-store.mjs), so two hours from the dismissal covers
+// it; past DISMISSED_MAX ids the oldest go. A Map of id to when it was dismissed (Map's
+// own order is the order they were added, so the first is the oldest).
+export const DISMISSED_KEEP_MS = 2 * 3600e3;
+export const DISMISSED_MAX = 500;
+export function rememberDismissed(dismissed, requestId, now) {
+  const next = new Map();
+  for (const [id, at] of dismissed ?? []) if (Number.isFinite(at) && now - at < DISMISSED_KEEP_MS) next.set(id, at);
+  next.delete(requestId);
+  next.set(requestId, now);
+  while (next.size > DISMISSED_MAX) next.delete(next.keys().next().value);
+  return next;
+}
 
 export const NOT_APPROVER = 'this device is not marked as one that may allow (bin/chat-pair approver, on the machine)';
 

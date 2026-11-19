@@ -113,9 +113,19 @@ export function runPoster(file, args, { input }) {
 // lock screen, so the chat's alerts send it generic words and keep the details for
 // #pepper (approvals, Ultron L10).
 // `priority` is ntfy's (a heal's page is 'high'); #pepper has no such thing.
-export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', ntfy = publish, discord = publishDiscord }) {
+// A #pepper copy the poster refused or couldn't post (it exited 2 or 3) is logged with
+// that reason, never the message (Ultron's 11-12 low): exit 2 is what the poster does
+// with secret-shaped text, which a job's name or a label can look like, and with ntfy
+// carrying the alert the run reads as sent, so nothing else would say #pepper missed it.
+// A poster that could not start logs its own line, and one that isn't installed is the
+// normal state elsewhere.
+const POSTER_EXIT_WORDS = Object.freeze({ 2: 'refused: secret-shaped text, or no webhook stored', 3: 'Discord or the network failed' });
+export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', ntfy = publish, discord = publishDiscord, logError = console.error }) {
   const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message, priority });
   const viaDiscord = await discord({ title, message });
+  // A sent post has no reason, so only a failed one matches.
+  const exit = /^discord-post exited (\d+)$/.exec(String(viaDiscord?.reason ?? ''));
+  if (exit) logError(`push: the #pepper copy of an alert was not sent (discord-post exited ${exit[1]}${Object.hasOwn(POSTER_EXIT_WORDS, exit[1]) ? `: ${POSTER_EXIT_WORDS[exit[1]]}` : ''})`);
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
 }
 
