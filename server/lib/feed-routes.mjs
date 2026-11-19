@@ -8,16 +8,22 @@ import { json, HttpError } from '../routes.mjs';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
-export function createFeedRoutes({ feed, devices = null, login = null, log = console.error }) {
+// The read rule, shared with GET /api/proactive (lib/proactive-routes.mjs): throws a
+// 403 for a request that is not the owner's tailnet login (when one is set) and a 401
+// for one without a paired device's cookie.
+export function deviceReadGuard({ devices = null, login = null } = {}) {
   const owner = typeof login === 'string' && login.trim() ? login.trim().toLowerCase() : null;
-
-  function requireReader(req) {
+  return function requireReader(req) {
     if (owner !== null) {
       const seen = req.headers?.['tailscale-user-login'];
       if (typeof seen !== 'string' || seen.trim().toLowerCase() !== owner) throw new HttpError(403, 'the request did not come as the owner through the tailnet');
     }
     if (!devices || !devices.authenticate(req.headers?.cookie)) throw new HttpError(401, 'this device is not paired');
-  }
+  };
+}
+
+export function createFeedRoutes({ feed, devices = null, login = null, log = console.error }) {
+  const requireReader = deviceReadGuard({ devices, login });
 
   async function handler(req, res) {
     try {

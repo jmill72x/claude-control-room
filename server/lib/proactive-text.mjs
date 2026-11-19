@@ -1,0 +1,159 @@
+// The proactive check's rules and words (docs/design/2026-11-18-proactive-check.md).
+//
+// RULES holds every threshold: constants, not config, like the limit warnings' steps.
+// checkHit keeps only the typed fields of a hit, each checked: a board id of an
+// opaque shape, a priority, a lane, a whole number, a date, a name from config, a limit's
+// fixed name, a key name that is a plain name. Anything else from outside (a board
+// title, an ask's words, a launchd label, a log line) never passes, and a field that
+// fails its check is said in generic words instead. proactiveText builds the event's
+// words from checked hits only, and the events module (lib/events.mjs) checks each
+// item again on its way out, since a coalesced item waits in memory.
+//
+// Nothing here imports lib/events.mjs: that module imports this one.
+import { resetWords } from './limit-warnings.mjs';
+
+export const RULES = Object.freeze({
+  // An open P0 or P1 item the check has seen unchanged this many days.
+  staleDays: Object.freeze({ P0: 2, P1: 7 }),
+  // An open item whose ask (its words and kind) has stood this many days.
+  askDays: 3,
+  // One launchd job failing on this many distinct runs, or one heal target healed this
+  // many times, within repeatDays.
+  repeatCount: 3,
+  repeatDays: 14,
+  // A weekly limit projected over this by its reset, once this share of the week is gone.
+  weekProjectedPct: 100,
+  weekMinElapsed: 0.25,
+  // The session limit at this or more.
+  sessionPct: 75,
+  // A working Shortcut key this many days or fewer from its idle expiry.
+  expiryDays: 7
+});
+
+// The order the rules are said in, the event's and the page's.
+export const RULE_ORDER = Object.freeze(['due', 'ask', 'stale', 'fails', 'heals', 'week', 'session', 'expiry']);
+// At most this many named per rule ("and N more"), and this many characters in all.
+export const PER_RULE = 5;
+export const TEXT_MAX = 1200;
+
+// A board id as it may be said: only an opaque shape, which can carry no words (Ultron's
+// M1, 11-18: the board takes any non-empty id, and a plain-looking one such as
+// "Jarvis-system-note.approve-pending-pairing" would reach the lead verbatim). A UUID
+// (the page's and Jarvis's), a 13-digit time and a short random part (the mod's), 8 hex,
+// or a number of at most 9 digits (the seed's). Any other id is said as "an item", and
+// the page and the lead find it by its other fields. Every open item on the live board
+// had one of these shapes on 2026-11-18 (241 of 241).
+export const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{13}-[a-z0-9]{6,12}|[0-9a-f]{8}|[0-9]{1,9})$/;
+export const opaqueId = v => (typeof v === 'string' && OPAQUE_ID.test(v) ? v : null);
+// A name as it may be said: the events module's own rule (lib/events.mjs, SAFE_NAME).
+export const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,59}$/;
+// A limit's name as lib/limit-warnings.mjs's ruleFor makes it.
+const LIMIT_NAME = /^(?:session|week \([A-Za-z0-9][A-Za-z0-9 .-]{0,23}\))$/;
+const DAY_TEXT = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
+const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
+const LANES = new Set(['idea', 'doing']);
+const ASK_KINDS = new Set(['decide', 'do']);
+const STALE_PRIORITIES = new Set(Object.keys(RULES.staleDays));
+
+const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const whole = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const time = v => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+const pick = (v, ok) => (ok(v) ? v : null);
+const name = v => (typeof v === 'string' && SAFE_NAME.test(v) ? v : null);
+const priority = v => pick(v, x => PRIORITIES.has(x));
+
+// A hit's typed fields for its rule, each checked, or null when the hit is not one this
+// module knows (an unknown rule, or a field the rule can't do without).
+export function checkHit(h) {
+  if (!isObject(h) || typeof h.rule !== 'string') return null;
+  switch (h.rule) {
+    case 'due':
+      if (typeof h.due !== 'string' || !DAY_TEXT.test(h.due) || !whole(h.late, 1, 100000)) return null;
+      return { rule: 'due', item: opaqueId(h.item), priority: priority(h.priority), due: h.due, late: h.late };
+    case 'ask':
+      if (!whole(h.days, RULES.askDays, 100000)) return null;
+      return { rule: 'ask', item: opaqueId(h.item), priority: priority(h.priority), kind: pick(h.kind, x => ASK_KINDS.has(x)), days: h.days };
+    case 'stale':
+      if (!STALE_PRIORITIES.has(h.priority) || !LANES.has(h.lane) || !whole(h.days, RULES.staleDays[h.priority], 100000)) return null;
+      return { rule: 'stale', item: opaqueId(h.item), priority: h.priority, lane: h.lane, days: h.days };
+    case 'fails':
+      if (!whole(h.count, RULES.repeatCount, 100000)) return null;
+      return { rule: 'fails', job: name(h.job), count: h.count };
+    case 'heals':
+      if (!whole(h.count, RULES.repeatCount, 100000)) return null;
+      return { rule: 'heals', target: name(h.target), count: h.count };
+    case 'week':
+      if (typeof h.limit !== 'string' || !LIMIT_NAME.test(h.limit) || h.limit === 'session' || !whole(h.projected, RULES.weekProjectedPct + 1, 100000)) return null;
+      return { rule: 'week', limit: h.limit, projected: h.projected, resetsAt: time(h.resetsAt) };
+    case 'session':
+      if (!whole(h.pct, RULES.sessionPct, 1000)) return null;
+      return { rule: 'session', pct: h.pct, resetsAt: time(h.resetsAt) };
+    case 'expiry':
+      if (h.what !== 'shortcut-key' || time(h.expiresAt) === null || !whole(h.days, 0, RULES.expiryDays)) return null;
+      return { rule: 'expiry', what: 'shortcut-key', name: name(h.name), expiresAt: h.expiresAt, days: h.days };
+    default:
+      return null;
+  }
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const resets = (at, now) => (at === null ? '' : `, resets ${resetWords(at, now)}`);
+// An item with no opaque id is "an item", and its details say where to find it.
+const itemPart = (h, details) => (h.item !== null ? `${h.item} (${details})` : `an item (${details}; see Heads up)`);
+
+// The words for one rule's hits (all of one rule, at least one), at most PER_RULE named.
+function rulePart(rule, hits, now) {
+  const shown = hits.slice(0, PER_RULE);
+  const more = hits.length - shown.length;
+  const tail = more > 0 ? `; and ${more} more` : '';
+  const list = (head, part) => `${head}: ${shown.map(part).join(', ')}${more > 0 ? `, and ${more} more` : ''}`;
+  switch (rule) {
+    case 'due':
+      return list(`${plural(hits.length, 'board item')} past due`, h => itemPart(h, `${h.priority ?? 'no priority'}, due ${h.due}`));
+    case 'ask':
+      return list(`${plural(hits.length, 'ask')} waiting ${RULES.askDays}+ days`, h => itemPart(h, `${h.priority ?? 'no priority'}, ${h.kind ?? 'ask'}, ${h.days} d`));
+    case 'stale':
+      return list(`${plural(hits.length, 'P0/P1 item')} unchanged`, h => itemPart(h, `${h.priority}, ${h.lane}, ${h.days} d`));
+    case 'fails':
+      return shown.map(h => `job ${h.job ?? 'a launchd job'} failed ${h.count} times in ${RULES.repeatDays} days`).join('; ') + tail;
+    case 'heals':
+      return shown.map(h => `${h.target ?? 'a heal target'} healed ${h.count} times in ${RULES.repeatDays} days (a lasting fix is due)`).join('; ') + tail;
+    case 'week':
+      return shown.map(h => `Claude ${h.limit} projected at ${h.projected}% by its reset${resets(h.resetsAt, now)}`).join('; ') + tail;
+    case 'session':
+      return shown.map(h => `Claude session at ${h.pct}%${resets(h.resetsAt, now)}`).join('; ') + tail;
+    case 'expiry':
+      return shown.map(h => `Shortcut key ${h.name ?? 'a Shortcut key'} stops working in ${plural(h.days, 'day')} unless used`).join('; ') + tail;
+    default:
+      return '';
+  }
+}
+
+const MORE = '; and more on the page (Heads up)';
+
+// One event's words for a batch of hits: "Heads up (N): " and one part per rule, in
+// RULE_ORDER. Every hit is checked here; one that fails is left out and not counted.
+// Cut at a rule's boundary to TEXT_MAX; null when no hit passes.
+export function proactiveText(hits, { now = Date.now() } = {}) {
+  const checked = (Array.isArray(hits) ? hits : []).map(checkHit).filter(Boolean);
+  if (checked.length === 0) return null;
+  const head = `Heads up (${checked.length}): `;
+  const parts = RULE_ORDER
+    .map(rule => checked.filter(h => h.rule === rule))
+    .filter(list => list.length > 0)
+    .map(list => rulePart(list[0].rule, list, now));
+  let text = head + parts.join('; ');
+  if (text.length <= TEXT_MAX) return text;
+  // Whole parts while they fit with room for the closing words.
+  text = head;
+  let used = 0;
+  for (const p of parts) {
+    const next = `${text}${used ? '; ' : ''}${p}`;
+    if (next.length + MORE.length > TEXT_MAX) break;
+    text = next;
+    used++;
+  }
+  // Not even the first part fits (it can't, with PER_RULE named): cut it.
+  if (used === 0) text = (head + parts[0]).slice(0, TEXT_MAX - MORE.length);
+  return text + MORE;
+}

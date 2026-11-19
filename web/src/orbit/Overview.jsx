@@ -12,6 +12,8 @@ import { AgentsCard } from './Agents.jsx';
 import { Waiting } from './Waiting.jsx';
 import { RoutinesList } from './Routines.jsx';
 import { Loops, LoopsFold } from './Loops.jsx';
+import { HeadsUp } from './HeadsUp.jsx';
+import { headsUpView } from '../lib/orbit/headsup.js';
 import { youEvents } from '../lib/orbit/waiting.js';
 import { useFold } from './useFold.js';
 
@@ -267,8 +269,11 @@ function HeatMap({ payload }) {
 // Usage and Today's schedule share a row, as Usage limits and Today's routines did.
 // Nothing folds by width any more: the tabs and the two folds keep a phone's first
 // screens short, and each fold remembers its state per viewer.
-export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged, agentsTab, setAgentsTab }) {
+export function Overview({ payload, now, roster, board, waiting, setWaiting, onOpenItem, onChanged, agentsTab, setAgentsTab, headsUp = null, onOpenLinked = onOpenItem }) {
+  // Heads up (the proactive check): its answer comes from its own read (useHeadsUp).
+  const heads = headsUpView(headsUp, { todos: board.todos, now });
   const parts = {
+    headsup: <HeadsUp key="headsup" view={heads} onOpenItem={onOpenLinked} />,
     waiting: <Waiting key="waiting" board={board} payload={payload} roster={roster} now={now} state={waiting} setState={setWaiting} onOpenItem={onOpenItem} onChanged={onChanged} />,
     agents: <AgentsCard key="agents" payload={payload} now={now} roster={roster} tab={agentsTab} onTab={setAgentsTab} />,
     usage: (
@@ -280,5 +285,5 @@ export function Overview({ payload, now, roster, board, waiting, setWaiting, onO
     schedule: null, // drawn in Usage's row
     loops: <Loops key="loops" payload={payload} now={now} />
   };
-  return <main className="o-wrap o-main">{homeSections(payload?.loops).map(k => parts[k])}</main>;
+  return <main className="o-wrap o-main">{homeSections(payload?.loops, heads !== null).map(k => parts[k])}</main>;
 }

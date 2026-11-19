@@ -7,6 +7,8 @@
 // - The notifier, after acks: only `cron:launchd:*` failures and `service:*` outages,
 //   never the lead's own session (`service:session:*`), never an ingested cron and
 //   never the needs-you, limit, projection, board or credits alerts.
+// - The proactive check (lib/proactive.mjs, `proactive`): its hits' typed fields, said by
+//   lib/proactive-text.mjs.
 // - The event socket (lib/event-socket.mjs): a typed body from a source on config's
 //   allowlist, empty by default.
 // The words come from fixed templates with typed fields only. A job is named only by
@@ -22,6 +24,9 @@
 // - At most 6 an hour per source and 30 a day in all (rolling). Past that the candidate
 //   is held and counted; once the source is under its caps again, one "N held back"
 //   summary goes out, which counts toward no cap and never starts another summary.
+//   The proactive check's heads-ups have a day cap of their own (8) and count toward
+//   neither the 30 nor anyone else's, so they can never push out a job failure or an
+//   outage (Ultron's L2, 11-18).
 // - Quiet hours 22:00-07:00 (local) hold events that are not failures until 07:00.
 //   Slice 1 has only failures; the hook is there for the counted sources.
 // - The kill switch, a file (`~/.local/state/jarvis-os/events-off`): while it exists
@@ -38,11 +43,14 @@ import { dirname } from 'node:path';
 import { prune as pruneKeys } from './push-alerts.mjs';
 import { clockTime } from './chat-socket.mjs';
 import { KIND as LIMIT_STEP, WARNING_BODY } from './limit-warnings.mjs';
+import { proactiveText, checkHit } from './proactive-text.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 export const COALESCE_MS = 60e3;
 export const PER_SOURCE_HOURLY = 6;
 export const DAILY_TOTAL = 30;
+// The proactive check's own day cap, outside DAILY_TOTAL.
+export const PROACTIVE_DAILY = 8;
 export const EVENT_TTL_MS = 2 * HOUR;
 export const QUIET_START_HOUR = 22;
 export const QUIET_END_HOUR = 7;
@@ -57,7 +65,9 @@ export const SUPPRESSED_EVERY_MS = HOUR;
 
 // A source name on the socket's allowlist, and the in-process ones.
 export const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
-export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage', limit: 'limit warning' });
+export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage', limit: 'limit warning', proactive: 'heads-up' });
+// The proactive check (lib/proactive.mjs): an in-process source, never a socket name.
+export const PROACTIVE_SOURCE = 'proactive';
 // What a limit warning's event says when its words are not in the fixed shape.
 export const LIMIT_WORDS = 'a limit warning';
 // Presence (lib/shortcut-routes.mjs): what a paired Shortcut may report, each a fixed
@@ -117,6 +127,9 @@ export function eventText(source, items, { title = null } = {}) {
   // A limit warning's own line (lib/limit-warnings.mjs), checked on the way in and
   // again here: a candidate held overnight comes back from the ledger's file.
   if (source === 'limit') return listed(items, c => (typeof c.words === 'string' && WARNING_BODY.test(c.words) ? c.words : LIMIT_WORDS));
+  // The proactive check's hits (lib/proactive-text.mjs): typed fields only, checked
+  // again here, since a coalesced item waits in memory before it is said.
+  if (source === PROACTIVE_SOURCE) return proactiveText(items.map(c => c.hit), { now: items[0]?.since ?? Date.now() }) ?? 'Heads up';
   if (source === PRESENCE_SOURCE) {
     if (n === 1) return `Presence: ${presencePart(items[0])}`;
     return `${n} presence reports: ${listed(items, presencePart)}`;
@@ -128,7 +141,7 @@ export function eventText(source, items, { title = null } = {}) {
 }
 
 export const heldText = (source, n, since, word = ALERT_SOURCES[source] ?? `${source} event`) =>
-  `${n} more ${word}${n === 1 ? '' : 's'} held back since ${clockTime(since)} (limits: ${PER_SOURCE_HOURLY} an hour per source, ${DAILY_TOTAL} a day)`;
+  `${n} more ${word}${n === 1 ? '' : 's'} held back since ${clockTime(since)} (limits: ${PER_SOURCE_HOURLY} an hour per source, ${source === PROACTIVE_SOURCE ? `${PROACTIVE_DAILY} heads-up events` : DAILY_TOTAL} a day)`;
 export const suppressedText = (n, since) => `${n} event${n === 1 ? '' : 's'} suppressed since ${clockTime(since)}: events were off`;
 
 // ---- the notifier's candidates ----
@@ -169,7 +182,7 @@ export function readEventsConfig(config) {
   if (!isObject(raw)) { problems.push('events is not an object'); return out; }
   if (raw.sources !== undefined && !isObject(raw.sources)) problems.push('events.sources is not an object');
   for (const [name, s] of Object.entries(isObject(raw.sources) ? raw.sources : {})) {
-    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service, limit or presence)`); continue; }
+    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service, limit, proactive or presence)`); continue; }
     const title = safeName(s?.title);
     if (!title) { problems.push(`events.sources.${name}: title must be a plain name of at most 60 characters`); continue; }
     out.sources.set(name, { title, failure: s.failure === true });
@@ -260,10 +273,14 @@ export function createEvents({
   }
 
   const trimMade = at => { ledger.made = ledger.made.filter(e => at - e.at < DAY); };
+  // The day's count: the proactive check's own, or everyone else's (L2).
   const capped = (source, at) => {
     trimMade(at);
     const hour = ledger.made.filter(e => e.source === source && at - e.at < HOUR).length;
-    return hour >= PER_SOURCE_HOURLY || ledger.made.length >= DAILY_TOTAL;
+    if (hour >= PER_SOURCE_HOURLY) return true;
+    const own = source === PROACTIVE_SOURCE;
+    const day = ledger.made.filter(e => (e.source === PROACTIVE_SOURCE) === own).length;
+    return day >= (own ? PROACTIVE_DAILY : DAILY_TOTAL);
   };
 
   const titleOf = source => sources.get(source)?.title ?? null;
@@ -295,6 +312,7 @@ export function createEvents({
     if (source === 'launchd') return 'job-failed';
     if (source === 'service') return 'service-down';
     if (source === 'limit') return 'limit-warning';
+    if (source === PROACTIVE_SOURCE) return 'heads-up';
     if (source !== PRESENCE_SOURCE) return 'count';
     const whats = new Set(items.map(c => c.what));
     return whats.size === 1 && Object.hasOwn(PRESENCE_EVENTS, items[0].what) ? items[0].what : 'presence';
@@ -507,6 +525,31 @@ export function createEvents({
     });
   }
 
+  // The proactive check's new hits of one pass (lib/proactive.mjs), as one event. Each
+  // hit is kept only as its checked typed fields (checkHit) and carries no alert key: the
+  // check keeps its own keys, so this ledger never holds one it could not forget, and
+  // liveness is not checked at delivery (the 2-hour life is). Marked immediate: the check
+  // holds its own hits through quiet hours and tells them at 07:00. The coalesce window
+  // applies. With the kill switch on (`off`) or the caps reached (`held`) nothing is
+  // taken and nothing is counted, neither suppressed nor held back: the check marks a hit
+  // sent only on `made` or `coalescing` and offers the rest again on its next pass
+  // (Ultron's L1, 11-18), so counting them here would count one hit every 5 minutes.
+  function proactive(hits) {
+    return serial(async () => {
+      const at = clock();
+      const items = (Array.isArray(hits) ? hits : []).map(checkHit).filter(Boolean)
+        .map(hit => ({ source: PROACTIVE_SOURCE, failure: false, immediate: true, hit, since: at }));
+      if (items.length === 0) return { status: 'refused' };
+      if (killed()) return { status: 'off' };
+      if (capped(PROACTIVE_SOURCE, at)) return { status: 'held' };
+      const r = await admit(PROACTIVE_SOURCE, items);
+      const status = r.made ? 'made' : r.held ? 'held' : r.waiting ? 'coalescing' : 'quiet';
+      await release();
+      await save();
+      return { status };
+    });
+  }
+
   // Whether a stored event may go to the channel now (chat-socket's toInbound).
   function deliverable(m, at = clock()) {
     if (m?.kind !== 'event' || m.from !== 'system') return false;
@@ -534,7 +577,7 @@ export function createEvents({
   }
 
   return {
-    load, fromAlerts, post, presence, deliverable, takeTriage, killed,
+    load, fromAlerts, post, presence, proactive, deliverable, takeTriage, killed,
     flushNow: source => flushSource(source),
     release: () => serial(async () => { const n = await release(); await save(); return n; }),
     get ledger() { return ledger; }

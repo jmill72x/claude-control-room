@@ -120,7 +120,9 @@ test('after a sweep the next write is as ever: owner-only, through a new temp fi
 test('server.mjs sweeps once at start, before the notifier is registered and before the collectors start', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   assert.match(src, /\nconst sentStore = createSentStore\([^\n]*\);\nconst staleSentTemps = await sentStore\.sweep\(\);\n/);
-  assert.equal(src.match(/\.sweep\(/g).length, 1, 'once');
+  // Once for this file (the proactive check sweeps its own file, data/proactive.json:
+  // test/proactive-routes.test.mjs).
+  assert.equal(src.match(/\bsentStore\.sweep\(/g).length, 1, 'once');
   const sweep = src.indexOf('await sentStore.sweep()');
   assert.ok(sweep < src.indexOf("registry.register('notifier'"), 'before the notifier exists');
   assert.ok(sweep < src.indexOf('registry.startAll()'), 'before any collector runs');

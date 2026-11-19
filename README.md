@@ -2007,6 +2007,8 @@ is `server/lib/events.mjs`, `server/lib/event-socket.mjs`, the event case in
 `server/lib/chat-socket.mjs` and the notifier's hook; tests in `server/test/events.test.mjs`
 and `web/test/orbit-events.test.js`. Events run only while the chat is on.
 
+- **The proactive check is a third kind** (2026-11-18, off by default): source `proactive`,
+  type `heads-up`, one event for a pass's new hits (see "The proactive check").
 - **Presence is a second kind** (2026-11-12): a paired Shortcut's `arrived-home` report
   (see "Shortcut keys") is an event of source `presence`, made at once at any hour, with
   the same caps, staleness rule and kill switch.
@@ -2037,7 +2039,8 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   its own (`server/data/events.json`, 0600, apart from `notified.json`, so a failed push and
   a failed event never block each other). A burst within 60 s of a source's last event waits
   for the window's end and goes as one. At most 6 an hour per source and 30 a day in all
-  (rolling); past that the candidates are held and counted, and once the source is under
+  (rolling; the proactive check's heads-ups have their own 8 a day outside the 30, so they
+  never push out a failure); past that the candidates are held and counted, and once the source is under
   its caps again one "held back" line goes, which counts toward no cap and starts no other
   summary. Quiet hours (22:00 to 07:00) hold events that are not failures until 07:00, at
   most 100 of them; past that they are only counted and join the held-back summary at 07:00.
@@ -2305,9 +2308,93 @@ T2 loops run, and loop 3's checkout reader), the first pass in
 - **Not built yet:** web builds and channel releases after a merge (loop 3 restarts the
   server only), the `heal-done` and
   `heal-proposed` events for the lead (an event wakes the lead's session, and the released
-  channel names only the event types it knows), the "3 in 14 days" fix-item event, and a
-  loop count on the health strip. The morning brief reads job-status itself, so it still
+  channel names only the event types it knows), and a loop count on the health strip. The
+  "3 in 14 days" count is the proactive check's `heals` rule (see "The proactive check"):
+  it tells the lead, who opens the board item for the lasting fix. The morning brief reads job-status itself, so it still
   calls a quiet job overdue.
+
+### The proactive check: wake the lead only on a hit (board a77b4757; built, off by default)
+
+A pass every 5 minutes inside this server, with no model and no network, over what it
+already has. It finds **hits**, tells each one once in a single event for the lead, and
+shows the current ones under **Heads up** on the Overview. It never writes the board,
+never pushes to a phone and never starts anything. Design:
+`docs/design/2026-11-18-proactive-check.md`; code `server/lib/proactive.mjs` (detectors,
+bookkeeping, state), `server/lib/proactive-text.mjs` (the rules' numbers and the words),
+`server/lib/proactive-routes.mjs` (the GET), `proactive()` in `server/lib/events.mjs`, and
+on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Tests:
+`server/test/proactive*.test.mjs`, `web/test/orbit-headsup.test.js`.
+
+- **The rules** (constants, `RULES` in proactive-text.mjs): an open item past its `due`
+  date; an open item's `ask` unchanged for 3 days; an open P0 item unchanged for 2 days, a
+  P1 for 7; one launchd job failing on 3 distinct runs in 14 days; one heal target healed
+  3 times in 14 days (the heal ledger's distinct heals); a weekly limit projected over 100%
+  by its reset, once a quarter of the week has passed; the session limit at 75% or more; a
+  working Shortcut key 7 days or fewer from its idle expiry. The Claude login's expiry is
+  not visible to this server (the date is in the Keychain credential); a board item for the
+  renewal with a `due` date is caught by the first rule.
+- **Its own clocks.** The board keeps no "changed at" or "asked at", so the check keeps a
+  fingerprint of each open P0/P1 item and each open ask with the time it first saw it:
+  "unchanged for 7 days" means seen unchanged by the check, from the day it was turned on.
+  Failed runs are counted the same way from the crons panel (one per `lastRunAt`, two
+  within 2 minutes being one; a job a heal loop holds is not counted until the hold ends).
+- **Read-only board.** The board is read from `server/todos.json` with `readFile`, never
+  through the board store, whose read can write (it seeds a missing board and sets a
+  damaged one aside). server.mjs names the file once (`TODOS_PATH`) for both. A source test
+  in `test/proactive-routes.test.mjs` holds that. A board unreadable on 4 passes in a row is
+  logged once by its error's code, and once more when it can be read again.
+- **Opaque ids only.** The board takes any non-empty id, so a board id is said (in the event
+  and in the view) only when it is a UUID, a 13-digit time and a short random part, 8 hex,
+  or a number of at most 9 digits (`OPAQUE_ID` in proactive-text.mjs). Any other is "an
+  item (…; see Heads up)"; it is still tracked by its key.
+- **Once per hit.** A hit's key names its subject (`due:<id>`, `stale:<id>`, `ask:<id>`,
+  `fails:<hash>`, `heals:<target>`, `week:<limit>:<window>`, `session:<window>`,
+  `key-expiry:<id>`). It is told once, until it clears (forgotten) or changes materially
+  (a new due date, a reworded ask, a new priority, the next band of 3, 6, 12, 24 failures or
+  heals, a moved expiry day). A usage key is kept until its window ends, so a dip and a
+  return tell nothing twice. A source that can't be read this pass (a Shortcut keys list
+  that throws included) keeps its keys and its last hits. Keys leave the process only as
+  16-hex hashes. A job whose `cron:launchd:<label>` key is in `events.excludeKeys` is not
+  counted, as the events module skips it.
+- **No second push.** A usage hit only feeds the event and the page. A session hit first
+  seen at 80% or more is marked told without an event: the limit warning at that step
+  already tells the lead and the phone.
+- **Delivery.** One event a pass at most (`events.proactive`), words from typed fields only
+  (an opaque board id, a priority, a lane, whole numbers, a date, a name from config, a
+  limit's fixed name), at most 5 named per rule and 1,200 characters in all; the lead reads
+  titles from the board. Caps: 6 an hour, and 8 heads-up events a day of their own, outside
+  the others' 30; the 60 s coalescing, `events-off` and the 2-hour life apply. The items
+  carry no alert key, so the events ledger never holds one of the check's keys. A hit is
+  marked sent only when the events module answers `made` or `coalescing`; `held` (a cap),
+  `off` (the kill switch) and a refused store write take nothing and count nothing, so the
+  next pass offers the hits again. "Sent" means handed to the events path, not read.
+- **Quiet hours, 22:00 to 07:00 local.** A hit found then is held; at 07:00 (a timer for the
+  moment, as well as the pass) every held hit still current goes in one event with anything
+  new. One that cleared overnight is dropped.
+- **Heads up and its GET.** `GET /api/proactive` (read-only) answers the view: status, when
+  it last checked, the sources' states, the rules' numbers, the last delivery and each hit's
+  typed fields, its hashed key and when it was found, told or held. It has exactly the
+  Feed's read rule (a paired device's cookie, and the owner's login when `chat.login` is
+  set; with the chat off, nobody), and it is not in `/api/dashboard`, because an expiry hit
+  names a Shortcut key. The page reads it once a minute while the Overview shows and draws
+  Heads up right after Needs you only while there is a hit; a board row names the item from
+  the page's own board and opens it. Each row says "sent", "waits for 07:00" or "not sent
+  yet"; a row from a source the last pass could not read (`current: false`) is marked "as
+  of <when it was read>, not read since", and a usage hit leaves once its window ends.
+- **State.** `server/data/proactive.json` (gitignored), written whole through
+  `lib/sent-store.mjs` (0600, a temp file and a rename, interrupted temp files swept at
+  start), only when it changed. A file that can't be read is an empty state (every clock
+  starts again).
+- **Switches.** Config's `"proactive": { "enabled": true }` (read at start); absent is
+  `unset`, off. The file `~/.local/state/jarvis-os/proactive-off` stops every pass with no
+  restart. With the chat off no pass runs (there is no events path and no paired device).
+  The start line reads `proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events
+  on`, `proactive: on in config, but no passes run: the chat is off, …` or `proactive:
+  unset|off`. A sent batch logs `proactive: N heads-ups to the lead's event
+  (made|coalescing)`; an unsent one `proactive: N heads-ups not sent (held|off|…); offered
+  again each pass`, once a spell; never a key or an item.
+- **The channel** names only the event types it knows, so until it learns `heads-up` the
+  lead's tag reads `event="unknown"`; the words still arrive (`source="proactive"`).
 
 ### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
 
@@ -2507,8 +2594,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 1454 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 320 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 1522 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 332 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (one page, index.html), which the server serves
 ```
 
@@ -2821,6 +2908,7 @@ and that must not reach every device on the tailnet.
 | `chat.shortcutHeic` | `"refuse"` (default) or `"convert"` | What happens to a HEIC photo shared through a Shortcut (see "Shortcut keys"): refused in words that say to share it as Most Compatible (the Shortcut's own Convert Image step is what normally makes a photo a JPEG), or made a JPEG on this machine with `/usr/bin/sips`, which runs an image decoder on outside bytes with no sandbox. Anything else is a `config:` line, and refuses. The start logs which: `shortcuts: a shared HEIC photo is …`. |
 | `chat.speech` | object, optional | Turns on read aloud in the Mac's own voice (see "Read aloud in the Mac's own voice"): `GET /api/chat/speech/<message id>`, rendered here by `/usr/bin/say`. `chat.speech.voice` is the voice's name as `say -v ?` lists it (default `"Evan (Enhanced)"`); `chat.speech.fallback` an optional stand-in while that one is not installed. Only with the chat on. Absent, `null` or `false` is off; anything else that isn't such an object, or a name with characters no voice has, is a `config:` line, and off. Off at a start, the audio cached by an earlier run (`~/.local/state/jarvis-os/speech-cache/`) is removed. The file `~/.local/state/jarvis-os/speech-off` turns it off without a restart (the cache then stays, and ages out). |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
+| `proactive` | object, optional | The proactive check (see "The proactive check"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. The rules' numbers are constants, not config. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |

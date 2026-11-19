@@ -11,8 +11,10 @@ import { routinesSummary } from './routines.js';
 
 // Needs you, the Agents card, Usage, Today's schedule, and Loops only while a loop is
 // open. With none open, the loops' state is one line at the foot of Today's schedule.
-export function homeSections(loops) {
-  const keys = ['waiting', 'usage', 'schedule', 'agents'];
+// Heads up (the proactive check, lib/orbit/headsup.js) comes right after Needs you,
+// only while it has a hit (`headsUp` true): a new section, the others keep their order.
+export function homeSections(loops, headsUp = false) {
+  const keys = ['waiting', ...(headsUp === true ? ['headsup'] : []), 'usage', 'schedule', 'agents'];
   if (hasOpen(loops)) keys.push('loops');
   return keys;
 }

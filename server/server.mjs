@@ -55,6 +55,8 @@ import { createPushService, loadVapid } from './lib/chat-push.mjs';
 import { parityStartLine, createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
+import { createProactive, readProactiveConfig, proactiveStart, targetNamer, nextQuietEnd, CHECK_EVERY_MS as PROACTIVE_EVERY_MS } from './lib/proactive.mjs';
+import { createProactiveRoutes } from './lib/proactive-routes.mjs';
 import { createShortcutKeys } from './lib/shortcut-keys.mjs';
 import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, SERVER_REQUEST_TIMEOUT_MS } from './lib/shortcut-routes.mjs';
 import { createHeicConverter, SIPS } from './lib/heic-convert.mjs';
@@ -108,7 +110,9 @@ const programProblems = await vetPrograms([
 ]);
 for (const problem of programProblems) console.error(`config: ${problem}`);
 const cache = createCache();
-const todos = createTodoStore(join(HERE, 'todos.json'));
+// The board's file: the store's, and the proactive check's read (one path, Ultron's L6).
+const TODOS_PATH = join(HERE, 'todos.json');
+const todos = createTodoStore(TODOS_PATH);
 // Acknowledged alerts (lib/acks.mjs), beside notified.json; gitignored with it.
 const ackStore = createAckStore(join(HERE, 'data', 'acks.json'));
 const registry = createRegistry(cache);
@@ -387,6 +391,8 @@ let chat = null;
 // config's `chat.shortcuts` is true. Null otherwise, and /api/shortcut/* is a 404.
 let shortcuts = null;
 let chatDevicesForFeed = null; // the Feed's reads take the chat's device cookie
+// The Shortcut keys, for the proactive check's expiry rule: set once they are loaded.
+let shortcutKeysForProactive = null;
 // Read aloud in the Mac's own voice (lib/chat-speech.mjs): set once it has started.
 let speech = null;
 const chatSettings = readChatConfig(config, hosts.mode);
@@ -582,6 +588,7 @@ if (chatSettings.on && socketsReady) {
     let keyCount = null;
     try { keyCount = await shortcutKeys.load(); } catch (err) { console.error(`shortcuts: the keys file could not be read (${err?.code ?? err?.name ?? 'error'}); Shortcut keys stay off`); }
     if (keyCount !== null) {
+      shortcutKeysForProactive = shortcutKeys;
       // A shared HEIC photo is refused (the Shortcut is told to share it as Most
       // Compatible) unless config's `chat.shortcutHeic` is "convert" and sips is there:
       // then it is made a JPEG with macOS's own sips (lib/heic-convert.mjs).
@@ -626,6 +633,52 @@ const feedRoutes = createFeedRoutes({
   devices: chatDevicesForFeed,
   login: chatSettings.on ? chatSettings.login : null
 });
+// The proactive check (lib/proactive.mjs; docs/design/2026-11-18-proactive-check.md):
+// every 5 minutes, no model and no network, over the board file, the crons and usage
+// panels, the heal ledger and the Shortcut keys. A new hit wakes the lead with one event
+// (lib/events.mjs, `proactive`); hits found from 22:00 to 07:00 wait for 07:00. Off
+// unless config's `proactive.enabled` is true, and with the chat off no pass runs (no
+// events path, no paired device: proactiveStart); the kill file `proactive-off` beside
+// the sockets stops every pass with no restart. The board is read from its file, never
+// through the board store, whose read can write (it seeds a missing board). Guarded by
+// a source test (test/proactive-routes.test.mjs).
+const proactiveSettings = readProactiveConfig(config);
+for (const problem of proactiveSettings.problems) console.error(`config: ${problem}`);
+const proactiveOffPath = join(stateDir, 'proactive-off');
+const proactiveStore = createSentStore(join(HERE, 'data', 'proactive.json'));
+const proactive = createProactive({
+  settings: proactiveSettings,
+  readBoard: () => readFile(TODOS_PATH, 'utf8'),
+  snapshot: () => cache.snapshot(Date.now()),
+  healLines: () => healLedger.lines(),
+  healTargetName: targetNamer(healSettings.targets, roster.jobs),
+  shortcutKeys: () => shortcutKeysForProactive?.list() ?? null,
+  store: proactiveStore,
+  events: () => events,
+  jobNames: roster.jobs,
+  excludeKeys: eventsSettings.excludeKeys,
+  killed: () => existsSync(proactiveOffPath)
+});
+const proactiveRoutes = createProactiveRoutes({
+  view: () => proactive.view(),
+  devices: chatDevicesForFeed,
+  login: chatSettings.on ? chatSettings.login : null
+});
+const proactiveStarted = proactiveStart({ settings: proactiveSettings, events: Boolean(events), devices: Boolean(chatDevicesForFeed), killFile: existsSync(proactiveOffPath) });
+if (proactiveStarted.run) {
+  const stale = await proactiveStore.sweep();
+  if (stale > 0) console.log(`proactive: removed ${stale} temp file${stale === 1 ? '' : 's'} an interrupted write left`);
+  const runPass = () => { proactive.pass().catch(err => console.error(`proactive: the pass failed (${err?.message ?? err})`)); };
+  // At 07:00 sharp too, so the night's held hits go then and not up to 5 minutes later.
+  const atQuietEnd = () => { setTimeout(() => { runPass(); atQuietEnd(); }, nextQuietEnd(Date.now()) - Date.now()).unref(); };
+  // The first pass waits for every collector's first run, so the panels it reads are filled.
+  registry.whenFirstPass().then(() => {
+    runPass();
+    setInterval(runPass, PROACTIVE_EVERY_MS).unref();
+    atQuietEnd();
+  });
+}
+console.log(proactiveStarted.line);
 const serveStatic = createStaticHandler(WEB_DIR);
 const serveAvatar = createAvatarHandler({ dir: roster.avatarDir, keys: roster.agents.map(a => a.key) });
 
@@ -641,6 +694,7 @@ const routes = withHostGuard(async (req, res) => {
   if (shortcuts && shortcuts.owns(new URL(req.url, 'http://localhost').pathname)) return shortcuts.handler(req, res);
   if (chat && chat.owns(new URL(req.url, 'http://localhost').pathname)) return chat.handler(req, res);
   if (feedRoutes.owns(new URL(req.url, 'http://localhost').pathname)) return feedRoutes.handler(req, res);
+  if (proactiveRoutes.owns(new URL(req.url, 'http://localhost').pathname)) return proactiveRoutes.handler(req, res);
   if (req.url.startsWith('/api/')) return api(req, res);
   if (req.url.startsWith('/avatars/')) return serveAvatar(req, res);
   return serveStatic(req, res);

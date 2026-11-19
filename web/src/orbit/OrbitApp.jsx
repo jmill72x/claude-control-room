@@ -16,6 +16,7 @@ import { ChatTab } from './Chat.jsx';
 import { useChat } from './useChat.js';
 import { FeedTab } from './Feed.jsx';
 import { useFeed } from './useFeed.js';
+import { useHeadsUp } from './useHeadsUp.js';
 import { useUnseen } from './useUnseen.js';
 import { useSwipeTabs } from './useSwipeTabs.js';
 import { navStuck } from '../lib/orbit/nav.js';
@@ -112,6 +113,8 @@ export function OrbitApp() {
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
   // The Now chip (Now.jsx), rebuilt each tick: its ages move by the second.
   const nowChip = isOverview ? nowFromPayload({ payload, roster, now }) : null;
+  // Heads up on the Overview (the proactive check): read while the Overview shows.
+  const headsUp = useHeadsUp({ active: isOverview });
 
   useEffect(() => {
     document.title = isBoard ? 'Board · Control Room' : isChat ? 'Chat · Control Room' : isFeed ? 'Feed · Control Room' : 'Control Room';
@@ -172,7 +175,8 @@ export function OrbitApp() {
       {isBoard && <BoardTab board={board} roster={roster} filters={filters} focus={route.item} focusWhy={focusWhy}
             onOpen={openItem} onCloseFocus={() => go({ tab: 'board' })} />}
       {isOverview && <Overview payload={payload} now={now} roster={roster} board={board} waiting={waiting} setWaiting={setWaiting}
-            onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} agentsTab={agentsTab} setAgentsTab={setAgentsTab} />}
+            onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} agentsTab={agentsTab} setAgentsTab={setAgentsTab}
+            headsUp={headsUp} onOpenLinked={id => openItem(id, 'link')} />}
     </div>
   );
 }

@@ -6,6 +6,7 @@
   "chat": { "login": "owner@example.com", "channelServer": "/absolute/path/to/jarvis-local/plugins/jarvis-channel/server.mjs", "shortcuts": false },
   "push": { "subject": "mailto:owner@example.com" },
   "events": { "sources": {}, "excludeKeys": [], "triagePerDay": 10 },
+  "proactive": { "enabled": false },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",
