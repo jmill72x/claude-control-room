@@ -40,7 +40,7 @@ function Usage({ payload, now }) {
   const tier = envelopeOf(payload?.plan).data?.tier ?? null;
   const renews = Date.parse(`${payload?.config?.data?.plan?.nextRenewal ?? ''}T00:00:00`);
   const daysLeft = Number.isFinite(renews) ? Math.max(0, Math.ceil((renews - now) / DAY)) : null;
-  const described = rings.map(r => `${r.label} ${r.pctLabel}${r.ghostLabel ? `, ${r.ghostLabel}` : ''}`).join('; ');
+  const described = rings.map(r => `${r.label} ${r.pctLabel}${r.ahead ? `, ${r.ahead}` : ''}${r.ghostLabel ? `, ${r.ghostLabel}` : ''}`).join('; ');
   const [more, setMore] = useFold(FOLD_KEYS.usage);
   const { hourly } = hourlyOf(payload);
 
@@ -83,7 +83,7 @@ function Usage({ payload, now }) {
               <div key={r.key} className="o-ring-col" style={{ borderTopColor: r.color }}>
                 <span className="o-big-pct">{r.pctLabel}</span>
                 <span className="o-mono o-eyebrow-night">{r.label}</span>
-                <span className="o-ring-note">{r.note}{r.ghostLabel && <><br /><span style={{ color: r.color }}>{r.ghostLabel}</span></>}</span>
+                <span className="o-ring-note">{r.note}{r.ahead && <><br /><span className="o-ring-ahead">{r.ahead}</span></>}{r.ghostLabel && <><br /><span style={{ color: r.color }}>{r.ghostLabel}</span></>}</span>
               </div>
             ))}
           </div>

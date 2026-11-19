@@ -1,4 +1,5 @@
 import { needsYouAlerts } from './needs-you.mjs';
+import { basisWords } from './pace.mjs';
 
 const DAY = 24 * 3600 * 1000;
 // Three quarters of the board's save cap.
@@ -65,8 +66,11 @@ export function buildAlerts(snapshot, config, now = Date.now()) {
   for (const limit of snapshot.usage?.data?.limits ?? []) {
     const projected = limit?.pace?.projectedPct;
     if (Number.isFinite(projected) && projected > 100) {
+      const basis = basisWords(limit.pace, String(limit.label).startsWith('Weekly'));
       alerts.push({
-        text: `${limit.label} projected to reach ${projected}% by reset`,
+        // With what the projection rests on: a weekly limit's last day's rate, or the
+        // straight line (lib/pace.mjs, basisWords). Numbers and fixed words only.
+        text: `${limit.label} projected to reach ${projected}% by reset${basis ? ` ${basis}` : ''}`,
         kind: 'projection',
         key: `projection:${limit.label}`
       });

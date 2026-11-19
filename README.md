@@ -51,7 +51,7 @@ the week's heat map) or the mod (`mod/README.md`).
 | By project · this week | Mod | Same transcript roots, top 3 by tokens + Other | Real |
 | By model · this week | Mod (the page's Burn splits the last 24 hours by model family instead) | Same transcript roots | Real |
 | Recent sessions | Mod | Same transcript roots; percent = that session's share of the week's tokens | Real |
-| Pace and projection on each limit | Mod (a line under each bar); on the page a projection past 100% is an alert-bar line | `/usage` history (see below) plus an observed window length | Real, but the session bar has no fallback — see below |
+| Pace and projection on each limit | Mod (a line under each bar); on the page a line under each weekly figure ("heading for 64% at the last 24 h rate"), and a projection past 100% is an alert-bar line | `/usage` history (see below) plus an observed window length; a weekly limit is projected from its last day's rate | Real, but the session bar has no fallback — see below |
 | Sparklines on each limit | Mod | Same history store | Real; needs at least two readings, else says so |
 | Usage drivers | Mod | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike the account-wide limit percentages, see below |
 | Projects | Mod | Cowork session metadata + transcript logs + git branch | Real; no running/idle state since 2026-10-30 (the `claude agents --json` poll was dropped, see [How often the server starts `claude`](#how-often-the-server-starts-claude)) |
@@ -195,6 +195,45 @@ elapsed fraction produces wild, trust-eroding numbers. If the reset being held
 has already passed — a stale reading with the countdown beside it reading
 `00:00` — the line says `window ended · awaiting a fresh reading` rather than
 projecting to a deadline that is behind us.
+
+### The weekly projection follows the last day's rate (2026-11-19)
+
+A straight line from the start of the week (the percent divided by the share of the week
+gone) keeps one heavy day in the projection for the rest of the week: on 2026-11-19 it
+read 104% and 157% for two weekly limits, one of which had gained two points overnight
+and the other none for a day. A weekly limit is now projected as **its percent plus the
+rate of its last 24 hours over the time left** (`recentBaseline` and `computePace` in
+`server/lib/pace.mjs`; design `docs/design/2026-11-19-dynamic-projection-idle-wake.md`).
+On the same readings that is 64% and 78%.
+
+- **The rate** is what the limit gained since the newest reading at least 24 hours old
+  (`RATE_LOOKBACK_MS`), so it always holds one whole day and night. A gap in the readings
+  makes the span longer, and the basis says the true span ("at the last 31 h rate"). A
+  dip is a rate of 0, never a negative one.
+- **Only this window's readings count.** Walking back from now, a reading belongs while
+  its printed reset is within 30 minutes of the current one, or, when it prints none (a
+  weekly limit at 0% prints no reset), while it was taken after the window's start. The
+  walk stops at another window's reading and at a fall of more than 5 points
+  (`RESET_DROP_PCT`): a limit reset before its printed time.
+- **The fallback is the straight line**: until a reading of this window is 24 hours old
+  (the first day of the week, and after a reset), and when the history does not reach
+  back. Under 10% of the window there is still no projection.
+- **The session limit keeps the straight line.**
+- **The basis travels with the number.** `pace.basis` is `recent` or `window` and
+  `pace.basisMs` the span the rate covers; `basisWords` says it ("at the last 24 h rate",
+  "at the week's average rate"). The alert line, the Heads up row, the lead's heads-up
+  event, the line under each weekly figure on the Usage panel and the mod's pace line all
+  say the basis beside the number. `pace.state` (ahead, on, under) still compares the
+  percent with an even pace, so "ahead of pace" can stand beside a projection under 100%.
+- **Why 24 hours**: over every complete week in the history on 2026-11-19 (12 and 8 weeks
+  for two limits, a reading each 30 minutes after a quarter of the week) the 24-hour rate
+  was wrongly over 100% on 8% of readings against the straight line's 12%, and in the one
+  week that reached 100% it said so on every reading. The sample is small.
+- **Who reads it**: `lib/alerts.mjs` (the `projection` alert, over 100%) and the proactive
+  check (`week`, and the idle wake-up's room). The limit warnings never used a
+  projection: they fire on the percent itself.
+
+Tests: `server/test/pace-recent.test.mjs`, `web/test/orbit-overview.test.js`.
 
 Two further honesty rules on the sparklines. A series is **decimated
 server-side** to `MAX_SERIES_POINTS` (240) before it goes on the wire: the line
@@ -2016,7 +2055,9 @@ is `server/lib/events.mjs`, `server/lib/event-socket.mjs`, the event case in
 and `web/test/orbit-events.test.js`. Events run only while the chat is on.
 
 - **The proactive check is a third kind** (2026-11-18, off by default): source `proactive`,
-  type `heads-up`, one event for a pass's new hits (see "The proactive check").
+  type `heads-up`, one event for a pass's new hits (see "The proactive check"). Its idle
+  wake-up (2026-11-19, off by default) is type `idle`, at most one an hour, counted toward
+  neither the heads-ups' 8 a day nor the others' 30.
 - **Presence is a second kind** (2026-11-12): a paired Shortcut's `arrived-home` report
   (see "Shortcut keys") is an event of source `presence`, made at once at any hour, with
   the same caps, staleness rule and kill switch.
@@ -2067,7 +2108,7 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   page shows those with "Not sent to Jarvis: events were off".
 - **Delivery.** An event goes to the channel only when the channel's `hello` said
   `"capabilities": ["events"]` (an older channel acks line types it doesn't know, which would
-  swallow events), while it is under 2 hours old and, if it came from an alert, while at
+  swallow events), while it is under 2 hours old (an idle wake-up: 15 minutes) and, if it came from an alert, while at
   least one of its alert keys is still live (present and unacked at the last pass). Anything
   else fails closed: the event is skipped on the stream, the cursor moves past it as usual,
   and the store marks it `state: "undelivered"` (never delivered later), which the page
@@ -2109,7 +2150,8 @@ admin socket, with one route: `POST /v1/event` with the body `{ "source": "<name
 and `-`, at most 64; a repeated `ref` within 24 hours answers `{"status":"duplicate"}`).
 The source must be on config's `events.sources` allowlist, `{ "<name>": { "title": "NAS
 drop", "failure": false } }`, which is **empty by default, so slice 1 refuses every post**
-(403). Free text, an unknown field or source, a bad count (1 to 10000) and a body over 1 KB
+(403). `launchd`, `service`, `limit`, `proactive`, any name starting `proactive-` and
+`presence` are the server's own and can't be listed. Free text, an unknown field or source, a bad count (1 to 10000) and a body over 1 KB
 are refused with fixed words; the words are built on the server (`<title>: N new at
 HH:MM`), and the caps, quiet hours and kill switch apply. Answers: 201 `{"status":"made"}`,
 or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the owner may
@@ -2333,7 +2375,7 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   it tells the lead, who opens the board item for the lasting fix. The morning brief reads job-status itself, so it still
   calls a quiet job overdue.
 
-### The proactive check: wake the lead only on a hit (board a77b4757; built, off by default)
+### The proactive check: wake the lead only on a hit (board a77b4757; off unless config turns it on)
 
 A pass every 5 minutes inside this server, with no model and no network, over what it
 already has. It finds **hits**, tells each one once in a single event for the lead, and
@@ -2349,7 +2391,8 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   date; an open item's `ask` unchanged for 3 days; an open P0 item unchanged for 2 days, a
   P1 for 7; one launchd job failing on 3 distinct runs in 14 days; one heal target healed
   3 times in 14 days (the heal ledger's distinct heals); a weekly limit projected over 100%
-  by its reset, once a quarter of the week has passed; the session limit at 75% or more; a
+  by its reset (from its last day's rate, and the words say so), once a quarter of the week
+  has passed; the session limit at 75% or more; a
   working Shortcut key 7 days or fewer from its idle expiry. The Claude login's expiry is
   not visible to this server (the date is in the Keychain credential); a board item for the
   renewal with a `due` date is caught by the first rule.
@@ -2419,8 +2462,63 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   unsent one `proactive: N heads-ups not sent (held|off|…); offered again each pass`, and
   an event the store refused `proactive: the event was not made (<code>); tried again each
   pass`, each once a spell (Ultron's N3); never a key or an item.
-- **The channel** names only the event types it knows, so until it learns `heads-up` the
-  lead's tag reads `event="unknown"`; the words still arrive (`source="proactive"`).
+- **The channel** names only the event types it knows, so until it learns `heads-up` and
+  `idle` the lead's tag reads `event="unknown"`; the words still arrive
+  (`source="proactive"`).
+
+#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default)
+
+The lead wakes only on events, so when the last agent run ends nothing starts the next
+one, though the board holds work and the limits have room. The check's pass makes **one
+event for the lead** (`source: proactive`, `type: idle`) when all of this holds, each read
+in that pass:
+
+1. **Nothing is running**: the sessions panel is current, its live agents list is
+   empty (`lib/live-agents.mjs`), and the lead is known (`agentWork.lead`; with no roster
+   its quiet can't be counted).
+2. **There is room**: the usage panel is current, the session limit is under 75%, at
+   least one weekly limit has a percent, and every weekly limit is under 90% (the limit
+   warnings' weekly step) and projected under 100% (above); a weekly limit with no
+   projection yet counts by its percent. The 90% holds whatever the projection: after a
+   quiet day the 24-hour rate is about 0, and a limit at 97% projects 97%.
+3. **There is work**: the board file holds an open item (`idea` or `doing`) with no `ask`.
+4. **It has lasted 10 minutes**, counted from the later of the first idle pass and the
+   lead's own session's last request, so the moment between one run's end and the next
+   one's start is not idle.
+
+A source that can't be read this pass means no wake-up. It **starts nothing**: the lead
+decides what to run.
+
+- **The words** are fixed and built from whole numbers only (`checkIdle`, `idleText` in
+  `lib/proactive-text.mjs`, checked again in `events.idle`): `Idle: no agent run is live.
+  14 open board items have no ask (1 P0, 5 P1; 3 in doing). Session at 12%, highest weekly
+  projection 64%. 2 idle events since the last run.` No id, no title.
+- **At most one an hour**, kept twice: in the check's state (`proactive.json`'s `idle`, so
+  a restart repeats nothing) and in the events ledger, which refuses a second within the
+  hour whoever asks (`held`). **It backs off while nothing follows**: after a wake-up no
+  run followed, the next waits 2 hours, then 4; a run seen live puts it back to 1.
+- **Not from 22:00 to 07:00**, and none held for the morning: the 07:00 pass decides
+  afresh. `"quietHours": false` lets it go at night too. `events.idle` checks the hours
+  again itself (`quiet`), unless its caller passes `nights: true`, which the check does
+  only with that switch.
+- **A life of 15 minutes** at delivery, not the 2 hours of other events: an idle board
+  told an hour late may be busy by then, and the next wake-up follows within the hour.
+- **Not made means not sent**: `held`, `off` (the `events-off` file), `quiet` or a store that
+  refused it changes nothing, and a later pass asks again; the log says each spell once.
+- **Switches.** `"proactive": { "enabled": true, "idle": { "enabled": true, "quietHours":
+  true } }`, read at start. Without `idle.enabled` none goes. The file
+  `~/.local/state/jarvis-os/idle-off` stops the wake-ups at the next pass with no restart
+  (the rest of the check runs on); `proactive-off` stops everything. The start line ends
+  `; idle wake-up on (not 22:00-07:00)`, `on (nights too)` or `off`. A wake-up logs
+  `proactive: an idle wake-up to the lead's event (made): N open items with no ask`.
+- **The page** has no row for it. `GET /api/proactive` carries `idle`: the switch, the
+  last pass's state (`settling`, `quiet-hours`, `waiting`, `sent`, `running`,
+  `session-high`, `week-high`, `no-work`, …), its counts and when one last went.
+- **The lead's side** is not in this repo: its channel's standing words say an event
+  alone never justifies a write, so its own instructions need a line that an `idle` event
+  is the cue to pick the next item under the owner's standing ask.
+
+Tests: `server/test/proactive-idle.test.mjs`, `server/test/proactive-idle-events.test.mjs`.
 
 ### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
 
@@ -2950,7 +3048,7 @@ and that must not reach every device on the tailnet.
 | `chat.shortcutHeic` | `"refuse"` (default) or `"convert"` | What happens to a HEIC photo shared through a Shortcut (see "Shortcut keys"): refused in words that say to share it as Most Compatible (the Shortcut's own Convert Image step is what normally makes a photo a JPEG), or made a JPEG on this machine with `/usr/bin/sips`, which runs an image decoder on outside bytes with no sandbox. Anything else is a `config:` line, and refuses. The start logs which: `shortcuts: a shared HEIC photo is …`. |
 | `chat.speech` | object, optional | Turns on read aloud in the Mac's own voice (see "Read aloud in the Mac's own voice"): `GET /api/chat/speech/<message id>`, rendered here by `/usr/bin/say`. `chat.speech.voice` is the voice's name as `say -v ?` lists it (default `"Evan (Enhanced)"`); `chat.speech.fallback` an optional stand-in while that one is not installed. Only with the chat on. Absent, `null` or `false` is off; anything else that isn't such an object, or a name with characters no voice has, is a `config:` line, and off. Off at a start, the audio cached by an earlier run (`~/.local/state/jarvis-os/speech-cache/`) is removed. The file `~/.local/state/jarvis-os/speech-off` turns it off without a restart (the cache then stays, and ages out). |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
-| `proactive` | object, optional | The proactive check (see "The proactive check"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. The rules' numbers are constants, not config. |
+| `proactive` | object, optional | The proactive check (see "The proactive check"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. `"idle": { "enabled": true, "quietHours": true }` turns the idle wake-up on (off without it); `quietHours: false` lets it go from 22:00 to 07:00 too. The rules' numbers are constants, not config. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
@@ -3117,7 +3215,7 @@ quoted:**
 |---|---|
 | `limit` | full text — e.g. `Monthly spend at 88%`. Only for a limit with no warning steps of its own: the session and the weekly limits are told by `limit-step` instead, and their alert-bar line is not pushed |
 | `limit-step` | full text, and to the paired devices too — e.g. `Claude session at 80%, resets 5:30 pm` (see "Limit warnings" below) |
-| `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset` |
+| `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset at the last 24 h rate` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
 | `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
 | `cron` | **counted, never quoted** — `1 job failed — open the dashboard for detail`. A launchd job's verdict is job-status's when it answers (`crons[]` above) |

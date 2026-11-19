@@ -819,7 +819,7 @@ test('quiet hours hold a limit warning until 07:00; one whose window has ended b
 test('`limit` is the notifier\'s own source: config cannot name a socket source after it', () => {
   const r = readEventsConfig({ events: { sources: { limit: { title: 'Limits' }, 'nas-drop': { title: 'NAS drop' } } } });
   assert.deepEqual([...r.sources.keys()], ['nas-drop']);
-  assert.deepEqual(r.problems, ['events.sources: "limit" is not a source name (a-z, 0-9 and -, not launchd, service, limit, proactive or presence)']);
+  assert.deepEqual(r.problems, ['events.sources: "limit" is not a source name (a-z, 0-9 and -, not launchd, service, limit, proactive, proactive-anything or presence)']);
 });
 
 test('a limit warning\'s words are checked again on the way out: anything not in the fixed shape is said as "a limit warning"', async () => {

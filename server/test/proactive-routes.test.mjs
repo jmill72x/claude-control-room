@@ -95,7 +95,9 @@ test('server.mjs: the board is read from its file, never through the board store
   assert.match(made, /excludeKeys: eventsSettings\.excludeKeys,/);
   assert.ok(!/\btodos\.[a-zA-Z]+\(/.test(made), 'no board store call in the check');
   assert.match(made, /events: \(\) => events,/);
-  assert.match(made, /killed: \(\) => existsSync\(proactiveOffPath\)/);
+  assert.match(made, /killed: \(\) => existsSync\(proactiveOffPath\),/);
+  assert.match(made, /idleKilled: \(\) => existsSync\(idleOffPath\)/);
+  assert.match(src, /const idleOffPath = join\(stateDir, 'idle-off'\);/);
   assert.match(made, /store: proactiveStore,/);
   assert.match(src, /const proactiveOffPath = join\(stateDir, 'proactive-off'\);/);
   assert.match(src, /const proactiveStore = createSentStore\(join\(HERE, 'data', 'proactive\.json'\)\);/);

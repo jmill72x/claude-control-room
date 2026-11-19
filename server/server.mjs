@@ -649,6 +649,9 @@ const feedRoutes = createFeedRoutes({
 const proactiveSettings = readProactiveConfig(config);
 for (const problem of proactiveSettings.problems) console.error(`config: ${problem}`);
 const proactiveOffPath = join(stateDir, 'proactive-off');
+// The idle wake-up's own kill file (docs/design/2026-11-19-dynamic-projection-idle-wake.md):
+// config's `proactive.idle` turns the wake-up on; while this file exists none goes.
+const idleOffPath = join(stateDir, 'idle-off');
 const proactiveStore = createSentStore(join(HERE, 'data', 'proactive.json'));
 const proactive = createProactive({
   settings: proactiveSettings,
@@ -661,7 +664,8 @@ const proactive = createProactive({
   events: () => events,
   jobNames: roster.jobs,
   excludeKeys: eventsSettings.excludeKeys,
-  killed: () => existsSync(proactiveOffPath)
+  killed: () => existsSync(proactiveOffPath),
+  idleKilled: () => existsSync(idleOffPath)
 });
 const proactiveRoutes = createProactiveRoutes({
   view: () => proactive.view(),

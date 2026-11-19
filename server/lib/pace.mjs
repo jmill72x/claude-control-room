@@ -134,7 +134,62 @@ export function inferWindowMs(records, label) {
   return observed;
 }
 
-export function computePace({ pct, resetsAt, windowMs, now }) {
+// ---- a projection from the recent rate (docs/design/2026-11-19-dynamic-projection-idle-wake.md) ----
+//
+// A straight line from the window's start keeps one heavy day in the projection for
+// the rest of the week (2026-11-19: 154% for a limit that had stood still for a day).
+// A weekly limit is projected from what it gained since the newest reading at least
+// this old instead. A whole day, so the rate holds one day and one night whatever the
+// hour it is read at.
+export const RATE_LOOKBACK_MS = 24 * 60 * MINUTE;
+// A fall of more than this many points from one reading to the next is a reset before
+// the printed time (2026-10-19: 93% to 0% on the same printed reset), not a dip: the
+// three dips in the history were one point each. No rate is measured across it.
+export const RESET_DROP_PCT = 5;
+
+// The reading a recent rate is measured from: the newest one of THIS window taken at
+// least `lookbackMs` before `now`, as { t, pct }, or null when there is none (early
+// in the window, after a reset, or a history that does not reach back), and then the
+// caller falls back to the straight line.
+//
+// Walking back from now, a reading belongs to this window while its printed reset is
+// within MIN_PLAUSIBLE_WINDOW_MS of the current one (the printed minute flaps), or,
+// when it prints no reset (a weekly limit at 0% prints none), while it was taken after
+// the window's start. The walk ends at another window's reading and at an early reset.
+// `records` are in ascending `t` order, as the store keeps them.
+export function recentBaseline(records, limit, { now, windowMs, lookbackMs = RATE_LOOKBACK_MS }) {
+  const end = Date.parse(limit?.resetsAt ?? '');
+  if (!Number.isFinite(end) || !Number.isFinite(limit?.pct) || !(windowMs > 0)) return null;
+  const start = end - windowMs;
+  let newer = limit.pct;
+  for (let i = (records?.length ?? 0) - 1; i >= 0; i--) {
+    const r = records[i];
+    if (!Number.isFinite(r?.t) || r.t > now) continue;
+    const seen = limitsOf(r).find(l => l?.label === limit.label);
+    if (!seen || !Number.isFinite(seen.pct)) continue;
+    const reset = Date.parse(seen.resetsAt ?? '');
+    if (Number.isFinite(reset) ? Math.abs(reset - end) > MIN_PLAUSIBLE_WINDOW_MS : r.t < start) return null;
+    if (seen.pct - newer > RESET_DROP_PCT) return null;
+    if (r.t <= now - lookbackMs) return { t: r.t, pct: seen.pct };
+    newer = seen.pct;
+  }
+  return null;
+}
+
+const HOUR = 60 * MINUTE;
+// How a projection's basis is said, wherever the projection is: "at the last 24 h
+// rate" for a recent rate (its true span, in whole hours); for the straight line "at
+// the week's average rate" (a weekly limit's, `weekly`) or "at this window's average
+// rate"; and nothing for a pace with no basis (an older server's).
+export function basisWords(pace, weekly = false) {
+  if (pace?.basis === 'recent' && Number.isFinite(pace.basisMs) && pace.basisMs > 0) return `at the last ${Math.max(1, Math.round(pace.basisMs / HOUR))} h rate`;
+  return pace?.basis === 'window' ? (weekly ? "at the week's average rate" : "at this window's average rate") : '';
+}
+
+// `baseline` ({ t, pct }, from recentBaseline) makes the projection the percent plus
+// the rate since that reading over the time left; without one it is the straight line.
+// `basis` says which ('recent' or 'window') and `basisMs` the span the rate covers.
+export function computePace({ pct, resetsAt, windowMs, now, baseline = null }) {
   const none = { state: 'unknown-window', elapsed: null, expectedPct: null, projectedPct: null };
   if (!windowMs || windowMs <= 0 || !resetsAt) return none;
 
@@ -160,9 +215,14 @@ export function computePace({ pct, resetsAt, windowMs, now }) {
 
   // Not clamped: a projection of 180% is real information. The caller clamps
   // the tick MARK to the bar's width, exactly as the credits bar already does.
-  const projectedPct = Math.round(pct / elapsed);
+  // From the recent rate when there is a baseline behind us; a dip (a negative rate)
+  // projects the percent itself.
+  const recent = baseline !== null && Number.isFinite(baseline?.t) && Number.isFinite(baseline?.pct) && baseline.t < now;
+  const projectedPct = recent
+    ? Math.round(pct + (Math.max(0, pct - baseline.pct) / (now - baseline.t)) * (end - now))
+    : Math.round(pct / elapsed);
 
   const delta = pct - expectedPct;
   const state = delta > ON_PACE_BAND ? 'ahead' : delta < -ON_PACE_BAND ? 'under' : 'on';
-  return { state, elapsed, expectedPct, projectedPct };
+  return { state, elapsed, expectedPct, projectedPct, basis: recent ? 'recent' : 'window', basisMs: recent ? now - baseline.t : now - start };
 }

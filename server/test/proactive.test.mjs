@@ -291,7 +291,7 @@ test('a weekly limit projected over 100% is a hit once a quarter of the week has
   const week = (projectedPct, elapsed) => [{ label: WEEK, pct: 40, resetsAt, pace: { projectedPct, elapsed } }];
   assert.deepEqual(usageHits({ limits: week(100, 0.5), now: T0 }), []);
   assert.deepEqual(usageHits({ limits: week(140, 0.24), now: T0 }), []);
-  assert.deepEqual(usageHits({ limits: week(101, 0.25), now: T0 }), [{ key: `week:${WEEK}:${win}`, fp: '1', rule: 'week', limit: 'week (all models)', projected: 101, resetsAt: win, keepUntil: win }]);
+  assert.deepEqual(usageHits({ limits: week(101, 0.25), now: T0 }), [{ key: `week:${WEEK}:${win}`, fp: '1', rule: 'week', limit: 'week (all models)', projected: 101, rateHours: null, resetsAt: win, keepUntil: win }]);
   assert.deepEqual(usageHits({ limits: week(null, 0.5), now: T0 }), []);
   assert.deepEqual(usageHits({ limits: [{ label: 'Something else', pct: 99, resetsAt, pace: { projectedPct: 300, elapsed: 0.9 } }], now: T0 }), []);
   assert.equal(usageHits({ limits: [{ label: WEEK, pct: 40, resetsAt: null, pace: { projectedPct: 120, elapsed: 0.5 } }], now: T0 })[0].keepUntil, T0 + DAY);
@@ -311,13 +311,13 @@ test('a working Shortcut key 7 days or fewer from its idle expiry is a hit; revo
 
 test('config: absent is unset, true is on, false is off, anything else is off and said', () => {
   assert.deepEqual(readProactiveConfig({}), { on: false, state: 'unset', problems: [] });
-  assert.deepEqual(readProactiveConfig({ proactive: { enabled: true } }), { on: true, state: 'on', problems: [] });
-  assert.deepEqual(readProactiveConfig({ proactive: { enabled: false } }), { on: false, state: 'off', problems: [] });
+  assert.deepEqual(readProactiveConfig({ proactive: { enabled: true } }), { on: true, state: 'on', idle: { on: false, quietHours: true }, problems: [] });
+  assert.deepEqual(readProactiveConfig({ proactive: { enabled: false } }), { on: false, state: 'off', idle: { on: false, quietHours: true }, problems: [] });
   assert.equal(readProactiveConfig({ proactive: { enabled: 'yes' } }).on, false);
   assert.equal(readProactiveConfig({ proactive: { enabled: 'yes' } }).problems.length, 1);
   assert.equal(readProactiveConfig({ proactive: true }).on, false);
   assert.equal(readProactiveConfig({ proactive: [] }).problems.length, 1);
-  assert.deepEqual(readProactiveConfig({ proactive: { enabled: true, every: 1 } }).problems, ['proactive.every is not a setting (only "enabled"); it is ignored']);
+  assert.deepEqual(readProactiveConfig({ proactive: { enabled: true, every: 1 } }).problems, ['proactive.every is not a setting (only "enabled" and "idle"); it is ignored']);
   assert.equal(readProactiveConfig({ proactive: { enabled: true, every: 1 } }).on, true);
 });
 
@@ -886,11 +886,11 @@ test('L5: no pass runs with neither an events path nor a paired device; the star
   const on = { on: true, state: 'on' };
   assert.deepEqual(proactiveStart({ settings: { on: false, state: 'unset' }, events: true, devices: true }), { run: false, line: 'proactive: unset' });
   assert.deepEqual(proactiveStart({ settings: { on: false, state: 'off' } }), { run: false, line: 'proactive: off' });
-  assert.deepEqual(proactiveStart({ settings: on, events: true, devices: true }), { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events on' });
+  assert.deepEqual(proactiveStart({ settings: on, events: true, devices: true }), { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events on; idle wake-up off' });
   assert.deepEqual(proactiveStart({ settings: on, events: true, devices: true, killFile: true }),
-    { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events on (the kill file is there: no passes)' });
+    { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events on; idle wake-up off (the kill file is there: no passes)' });
   assert.deepEqual(proactiveStart({ settings: on, events: false, devices: true }),
-    { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events off: hits show only on a paired device\'s Heads up' });
+    { run: true, line: 'proactive: on, every 5 min, quiet 22:00-07:00 held to 07:00; events off: hits show only on a paired device\'s Heads up; idle wake-up off' });
   assert.deepEqual(proactiveStart({ settings: on }),
     { run: false, line: 'proactive: on in config, but no passes run: the chat is off, so there is no events path and no paired device to read the hits' });
   assert.equal(proactiveStart({ settings: on, events: true }).run, true, 'events alone');

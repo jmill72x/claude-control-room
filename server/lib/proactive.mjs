@@ -21,7 +21,7 @@ import { isQuiet, keyHash, jobName, QUIET_START_HOUR, QUIET_END_HOUR } from './e
 import { ruleFor, windowOf, SESSION_STEPS, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
 import { distinctHeals } from './heal.mjs';
 import { isDueDate } from '../todos.mjs';
-import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit } from './proactive-text.mjs';
+import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit, checkIdle, IDLE } from './proactive-text.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const CHECK_EVERY_MS = 5 * MIN;
@@ -81,10 +81,24 @@ export function readProactiveConfig(config) {
   const raw = config?.proactive;
   if (raw === undefined || raw === null) return { on: false, state: 'unset', problems };
   if (!isObject(raw)) { problems.push('proactive is not an object; the proactive check stays off'); return { on: false, state: 'off', problems }; }
-  for (const k of Object.keys(raw)) if (k !== 'enabled') problems.push(`proactive.${k} is not a setting (only "enabled"); it is ignored`);
-  if (raw.enabled === true) return { on: true, state: 'on', problems };
+  for (const k of Object.keys(raw)) if (k !== 'enabled' && k !== 'idle') problems.push(`proactive.${k} is not a setting (only "enabled" and "idle"); it is ignored`);
+  const idle = readIdleConfig(raw.idle, problems);
+  if (raw.enabled === true) return { on: true, state: 'on', idle, problems };
   if (raw.enabled !== false && raw.enabled !== undefined) problems.push('proactive.enabled must be true or false; the proactive check stays off');
-  return { on: false, state: 'off', problems };
+  return { on: false, state: 'off', idle, problems };
+}
+
+// proactive.idle = { "enabled": true, "quietHours": true }: the idle wake-up. Absent or
+// not enabled, none goes. `quietHours` (true unless it is exactly false) keeps
+// 22:00-07:00 free of them; false lets them go at night too.
+function readIdleConfig(raw, problems) {
+  const off = { on: false, quietHours: true };
+  if (raw === undefined || raw === null) return off;
+  if (!isObject(raw)) { problems.push('proactive.idle is not an object; the idle wake-up stays off'); return off; }
+  for (const k of Object.keys(raw)) if (k !== 'enabled' && k !== 'quietHours') problems.push(`proactive.idle.${k} is not a setting (only "enabled" and "quietHours"); it is ignored`);
+  if (raw.quietHours !== undefined && typeof raw.quietHours !== 'boolean') problems.push('proactive.idle.quietHours must be true or false; quiet hours stay on');
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') problems.push('proactive.idle.enabled must be true or false; the idle wake-up stays off');
+  return { on: raw.enabled === true, quietHours: raw.quietHours !== false };
 }
 
 // Whether passes run, and the start line (Ultron's L5, 11-18). A hit reaches someone
@@ -97,7 +111,8 @@ export function proactiveStart({ settings, events = false, devices = false, kill
   if (!events && !devices) return { run: false, line: 'proactive: on in config, but no passes run: the chat is off, so there is no events path and no paired device to read the hits' };
   const where = events ? 'events on' : "events off: hits show only on a paired device's Heads up";
   const kill = killFile ? ' (the kill file is there: no passes)' : '';
-  return { run: true, line: `proactive: on, every ${CHECK_EVERY_MS / MIN} min, quiet ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)} held to ${hh(QUIET_END_HOUR)}; ${where}${kill}` };
+  const idle = !settings.idle?.on ? 'idle wake-up off' : `idle wake-up on (${settings.idle.quietHours ? `not ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)}` : 'nights too'})`;
+  return { run: true, line: `proactive: on, every ${CHECK_EVERY_MS / MIN} min, quiet ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)} held to ${hh(QUIET_END_HOUR)}; ${where}; ${idle}${kill}` };
 }
 
 // ---- the detectors ----
@@ -225,7 +240,9 @@ export function usageHits({ limits, now }) {
     } else {
       const p = l.pace;
       if (!finite(p?.projectedPct) || !(p.projectedPct > RULES.weekProjectedPct) || !finite(p.elapsed) || p.elapsed < RULES.weekMinElapsed) continue;
-      hits.push({ key: `week:${l.label}:${win ?? '-'}`, fp: '1', rule: 'week', limit: rule.name, projected: Math.round(p.projectedPct), resetsAt: win, keepUntil: win ?? now + WEEK_NO_RESET_KEEP_MS });
+      // With the span of the recent rate it rests on, when it does (lib/pace.mjs).
+      const rateHours = p.basis === 'recent' && p.basisMs > 0 ? Math.max(1, Math.round(p.basisMs / HOUR)) : null;
+      hits.push({ key: `week:${l.label}:${win ?? '-'}`, fp: '1', rule: 'week', limit: rule.name, projected: Math.round(p.projectedPct), rateHours, resetsAt: win, keepUntil: win ?? now + WEEK_NO_RESET_KEEP_MS });
     }
   }
   return hits;
@@ -241,6 +258,62 @@ export function expiryHits({ keys, now }) {
     hits.push({ key: `key-expiry:${k.id}`, fp: localDay(k.expiresAt), rule: 'expiry', what: 'shortcut-key', name: typeof k.name === 'string' && SAFE_NAME.test(k.name) ? k.name : null, expiresAt: k.expiresAt, days: Math.ceil(left / DAY) });
   }
   return hits;
+}
+
+// ---- the idle wake-up (docs/design/2026-11-19-dynamic-projection-idle-wake.md) ----
+
+// Whether the board sits idle with room to work, from this pass's readings: `sessions`
+// and `usage` are the cache's panels ({ status, data }), `todos` the board file's list
+// or null when it could not be read. The answer is `{ state }`, the first of these that
+// holds, and with `idle` the wake-up's `fields` (lib/proactive-text.mjs, checkIdle):
+//   sessions-not-current  the live agents list was not read this pass, or the lead is
+//                         not known (no agent work block, or its `lead` is null)
+//   running               an agent run is live (lib/live-agents.mjs)
+//   usage-not-current     the usage panel was not read this pass, or has no session
+//                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
+//   session-high          the session limit is at IDLE.sessionPct or over
+//   week-high             a weekly limit is at IDLE.weekPct or over, whatever its
+//                         projection (Ultron's M1, 11-19: after a quiet day the 24-hour
+//                         rate is about 0 and a limit at 97% projects 97%), or is
+//                         projected at IDLE.weekProjectedPct or over (by its percent,
+//                         while it has no projection)
+//   board-unreadable      the board file could not be read
+//   no-work               no open item (idea or doing) without an ask
+// A source that can't be read never reads as idle. With `idle` comes `leadLast`, the
+// lead's own session's latest request: null only when the lead is known and has made
+// none in the transcripts read (Ultron's L2, 11-19). The caller counts the quiet from it.
+export function idleCheck({ sessions, usage, todos, now }) {
+  const live = sessions?.status === 'ok' ? sessions.data?.liveAgents : null;
+  if (!isObject(live) || !Array.isArray(live.runs)) return { state: 'sessions-not-current' };
+  if (live.runs.length > 0) return { state: 'running' };
+  const work = sessions.data.agentWork;
+  if (!isObject(work) || typeof work.lead !== 'string' || work.lead === '') return { state: 'sessions-not-current' };
+  const leadLast = work.leadLast;
+
+  const limits = usage?.status === 'ok' && Array.isArray(usage.data?.limits) ? usage.data.limits : null;
+  const session = limits?.find(l => ruleFor(l?.label)?.name === 'session');
+  if (!finite(session?.pct)) return { state: 'usage-not-current' };
+  if (session.pct >= IDLE.sessionPct) return { state: 'session-high' };
+  let week = null, high = false;
+  for (const l of limits) {
+    const rule = ruleFor(l?.label);
+    if (!rule || rule.name === 'session' || !finite(l.pct)) continue;
+    if (l.pct >= IDLE.weekPct) high = true;
+    week = Math.max(week ?? 0, Math.round(finite(l.pace?.projectedPct) ? l.pace.projectedPct : l.pct));
+  }
+  if (week === null) return { state: 'usage-not-current' };
+  if (high || week >= IDLE.weekProjectedPct) return { state: 'week-high' };
+
+  if (!Array.isArray(todos)) return { state: 'board-unreadable' };
+  const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week };
+  for (const t of todos) {
+    if (!isObject(t) || !OPEN_LANES.has(t.lane) || (t.ask !== undefined && t.ask !== null)) continue;
+    fields.workable++;
+    if (t.priority === 'P0') fields.p0++;
+    if (t.priority === 'P1') fields.p1++;
+    if (t.lane === 'doing') fields.doing++;
+  }
+  return fields.workable === 0 ? { state: 'no-work' } : { state: 'idle', fields, leadLast: finite(leadLast) && leadLast <= now ? leadLast : null };
 }
 
 // A heal target's name for a hit (config's `heal.targets`, a Map by label of { id,
@@ -262,7 +335,8 @@ export const sourceOf = key => { const kind = String(key).split(':')[0]; return 
 
 // ---- the state file ----
 
-const emptyState = () => ({ board: new Map(), jobs: new Map(), hits: new Map() });
+const emptyIdle = () => ({ since: null, sentAt: null, unanswered: 0 });
+const emptyState = () => ({ board: new Map(), jobs: new Map(), hits: new Map(), idle: emptyIdle() });
 const entries = v => (Array.isArray(v) ? v.filter(e => Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && isObject(e[1])) : []);
 const timeOrNull = v => (finite(v) ? v : null);
 
@@ -284,9 +358,12 @@ export function cleanState(raw) {
     if (sourceOf(key) === null || typeof e.fp !== 'string' || !finite(e.firstAt)) continue;
     s.hits.set(key, { fp: e.fp, firstAt: e.firstAt, toldAt: timeOrNull(e.toldAt), heldAt: timeOrNull(e.heldAt), keepUntil: timeOrNull(e.keepUntil), silent: e.silent === true });
   }
+  // The idle wake-up's: since when the board has sat idle, when the last one went, and
+  // how many went since a run was last seen.
+  if (isObject(raw.idle)) s.idle = { since: timeOrNull(raw.idle.since), sentAt: timeOrNull(raw.idle.sentAt), unanswered: Number.isInteger(raw.idle.unanswered) && raw.idle.unanswered > 0 ? Math.min(raw.idle.unanswered, 1000) : 0 };
   return s;
 }
-const stateToFile = s => ({ v: STATE_VERSION, board: [...s.board], jobs: [...s.jobs], hits: [...s.hits] });
+const stateToFile = s => ({ v: STATE_VERSION, board: [...s.board], jobs: [...s.jobs], hits: [...s.hits], idle: { ...s.idle } });
 
 // ---- the check ----
 
@@ -308,10 +385,20 @@ export function createProactive({
   jobNames = {},
   excludeKeys = new Set(),
   killed = () => false,
+  // The idle wake-up's own kill file (`idle-off`).
+  idleKilled = () => false,
   clock = () => Date.now(),
   log = console.log
 }) {
   let state = emptyState();
+  const idleSettings = settings.idle ?? { on: false, quietHours: true };
+  // What the idle rule found on the last pass, for the view; and the last status that
+  // left a wake-up unsent, so the log says each spell once.
+  let idleNow = { state: idleSettings.on ? 'not checked yet' : 'off' };
+  let idleUnsentSaid = null;
+  // This pass's board list (null when unreadable) and panels, for the idle rule.
+  let boardNow = null;
+  let snapNow = {};
   let loaded = false;
   let savedText = null;
   // Each source's hits from the last pass that could read it, for the page while it can't.
@@ -357,6 +444,7 @@ export function createProactive({
       const parsed = JSON.parse(await readBoard());
       if (Array.isArray(parsed)) todos = parsed;
     } catch (err) { why = err?.code ?? err?.name ?? 'error'; }
+    boardNow = todos;
     if (todos) {
       const r = boardHits({ todos, seen: state.board, now });
       state.board = r.seen;
@@ -376,6 +464,7 @@ export function createProactive({
     }
 
     const snap = snapshot() ?? {};
+    snapNow = snap;
     const crons = snap.crons;
     if (crons?.status === 'ok' && Array.isArray(crons.data)) {
       const r = jobHits({ crons: crons.data, jobs: state.jobs, now, jobNames, excludeKeys });
@@ -411,6 +500,47 @@ export function createProactive({
 
   // Whether a source was read this pass (none, for the keys, is a reading too).
   const isCurrent = src => sources[src] === 'ok' || (src === 'keys' && sources.keys === 'none');
+
+  // The idle rule, after the hits: at most one wake-up, when the board has sat idle
+  // with room to work, and the lead's own session has made no request, for IDLE.settleMs. Not at night unless config says so, and never
+  // held for the morning: the 07:00 pass decides afresh. One every IDLE.everyMs at most,
+  // the wait doubling (to IDLE.backoffMax times) after each one no run followed; a run
+  // seen live puts it back.
+  async function idleStep(now) {
+    if (!idleSettings.on) return { state: 'off' };
+    const idle = state.idle;
+    if (idleKilled()) { idle.since = null; return { state: 'killed' }; }
+    const found = idleCheck({ sessions: snapNow.sessions, usage: snapNow.usage, todos: boardNow, now });
+    if (found.state === 'running') idle.unanswered = 0;
+    if (found.state !== 'idle') { idle.since = null; return { state: found.state }; }
+    if (!finite(idle.since) || idle.since > now) idle.since = now;
+    const base = { since: idle.since, ...found.fields, unanswered: idle.unanswered };
+    if (now - Math.max(idle.since, found.leadLast ?? 0) < IDLE.settleMs) return { state: 'settling', ...base };
+    if (idleSettings.quietHours && isQuiet(now)) return { state: 'quiet-hours', ...base };
+    // One hour after a wake-up, two after a second with no run between, then four.
+    const wait = IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** Math.max(0, idle.unanswered - 1));
+    if (finite(idle.sentAt) && idle.sentAt <= now && now - idle.sentAt < wait) return { state: 'waiting', ...base, nextAt: idle.sentAt + wait };
+    const ev = events();
+    if (!ev) return { state: 'no-events', ...base };
+    let status;
+    try {
+      const r = await ev.idle(checkIdle({ ...found.fields, unanswered: idle.unanswered }), { nights: !idleSettings.quietHours });
+      status = typeof r?.status === 'string' ? r.status : 'unknown';
+    } catch (err) {
+      status = 'error';
+      if (idleUnsentSaid !== 'error') log(`proactive: the idle wake-up was not made (${err?.code ?? err?.name ?? 'error'}); tried again each pass`);
+    }
+    if (SENT_STATUSES.includes(status)) {
+      idle.sentAt = now;
+      idle.unanswered++;
+      idleUnsentSaid = null;
+      log(`proactive: an idle wake-up to the lead's event (${status}): ${found.fields.workable} open item${found.fields.workable === 1 ? '' : 's'} with no ask`);
+      return { state: 'sent', ...base, sentAt: now };
+    }
+    if (status !== 'error' && idleUnsentSaid !== status) log(`proactive: the idle wake-up was not sent (${status}); offered again each pass`);
+    idleUnsentSaid = status;
+    return { state: 'not-sent', ...base, why: status };
+  }
 
   // One pass: read, keep the books, tell what is new (or hold it for the night).
   function pass() {
@@ -475,6 +605,7 @@ export function createProactive({
           }
         }
       }
+      idleNow = await idleStep(now);
       await save();
       return { status: 'on', hits: found.length, told, waiting: due.length - told, quiet: isQuiet(now) };
     });
@@ -509,6 +640,9 @@ export function createProactive({
       events: Boolean(events()),
       sources: { ...sources },
       rules: RULES,
+      // The idle wake-up: its switch, what the last pass found (a state and whole numbers
+      // only), when one last went, and its numbers.
+      idle: { on: idleSettings.on, quietHours: idleSettings.quietHours, ...(status === 'on' ? idleNow : { state: idleSettings.on ? status : 'off' }), lastSentAt: state.idle.sentAt, rules: IDLE },
       delivery: lastDelivery,
       hits,
       generatedAt: now

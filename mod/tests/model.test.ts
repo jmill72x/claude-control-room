@@ -16,6 +16,8 @@ test('heat matches the web page: error at the threshold, warning from 70% of it,
 
 test('pace wording is the web page\'s, and an unknown state says nothing rather than guess', () => {
   expect(paceNote({ state: 'ahead', projectedPct: 140 })).toBe('ahead of pace · projected 140% by reset')
+  expect(paceNote({ state: 'ahead', projectedPct: 64, basis: 'recent', basisMs: 24 * 3600000 })).toBe('ahead of pace · projected 64% by reset at the last 24 h rate')
+  expect(paceNote({ state: 'under', projectedPct: 20, basis: 'window', basisMs: 24 * 3600000 })).toBe('under pace · projected 20% by reset')
   expect(paceNote({ state: 'unknown-window' })).toBe('window length not yet observed')
   expect(paceNote({ state: 'something-new' })).toBe('')
   expect(paceNote(null)).toBe('')

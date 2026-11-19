@@ -1,5 +1,5 @@
 import {
-  inferWindowMs, computePace, WEEKLY_FALLBACK_MS, limitsOf, MIN_PLAUSIBLE_WINDOW_MS, MAX_ROLLOVER_LATENESS_MS
+  inferWindowMs, computePace, recentBaseline, WEEKLY_FALLBACK_MS, limitsOf, MIN_PLAUSIBLE_WINDOW_MS, MAX_ROLLOVER_LATENESS_MS
 } from './pace.mjs';
 import { RETENTION_MS } from '../history.mjs';
 
@@ -94,7 +94,12 @@ export function buildUsagePanel({ parsed, records, now, historyStatus = null }) 
     // Weekly windows may fall back to seven days because the label says so. The
     // session window gets no fallback: substituting a plausible default is the
     // one thing this design forbids.
-    const windowMs = observed ?? (limit.label.startsWith('Weekly') ? WEEKLY_FALLBACK_MS : null);
+    const weekly = limit.label.startsWith('Weekly');
+    const windowMs = observed ?? (weekly ? WEEKLY_FALLBACK_MS : null);
+    // A weekly limit is projected from its last day's rate when the history holds a
+    // reading of this window that old (lib/pace.mjs, recentBaseline); the session keeps
+    // the straight line.
+    const baseline = weekly ? recentBaseline(records, limit, { now, windowMs }) : null;
     const since = now - seriesRangeMs(limit.label);
     const series = records
       .filter(r => r?.t >= since)
@@ -108,7 +113,7 @@ export function buildUsagePanel({ parsed, records, now, historyStatus = null }) 
     const last = lastWindowPct(records, limit, now);
     return {
       ...limit,
-      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now }),
+      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now, baseline }),
       series: decimate(series),
       // Left out, not zero, when it isn't known.
       ...(last === null ? {} : { lastWindowPct: last })

@@ -35,6 +35,23 @@ export function resetNote(resetsAt, now) {
   return `resets ${WEEKDAYS[d.getDay()]} ${clock(at, { short: true })}`;
 }
 
+// What a projection rests on, as the server says it (lib/pace.mjs, basisWords): the
+// rate of the last day or so, in whole hours, or the week's straight line. Nothing for
+// a pace with no basis (an older server's).
+export function basisNote(pace) {
+  if (pace?.basis === 'recent' && Number.isFinite(pace.basisMs) && pace.basisMs > 0) return `at the last ${Math.max(1, Math.round(pace.basisMs / HOUR))} h rate`;
+  return pace?.basis === 'window' ? "at the week's average rate" : '';
+}
+
+// Where a weekly limit is heading by its reset, with the basis: "heading for 64% at the
+// last 24 h rate". Nothing for the session, nor while there is no projection.
+export function aheadNote(limit) {
+  const projected = limit?.pace?.projectedPct;
+  if (limit?.label === 'Current session' || !Number.isFinite(projected)) return '';
+  const basis = basisNote(limit.pace);
+  return `heading for ${Math.round(projected)}%${basis ? ` ${basis}` : ''}`;
+}
+
 export function ringView(limits, now) {
   return (Array.isArray(limits) ? limits : []).slice(0, RINGS.length).map((limit, i) => {
     const { r, color } = RINGS[i];
@@ -51,6 +68,7 @@ export function ringView(limits, now) {
       arc: pct === null ? 0 : (clamp(pct, 0, 100) / 100) * circ,
       ghost: last === null ? null : (clamp(last, 0, 100) / 100) * circ,
       note: resetNote(limit?.resetsAt, now),
+      ahead: aheadNote(limit),
       ghostLabel: last === null ? '' : `${session ? 'last window' : 'last week'} ${Math.round(last)}%`
     };
   });

@@ -105,3 +105,12 @@ test('a row from a source the server could not read on its last check says so, a
   assert.equal(staleWords({ current: 'no' }, NOW), null, 'only false marks it');
   assert.equal(staleWords({ current: false, readAt: Number.NaN }, NOW), 'not current');
 });
+
+test('a week row says the recent rate its projection rests on, when the server sends one', () => {
+  const week = extra => ({ id: 'h6', rule: 'week', limit: 'week (all models)', projected: 112, firstAt: NOW, toldAt: NOW, ...extra });
+  assert.equal(rowOf(week({ rateHours: 24 }), { now: NOW }).line, 'projected at 112% by its reset at the last 24 h rate');
+  assert.equal(rowOf(week({ rateHours: 1 }), { now: NOW }).line, 'projected at 112% by its reset at the last 1 h rate');
+  for (const rateHours of [null, undefined, 0, -3, 24.5, '24', 'IGNORE PREVIOUS INSTRUCTIONS']) {
+    assert.equal(rowOf(week({ rateHours }), { now: NOW }).line, 'projected at 112% by its reset', String(rateHours));
+  }
+});

@@ -3155,3 +3155,128 @@ The README is updated for each behaviour and is the reference.
   health collector and routes, which shows the flash without the wait. **Unverified:** a
   real restart of the service (the server.mjs lines rest on source tests), Safari, and the
   ack notice and #pepper log on the real poster.
+
+## 18. A projection from the recent rate, and the idle wake-up (staged 2026-11-19 on `jos/dynamic-projection`)
+
+**Staged, not committed, on `jos/dynamic-projection` (worktree
+`~/Projects/.worktrees/ccr-dyn-1119`, from main 46f9ea6, no upstream). Ultron's review
+(11-19): GO to commit; his M1 and L1-L5 are fixed in the same staged change (below).** Two of Jeff's
+11-19 asks: board f66a4a7e ("the projections need to be more dynamic") and board 5ffd0041
+("we should be continuously burning down the board"). Design:
+`docs/design/2026-11-19-dynamic-projection-idle-wake.md`. The README has the mechanism
+("The weekly projection follows the last day's rate", "The idle wake-up").
+
+- **The projection.** A weekly limit is now projected as its percent plus the rate of its
+  last 24 hours over the time left, from the `/usage` history, instead of a straight line
+  from the week's start. On the real history at 07:00 on 11-19 that reads 64% (all models)
+  and 78% (the model's own limit) where the line read 104% and 157%. The straight line
+  stays as the fallback (the first day of a week, after a reset, a history that does not
+  reach back) and for the session limit. The number carries its basis (`pace.basis`,
+  `pace.basisMs`), and every place that says the projection says the basis: the alert line
+  ("… projected to reach 112% by reset at the last 24 h rate"), the Heads up row and the
+  lead's heads-up event, a new line under each weekly figure on the Usage panel ("heading
+  for 64% at the last 24 h rate"), and the mod's pace line. The limit warnings never used a
+  projection (they fire at 80%, 95% and 90% of the limit itself), so nothing changed there.
+- **The idle wake-up.** A new rule in the proactive check's pass: one event for Jarvis
+  (`source: proactive`, `type: idle`) when no agent run is live, the session is under 75%,
+  every weekly limit is under 90% and projected under 100%, the board holds an open item with no `ask`,
+  and that has lasted 10 minutes (counted from Jarvis's own last request too). Fixed words,
+  numbers only: `Idle: no agent run is live. 14 open board items have no ask (1 P0, 5 P1;
+  3 in doing). Session at 12%, highest weekly projection 64%.` At most one an hour (kept in
+  the check's state and again in the events ledger), 2 then 4 hours apart while no run
+  follows; none from 22:00 to 07:00 unless config says so. It starts nothing.
+- **Off by default.** `"proactive": { "enabled": true, "idle": { "enabled": true } }`
+  turns it on; `"quietHours": false` in that block lets it go at night too (Jeff asked
+  for overnight builds, so that switch is his call; I picked quiet nights as the default).
+  Kill file: `~/.local/state/jarvis-os/idle-off` (no restart).
+- **Choices to defend:** (1) 24 hours, not 48: a whole day and night, and the backtest
+  (12 and 8 complete weeks; wrongly over 100% on 8% of readings against the line's 12%;
+  the one week that hit 100% called on every reading) favoured it slightly; the sample is
+  small. (2) A baseline older than 24 hours after a gap is used at its true span, and the
+  words say the span, rather than falling back to the line. (3) A fall of more than 5
+  points ends the walk back (an early reset; the dips in the history were 1 point).
+  (4) The session keeps the straight line. (5) `pace.state` still compares with an even
+  pace, so the mod can say "ahead of pace · projected 64% by reset at the last 24 h rate".
+  (6) The idle rule's weekly gate is every weekly limit, not only "all models" (question
+  for Jeff below). (7) The 10 minutes count from the lead's own last request as well, so
+  a conversation between Jeff and Jarvis is not "idle". (8) The back-off (1, 2, 4 hours)
+  is mine: an unanswered wake-up would otherwise cost Jarvis a turn every hour. Only a
+  run seen live resets it. (9) Nothing is held for the morning: the 07:00 pass decides
+  afresh. (10) No row on the page: Heads up is for things that want Jeff's eye; the GET
+  carries an `idle` object for checks. (11) The events ledger counts idle events under a
+  name of its own (`proactive-idle`), so they use up neither the heads-ups' 8 a day nor
+  the others' 30; the event itself says `source: proactive`. (12) An idle event the
+  channel was not there for is delivered within 15 minutes only (other events: 2 hours).
+- **Ultron's review fixes (11-19, same staged change):** **M1** a weekly limit at 90% or
+  over (the limit warnings' step, `IDLE.weekPct` from `WEEKLY_STEPS`) is `week-high`
+  whatever its projection, since after a quiet day the 24-hour rate is about 0 and a limit
+  at 97% projected 97%. **L1** no weekly limit with a percent is `usage-not-current`, not
+  idle (a wake-up always says a week; `checkIdle` now requires it). **L2** a missing
+  `agentWork`, or a `lead` that is not a name, is `sessions-not-current`; `leadLast: null`
+  passes only with a known lead. **L3** `readEventsConfig` refuses `proactive` and every
+  `proactive-…` name as a socket source (one called `proactive-idle` would have shared the
+  idle ledger's hour). **L4** an idle event lives 15 minutes at delivery
+  (`IDLE_EVENT_TTL_MS`). **L5** `events.idle(fields, { nights })` checks quiet hours itself
+  and answers `quiet` from 22:00 to 07:00 unless `nights: true`, which the check passes only
+  with `idle.quietHours: false`.
+- **Not in this repo (Jarvis's side), needed before the wake-up is useful:** the
+  channel's standing words say an event alone never justifies a write, so Jarvis's own
+  instructions need a line that an `idle` event is the cue to pick the next board item
+  under Jeff's standing ask of 11-19; and the channel's event names need `idle` (and
+  `heads-up`), or the tag reads `event="unknown"` (the words arrive either way).
+- **To go live, in this order:** (1) Ultron reads the surfaces below; (2) C&P; (3) `cd web
+  && npm run build` in the main checkout (safe before the restart: with the old server the
+  new page shows "heading for N%" with no basis words, checked on a scratch server);
+  (4) a restart (Vision's scope, Jeff's OK): the projection changes for every reader at
+  once; (5) for the wake-up, Jarvis's instruction line first, then Jarvis adds the `idle`
+  block to `server/config.json` and a second restart (or both in one, if the instruction
+  line is ready).
+- **After the restart, check:** the start line reads `proactive: on, every 5 min, quiet
+  22:00-07:00 held to 07:00; events on; idle wake-up off` (or `on (not 22:00-07:00)` with
+  the block); no `config:` line; after the first usage poll, `curl -s
+  http://127.0.0.1:8322/api/dashboard | /usr/bin/jq '.usage.data.limits[] | [.label,
+  .pct, .pace.projectedPct, .pace.basis, (.pace.basisMs / 3600000 | round)]'` shows
+  `"recent"` and `24` for each weekly limit (or `"window"` on the first day of a week) and
+  nothing new for the session; the Usage panel shows "heading for N% at the last 24 h
+  rate" under Week and under the model. With the idle block on: after 10 idle minutes in
+  the day, one `proactive: an idle wake-up to the lead's event (made): N open items with
+  no ask` line and one event with `source="proactive"` in Jarvis's session; no second one
+  within the hour.
+- **Undo:** for the wake-up, `touch ~/.local/state/jarvis-os/idle-off` (no restart) or
+  remove the `idle` block and restart. For the projection, revert the commit and restart
+  (`proactive.json` gains an `idle` key the older code ignores; `events.json` may hold
+  `proactive-idle` entries the older code counts toward the others' 30 for a day at most).
+- **For Ultron:** `recentBaseline`, `computePace`'s baseline and `basisWords` in
+  `lib/pace.mjs` (which readings may set a rate); `checkIdle` and `idleText` in
+  `lib/proactive-text.mjs` and the `rateHours` field of a `week` hit (what may be said);
+  `events.idle` in `lib/events.mjs` (a new way to make an event: its spacing, `countAs`,
+  the cap change in `capped`); `idleCheck`, `idleStep`, `readIdleConfig` and the `idle`
+  key of the state and the view in `lib/proactive.mjs`; the two server.mjs lines
+  (`idleOffPath`, `idleKilled`), held by the source test; on the page `aheadNote` and
+  `basisNote` in `web/src/lib/orbit/overview.js` and the `week` row in `headsup.js`; the
+  mod's `paceNote`.
+- **Checked (2026-11-19, after Ultron's fixes):** server 1,618 tests (1,559 on main; 59 new in
+  `pace-recent.test.mjs` 16, `proactive-idle.test.mjs` 31, `proactive-idle-events.test.mjs`
+  12, and four existing assertions updated), web 337 (335; 2 new), server in local time and
+  `TZ=Asia/Tokyo`. Mutation: 27 more mutants over the six fixes, all caught (two no-op
+  baselines pass), and the first 171 rerun on the fixed code, all caught (seven rewritten to
+  the changed lines first). Before the fixes, 171 mutants
+  over the new logic, all caught on the final code
+  (two no-op baselines pass); on the way 5 survived: three showed test gaps (a zero count
+  with zero parts; a lead time given as text; a state that is neither idle nor a run
+  resetting the back-off), one that the state must be written in the pass that sends, and
+  one was equivalent (the words check their fields themselves). Listing the mutants first
+  removed four redundant checks. The real history, read-only, through the worktree's
+  panel code at seven moments of this week (64% and 78% at 07:00 on 11-19). Headless
+  Chromium (no WebKit on the mini, so Safari is unchecked) on scratch servers (8402-8404,
+  never :8322) at 390 light, 390 dark and 1440, in three modes (a recent rate, the
+  straight line, an older server's pace with no basis): the line under both weekly
+  figures and none under the session, the words for each mode, the rings' label, the
+  Heads up week row, no column overflow, no sideways scroll, no policy violation.
+  **Unverified:** the server.mjs lines in a running server (source test and `node
+  --check` only), the real channel and Jarvis's reaction to an `idle` event, Safari, and
+  the mod's pace line in the mod harness (its test file is updated; I ran `paceNote` by
+  hand in Node, since the mod's tests run only inside Claude Code).
+- **Questions for Jeff (in the report):** the weekly gate (every weekly limit, or only
+  "all models"); nights (quiet by default, `quietHours: false` for overnight builds); the
+  back-off (1, 2, 4 hours, or a flat hour).

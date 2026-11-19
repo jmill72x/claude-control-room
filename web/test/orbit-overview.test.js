@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RINGS, circumference, ringLabel, ringView, resetNote, sessionCountdown, next24,
+  RINGS, circumference, ringLabel, ringView, resetNote, sessionCountdown, next24, aheadNote, basisNote,
   burnBars, burnShares, shareLabel, shadeLevel, heatRows, SHADES
 } from '../src/lib/orbit/overview.js';
 
@@ -161,4 +161,24 @@ test('heat rows: weekday labels, the peak hour ringed and named, busy days in bo
   assert.equal(out.peakLabel, 'Sun 3 PM');
   assert.equal(heatRows({ days: [], peak: null }).peakLabel, null);
   assert.equal(heatRows({ days: [day('2026-10-19', { 0: 9 })], peak: { date: '2026-10-19', hour: 0, tokens: 9 } }).peakLabel, 'Mon 12 AM');
+});
+
+// ---- where a weekly limit is heading, with what the projection rests on ----
+
+test('a weekly ring says where it is heading and on what basis; the session and a limit with no projection say nothing', () => {
+  const H = 3600 * 1000;
+  const week = pace => ({ label: 'Weekly · all models', pct: 37, resetsAt: iso(at(26, 20)), pace });
+  assert.equal(aheadNote(week({ projectedPct: 64, basis: 'recent', basisMs: 24 * H })), 'heading for 64% at the last 24 h rate');
+  assert.equal(aheadNote(week({ projectedPct: 64.4, basis: 'recent', basisMs: 31.6 * H })), 'heading for 64% at the last 32 h rate');
+  assert.equal(aheadNote(week({ projectedPct: 104, basis: 'window', basisMs: 60 * H })), "heading for 104% at the week's average rate");
+  assert.equal(aheadNote(week({ projectedPct: 104 })), 'heading for 104%', 'an older server sends no basis');
+  assert.equal(aheadNote(week({ projectedPct: null, basis: 'window', basisMs: H })), '');
+  assert.equal(aheadNote(week(undefined)), '');
+  assert.equal(aheadNote({ label: 'Current session', pct: 30, pace: { projectedPct: 140, basis: 'window', basisMs: H } }), '');
+  assert.equal(aheadNote(null), '');
+  assert.equal(basisNote({ basis: 'recent', basisMs: 10 * 60 * 1000 }), 'at the last 1 h rate');
+  for (const pace of [null, {}, { basis: 'recent' }, { basis: 'recent', basisMs: 0 }, { basis: 'recent', basisMs: 'x' }, { basis: 'recent', basisMs: Infinity }, { basis: 'other', basisMs: H }]) assert.equal(basisNote(pace), '', String(pace?.basisMs));
+  const [s, w] = ringView([{ label: 'Current session', pct: 25, pace: { projectedPct: 90, basis: 'window', basisMs: H } }, week({ projectedPct: 64, basis: 'recent', basisMs: 24 * H })], NOW);
+  assert.equal(s.ahead, '');
+  assert.equal(w.ahead, 'heading for 64% at the last 24 h rate');
 });

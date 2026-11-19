@@ -83,7 +83,8 @@ export function rowOf(h, { byId = new Map(), rules = DEFAULT_RULES, now }) {
       return { ...base, mark: '↻', tone: 'warn', name: text(h.target) ?? 'A heal target', line: `healed ${h.count} times in ${rules.repeatDays} days: a lasting fix is due` };
     case 'week':
       if (!whole(h.projected) || !text(h.limit)) return null;
-      return { ...base, mark: '%', tone: 'warn', name: `Claude ${h.limit}`, line: `projected at ${h.projected}% by its reset` };
+      // `rateHours`: the span of the recent rate the projection rests on, when it does.
+      return { ...base, mark: '%', tone: 'warn', name: `Claude ${h.limit}`, line: `projected at ${h.projected}% by its reset${whole(h.rateHours) && h.rateHours > 0 ? ` at the last ${h.rateHours} h rate` : ''}` };
     case 'session':
       if (!whole(h.pct)) return null;
       return { ...base, mark: '%', tone: 'warn', name: 'Claude session', line: `at ${h.pct}%` };

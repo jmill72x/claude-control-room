@@ -43,7 +43,7 @@ import { dirname } from 'node:path';
 import { prune as pruneKeys } from './push-alerts.mjs';
 import { clockTime } from './chat-socket.mjs';
 import { KIND as LIMIT_STEP, WARNING_BODY } from './limit-warnings.mjs';
-import { proactiveText, checkHit } from './proactive-text.mjs';
+import { proactiveText, checkHit, checkIdle, idleText, IDLE } from './proactive-text.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
 export const COALESCE_MS = 60e3;
@@ -51,7 +51,16 @@ export const PER_SOURCE_HOURLY = 6;
 export const DAILY_TOTAL = 30;
 // The proactive check's own day cap, outside DAILY_TOTAL.
 export const PROACTIVE_DAILY = 8;
+// The idle wake-up (lib/proactive.mjs): at most one in this long, whoever asks. That
+// spacing is its whole cap (24 a day at most); its events count toward neither the
+// heads-ups' 8 nor the others' 30, under a name of their own in the ledger.
+export const IDLE_EVERY_MS = IDLE.everyMs;
+export const IDLE_LEDGER = 'proactive-idle';
 export const EVENT_TTL_MS = 2 * HOUR;
+// An idle wake-up's life (Ultron's L4, 11-19): it says the board sat idle a moment ago,
+// and the check sends another within the hour while that still holds, so an old one
+// would only tell the lead something that may have stopped being true.
+export const IDLE_EVENT_TTL_MS = 15 * 60e3;
 export const QUIET_START_HOUR = 22;
 export const QUIET_END_HOUR = 7;
 export const TRIAGE_PER_DAY = 10;
@@ -66,8 +75,11 @@ export const SUPPRESSED_EVERY_MS = HOUR;
 // A source name on the socket's allowlist, and the in-process ones.
 export const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const ALERT_SOURCES = Object.freeze({ launchd: 'job failure', service: 'service outage', limit: 'limit warning', proactive: 'heads-up' });
-// The proactive check (lib/proactive.mjs): an in-process source, never a socket name.
+// The proactive check (lib/proactive.mjs): an in-process source, never a socket name,
+// and neither is any name starting `proactive-` (the ledger counts idle wake-ups under
+// IDLE_LEDGER, so a socket source of that name would share their hour; Ultron's L3, 11-19).
 export const PROACTIVE_SOURCE = 'proactive';
+const reservedSource = name => Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE || name.startsWith(`${PROACTIVE_SOURCE}-`);
 // What a limit warning's event says when its words are not in the fixed shape.
 export const LIMIT_WORDS = 'a limit warning';
 // Presence (lib/shortcut-routes.mjs): what a paired Shortcut may report, each a fixed
@@ -182,7 +194,7 @@ export function readEventsConfig(config) {
   if (!isObject(raw)) { problems.push('events is not an object'); return out; }
   if (raw.sources !== undefined && !isObject(raw.sources)) problems.push('events.sources is not an object');
   for (const [name, s] of Object.entries(isObject(raw.sources) ? raw.sources : {})) {
-    if (!SOURCE_NAME.test(name) || Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service, limit, proactive or presence)`); continue; }
+    if (!SOURCE_NAME.test(name) || reservedSource(name)) { problems.push(`events.sources: ${JSON.stringify(name)} is not a source name (a-z, 0-9 and -, not launchd, service, limit, proactive, proactive-anything or presence)`); continue; }
     const title = safeName(s?.title);
     if (!title) { problems.push(`events.sources.${name}: title must be a plain name of at most 60 characters`); continue; }
     out.sources.set(name, { title, failure: s.failure === true });
@@ -279,14 +291,15 @@ export function createEvents({
     const hour = ledger.made.filter(e => e.source === source && at - e.at < HOUR).length;
     if (hour >= PER_SOURCE_HOURLY) return true;
     const own = source === PROACTIVE_SOURCE;
-    const day = ledger.made.filter(e => (e.source === PROACTIVE_SOURCE) === own).length;
+    const day = ledger.made.filter(e => e.source !== IDLE_LEDGER && (e.source === PROACTIVE_SOURCE) === own).length;
     return day >= (own ? PROACTIVE_DAILY : DAILY_TOTAL);
   };
 
   const titleOf = source => sources.get(source)?.title ?? null;
 
   // One stored event. `counted` events go toward the caps; a summary does not.
-  async function append({ source, type, text, items = [], state = null, counted = true }) {
+  // `countAs` is the name it is counted under in the ledger, when not its source.
+  async function append({ source, type, text, items = [], state = null, counted = true, countAs = source }) {
     const at = clock();
     const keys = items.map(c => c.key).filter(Boolean).map(keyHash);
     const meta = { event: { v: 1, source, type, count: type === 'count' ? items.reduce((s, c) => s + (c.count ?? 0), 0) : items.length, keys, live: keys.length > 0 } };
@@ -302,7 +315,7 @@ export function createEvents({
       for (const k of added) delete ledger.keys[k];
       throw err;
     }
-    if (counted && state !== 'off') ledger.made.push({ source, at });
+    if (counted && state !== 'off') ledger.made.push({ source: countAs, at });
     lastAt.set(source, at);
     return m;
   }
@@ -554,13 +567,38 @@ export function createEvents({
     });
   }
 
+  // The idle wake-up (lib/proactive.mjs): one event of fixed words built from whole
+  // numbers (lib/proactive-text.mjs, checkIdle and idleText, checked here whoever
+  // calls). Source `proactive`, type `idle`, no alert key, a life of IDLE_EVENT_TTL_MS.
+  // Made now or not at all: no window, no hold for the morning, and nothing counted
+  // when it is not made, since the check asks again on a later pass. Quiet hours are
+  // checked here too, whoever calls (Ultron's L5, 11-19): from 22:00 to 07:00 the answer
+  // is `quiet` unless the caller passes `nights: true` (the check does, when config's
+  // `proactive.idle.quietHours` is false). `held` is the spacing: one was made within
+  // IDLE_EVERY_MS.
+  function idle(fields, { nights = false } = {}) {
+    return serial(async () => {
+      const at = clock();
+      const checked = checkIdle(fields);
+      if (!checked) return { status: 'refused' };
+      if (killed()) return { status: 'off' };
+      if (nights !== true && isQuiet(at)) return { status: 'quiet' };
+      trimMade(at);
+      if (ledger.made.some(e => e.source === IDLE_LEDGER && at - e.at < IDLE_EVERY_MS)) return { status: 'held' };
+      await append({ source: PROACTIVE_SOURCE, type: 'idle', text: idleText(checked), items: [{ source: PROACTIVE_SOURCE, failure: false, since: at }], countAs: IDLE_LEDGER });
+      await save();
+      return { status: 'made' };
+    });
+  }
+
   // Whether a stored event may go to the channel now (chat-socket's toInbound).
   function deliverable(m, at = clock()) {
     if (m?.kind !== 'event' || m.from !== 'system') return false;
     if (m.state === 'off' || m.state === 'undelivered') return false;
     if (killed()) return false;
-    if (!(at - m.at < EVENT_TTL_MS)) return false;
     const ev = m.meta?.event;
+    const ttl = ev?.source === PROACTIVE_SOURCE && ev.type === 'idle' ? IDLE_EVENT_TTL_MS : EVENT_TTL_MS;
+    if (!(at - m.at < ttl)) return false;
     if (ev?.live) {
       const live = new Set(Object.keys(ledger.keys).map(keyHash));
       if (!(ev.keys ?? []).some(h => live.has(h))) return false;
@@ -581,7 +619,7 @@ export function createEvents({
   }
 
   return {
-    load, fromAlerts, post, presence, proactive, deliverable, takeTriage, killed,
+    load, fromAlerts, post, presence, proactive, idle, deliverable, takeTriage, killed,
     // Whether an alert's key is in the ledger, or waits out a coalesce window: the lead
     // has been, or is about to be, told of it (the notifier's heal hold, Ultron's L4).
     knows: key => typeof key === 'string' && (Object.hasOwn(ledger.keys, key) || isPending(key)),

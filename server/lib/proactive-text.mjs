@@ -10,7 +10,7 @@
 // item again on its way out (any caller may hand it hits).
 //
 // Nothing here imports lib/events.mjs: that module imports this one.
-import { resetWords } from './limit-warnings.mjs';
+import { resetWords, WEEKLY_STEPS } from './limit-warnings.mjs';
 
 export const RULES = Object.freeze({
   // An open P0 or P1 item the check has seen unchanged this many days.
@@ -90,7 +90,9 @@ export function checkHit(h) {
       return { rule: 'heals', target: name(h.target), count: h.count };
     case 'week':
       if (typeof h.limit !== 'string' || !LIMIT_NAME.test(h.limit) || h.limit === 'session' || !whole(h.projected, RULES.weekProjectedPct + 1, 100000)) return null;
-      return { rule: 'week', limit: h.limit, projected: h.projected, resetsAt: time(h.resetsAt) };
+      // `rateHours`: the span of the recent rate the projection rests on (lib/pace.mjs), in
+      // whole hours; null for the straight line.
+      return { rule: 'week', limit: h.limit, projected: h.projected, resetsAt: time(h.resetsAt), rateHours: whole(h.rateHours, 1, 10000) ? h.rateHours : null };
     case 'session':
       if (!whole(h.pct, RULES.sessionPct, 1000)) return null;
       return { rule: 'session', pct: h.pct, resetsAt: time(h.resetsAt) };
@@ -130,7 +132,7 @@ function rulePart(rule, hits, now) {
     case 'heals':
       return shown.map(h => `${h.target ?? 'a heal target'} healed ${h.count} times in ${RULES.repeatDays} days (a lasting fix is due)`).join('; ') + tail;
     case 'week':
-      return shown.map(h => `Claude ${h.limit} projected at ${h.projected}% by its reset${resets(h.resetsAt, now)}`).join('; ') + tail;
+      return shown.map(h => `Claude ${h.limit} projected at ${h.projected}% by its reset${h.rateHours === null ? '' : ` at the last ${h.rateHours} h rate`}${resets(h.resetsAt, now)}`).join('; ') + tail;
     case 'session':
       return shown.map(h => `Claude session at ${h.pct}%${resets(h.resetsAt, now)}`).join('; ') + tail;
     case 'expiry':
@@ -167,4 +169,48 @@ export function proactiveText(hits, { now = Date.now() } = {}) {
   // Not even the first part fits (it can't, with PER_RULE named): cut it.
   if (used === 0) text = (head + parts[0]).slice(0, TEXT_MAX - MORE.length);
   return text + MORE;
+}
+
+// ---- the idle wake-up (docs/design/2026-11-19-dynamic-projection-idle-wake.md) ----
+
+const MIN_MS = 60e3;
+// Its numbers: constants, like RULES. A wake-up goes when no agent run is live, the
+// session limit is under `sessionPct`, every weekly limit is under `weekPct` (the limit
+// warnings' weekly step, whatever its projection: after a quiet day the 24-hour rate is
+// about 0, so a limit at 97% would project 97%; Ultron's M1, 11-19) and projected under
+// `weekProjectedPct`, the board holds an open item with no ask, and all of that has
+// held, with no request from the lead's own session, for `settleMs`. At most one every
+// `everyMs`, the wait doubling after each one no run followed, up to `backoffMax` times
+// `everyMs`.
+export const IDLE = Object.freeze({
+  sessionPct: RULES.sessionPct,
+  weekPct: WEEKLY_STEPS[0],
+  weekProjectedPct: RULES.weekProjectedPct,
+  settleMs: 10 * MIN_MS,
+  everyMs: 60 * MIN_MS,
+  backoffMax: 4
+});
+
+// A wake-up's fields, each a whole number in its range, or null when one is not:
+// `workable` open items with no ask, `p0` and `p1` of them, `doing` of them in that
+// lane, the `session` percent, the highest `week` projection (a wake-up always has one:
+// with no weekly limit read there is none; Ultron's L1, 11-19) and `unanswered`, the
+// wake-ups made since a run was last seen. No id, no word from the board.
+export function checkIdle(f) {
+  if (!isObject(f) || !whole(f.workable, 1, 100000)) return null;
+  for (const k of ['p0', 'p1', 'doing']) if (!whole(f[k], 0, f.workable)) return null;
+  if (!whole(f.session, 0, IDLE.sessionPct - 1) || !whole(f.unanswered, 0, 100000)) return null;
+  if (!whole(f.week, 0, IDLE.weekProjectedPct - 1)) return null;
+  return { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, unanswered: f.unanswered };
+}
+
+// The wake-up's words: facts in a fixed order, numbers only; null for fields that fail.
+export function idleText(fields) {
+  const f = checkIdle(fields);
+  if (!f) return null;
+  const urgent = [f.p0 > 0 ? `${f.p0} P0` : null, f.p1 > 0 ? `${f.p1} P1` : null].filter(Boolean).join(', ');
+  const detail = [urgent, f.doing > 0 ? `${f.doing} in doing` : ''].filter(Boolean).join('; ');
+  return `Idle: no agent run is live. ${plural(f.workable, 'open board item')} ${f.workable === 1 ? 'has' : 'have'} no ask${detail ? ` (${detail})` : ''}. `
+    + `Session at ${f.session}%, highest weekly projection ${f.week}%.`
+    + (f.unanswered > 0 ? ` ${plural(f.unanswered, 'idle event')} since the last run.` : '');
 }

@@ -35,6 +35,12 @@ export function heat(pct, threshold = 85) {
   return undefined
 }
 
+// A weekly projection rests on the last day's rate, not the week's straight line
+// (server/lib/pace.mjs): the line says so, since "ahead of pace" beside a projection
+// under 100% reads as a contradiction without it.
+const rateNote = pace => (pace.basis === 'recent' && Number.isFinite(pace.basisMs) && pace.basisMs > 0
+  ? ` at the last ${Math.max(1, Math.round(pace.basisMs / 3600000))} h rate` : '')
+
 // Each state says exactly what is known; an unrecognised one says nothing.
 export function paceNote(pace) {
   if (!pace) return ''
@@ -42,9 +48,9 @@ export function paceNote(pace) {
     case 'unknown-window': return 'window length not yet observed'
     case 'too-early': return 'too early to project'
     case 'window-ended': return 'window ended · awaiting a fresh reading'
-    case 'ahead': return `ahead of pace · projected ${pace.projectedPct}% by reset`
-    case 'under': return `under pace · projected ${pace.projectedPct}% by reset`
-    case 'on': return `on pace · projected ${pace.projectedPct}% by reset`
+    case 'ahead': return `ahead of pace · projected ${pace.projectedPct}% by reset${rateNote(pace)}`
+    case 'under': return `under pace · projected ${pace.projectedPct}% by reset${rateNote(pace)}`
+    case 'on': return `on pace · projected ${pace.projectedPct}% by reset${rateNote(pace)}`
     default: return ''
   }
 }
