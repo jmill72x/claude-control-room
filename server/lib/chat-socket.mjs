@@ -52,6 +52,7 @@ import { json, readBody, HttpError } from '../routes.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, MAX_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { isRoutineMessage } from './routine-chat.mjs';
+import { lateComposedAt, lateNote } from './chat-late.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -125,8 +126,13 @@ export function toInbound(m, { eventOk = () => false, stopOk = () => false } = {
     if (m.from !== 'jeff' || !isStopMeta(st) || !stopOk(m)) return null;
     return { type: 'stop', seq: m.seq, id: m.id, at: m.at, row: st.row, agent: st.agent, start: st.start };
   }
+  // A message that reached the server long after it was written (lib/chat-late.mjs)
+  // starts with a note saying so, and carries `composedAt`: the channel's tag shows
+  // only the arrival time (`ts`), and an old message read as new misleads the lead.
   if (m.from === 'jeff' && m.kind === 'chat') {
-    return { type: 'message', seq: m.seq, id: m.id, at: m.at, text: m.text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
+    const composedAt = lateComposedAt(m);
+    const text = composedAt === null ? m.text : (m.text ? `${lateNote(composedAt, m.at)}\n\n${m.text}` : lateNote(composedAt, m.at));
+    return { type: 'message', seq: m.seq, id: m.id, at: m.at, ...(composedAt === null ? {} : { composedAt }), text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
   }
   // A verdict only from the owner's side and naming its request (L8): the store makes
   // them from a device's tap alone, and anything else in the store is never one.

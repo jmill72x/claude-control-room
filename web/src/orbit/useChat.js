@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './chatApi.js';
 import { holdReload } from './buildWatch.js';
 import { hasUnsent } from '../lib/orbit/build.js';
-import { mergeMessages, mergeFresh, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, rememberDismissed, PAGE } from '../lib/orbit/chat.js';
+import { sendBody, isStaleRefusal, mergeMessages, mergeFresh, applyEdit, applyState, lastSeq, oldestId, newClientId, upsertPermission, changedCard, withStatus, phaseFor, afterStreamRefusal, sha256Hex, keepCard, rememberDismissed, PAGE } from '../lib/orbit/chat.js';
 import { reachStep, singleFlight, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orbit/chat-search.js';
 
 // The Chat tab's state (jarvis-os-chat-spec.md, C5): whether this device is
@@ -18,6 +18,9 @@ import { reachStep, singleFlight, REACH_PAGE, REACH_PAGES_MAX } from '../lib/orb
 //
 // A send is optimistic: the bubble appears at once with a `clientId`, the server
 // dedups on that id, so a retry after a lost answer never doubles the message.
+// Nothing here sends again by itself: a second attempt is always a tap (Retry or
+// Send now). The send says when the message was written, and the server holds a
+// first attempt that arrives too late (lib/orbit/chat.js, unsentWords).
 const REOPEN_MS = 3000;
 const PAIR_POLL_MS = 2000;
 
@@ -260,9 +263,10 @@ export function useChat({ active }) {
 
   // `files` are { name, blob } already resized by the composer; each is uploaded
   // first (its id kept on the bubble, so a retry uploads only what failed).
-  const deliver = useCallback(async pending => {
+  // `confirmed`: this attempt is the owner's tap, so the server sends it whatever its age.
+  const deliver = useCallback(async (pending, { confirmed = false } = {}) => {
     const { clientId } = pending;
-    setPending(clientId, { failed: false, error: null });
+    setPending(clientId, { failed: false, stale: false, error: null });
     try {
       const ids = [...(pending.attachmentIds ?? [])];
       const files = pending.files ?? [];
@@ -271,7 +275,7 @@ export function useChat({ active }) {
         ids.push(up.id);
         setPending(clientId, { attachmentIds: [...ids], attachments: files.map((f, j) => ({ id: ids[j] ?? null, name: f.name, type: f.blob.type, bytes: f.blob.size })) });
       }
-      const r = await api.sendMessage({ clientId, text: pending.text, replyTo: pending.replyTo, attachmentIds: ids });
+      const r = await api.sendMessage(sendBody({ ...pending, attachmentIds: ids }, { confirmed }));
       if (!aliveRef.current) return;
       setMessages(list => {
         // The live event may have come first: then the bubble just goes.
@@ -281,6 +285,8 @@ export function useChat({ active }) {
     } catch (err) {
       if (!aliveRef.current) return;
       if (err?.status === 401) { unpaired(); return; }
+      // Written too long ago and not stored: the bubble asks for Send now.
+      if (isStaleRefusal(err)) { setPending(clientId, { failed: true, stale: true, error: null }); return; }
       setPending(clientId, { failed: true, error: String(err?.message ?? err) });
     }
   }, [unpaired]);
@@ -299,7 +305,7 @@ export function useChat({ active }) {
 
   const retry = useCallback(clientId => {
     const pending = messagesRef.current.find(m => m.clientId === clientId && !Number.isInteger(m.seq));
-    if (pending) deliver(pending);
+    if (pending) deliver(pending, { confirmed: true });
   }, [deliver]);
 
   const discard = useCallback(clientId => setMessages(list => list.filter(m => !(m.clientId === clientId && !Number.isInteger(m.seq)))), []);

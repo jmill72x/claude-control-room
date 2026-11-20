@@ -40,7 +40,9 @@ export const messagesAfter = (seq, limit) => get(`/api/chat/messages?after=${seq
 export const messagesBefore = (id, limit) => get(`/api/chat/messages?before=${encodeURIComponent(id)}&limit=${limit}`);
 // Search (server/lib/chat-search.mjs): newest first, each with a snippet and its marks.
 export const searchMessages = (q, limit = 20) => get(`/api/chat/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-export const sendMessage = ({ clientId, text, replyTo = null, attachmentIds = [] }) => post('/api/chat/messages', { clientId, text, replyTo, attachmentIds });
+// The body comes from lib/orbit/chat.js sendBody: it also says when the message was
+// written (`composedAt`) and whether this attempt is the owner's tap (`confirmed`).
+export const sendMessage = body => post('/api/chat/messages', body);
 // `shown` is the sha256 of what the card showed (lib/orbit/chat.js, shownInput).
 export const answerPermission = (requestId, behavior, shown) => post(`/api/chat/permission/${encodeURIComponent(requestId)}`, { behavior, shown });
 

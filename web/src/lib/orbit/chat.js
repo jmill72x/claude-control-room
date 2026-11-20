@@ -5,6 +5,7 @@
 
 import { markdownPlain } from './markdown.js';
 import { stuckSince } from './runbook.js';
+import { clock } from './page.js';
 
 // A card's window when the server sends no `expiresAt` (an older server): the old
 // 10 minutes. A server now sends how long the channel holds the request, up to 12 h.
@@ -41,6 +42,50 @@ export function defaultDeviceName({ userAgent = '', maxTouchPoints = 0 } = {}) {
 // the same message after a lost answer never doubles it.
 export function newClientId(now = Date.now(), rand = Math.random) {
   return `p_${now.toString(36)}_${Math.floor(rand() * 36 ** 6).toString(36).padStart(6, '0')}`;
+}
+
+// ---- late sends (server lib/chat-late.mjs, board 89248590) ----
+// A message written longer ago than this is never sent without the owner's tap: the
+// server refuses such a first attempt (409, `stale`), and the bubble asks "Send now"
+// with the time it was written. The same window as the server's.
+export const STALE_SEND_MS = 5 * 60e3;
+
+// The send's body: when it was written (the Send tap, the bubble's `at`), and
+// whether this attempt is a tap (Retry or Send now) rather than the first attempt.
+export function sendBody(pending, { confirmed = false } = {}) {
+  return {
+    clientId: pending.clientId, text: pending.text, replyTo: pending.replyTo ?? null,
+    attachmentIds: pending.attachmentIds ?? [], composedAt: Number.isSafeInteger(pending.at) ? pending.at : null, confirmed: confirmed === true
+  };
+}
+
+// 12:10 PM, or Thu 12:10 PM when that is not `ref`'s day.
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export function writtenAt(at, ref) {
+  const d = new Date(at);
+  const r = new Date(ref);
+  const same = d.getFullYear() === r.getFullYear() && d.getMonth() === r.getMonth() && d.getDate() === r.getDate();
+  return same || Number.isNaN(d.getTime()) ? clock(at) : `${DAYS[d.getDay()]} ${clock(at)}`;
+}
+
+// The server's "written too long ago, not stored" answer.
+export const isStaleRefusal = err => err?.status === 409 && err?.body?.stale === true;
+
+// What a bubble that didn't go says, and its button: a recent failure offers Retry;
+// one the server held as stale, or older than the window, says when it was written
+// and offers Send now, so an old message never goes out looking new.
+export function unsentWords(m, now = Date.now()) {
+  const old = m?.stale === true || (Number.isFinite(m?.at) && now - m.at > STALE_SEND_MS);
+  if (!old) return { line: `Not sent${m?.error ? `: ${m.error}` : ''}`, action: 'Retry' };
+  const why = m?.stale === true ? 'it reached the server only now' : (m?.error ? m.error : 'it did not go through');
+  return { line: `Written ${writtenAt(m.at, now)}, not sent: ${why}`, action: 'Send now' };
+}
+
+// Under a message that reached the server late: when it was written.
+export function writtenWords(m) {
+  const c = m?.meta?.composedAt;
+  if (!Number.isSafeInteger(c) || !Number.isFinite(m?.at) || m.at - c <= STALE_SEND_MS) return null;
+  return `written ${writtenAt(c, m.at)}`;
 }
 
 // The list after `incoming` (from a page of history, a replay or one live event)

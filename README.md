@@ -1255,7 +1255,8 @@ three pieces, each with its own router:
   re-checks its device, so a revoke by any path ends it within 20 s; a revoke also drops a
   pairing that was approved but not yet collected, and a device revoking itself gets its
   `__Host-jos` cookie cleared), the messages
-  (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId` dedup), uploads (`POST
+  (`GET`/`POST /api/chat/messages`, 8,000 characters, `clientId` dedup first, then the
+  late-send rule below), uploads (`POST
   /api/chat/attachments` with the raw bytes of a png, jpeg, webp or heic photo or a PDF,
   sniffed before anything is written, a PDF by `%PDF-`, and refused when the declared type
   and the bytes disagree; never text from the page; 10 MB; four files a message across
@@ -1355,7 +1356,22 @@ three pieces, each with its own router:
   allows neither), so the composer shows the file's name, size and new dimensions, and the
   bubble shows the server's copy once sent (tap for full size). Every send carries a fresh
   `clientId`, the bubble appears at once, and a retry resends the same id, so a lost answer
-  never doubles a message. The banner over the thread follows `/api/chat/status` and the
+  never doubles a message. The page never sends again by itself: a second attempt is a tap.
+  **Late sends** (`server/lib/chat-late.mjs`, since 2026-11-20): each send also says when it
+  was written (`composedAt`, the device's clock at the Send tap) and whether it is a tap
+  (`confirmed`, true on Retry and Send now). A first attempt that reaches the server more
+  than 5 minutes after it was written is not stored: 409 `{stale: true, composedAt}`, a log
+  line without the text, and the bubble reads "Written 12:10 PM, not sent: it reached the
+  server only now" with Send now and Discard (any failed bubble older than 5 minutes asks
+  Send now the same way). A message stored late keeps `meta.composedAt`, shows "written
+  12:10 PM" under it, and its line on the lead's inbound stream carries `composedAt` and
+  starts with `[Written 12:10, delivered 15:38: 3 h 28 min late. Read it as of when it was
+  written.]` (the stored text stays as typed). A page built before this sends no
+  `composedAt`; the time in its `clientId` (`p_<ms in base 36>_…`) is used instead. The
+  device's clock is trusted: one ahead of the server's counts as now, and one more than 5
+  minutes slow would need a tap on every send. Why: on 2026-11-20 two iPad messages written
+  at 12:10, during an outage, arrived at 15:38 as the page woke, with no tap, and were read
+  as new. The banner over the thread follows `/api/chat/status` and the
   stream's `status` events: online (a dot), "Jarvis is offline since HH:MM. Messages wait
   here and reach him when he's back.", "Delivered N m ago, no answer yet", or "waiting on
   you", which the open cards decide on the page between pings (offline wins over it), or

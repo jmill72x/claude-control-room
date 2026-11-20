@@ -3559,10 +3559,10 @@ notifications") is the reference.
   the lead moves to a model with its own weekly limit, that limit needs the full step
   (`ruleFor` in `server/lib/limit-warnings.mjs`).
 
-## 22. Restart Jarvis from the page, with Face ID (board 98a30b15, P0; staged 2026-11-20 on `jos/recover-jarvis`; Ultron GO, his L1, L2, L4 and Q1 in)
+## 22. Restart Jarvis from the page, with Face ID (board 98a30b15, P0; merged as main 70dd8bf and live 2026-11-20; Ultron GO, his L1, L2, L4 and Q1 in)
 
-**Staged, not committed, on `jos/recover-jarvis` (worktree `~/Projects/.worktrees/ccr-recover`,
-from main 0c568da, no upstream).** Ultron reviewed it 11-20: GO, four lows. L1, L2, L4 and
+**Merged as main 70dd8bf and live since the 2026-11-20 restart (about 20:37Z) and web
+build; built on `jos/recover-jarvis` from main 0c568da.** Ultron reviewed it 11-20: GO, four lows. L1, L2, L4 and
 his Q1 sheet wording are in, on Jarvis's decisions; L3 (a lock in jarvis-recover itself, for
 a second run beside a hung one after the 45-minute no-answer) is the jarvis repo's, its own
 board item. Ultron's M8, after the outages of 11-19 and 11-20: when
@@ -3693,3 +3693,80 @@ Jarvis from the page" is the reference; this is the state, the choices and the g
   ntfy (L1, done). His monthly sweep: `recover.enabled`, the `recover-off` file, the mode and
   count of `server/data/chat/recover.json`; re-vet `recoverProgram`, `recoverEnv`, `gate`,
   `PURPOSE` and any route added here. Open: L3, the lock in jarvis-recover (jarvis repo).
+
+## 23. Late re-sends from the chat: an old message held for a tap and marked late (board 89248590, P1; staged 2026-11-20 on `jos/stale-resend`)
+
+**Staged, not committed, on `jos/stale-resend` (worktree `~/Projects/.worktrees/ccr-stale-resend`,
+from main 70dd8bf, no upstream).** Not reviewed by Ultron yet. The README's "Late sends"
+paragraph (under the Chat tab) is the reference; this is the evidence, the choices and the
+go-live.
+
+- **What happened (2026-11-20).** Seq 1066 and 1067 came from the iPad at 20:38:49.021Z and
+  .029Z. Their clientIds (`p_<ms in base 36>_…`, made at the Send tap) decode to 17:10:52Z
+  and 17:11:00Z: written 8 s apart, at 12:10 ET, delivered 3 h 28 min later and 8 ms apart.
+  The server had restarted at 17:10:12Z and took the Mac mini's own messages from 17:13Z,
+  so the iPad's two requests never reached it then; Jeff re-sent the same terminal check
+  from the iPhone at 17:38Z (seq 1024). No earlier copy of either clientId is in the store.
+  The service log shows "Jeff's iPad turned notifications on" at 20:38:52.8Z, 3.8 s after
+  the two arrived: `resync()` runs only when the page loads (main.jsx), so the iPad page
+  reloaded right then. That fits the old page waking, its two held sends going out, the
+  reload hold (`hasUnsent`) letting go, and the build watch reloading for the 70dd8bf
+  build.
+- **Root cause.** The page never re-sends by itself: `useChat.js` sends once in `send()`
+  and again only from the Retry button; the service worker has no fetch handler and no
+  queue; nothing persists a bubble across a reload. Two sends written 8 s apart can't land
+  8 ms apart from taps. So the two `fetch` POSTs most likely sat in the iPad's network
+  layer while the page was suspended, with no timeout on the page's side, and went out
+  when it woke. **Not proven:** which WebKit or network state held them (no WebKit here,
+  and the iPad's own logs aren't readable). Either way the server stamped the arrival time
+  (`at`), the page sent no compose time, and the lead had nothing to tell the two apart
+  from new messages.
+- **The fix, and why this one.** The server is the one place that sees when a request
+  lands, so the gate lives there and works whatever held the request: the page sends
+  `composedAt` and `confirmed`; a first attempt older than 5 minutes is refused with 409
+  `stale` and not stored; the bubble asks "Send now" with the time it was written; a tap
+  sends it, marked late in its meta, on the page ("written 12:10 PM") and on the lead's
+  inbound line (a leading `[Written 12:10, delivered 15:38: … late …]` note plus a
+  `composedAt` field). The clientId dedup runs first, unchanged, so a retry of a stored
+  message still answers 200 `duplicate`. A page from before this change is covered too:
+  without `composedAt` the server reads the time in the clientId. Considered and not
+  taken: a page-side timeout or age check alone (a suspended page's timers don't run, and
+  the held request can go out before the page's code does) and a service-worker queue
+  (more moving parts, and the worker has no fetch handler on purpose).
+- **Choices to defend.** One window, 5 minutes, for both the hold and the mark. `confirmed`
+  is a boolean, not a tap time: a time would compare the device's clock with the server's
+  twice, and a slow device clock could then never send. Every Retry counts as a tap, so a
+  fresh failure retried at once goes as before. The note goes in the inbound text because
+  today's channel shows only the arrival time (`ts`); the stored text stays as typed.
+  Uploads waiting on a held message stay pending (an hour), so Send now within the hour
+  needs no new upload.
+- **Limits.** The device's clock is trusted: ahead of the server's counts as now (the old
+  behaviour); more than 5 minutes slow would hold every first send for a tap. A held Send
+  now tap can itself arrive late; it is stored, but marked late on the page and for the
+  lead. A message held more than an hour with photos fails its Send now with "an
+  attachment id is unknown" (the uploads expired), and the bubble keeps asking: Discard and
+  send again (an older gap, not this branch's).
+- **Checked (2026-11-20):** server 1,724 tests (7 new in `chat-late.test.mjs`, one of them
+  replaying the 11-20 pair: two bodies made 8 s apart landing 3 h 28 min later 8 ms apart),
+  web 374 (5 new in `orbit-chat-late.test.js`), both in local time and `TZ=Asia/Tokyo`;
+  oxlint clean on the changed files (four older warnings in `chat-routes.mjs` aren't this
+  branch's). 18 mutants over the server module, the route, the inbound line and the page
+  logic, all caught. Headless Chromium against a scratch server (port 8397, the worktree's
+  chat routes on a clock the check moves, the page built to the scratchpad): the first
+  POST held by `page.route` while the server's clock jumps 3 h 28 min, then released: 12
+  of 12 checks at 820 and 390 px (the 409 hold, nothing stored, the log line, "Written …,
+  not sent" with Send now and Discard, Send now as a tap with the same clientId and time,
+  stored once with `meta.composedAt`, "written …" under it, a later fresh send unmarked).
+  A mutant build whose Retry sends no `confirmed` failed 5 of them. **Not verified:**
+  Safari and the installed iPad app, and what WebKit really did with the two requests.
+- **Go-live (Jeff, after Ultron and C&P):** a web build and a Control Room restart. Order
+  doesn't matter much: an old page against the new server has its stale sends held and its
+  Retry refused again (no `confirmed`), so it must Discard, which also lets the build watch
+  reload it; a new page against the old server sends two extra fields the old route
+  ignores.
+- **The channel (jarvis repo, not edited here):** `messageNotification` in
+  `jarvis-local/plugins/jarvis-channel/server.mjs` builds the tag with `ts: isoOf(ev.at)`
+  only. Proposed: when `ev.composedAt` is a safe integer, add `written: isoOf(ev.composedAt)`
+  and `late: '1'` to the tag's meta, and one line in the instructions ("a tag with late="1"
+  was written at `written`, long before it arrived: read it as of then"). Then the server's
+  text note could go. Until then the note does the job.

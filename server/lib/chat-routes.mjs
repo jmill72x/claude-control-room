@@ -20,6 +20,7 @@ import { readAllowedHosts } from './host-guard.mjs';
 import { verdictOriginProblem } from './approvals.mjs';
 import { oneLine } from './chat-events.mjs';
 import { searchAnswer } from './chat-search.mjs';
+import { composedAtOf, badTime, staleSend, lateMeta, lateBy, when } from './chat-late.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -284,13 +285,24 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         const ids = body.attachmentIds === undefined || body.attachmentIds === null ? [] : body.attachmentIds;
         if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS || !ids.every(isAttachmentId)) throw new HttpError(400, `attachmentIds must be a list of at most ${MAX_ATTACHMENTS} ids`);
         if (body.text.trim() === '' && ids.length === 0) throw new HttpError(400, 'a message needs text or a file');
+        const timeProblem = badTime(body);
+        if (timeProblem) throw new HttpError(400, timeProblem);
         const attachments = [];
         for (const id of ids) {
           const up = pendingUploads.get(id);
           if (!up || up.deviceId !== device.id) throw new HttpError(400, 'an attachment id is unknown or belongs to another device');
           attachments.push(up.attachment);
         }
-        const m = await store.append({ from: 'jeff', kind: 'chat', text: body.text, replyTo: body.replyTo ?? null, device: device.name, clientId: body.clientId, attachments, state: 'queued' });
+        // A first attempt that took too long to get here waits for the owner's tap
+        // (lib/chat-late.mjs); its uploads stay pending for the Send now. The dedup
+        // above comes first, so a retry of a message already stored still answers 200.
+        const at = now();
+        const composedAt = composedAtOf(body, at);
+        if (staleSend({ composedAt, confirmed: body.confirmed === true }, at)) {
+          log(`chat: a message from ${device.name} written ${lateBy(at - composedAt)} ago was held for a tap, not stored`);
+          return json(res, 409, { error: `this message was written at ${when(composedAt, at)} and reached the server only now, so it was not sent; send it again if it still holds`, stale: true, composedAt });
+        }
+        const m = await store.append({ from: 'jeff', kind: 'chat', text: body.text, replyTo: body.replyTo ?? null, device: device.name, clientId: body.clientId, attachments, state: 'queued', meta: lateMeta(composedAt, at) });
         for (const id of ids) pendingUploads.delete(id);
         return json(res, 200, { id: m.id, seq: m.seq });
       }

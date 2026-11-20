@@ -17,7 +17,7 @@ import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, spacesMark, spacesLabel, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
-  isPhotoType, fileWord, viaWords, routineWord, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
+  isPhotoType, fileWord, viaWords, routineWord, unsentWords, writtenWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
 } from '../lib/orbit/chat.js';
 import { RunbookLink } from './Runbook.jsx';
 import { RecoverButton, RecoverMenuItem } from './Recover.jsx';
@@ -377,6 +377,10 @@ function Row({ m, list, lead, chat, onReply, onView, speaking, speechLoading, ca
   const tick = tickFor(m, list);
   const quote = m.replyTo ? quoted(list, m.replyTo) : null;
   const pending = !Number.isInteger(m.seq);
+  // A failed send's words: an old one says when it was written and asks for Send now;
+  // a message that arrived late says when it was written (lib/orbit/chat.js).
+  const unsent = m.failed ? unsentWords(m) : null;
+  const written = writtenWords(m);
   return (
     <li data-mid={pending ? undefined : mid} className={`o-chat-row ${mine ? 'o-chat-mine' : 'o-chat-theirs'}${m.failed ? ' o-chat-failed' : ''}${pending ? ' o-chat-pending' : ''}${foundClass}`}>
       {!mine && <span className="o-chat-avatar"><Avatar agent={lead} fallback="J" size={28} tone="day" /></span>}
@@ -398,14 +402,15 @@ function Row({ m, list, lead, chat, onReply, onView, speaking, speechLoading, ca
           {!mine && !pending && m.kind === 'chat' && m.text && <SpeakButton m={m} speaking={speaking} loading={speechLoading} canSpeak={canSpeak} />}
           <time className="o-mono" dateTime={new Date(m.at).toISOString()}>{clock(m.at)}</time>
           {m.editedAt && <span className="o-chat-edited">edited</span>}
+          {written && <span className="o-chat-via o-chat-written">{written}</span>}
           {mine && viaWords(m) && <span className="o-chat-via">via {viaWords(m)}</span>}
           {routineWord(m) && <span className="o-chat-via o-chat-routine">{routineWord(m)}</span>}
           {tick && <span className={`o-chat-tick o-chat-tick-${tick}`} role="img" aria-label={TICK_WORDS[tick]}>{TICK_MARKS[tick]}</span>}
         </div>
-        {m.failed && (
+        {unsent && (
           <div className="o-chat-retry" role="alert">
-            <span>Not sent{m.error ? `: ${m.error}` : ''}</span>
-            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.retry(m.clientId)}>Retry</button>
+            <span>{unsent.line}</span>
+            <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.retry(m.clientId)}>{unsent.action}</button>
             <button type="button" className="o-cbtn o-cbtn-small" onClick={() => chat.discard(m.clientId)}>Discard</button>
           </div>
         )}
