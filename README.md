@@ -1049,6 +1049,117 @@ pipe's status is curl's alone, so a jq failure was never seen either way. A post
 fails (no server, or jq's empty output, which the server answers with a 400) records
 nothing; it leaves no trace in the session, only a missing line in the service log.
 
+### Restart Jarvis from the page (board 98a30b15; built, off by default)
+
+When the lead is down, the page offers **Restart Jarvis**: one tap, Face ID, and this
+server runs the run sheet's one line, the lead's recovery script, and shows how it ended
+(`server/lib/jarvis-recover.mjs`, `web/src/orbit/Recover.jsx`,
+`web/src/lib/orbit/recover.js`; tested by `server/test/jarvis-recover.test.mjs` and
+`web/test/orbit-recover.test.js`). Off unless config has `"recover": { "enabled": true }`
+(see Configuration); the file `~/.local/state/jarvis-os/recover-off` turns it off with no
+restart. Only with the chat on (its routes, devices and passkeys).
+
+```
+cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
+```
+
+- **What runs, exactly.** `/bin/bash ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover`,
+  from `~/Projects` (`recoverProgram`). Nothing in a request names what runs, where or with
+  what: the body of the restart is only the Face ID answer, and a test sends extra fields
+  to show they are ignored. The script fixes what has stopped the lead before (the stop
+  flag, folder trust, the channel plugin, the Discord plugin), restarts him with its
+  `jarvis-start --restart`, and ends with one line: `OK: ...`, `OK, degraded: ...` or
+  `NOT OK: ...`. That last line is the result.
+- **No terminal.** Its stdin is `/dev/null`, so the script's Keychain step (`[ -t 0 ]`)
+  never asks for a password: when the login Keychain can't be reached it ends at once with
+  `NOT OK: this shell can't reach the login Keychain. Run: security unlock-keychain ...`.
+  The server is a LaunchAgent in the owner's login session, where the Keychain is
+  reachable, as it is for the lead's own watch job's starts.
+- **Its own process group, output to a file.** It is spawned detached and writes to
+  `server/data/chat/recover/run-<start>-<id>.out` (0600, the newest 5 kept), never to a
+  pipe: a restart of this server (launchd ends the job's process group) does not end a
+  recovery half way, and a pipe whose reader went away would end the script on its next
+  line. After a restart the server finds a run still going in its ledger and watches its
+  pid to the end (every 5 s), then reads its last line.
+- **A built environment, not the server's.** `HOME`, the restart job's `PATH`
+  (`~/.local/bin:~/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `LANG`,
+  `xcrun_nocache=1` (the watch job's), and `USER`, `LOGNAME`, `SHELL`, `TMPDIR` from the
+  server's own. Nothing else: no `XPC_SERVICE_NAME` or `TMUX`, so a tmux server the script
+  starts doesn't hand the Control Room's environment to the lead's session.
+- **The routes** (served by the chat's router):
+  - `GET /api/recover/status`: `{ on, passkey, pending, pendingUntil, running, last,
+    blocked, nextAt, command, jarvis }`. `running` and `last` are runs as the page sees them
+    (`id`, `by`, `startedAt`, `finishedAt`, `verdict` `starting`/`running`/`ok`/`degraded`/
+    `not-ok`/`unknown`, `line`, `exit`), never the pid or the file. `jarvis` is `{ health,
+    stopped }`: what the health strip says of the lead's session now (`up`, `down` or
+    `unknown`; `leadHealth`, the roster's lead as on the page, and `unknown` when the panel
+    isn't current) and whether the stop flag `~/.local/state/jarvis/jarvis-stopped` is there.
+  - `POST /api/recover/challenge`: a Face ID challenge for the purpose `recover:jarvis`.
+  - `POST /api/recover`: the Face ID answer; 202 `{ ok, run, note }`, and the script starts.
+  Every route: no `Authorization` header (a Shortcut key never restarts anything), a
+  paired device by its cookie and the owner's login header, an approver device; the two
+  POSTs also the write guard (same origin, JSON) and the page's own https `Origin` (the
+  approvals rule). The passkey is the Stop's (`lib/stepup.mjs`): set up once per device,
+  confirmed at the machine with `bin/chat-pair passkey <CODE>`. A challenge is for one
+  device and one purpose, so a Stop's Face ID answer never starts a restart.
+- **Whether or not he looks down** (Ultron's Q1, 2026-11-20). A restart runs whatever the
+  health strip says: a wrong "up" must not block the one way back, and Face ID plus the caps
+  make each run deliberate. The sheet says so before Face ID: "Jarvis looks up; this ends
+  his current turn" when health says up, and "Jarvis was stopped on purpose; this restart
+  clears that" when the stop flag is there (jarvis-recover's step 4 removes it). The ask's
+  event and log line record both, and the ledger keeps them with the run.
+- **Limits,** checked before Face ID is asked and again after it: one run at a time (409);
+  at most **3** started in any hour and **8** in any day (429, with `nextAt`), counted from
+  the ledger, so a restart of the server keeps them; off (403) or the kill file (503). A run
+  with no end after **45 minutes** is shown as "No answer" and a new one may start; the
+  script is never killed (jarvis-start's own lock keeps two restarts from overlapping), and
+  a late end still replaces the line. The script not there is a 503 and a `NOT OK` run. A
+  run the ledger still has as `starting` when the server starts (it stopped between writing
+  the run down and recording the pid, so the script may have run, unwatched) is closed the
+  same way, as no answer: "The Control Room restarted while starting jarvis-recover; it may
+  have run; see ~/Library/Logs/jarvis-recover.log" (Ultron's L2).
+- **Logged and alerted.** The ledger `server/data/chat/recover.json` (0600, the last 20
+  runs: who, when, pid, exit, verdict, line) gets each run **before** the script starts.
+  The service log says `recover: iPhone asked for a Jarvis restart (Face ID passed; health
+  said down); run <id> started jarvis-recover (pid N)` and `recover: run <id> ended (exit
+  0): OK: ...`; the chat's events `recover-asked` and `recover-done` go to `#pepper` like a
+  Stop (ntfy gets its generic words). A refusal that is more than a slip, `recover-refused`
+  (a Shortcut key from the owner's login, a paired device that is not an approver, or a
+  Face ID answer that fails on a POST), is alerted the same way, at most once per 10 minutes
+  with the rest counted (`lib/chat-alert-limit.mjs`, like `heal-tap-refused`; Ultron's
+  L4): a burst of them is how a stolen device cookie would show. The status read is never
+  alerted, since every page reads it. The line shown, logged and alerted is one line (hidden characters
+  marked), at most 300 characters, and withheld by the pattern's name if it looks like a
+  credential (`lib/secret-shape.mjs`).
+- **On the page.** A card under the alert strip, on every tab, in three states: **Jarvis is
+  down** (from the strip's own alert: the lead's session five minutes down, or a local
+  `jarvis-down` alert; `leadDownAlert`), with Restart Jarvis, Bring Jarvis Back, and the
+  line to paste with a Copy button; **Restarting Jarvis…** (who asked, when; read every 3 s);
+  and **Jarvis restart: OK / NOT OK** with the script's last line, for 30 minutes or until
+  Done. After a NOT OK, or down again 5 minutes after an OK, the button is back (right after
+  an OK the alert can outlive him being back by a health poll or two). The Chat banner's
+  offline and stuck states get a Restart Jarvis button beside Bring Jarvis Back, and the
+  Chat ⋮ menu a "Restart Jarvis…" item, always, for a Jarvis stuck in a way nothing on the
+  page has noticed. All three open one sheet, held by the app so it outlives the alert:
+  the confirm ("A turn he is in ends"), Face ID, then the run and its end. A device that
+  isn't an approver sees the card and the line, with no button.
+- **The line in every Jarvis-down alert** (`server/lib/recover-command.mjs`, one place on
+  the server; `RECOVER_COMMAND` in `web/src/lib/orbit/recover.js` on the page, and a test
+  keeps the two equal): the chat's "Jarvis is offline" push, a local `jarvis-down` alert's
+  push (after its body, never cut: `alertPayload`'s `tail`), the notifier's alert for the
+  lead's session five minutes down (its own message, "Jarvis is not running (down for 5
+  minutes).", to `#pepper`, no longer one of the counted services), and the Needs you cards
+  for both. Each says: "To bring him back: Restart Jarvis in the Control Room (Face ID), or
+  paste in a terminal on the mini, outside the jarvis tmux session: cd ~/Projects &&
+  ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover".
+- **Never a command in ntfy** (Ultron's L1, 2026-11-20). Anyone who knows the ntfy topic can
+  publish to it, so a forged "Jarvis is down, paste this" would look exactly like the real
+  one. The lead-down alert's ntfy copy (`ntfyMessage`, sent by `entryAlert` in `notify.mjs`)
+  names the ways back with no command: "To bring him back: Restart Jarvis in the Control
+  Room (Face ID), or paste the line from the run sheet (Bring Jarvis Back) in a terminal on
+  the mini." (`RECOVER_NTFY_LINE`). Web Push (signed with this server's own key), `#pepper`
+  and the page carry the command.
+
 ### The chat with the lead agent (Jarvis OS, built, not live)
 
 The chat (`~/Projects/jarvis/docs/jarvis-os-chat-spec.md`, its C2 part) is on only when
@@ -3231,6 +3342,7 @@ and that must not reach every device on the tailnet.
 | `chat.speech` | object, optional | Turns on read aloud in the Mac's own voice (see "Read aloud in the Mac's own voice"): `GET /api/chat/speech/<message id>`, rendered here by `/usr/bin/say`. `chat.speech.voice` is the voice's name as `say -v ?` lists it (default `"Evan (Enhanced)"`); `chat.speech.fallback` an optional stand-in while that one is not installed. Only with the chat on. Absent, `null` or `false` is off; anything else that isn't such an object, or a name with characters no voice has, is a `config:` line, and off. Off at a start, the audio cached by an earlier run (`~/.local/state/jarvis-os/speech-cache/`) is removed. The file `~/.local/state/jarvis-os/speech-off` turns it off without a restart (the cache then stays, and ages out). |
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `proactive` | object, optional | The proactive check (see "The proactive check"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. `"idle": { "enabled": true, "quietHours": true }` turns the idle wake-up on (off without it); `quietHours: false` lets it go from 22:00 to 07:00 too. The rules' numbers are constants, not config. |
+| `recover` | object, optional | Restart Jarvis from the page (see "Restart Jarvis from the page"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. Only with the chat on. What runs is fixed in code, never config. The file `~/.local/state/jarvis-os/recover-off` turns it off without a restart. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |

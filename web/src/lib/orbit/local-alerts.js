@@ -5,6 +5,7 @@
 // what kind it is and whose text is the body. Plain text throughout: React escapes it.
 // Checked by web/test/orbit-local-alerts.test.js.
 import { clock } from './page.js';
+import { RECOVER_WHAT } from './recover.js';
 
 export const isLocalAlert = alert => alert?.kind === 'local';
 
@@ -17,10 +18,12 @@ export function localChip(alert) {
 }
 
 // What the card says to do: the script's own body, then how to put it away.
+// A "jarvis-down" one also says how to bring him back (recover.js, RECOVER_WHAT).
 export function localWhat(alert) {
   const body = typeof alert?.body === 'string' ? alert.body.trim() : '';
   const away = 'Once it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.';
-  return body ? `${body}\n\n${away}` : away;
+  const back = alert?.about === 'jarvis-down' ? `${RECOVER_WHAT}\n\n` : '';
+  return body ? `${body}\n\n${back}${away}` : `${back}${away}`;
 }
 
 // The card's meta line: who raised it and when.

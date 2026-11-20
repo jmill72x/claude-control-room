@@ -17,6 +17,7 @@ import {
 } from '../lib/local-alerts.mjs';
 import { createIngestHandler, createHandler, INGEST_ROUTES } from '../routes.mjs';
 import { listenIngestSocket } from '../lib/ingest-socket.mjs';
+import { RECOVER_LINE } from '../lib/recover-command.mjs';
 import { PROXY_HEADERS } from '../lib/local-caller.mjs';
 import { createCache } from '../cache.mjs';
 import { createNeedsYouStore } from '../lib/needs-you.mjs';
@@ -163,7 +164,8 @@ test('a taken alert is pushed once with its title, body and severity, and shown 
   const e = store({ push: 'record' });
   const r = await e.s.post(value());
   assert.deepEqual(r, { status: 200, body: { ok: true, id: ID, key: KEY, push: 'on', devices: { tried: 2, reached: 2 } } });
-  assert.deepEqual(e.pushed, [{ title: 'Jarvis failed to start', body: 'MARKER the bot token is missing', severity: 'critical' }]);
+  // A "jarvis-down" alert's push carries the way back as its tail (board 98a30b15).
+  assert.deepEqual(e.pushed, [{ title: 'Jarvis failed to start', body: 'MARKER the bot token is missing', severity: 'critical', tail: RECOVER_LINE }]);
   e.c.t += MIN;
   await e.s.post(other({ title: 'Routine failed', severity: 'info' }));
   const view = e.s.view(e.c.t);
@@ -700,7 +702,7 @@ test('end to end over the socket: the store asks for the push service on each po
     live = a => p.svc.localAlert(a);
     const r = JSON.parse((await send(path, { title: 'Jarvis started degraded', body: 'The Discord plugin did not load.', kind: 'jarvis-down' })).text);
     assert.deepEqual(r.devices, { tried: 1, reached: 1 });
-    assert.deepEqual(p.opened(0)[0].notification, { title: 'Local alert: Jarvis started degraded', body: 'The Discord plugin did not load.', navigate: 'https://mini.example.ts.net/#overview' });
+    assert.deepEqual(p.opened(0)[0].notification, { title: 'Local alert: Jarvis started degraded', body: `The Discord plugin did not load.\n\n${RECOVER_LINE}`, navigate: 'https://mini.example.ts.net/#overview' });
   } finally {
     p.svc.stop();
     await new Promise(r => server.close(r));

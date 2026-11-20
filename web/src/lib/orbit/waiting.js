@@ -9,6 +9,7 @@ import { clock, ago, unavailable } from './page.js';
 import { canAck } from './acks.js';
 import { healCards } from './loops.js';
 import { isLocalAlert, localChip, localWhat, localMeta } from './local-alerts.js';
+import { RECOVER_WHAT } from './recover.js';
 
 export const WAIT_SHOWN = 9;
 export const DUE_SOON_DAYS = 7;
@@ -152,13 +153,17 @@ function alertCard(alert, acked = false) {
       alert: canAck(alert) ? alert : null
     };
   }
+  // The lead's session down (a `session` service's alert; runbook.js says the same
+  // without the health list): how to bring him back first, kept in its lines.
+  const leadDown = alert.kind === 'service' && typeof alert.key === 'string' && alert.key.startsWith('service:session:');
   return {
     key: `alert:${alert.key}`,
     group: 'alerts',
     look: acked ? 'decide' : 'alert',
     chip: acked ? 'Acked' : ALERT_CHIPS[alert.kind] ?? 'Alert',
     title: alert.text,
-    what: alertWhat(alert),
+    what: leadDown ? `${RECOVER_WHAT}\n\n${alertWhat(alert)}` : alertWhat(alert),
+    ...(leadDown ? { preLine: true } : {}),
     why: null,
     owner: null,
     fallback: '!',

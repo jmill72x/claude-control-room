@@ -122,7 +122,7 @@ export function notificationOrigin(raw, allowedHosts) {
 // status answer carries it, so the page asks for the keys only when there are any.
 // `speech` is read aloud in the Mac's own voice (lib/chat-speech.mjs), or null while it
 // is off: its route, and the voice it reads in, which every status carries.
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null, speech = null }) {
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null, speech = null, recover = null }) {
   // Every log line here names a device, and a name read back from devices.json was
   // never cleaned, so each line is made one line (lib/chat-events.mjs).
   const log = line => logLine(oneLine(line));
@@ -203,6 +203,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     try {
       // ---- stops and their Face ID (lib/agent-stop.mjs) ----
       if (agentStop?.owns(path)) return await agentStop.handle(req, res, path, { requireDevice, notifyHosts });
+      // ---- Restart Jarvis with Face ID (lib/jarvis-recover.mjs): the stop's device and Origin rules ----
+      if (recover?.owns(path)) return await recover.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
       // ---- taps on a heal card (lib/heal-routes.mjs): the same device and Origin rules ----
       if (healTaps?.owns(path)) return await healTaps.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
       // ---- read aloud in the Mac's own voice (lib/chat-speech.mjs): a paired device ----
@@ -461,7 +463,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   }
 
   // Which paths this router owns.
-  const owns = path => agentStop?.owns(path) === true || healTaps?.owns(path) === true || path.startsWith('/api/chat/') || path.startsWith('/api/pair/') || path.startsWith('/api/push/') || path === '/api/devices' || path.startsWith('/api/devices/');
+  const owns = path => agentStop?.owns(path) === true || healTaps?.owns(path) === true || recover?.owns(path) === true || path.startsWith('/api/chat/') || path.startsWith('/api/pair/') || path.startsWith('/api/push/') || path === '/api/devices' || path.startsWith('/api/devices/');
   // How many devices hold a stream open now (the push rule later: none in 10 s means push).
   const streaming = () => new Set([...streams].map(s => s.deviceId));
 

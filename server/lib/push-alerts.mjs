@@ -1,3 +1,4 @@
+import { RECOVER_LINE, RECOVER_NTFY_LINE } from './recover-command.mjs';
 import { KIND as LIMIT_STEP, ruleFor, keyParts, resetLabels, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
 
 // What may leave this machine, and what may not.
@@ -22,6 +23,9 @@ const COUNT_WORDS = {
   service: n => `${n} service${n === 1 ? ' is' : 's are'} down`,
   'needs-you': n => `${n} session${n === 1 ? ' is' : 's are'} waiting on you`
 };
+// The lead's session (a `session` service: lib/health.mjs) down for five minutes.
+export const LEAD_DOWN_WORDS = 'Jarvis is not running (down for 5 minutes).';
+const isLeadDown = a => a.kind === 'service' && a.key.startsWith('service:session:');
 const anyOther = n => `${n} item${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} attention`;
 
 export function pushableFrom(alerts) {
@@ -44,8 +48,18 @@ export function pushableFrom(alerts) {
     out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, devices: true, ...(a.feed === 'jarvis' ? { feed: 'jarvis' } : {}) });
   }
 
+  // The lead's session down for five minutes (lib/alerts.mjs: kind `service`, key
+  // `service:session:<name>`): a message of its own in fixed words, with the line that
+  // brings him back (lib/recover-command.mjs; board 98a30b15), not one of the counted
+  // services. Its name is config's, so it is not quoted, as for every service. ntfy gets
+  // `ntfyMessage` (notify.mjs, sendAlert), the ways back with no command in it: anyone
+  // who knows the topic can publish to it (Ultron's L1, 11-20). #pepper gets the command.
+  for (const a of keyed.filter(isLeadDown)) {
+    out.push({ keys: [a.key], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyMessage: `${LEAD_DOWN_WORDS} ${RECOVER_NTFY_LINE}` });
+  }
+
   const groups = new Map();
-  for (const a of keyed.filter(a => !DISCLOSED_KINDS.has(a.kind) && a.kind !== LIMIT_STEP)) {
+  for (const a of keyed.filter(a => !DISCLOSED_KINDS.has(a.kind) && a.kind !== LIMIT_STEP && !isLeadDown(a))) {
     const group = Object.hasOwn(COUNT_WORDS, a.kind) ? a.kind : 'other';
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(a.key);

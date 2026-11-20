@@ -12,7 +12,8 @@
 //   way, tried again every 15 s while a request is open, so a request left open
 //   is announced as soon as the queue has room.
 // - "Jarvis is offline": once, after 5 minutes without the channel's heartbeat;
-//   once more only after it has come back.
+//   once more only after it has come back. With the line that brings him back (the
+//   page's Restart Jarvis, or the run sheet's command): fixed words too.
 //
 // - A limit warning (lib/limit-warnings.mjs; the notifier calls limitWarning): a line
 //   such as "Claude session at 80%, resets 5:30 pm", to every device at once, urgent,
@@ -38,6 +39,7 @@
 import { sendPush, vapidKeys } from './webpush.mjs';
 import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
 import { isLimitPush } from './limit-warnings.mjs';
+import { RECOVER_LINE } from './recover-command.mjs';
 
 export const CHAT_QUIET_MS = 10e3;
 export const CHAT_REPEAT_MS = 60e3;
@@ -46,7 +48,9 @@ export const SEND_CONCURRENCY = 4;
 export const SEND_QUEUE_MAX = 16;
 export const OFFLINE_AFTER_MS = 5 * 60e3;
 export const OFFLINE_CHECK_MS = 30e3;
-export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: 'Jarvis is offline' });
+// "Jarvis is offline" carries the one line that brings him back (lib/recover-command.mjs;
+// board 98a30b15): every Jarvis-down push does.
+export const BODIES = Object.freeze({ chat: 'New message', approval: 'Jarvis needs an approval', offline: `Jarvis is offline. ${RECOVER_LINE}` });
 // A local alert: how long the push service keeps it for a device that is away, the
 // most its JSON may take (one record is 4,096 bytes less the tag and the delimiter),
 // and the words for an empty title or body.
@@ -106,10 +110,13 @@ export async function loadVapid({ config, read = readVapidKey } = {}) {
 
 // A local alert's message: its title and body, the body cut (by code points, with an
 // ellipsis) until the JSON fits ALERT_PAYLOAD_MAX bytes. No badge: it counts chat messages.
+// `tail` (the server's own fixed words, such as a "jarvis-down" alert's way back) goes
+// after the body on a paragraph of its own and is never cut: the body is cut first.
 export function alertPayload(site, alert) {
   const title = typeof alert?.title === 'string' && alert.title !== '' ? `${ALERT_TITLE_PREFIX}${alert.title}` : ALERT_FALLBACK_TITLE;
   const text = typeof alert?.body === 'string' && alert.body !== '' ? alert.body : ALERT_FALLBACK_BODY;
-  const make = body => ({ web_push: 8030, notification: { title, body, navigate: `${site}/#overview` } });
+  const tail = typeof alert?.tail === 'string' && alert.tail !== '' ? `\n\n${alert.tail}` : '';
+  const make = body => ({ web_push: 8030, notification: { title, body: body + tail, navigate: `${site}/#overview` } });
   const chars = [...text];
   let n = chars.length;
   let payload = make(text);

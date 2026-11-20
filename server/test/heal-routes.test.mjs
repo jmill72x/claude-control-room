@@ -192,7 +192,7 @@ test('server.mjs: loop 2 shares the ledger and the switch, runs the catalog prog
     [/addAck: \(ack, now\) => ackStore\.add\(ack, now\),/, 'the real ack store'],
     [/await missed\.pass\(out\);/, 'each crons pass'],
     [/const healTaps = createHealTaps\(\{ loops: \{ missed, restart: restartLoop \}, onEvent: chatEvents, log: line => console\.log\(oneLine\(line\)\) \}\);/, 'taps report through the chat events, one line each'],
-    [/createChatRoutes\(\{[^}]*healTaps \}\);/, 'behind the chat router']
+    [/createChatRoutes\(\{[^}]*healTaps[, a-zA-Z]* \}\);/, 'behind the chat router']
   ];
   for (const [re, what] of wired) assert.ok(re.test(src), what);
   assert.ok(!/kickstart|execFile|spawn\(/.test(src), 'no launchctl write or program of its own in server.mjs');

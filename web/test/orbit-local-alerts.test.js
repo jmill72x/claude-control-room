@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { isLocalAlert, localChip, localWhat, localMeta, stripText } from '../src/lib/orbit/local-alerts.js';
+import { RECOVER_WHAT } from '../src/lib/orbit/recover.js';
 import { alertCards, waitingCards } from '../src/lib/orbit/waiting.js';
 import { isLeadDownAlert } from '../src/lib/orbit/runbook.js';
 import { canAck, untilChoices, ackBody } from '../src/lib/orbit/acks.js';
@@ -38,9 +39,12 @@ test('the card\'s chip says Jarvis down for the lead\'s start script, else the s
 });
 
 test('the card\'s text is the body, then how to put it away; an empty body leaves the second part', () => {
-  assert.equal(localWhat(local()), 'The bot token is missing.\nSee the start log.\n\nOnce it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
-  assert.equal(localWhat(local({ body: '  ' })), 'Once it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
-  assert.equal(localWhat(local({ body: undefined })), 'Once it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
+  // A "jarvis-down" alert says how to bring him back between the two (board 98a30b15).
+  assert.equal(localWhat(local()), `The bot token is missing.\nSee the start log.\n\n${RECOVER_WHAT}\n\nOnce it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.`);
+  assert.equal(localWhat(local({ body: '  ' })), `${RECOVER_WHAT}\n\nOnce it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.`);
+  assert.equal(localWhat(local({ about: 'other' })), 'The bot token is missing.\nSee the start log.\n\nOnce it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
+  assert.equal(localWhat(local({ about: 'other', body: '  ' })), 'Once it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
+  assert.equal(localWhat(local({ about: 'other', body: undefined })), 'Once it is handled, acknowledge it; it leaves on its own 24 hours after it was raised.');
   assert.equal(localMeta(local()), 'a local script · raised 2:05 PM');
 });
 

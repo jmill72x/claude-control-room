@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
 import { makeChatEnv, openStream } from './helpers/chat-env.mjs';
+import { RECOVER_LINE } from '../lib/recover-command.mjs';
 import { createPushService, readPushConfig, payloadFor, BODIES, LIMIT_FALLBACK, CHAT_QUIET_MS, CHAT_REPEAT_MS, OFFLINE_AFTER_MS, APPROVAL_REPEAT_MS, SEND_CONCURRENCY, SEND_QUEUE_MAX } from '../lib/chat-push.mjs';
 import { notificationOrigin } from '../lib/chat-routes.mjs';
 import { vapidKeys, newVapidKeys, decrypt, verifyVapidJwt, b64u } from '../lib/webpush.mjs';
@@ -80,7 +81,9 @@ test('the payload is declarative Web Push with one of three generic bodies and a
     assert.equal(payloadFor('chat', good).notification.navigate, `${good}/#chat`, good);
   }
   assert.equal(payloadFor('approval', ORIGIN).notification.body, 'Jarvis needs an approval');
-  assert.equal(payloadFor('offline', ORIGIN).notification.body, 'Jarvis is offline');
+  assert.equal(payloadFor('offline', ORIGIN).notification.body, `Jarvis is offline. ${RECOVER_LINE}`);
+  // The offline push carries the run sheet's one line (board 98a30b15), word for word.
+  assert.ok(payloadFor('offline', ORIGIN).notification.body.endsWith(': cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover'));
 });
 
 test('where a tap goes: only an https origin whose host is in allowedHosts is kept, normalised; anything else is null', () => {
@@ -470,7 +473,7 @@ test('offline: one push after 5 minutes without a heartbeat, none before, none a
     t.svc.checkOffline();
     await t.svc.idle();
     const [p] = t.opened(phone);
-    assert.equal(p.notification.body, 'Jarvis is offline');
+    assert.equal(p.notification.body, `Jarvis is offline. ${RECOVER_LINE}`);
     assert.equal(p.headers.Urgency, 'normal');
     t.env.clock.t += 30 * MIN;
     t.svc.checkOffline();

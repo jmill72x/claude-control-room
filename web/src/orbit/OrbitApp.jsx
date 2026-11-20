@@ -9,6 +9,8 @@ import { HealthChips, HealthDetail } from './Health.jsx';
 import { NowChip, NowDetail } from './Now.jsx';
 import { nowFromPayload } from '../lib/orbit/now.js';
 import { AlertStrip } from './Acks.jsx';
+import { RecoverProvider, RecoverCard } from './Recover.jsx';
+import { leadDownAlert } from '../lib/orbit/recover.js';
 import { unack } from './ackApi.js';
 import { BoardBand, BoardTab } from './Board.jsx';
 import { useBoardFilters } from './useBoardFilters.js';
@@ -111,6 +113,9 @@ export function OrbitApp() {
   // The badge's count is in the link's name too ("Chat, 3 unread messages").
   const showBadge = !isChat && unseen.count > 0;
   const alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
+  // The lead down (the strip's alert for it), for Restart Jarvis (Recover.jsx).
+  const services = payload?.health?.data?.services ?? null;
+  const down = leadDownAlert(alerts, services, lead?.name ?? null);
   // The Now chip (Now.jsx), rebuilt each tick: its ages move by the second.
   const nowChip = isOverview ? nowFromPayload({ payload, roster, now }) : null;
   // Heads up on the Overview (the proactive check): read while the Overview shows.
@@ -127,6 +132,7 @@ export function OrbitApp() {
   const focusWhy = route.item !== null && route.item === focusFrom?.id ? focusFrom.why : 'link';
 
   return (
+    <RecoverProvider down={down}>
     <div className={`o-page${isChat ? ' o-page-chat' : ''}${isFeed ? ' o-page-feed' : ''}${navIsStuck ? ' o-page-stuck' : ''}`}>
       <header className={`o-band${isBoard ? ' o-band-board' : ''}`}>
         <div className="o-wrap o-band-inner">
@@ -168,7 +174,8 @@ export function OrbitApp() {
         </div>
       </header>
 
-      <AlertStrip alerts={alerts} now={now} onChanged={refresh} services={payload?.health?.data?.services} leadName={lead?.name ?? null} />
+      <AlertStrip alerts={alerts} now={now} onChanged={refresh} services={services} leadName={lead?.name ?? null} />
+      <RecoverCard now={now} />
 
       {isChat && <ChatTab chat={chat} now={now} lead={lead} />}
       {isFeed && <FeedTab feed={feed} now={now} roster={roster} filter={feedFilter} setFilter={setFeedFilter} />}
@@ -178,5 +185,6 @@ export function OrbitApp() {
             onOpenItem={id => openItem(id, 'waiting')} onChanged={refresh} agentsTab={agentsTab} setAgentsTab={setAgentsTab}
             headsUp={headsUp} onOpenLinked={id => openItem(id, 'link')} />}
     </div>
+    </RecoverProvider>
   );
 }

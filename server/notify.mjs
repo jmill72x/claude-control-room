@@ -136,6 +136,12 @@ export async function sendAlert({ topic, title, message, ntfyMessage = null, pri
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
 }
 
+// The notifier's alert for one entry of lib/push-alerts.mjs's pushableFrom: its title,
+// its message, its ntfy words when it has its own (`ntfyMessage`: the lead-down entry's
+// carry no command, Ultron's L1) and its feed (#jarvis for a limit's full line).
+export const entryAlert = ({ topic, send = sendAlert }) => entry =>
+  send({ topic, title: entry.title, message: entry.message, ntfyMessage: typeof entry.ntfyMessage === 'string' && entry.ntfyMessage !== '' ? entry.ntfyMessage : null, feed: entry.feed });
+
 // An ack's notice (lib/acks.mjs, ackNotice: `{ message, ntfyMessage, priority }`) goes
 // out in two halves, each through its own limit (lib/ack-notice-limit.mjs): the details
 // to #pepper, titled like an alert, and the generic words to ntfy. A post that fails is

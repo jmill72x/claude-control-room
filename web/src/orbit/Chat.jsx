@@ -20,6 +20,7 @@ import {
   isPhotoType, fileWord, viaWords, routineWord, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
 } from '../lib/orbit/chat.js';
 import { RunbookLink } from './Runbook.jsx';
+import { RecoverButton, RecoverMenuItem } from './Recover.jsx';
 import { noteQueued } from '../lib/orbit/runbook.js';
 
 // The Chat tab (jarvis-os-chat-spec.md, C5): the pairing screen when this device
@@ -253,7 +254,13 @@ function Thread({ chat, now, lead, onSettings }) {
             {banner.text}
             {/* "Bring Jarvis Back" (lib/orbit/runbook.js): a button under the words when
                 the channel is gone or stuck, a quiet link after them when he is silent. */}
-            {banner.runbook === 'loud' && <RunbookLink className="o-chat-runbook o-chat-runbook-loud" />}
+            {/* Restart Jarvis first (Recover.jsx), on a device that may restart. */}
+            {banner.runbook === 'loud' && (
+              <span className="o-chat-loudrow">
+                <RecoverButton className="o-chat-runbook o-chat-runbook-loud o-chat-recover" />
+                <RunbookLink className="o-chat-runbook o-chat-runbook-loud" />
+              </span>
+            )}
             {banner.runbook === 'quiet' && <> · Silent too long? <RunbookLink className="o-chat-runbook" /></>}
           </span>
           {chat.stream !== 'open' && <span className="o-chat-banner-sub">reconnecting…</span>}
@@ -296,7 +303,7 @@ function Thread({ chat, now, lead, onSettings }) {
   );
 }
 
-// The ⋮ menu: two items. Arrow keys move between them, Escape or a tap outside closes
+// The ⋮ menu: its items (Restart Jarvis only on a device that may restart). Arrow keys move between them, Escape or a tap outside closes
 // it and gives the focus back to the button.
 function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
   const ref = useRef(null);
@@ -320,6 +327,7 @@ function ChatMenu({ anchorRef, onSearch, onSettings, onClose }) {
     <div ref={ref} className="o-chat-menu" role="menu" aria-label="Chat menu">
       <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSearch}>Search messages</button>
       <button type="button" role="menuitem" className="o-chat-menuitem" onClick={onSettings}>Chat settings</button>
+      <RecoverMenuItem onClose={onClose} />
       <RunbookLink className="o-chat-menuitem o-chat-menulink" role="menuitem" onClick={onClose} />
     </div>
   );

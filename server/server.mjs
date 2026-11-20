@@ -30,7 +30,7 @@ import { vetPrograms } from './lib/program-check.mjs';
 import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier, entrySender } from './collectors/notifier.mjs';
 import { createSentStore } from './lib/sent-store.mjs';
-import { getTopic, sendAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
+import { getTopic, sendAlert, entryAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
 import { createChatEventHandler, NTFY_WORDS, oneLine } from './lib/chat-events.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
 import { createAckNotices } from './lib/ack-notice-limit.mjs';
@@ -71,6 +71,7 @@ import { buildAgentWork } from './lib/agent-work.mjs';
 import { buildLiveAgents } from './lib/live-agents.mjs';
 import { createStepUp, deviceEvent } from './lib/stepup.mjs';
 import { createAgentStop } from './lib/agent-stop.mjs';
+import { createRecover, readRecoverConfig, leadHealth, KILL_FILE as RECOVER_KILL_FILE } from './lib/jarvis-recover.mjs';
 import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 import { createLocalAlerts, KILL_FILE as LOCAL_ALERTS_KILL_FILE } from './lib/local-alerts.mjs';
@@ -328,8 +329,9 @@ registry.register('notifier', async () => {
     writeSent: sentStore.write,
     acks: await ackStore.read(now),
     // A limit's full line names #jarvis as its feed (lib/limit-warnings.mjs); every
-    // other alert goes to #pepper.
-    send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message, feed: entry.feed }), devices: limitPush }),
+    // other alert goes to #pepper. An entry's own ntfy words go to ntfy (notify.mjs,
+    // entryAlert: the lead-down one carries no command there).
+    send: entrySender({ alert: entryAlert({ topic }), devices: limitPush }),
     events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys })),
     // A heal hold skips a key the events ledger has (Ultron's L4, 11-13).
     eventKnown: key => Boolean(events?.knows(key)),
@@ -586,7 +588,18 @@ if (chatSettings.on && socketsReady) {
       console.log(`speech: on, asked for ${speechSettings.voice}${existsSync(speechOffPath) ? ' (the kill file is there: the page reads in the device\'s own voice)' : ''}`);
     } catch (err) { console.error(`speech: could not be loaded or started (${err?.code ?? err?.name ?? 'error'}); read aloud on the Mac stays off`); }
   }
-  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, speech, healTaps });
+  // Restart Jarvis with Face ID (lib/jarvis-recover.mjs; board 98a30b15): off unless
+  // config's `recover.enabled` is true; the file `recover-off` beside the sockets turns
+  // it off with no restart. It runs one fixed program, the run sheet's jarvis-recover.
+  const recoverSettings = readRecoverConfig(config);
+  for (const problem of recoverSettings.problems) console.error(`config: ${problem}`);
+  const recoverOffPath = join(stateDir, RECOVER_KILL_FILE);
+  // `health`: what the health strip says of the lead now, for the sheet's words and the
+  // ask's event; a run never waits on it (Ultron's Q1). The stop flag is read by the module.
+  const recover = createRecover({ home: homedir(), dir: chatDir, stepUp, enabled: recoverSettings.on, killed: () => existsSync(recoverOffPath), onEvent: chatEvents, health: () => leadHealth(cache.get('health'), leadName) });
+  const recoverRuns = await recover.load();
+  console.log(`recover: Restart Jarvis from the page is ${recoverSettings.on ? 'on' : recoverSettings.state === 'unset' ? 'off (no recover block in config)' : 'off'}${existsSync(recoverOffPath) ? ` (the kill file ${RECOVER_KILL_FILE} is there: every restart is refused)` : ''}; ${recoverRuns} run${recoverRuns === 1 ? '' : 's'} in its ledger`);
+  chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, speech, healTaps, recover });
   const listenUnix = async (path, handler, name) => {
     const s = createServer(async (req, res) => {
       try { await handler(req, res); } catch (err) { console.error(`chat ${name} failed`, err); if (!res.headersSent) res.writeHead(500); res.end(); }

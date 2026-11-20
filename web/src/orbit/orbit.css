@@ -230,6 +230,39 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-runbook-night { color: var(--paper); }
 /* A margin, not a space: a flex link (the buttons, the menu item) drops a leading space. */
 .o-runbook-arrow { margin-left: 0.25em; }
+/* Restart Jarvis (Recover.jsx; board 98a30b15): the card under the alert strip, on every
+   tab, in the Overview's paper colours (the strip keeps its red in both themes too). */
+.o-recover { background: var(--accent-soft); color: var(--ink); border-bottom: 1px solid var(--rule-strong); }
+.o-recover-ok { background: #E3F4EA; }
+.o-recover-running { background: var(--chip-soft); }
+.o-recover-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding-top: 12px; padding-bottom: 12px; }
+.o-recover-main { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.o-recover-main p { margin: 0; }
+.o-recover-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--heading); }
+.o-recover-down .o-recover-title, .o-recover-bad .o-recover-title { color: var(--accent-ink); }
+.o-recover-line { margin: 0; font-size: 13px; color: var(--heading); overflow-wrap: anywhere; }
+.o-recover-text { font-size: 13.5px; color: var(--sub); }
+.o-recover-why { margin: 0; font-size: 13px; font-weight: 600; color: var(--accent-ink); }
+/* The sheet's notes before Face ID (Jarvis looks up; stopped on purpose): a caution, not an error. */
+.o-recover-note { font-size: 14px; font-weight: 600; color: var(--c-amber); overflow-wrap: anywhere; }
+.o-recover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.o-recover-cmd { flex: 1 1 100%; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.o-recover-where { margin: 0; font-size: 12.5px; color: var(--sub); }
+.o-recover-cmdrow { display: flex; align-items: center; gap: 8px; }
+.o-recover-code {
+  flex: 1 1 auto; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--rule-strong); background: var(--card);
+  color: var(--heading); font-size: 12.5px; overflow-wrap: anywhere; -webkit-user-select: all; user-select: all;
+}
+.o-recover-copy { flex: none; }
+/* The same pieces inside the sheet, which takes the chat's colours (dark too). */
+.o-recover-sheet .o-recover-where { color: var(--c-sub); }
+.o-recover-sheet .o-recover-code { background: transparent; border-color: var(--c-rule); color: var(--c-ink); }
+.o-recover-sheet .o-recover-copy { border-color: var(--c-rule); color: var(--c-heading); }
+.o-recover-sheet .o-recover-line { color: var(--c-ink); }
+.o-recover-result { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--c-rule); }
+.o-recover-result-label { font-size: 17px; font-weight: 700; }
+.o-recover-result-ok .o-recover-result-label { color: var(--c-ok); }
+.o-recover-result-bad .o-recover-result-label { color: var(--c-bad); }
 .o-health-runbook { margin: 0; padding-top: 4px; border-top: 1px solid rgba(248, 247, 243, 0.08); font-size: 13px; color: var(--night-sub); }
 .o-ack-save { background: #FFFFFF; border-color: #FFFFFF; color: var(--accent-ink); }
 .o-ack-form {
@@ -853,6 +886,9 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   background: var(--c-bad); color: #FFFFFF; text-decoration: none; font-size: 1.05em;
 }
 .o-chat-runbook-loud:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
+/* Restart Jarvis beside it (Recover.jsx), both on one row when they fit. */
+.o-chat-loudrow { display: flex; flex-wrap: wrap; gap: 0 10px; }
+.o-chat-recover { border: 0; font: inherit; font-size: 1.05em; font-weight: 600; cursor: pointer; }
 /* The dark theme's --c-bad is a light orange: white on it is too faint, navy reads. */
 @media (prefers-color-scheme: dark) { .o-chat-runbook-loud { color: #0B1324; } }
 

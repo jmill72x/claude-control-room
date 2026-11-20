@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runNotifier, readLimitState, LIMIT_STATE } from '../collectors/notifier.mjs';
 import { BACK_TEXT, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS, OUT_MAX_MS, REPEAT_MS } from '../lib/limit-warnings.mjs';
+import { entryAlert } from '../notify.mjs';
 
 const at = (...parts) => new Date(...parts).getTime();
 const iso = t => new Date(t).toISOString();
@@ -283,6 +284,10 @@ test('a limit kept out more than eight days is dropped with a log line and no ba
 
 test('server.mjs passes each entry\'s feed to the alert and the events\' limitReset to the notifier', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  assert.match(src, /sendAlert\(\{ topic, title: entry\.title, message: entry\.message, feed: entry\.feed \}\)/);
+  assert.match(src, /alert: entryAlert\(\{ topic \}\)/);
+  // entryAlert keeps the entry's feed (and its ntfy words: test/jarvis-recover.test.mjs, L1).
+  const seen = [];
+  await entryAlert({ topic: 't', send: async a => { seen.push(a); return { sent: true }; } })({ title: 'Control Room', message: 'm', feed: 'jarvis' });
+  assert.deepEqual(seen, [{ topic: 't', title: 'Control Room', message: 'm', ntfyMessage: null, feed: 'jarvis' }]);
   assert.match(src, /\n {4}limitReset: events && \(\(\) => events\.limitReset\(\)\)\n/);
 });

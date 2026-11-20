@@ -51,7 +51,9 @@ export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced',
   // Stops and the Face ID behind them (lib/agent-stop.mjs, lib/stepup.mjs): a stop ends work, and a passkey is what lets one through.
   'stop-asked', 'passkey-pending', 'passkey-added', 'passkey-failed',
   // A tap on a heal card (lib/heal-routes.mjs): it runs a job or silences an alert, so it is reported like a verdict.
-  'heal-tap', 'heal-tap-refused']);
+  'heal-tap', 'heal-tap-refused',
+  // Restart Jarvis with Face ID (lib/jarvis-recover.mjs): it restarts the lead, so the ask, its result and a refused one are reported.
+  'recover-asked', 'recover-done', 'recover-refused']);
 
 // What a heal tap did, in the words its buttons use.
 export const HEAL_TAP_WORDS = Object.freeze({ 'rerun-job': 'Run it now', 'ack-until-next-run': 'Ack until its next run', 'restart-control-room': 'Restart', 'not-now': 'Not now' });
@@ -106,6 +108,16 @@ export function chatEventLine(event) {
     'heal-tap-refused': event.why === 'key'
       ? 'a tap on a heal card carried a Shortcut key and was refused'
       : `a tap on a heal card from ${event.device ?? 'a device'} was refused: that device is not marked approver`,
+    // What health said of him at the ask, and whether the stop flag was there (Ultron's Q1).
+    'recover-asked': `a Jarvis restart was asked from ${event.device ?? 'a device'} (Face ID passed; ${event.health === 'up' ? 'health said Jarvis was up' : event.health === 'down' ? 'health said Jarvis was down' : 'health could not say whether Jarvis was up'}${event.stopped === true ? ', and he had been stopped on purpose' : ''}); the Control Room runs jarvis-recover`,
+    // Capped (lib/chat-alert-limit.mjs): a burst of these is how a stolen device cookie would show (L4).
+    'recover-refused': event.why === 'key'
+      ? 'a Jarvis restart carried a Shortcut key and was refused'
+      : event.why === 'not-approver'
+        ? `a Jarvis restart from ${event.device ?? 'a device'} was refused: that device is not marked approver`
+        : `a Jarvis restart from ${event.device ?? 'a device'} was refused: Face ID did not pass (${event.error ?? 'no reason given'})`,
+    // The script's own last line, already one line, cleaned and capped (lib/jarvis-recover.mjs, cleanLine).
+    'recover-done': `the Jarvis restart asked from ${event.device ?? 'a device'} ended: ${event.verdict === 'ok' || event.verdict === 'degraded' ? 'OK' : event.verdict === 'unknown' ? 'no verdict' : 'NOT OK'}. Its last line: ${event.line ?? '(none)'}`,
     'heal-tap': `a ${event.card === 'restart-due' ? 'restart' : 'missed-run'} card was answered from ${event.device ?? 'a device'}: ${HEAL_TAP_WORDS[event.action] ?? 'an action'} (${event.name ?? 'a job'})`,
     'shortcut-expired': `the Shortcut key ${event.key?.name ?? '?'} was tried and refused: it expired after ${event.days ?? 'too many'} days without use (to use it again, make a new code and run the Jarvis Setup Shortcut)`
   };

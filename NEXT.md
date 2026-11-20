@@ -3465,10 +3465,10 @@ Jarvis side (calling it from `bin/jarvis-start` and `bin/routine`) is a separate
   doesn't keep "Jarvis failed to start" until it is acked or a day passes; and the Jarvis
   side's calls (`bin/jarvis-start`, `bin/routine`), which this contract is for.
 
-## 21. Jarvis at 100%, and back under: the full line and the back line (board 1e2d7926, P0; staged 2026-11-20 on `jos/limit-full`, Ultron GO with his fixes in)
+## 21. Jarvis at 100%, and back under: the full line and the back line (board 1e2d7926, P0; merged as main 0c568da, seen 2026-11-20)
 
-**Staged, not committed, on `jos/limit-full` (worktree `~/Projects/.worktrees/ccr-limit-full`,
-from main 0efa83f, no upstream).** Ultron's 11-19 M5 on board 1e2d7926: at 100% the lead
+**Merged as main 0c568da (built on `jos/limit-full`, worktree `~/Projects/.worktrees/ccr-limit-full`,
+from main 0efa83f); whether the server restart it needs has happened was not checked from here.** Ultron's 11-19 M5 on board 1e2d7926: at 100% the lead
 goes silent until the reset, and the 95% warning was the last word anyone got. Two pieces,
 on top of §11's warnings; the README's "The full line and the back line" (under "Push
 notifications") is the reference.
@@ -3558,3 +3558,138 @@ notifications") is the reference.
   too) is his style rule to write; the event only states the fact. (c) If
   the lead moves to a model with its own weekly limit, that limit needs the full step
   (`ruleFor` in `server/lib/limit-warnings.mjs`).
+
+## 22. Restart Jarvis from the page, with Face ID (board 98a30b15, P0; staged 2026-11-20 on `jos/recover-jarvis`; Ultron GO, his L1, L2, L4 and Q1 in)
+
+**Staged, not committed, on `jos/recover-jarvis` (worktree `~/Projects/.worktrees/ccr-recover`,
+from main 0c568da, no upstream).** Ultron reviewed it 11-20: GO, four lows. L1, L2, L4 and
+his Q1 sheet wording are in, on Jarvis's decisions; L3 (a lock in jarvis-recover itself, for
+a second run beside a hung one after the 45-minute no-answer) is the jarvis repo's, its own
+board item. Ultron's M8, after the outages of 11-19 and 11-20: when
+Jarvis is down, Jeff brings him back from his phone with one tap and Face ID. Jeff only
+cares that it reliably brings Jarvis back, and wants it simple. The README's "Restart
+Jarvis from the page" is the reference; this is the state, the choices and the go-live.
+
+- **What it does.** A card under the alert strip, on every tab, when the strip says the
+  lead is down (his session five minutes gone, or a local `jarvis-down` alert): "Jarvis is
+  down", Restart Jarvis, Bring Jarvis Back, and the run sheet's line with Copy. The tap
+  opens a sheet (the confirm, then Face ID with the Stop's passkey); the server runs one
+  fixed program, `/bin/bash ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover` from
+  `~/Projects`, and the card shows "Restarting Jarvis…", then "Jarvis restart: OK" or
+  "NOT OK" with the script's last line, for 30 minutes. The Chat banner (offline, stuck)
+  and the Chat ⋮ menu (always) open the same sheet. Every Jarvis-down push and alert now
+  carries the line: "Jarvis is offline", a local `jarvis-down` push, the notifier's alert
+  for the lead's session five minutes down (in `#pepper`; never in ntfy, L1 below), and the
+  Needs you cards.
+- **Ultron's fixes (11-20, on Jarvis's picks).** **L1:** the lead-down alert's ntfy copy
+  carries no command, since anyone who knows the topic can publish to it and a forged
+  "paste this" would look real. It says "Restart Jarvis in the Control Room (Face ID), or
+  paste the line from the run sheet (Bring Jarvis Back) in a terminal on the mini"
+  (`RECOVER_NTFY_LINE`); the entry's `ntfyMessage` reaches ntfy through the new
+  `entryAlert` in `notify.mjs`, which server.mjs's notifier now uses. Web Push, `#pepper`
+  and the page keep the command. **L2:** a run the ledger still has as `starting` at load
+  (the server stopped between writing it and recording the pid) is closed like a
+  no-answer, verdict `unknown`, line "The Control Room restarted while starting
+  jarvis-recover; it may have run; see ~/Library/Logs/jarvis-recover.log". I dropped the
+  "NOT OK:" Ultron's wording had, because a no-answer is not a NOT OK and the prefix would
+  have made the verdict `not-ok`. **L4:** `recover-refused`, alerted and capped at one push
+  per 10 minutes like `heal-tap-refused` (the rest counted): a Shortcut key on a POST
+  (alerted only from the owner's login, as for heal taps), a paired non-approver on a
+  POST, or a Face ID answer that fails (wrong purpose, expired, bad signature, malformed).
+  The status GET never alerts, because every page reads it. **Q1:** runs stay
+  unconditional. The status carries `jarvis: { health, stopped }` (health from the health
+  panel's lead session, `unknown` when the panel isn't current; the stop flag
+  `~/.local/state/jarvis/jarvis-stopped`). The sheet says "Jarvis looks up; this ends his
+  current turn" and "Jarvis was stopped on purpose; this restart clears that" before Face
+  ID (amber, `sheetNotes`), and `recover-asked`, its log line and the ledger record both.
+- **How jarvis-recover behaves without a terminal (read 11-20 from the release
+  worktree, 2e075be).** It does not block. Its only prompt is the Keychain unlock, and it
+  asks only `if [ -t 0 ]`; the server gives it `/dev/null` as stdin, so a Keychain it
+  can't reach ends the run at once with `NOT OK: this shell can't reach the login
+  Keychain. Run: security unlock-keychain ...`. Run from this LaunchAgent, in the owner's
+  login session, the Keychain is reachable (the probe is `security show-keychain-info`,
+  status 36 only from an SSH shell). Nothing else in it reads stdin: the plugin commands
+  have 120 s timeouts and jarvis-start runs claude in tmux. So the fixed command is the
+  script itself, not `launchctl kickstart -k gui/501/com.jeff.jarvis.restart`: the script
+  does more (stop flag, folder trust, the plugins, the dry run's ladder) and ends with the
+  OK / NOT OK line the card needs, where the kickstart would run a bare `jarvis-start
+  --restart` whose result would have to be dug out of a log. **No launchctl call is in
+  this change.** The script's own restart is the protected step: it restarts the lead (a
+  tmux window), on Jeff's Face ID only.
+- **Choices to defend.** (1) The script, not the restart job (above). (2) Detached, output
+  to a 0600 file, never a pipe: a restart of this server must not end a recovery half way
+  (launchd ends the job's process group), and a pipe's reader gone would end the script on
+  its next write (SIGPIPE). (3) A built environment (HOME, the restart job's PATH, LANG,
+  `xcrun_nocache`, USER, LOGNAME, SHELL, TMPDIR) and nothing else, so a tmux server the
+  script starts never carries `XPC_SERVICE_NAME` or other Control Room variables into the
+  lead's session. (4) The server does not check that the lead is down before it runs (Ultron
+  agreed, Q1): the page's stuck state is the page's alone, and a wrong "up" would block the
+  one way back when it is needed; Face ID, the confirm (with "Jarvis looks up" when health
+  says so) and the limits make it deliberate. The card only shows when the strip says down; the menu item is always there.
+  (5) Limits: one at a time; 3 an hour, 8 a day, counted from the ledger so a restart of
+  this server keeps them; checked before Face ID and again after. (6) Never killed: after
+  45 minutes the card says "No answer" and a new run may start (jarvis-start's lock keeps
+  two from overlapping); a late end still lands. (7) The passkey is the Stop's: one Face ID
+  set-up per device, and a challenge names its purpose, so a Stop's answer can't start a
+  restart. (8) After an OK, no second Restart for 5 minutes even if the alert is still on
+  the strip (the health panel lags a poll or two); after a NOT OK the button stays. (9) The
+  lead's down alert is its own message now instead of "1 service is down": in `#pepper`
+  with the command, in ntfy with the ways back and no command (L1). (10) The events
+  `recover-asked`, `recover-done` and `recover-refused` are alerted like a Stop (`#pepper`
+  with the device and the line; ntfy its generic words), `recover-refused` capped.
+- **To turn it on (Needs Jeff):** C&P; then add `"recover": { "enabled": true }` to
+  `server/config.json` (a top-level key); then a **restart of the server** (the
+  LaunchAgent is Vision's; the routes, the alert text and the config are server code);
+  then `cd web && npm run build` in the main checkout (the card, the sheet, the banner, the
+  menu). The build alone before the restart is safe: the page asks `/api/recover/status`,
+  today's server answers 404, and the card shows the line to paste with no button.
+  **Rollback, any of:** `touch ~/.local/state/jarvis-os/recover-off` (no restart; every
+  restart refused, the card keeps the line); `"enabled": false` and a restart; or revert
+  the commit, rebuild and restart.
+- **After the restart, check (Jeff, on the iPhone):** the start log has `recover: Restart
+  Jarvis from the page is on; 0 runs in its ledger`; Chat ⋮ shows "Restart Jarvis…"; it
+  opens the sheet, and on a device without the Stop's passkey offers "Set up Face ID" (then
+  `bin/chat-pair passkey <CODE>` at the mini). With Jarvis up, the sheet says "Jarvis looks
+  up; this ends his current turn" in amber (Cancel there: no run). The first real run is a real restart of
+  Jarvis, so only when he is down or with Jeff's say-so: the card goes "Restarting
+  Jarvis…", then OK with the script's line, `#pepper` gets both events, and
+  `server/data/chat/recover/` holds the output.
+- **Checked again after Ultron's fixes (2026-11-20):** server **1,717** tests pass (7 new:
+  L1's notifier alert, L4's two, Q1's four; the L2 assertion rewritten; the notifier's two
+  source tests now match `entryAlert`, and one of them also runs it for the feed), local time
+  and `TZ=Asia/Tokyo`, umask 022; web **369** (2 new: the sheet's notes, and that they sit in
+  the confirm step), both time zones; oxlint adds nothing on the changed files; a web build to
+  a scratch `--outDir` succeeds. 16 mutants over the new code (the ntfy words, `entryAlert`,
+  L2's verdict, each `recover-refused` and its login check, the cap, the router passing the
+  login check, `leadHealth`'s rules, the status and event fields, the stop flag's default
+  read, `sheetNotes`): all 16 caught. **Not verified for these fixes:** the sheet's notes in a
+  browser (unit and source tests only; the scratch https kit was gone), Safari, and a real
+  ntfy or `#pepper` post.
+- **Checked first (2026-11-20, before the review):** server 1,710 tests (1,688 on main; 22 new in
+  `jarvis-recover.test.mjs`, four existing assertions updated for the new alert text and
+  one source-test pattern widened for the new `recover` argument), under umask 022, local
+  time and `TZ=Asia/Tokyo`; web 367 (359 on main; 8 new in `orbit-recover.test.js`, the
+  local alert card's text test updated), both time zones; oxlint clean on every changed
+  file (the older `chat-push.mjs` warning is not this branch's). One test runs a scratch
+  script for real through `child_process.spawn`: no terminal (`[ -t 0 ]` false), the
+  folder, its own process group (pgid = pid), no `XPC_SERVICE_NAME`, `TMUX` or other
+  variable, and its last line as the result. 78 mutants over the server module, the
+  routes' wiring, the alerts and the page logic: 74 caught on the first run, the other 4
+  after tests were added (the ledger written before the spawn, a dead pid closed at load,
+  a live pid still watched, the router's `owns`); the whole list rerun after. Headless
+  Chromium against a scratch https server (worktree routes, step-up, recover module, a
+  scratch HOME whose `jarvis-recover` is a fake script; CDP virtual authenticator for Face
+  ID; port 8396, never :8322), 44 of 44 checks at 390 light and 1440 dark: the card and its
+  44 px button, Copy, the Needs you card's line, Face ID set-up with the code confirmed at
+  the "machine", the restart, the running card, OK with the line, no second Restart right
+  after an OK, the result kept across a reload and put away with Done, the Chat banner and
+  menu, Escape, NOT OK with the button back, the fourth run in an hour refused with the
+  reason, a non-approver device with the card and the line but no button, no sideways
+  scroll, no page errors. **Not verified:** the real jarvis-recover run by the server (it
+  restarts Jarvis), Safari and the installed iPhone app (no WebKit here; Face ID on the
+  device), and a real push with the new text.
+- **Ultron's answers (11-20):** Q1 keep the run unconditional (done, with the sheet's
+  words); Q2 the environment list is right, add no `TERM` or `JARVIS_*`; Q3 no command in
+  ntfy (L1, done). His monthly sweep: `recover.enabled`, the `recover-off` file, the mode and
+  count of `server/data/chat/recover.json`; re-vet `recoverProgram`, `recoverEnv`, `gate`,
+  `PURPOSE` and any route added here. Open: L3, the lock in jarvis-recover (jarvis repo).

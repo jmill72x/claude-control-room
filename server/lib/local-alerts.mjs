@@ -10,7 +10,8 @@
 //     the Overview, kept by the push service for ALERT_TTL_S when a phone is away;
 //   - shows it in the page's alert strip and in Needs you, as kind `local`, for
 //     KEEP_MS or until acknowledged (lib/acks.mjs takes `local` like a down service);
-//     `kind: "jarvis-down"` also gets the "Bring Jarvis Back" button there.
+//     `kind: "jarvis-down"` also gets the "Bring Jarvis Back" button there, and its
+//     push ends with the line that brings him back (lib/recover-command.mjs).
 //
 // What keeps it narrow:
 //
@@ -53,6 +54,7 @@ import { createHash } from 'node:crypto';
 import { stripHiddenChars } from './hidden-chars.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { PROXY_HEADERS } from './local-caller.mjs';
+import { RECOVER_LINE } from './recover-command.mjs';
 
 export const LOCAL_ALERT_ROUTE = '/api/ingest/local-alert';
 export const TITLE_MAX = 120;
@@ -268,7 +270,9 @@ export function createLocalAlerts({ now = () => Date.now(), push = () => null, k
     else if (!room(pushed.filter(e => t - e.at < HOUR_MS), PUSH_PER_HOUR, PUSH_RESERVE_HOUR, value.kind) || !room(pushed, PUSH_PER_DAY, PUSH_RESERVE_DAY, value.kind)) {
       out = { push: 'capped', devices: NO_DEVICES };
     } else {
-      out = await pushOut({ title: entry.title, body: entry.body, severity: entry.severity });
+      // A "jarvis-down" alert's push ends with the line that brings him back (fixed words,
+      // never cut: lib/chat-push.mjs, alertPayload's tail; board 98a30b15).
+      out = await pushOut({ title: entry.title, body: entry.body, severity: entry.severity, ...(entry.kind === 'jarvis-down' ? { tail: RECOVER_LINE } : {}) });
       if (out.push !== 'off') pushed.push({ at: t, kind: value.kind });
     }
     // The entry may have been replaced by a newer post while the push went out.

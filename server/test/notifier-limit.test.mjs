@@ -188,7 +188,8 @@ test('entrySender: landing on the devices or as an alert counts as sent, and nei
 // exists.
 test('server.mjs sends every notifier entry through entrySender, with the push service\'s limitWarning for the devices', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  assert.match(src, /send: entrySender\(\{ alert: entry => sendAlert\(\{ topic, title: entry\.title, message: entry\.message, feed: entry\.feed \}\), devices: limitPush \}\),/);
+  // entryAlert (notify.mjs) sends the entry's title, message, ntfy words and feed: test/jarvis-recover.test.mjs (L1).
+  assert.match(src, /send: entrySender\(\{ alert: entryAlert\(\{ topic \}\), devices: limitPush \}\),/);
   assert.match(src, /\n {2}limitPush = body => push\.limitWarning\(body\);\n/);
   assert.equal(src.match(/limitPush = /g).length, 2, 'null until the chat is on, then set once');
 });

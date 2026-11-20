@@ -20,8 +20,10 @@ export const LIMITED_KINDS = Object.freeze({
   'shortcut-refused': 'bursts of wrong Shortcut keys',
   'shortcut-over-limit': 'Shortcut keys over a limit',
   'shortcut-pair-refused': 'bursts of refused Shortcut pairing tries',
-  // A refused heal tap (lib/heal-routes.mjs) can come in a loop too.
-  'heal-tap-refused': 'refused heal taps'
+  // A refused heal tap (lib/heal-routes.mjs) can come in a loop too, and so can a
+  // refused Jarvis restart (lib/jarvis-recover.mjs; Ultron's L4, 11-20).
+  'heal-tap-refused': 'refused heal taps',
+  'recover-refused': 'refused Jarvis restarts'
 });
 
 const minutes = ms => `${Math.round(ms / 60e3)} minutes`;
