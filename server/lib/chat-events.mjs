@@ -59,6 +59,20 @@ export const ALERTED_KINDS = Object.freeze(['client-refused', 'client-replaced',
 export const HEAL_TAP_WORDS = Object.freeze({ 'rerun-job': 'Run it now', 'ack-until-next-run': 'Ack until its next run', 'restart-control-room': 'Restart', 'not-now': 'Not now' });
 
 // The words for one event, made safe for one line.
+// The agent runs a Jarvis restart stops, as `recover-asked` says them (board d8f27c49):
+// nothing for an ask without the field, else how many by name, and whether the list could
+// be seen at all. The names are the roster's or a subagent's type, at most 10 of them.
+const RUN_NAMES_MAX = 10;
+export function recoverRunsWords(event) {
+  if (!Array.isArray(event?.agentRuns)) return '';
+  const names = event.agentRuns.filter(n => typeof n === 'string').map(n => oneLine(n, 40));
+  const n = names.length;
+  const shown = names.slice(0, RUN_NAMES_MAX).join(', ') + (n > RUN_NAMES_MAX ? `, and ${n - RUN_NAMES_MAX} more` : '');
+  const seen = n ? `; it stopped ${n} agent run${n === 1 ? '' : 's'} he had going (${shown}), confirmed on the page` : '';
+  const unseen = event.agentsKnown === true ? '' : `; the live agent runs could not be seen, and the restart was confirmed anyway`;
+  return seen + unseen;
+}
+
 export function chatEventLine(event) {
   const words = {
     'client-refused': 'a second chat channel tried to connect and was refused',
@@ -108,8 +122,9 @@ export function chatEventLine(event) {
     'heal-tap-refused': event.why === 'key'
       ? 'a tap on a heal card carried a Shortcut key and was refused'
       : `a tap on a heal card from ${event.device ?? 'a device'} was refused: that device is not marked approver`,
-    // What health said of him at the ask, and whether the stop flag was there (Ultron's Q1).
-    'recover-asked': `a Jarvis restart was asked from ${event.device ?? 'a device'} (Face ID passed; ${event.health === 'up' ? 'health said Jarvis was up' : event.health === 'down' ? 'health said Jarvis was down' : 'health could not say whether Jarvis was up'}${event.stopped === true ? ', and he had been stopped on purpose' : ''}); the Control Room runs jarvis-recover`,
+    // What health said of him at the ask, and whether the stop flag was there (Ultron's Q1);
+    // and the agent runs the restart stops, confirmed on the page (board d8f27c49).
+    'recover-asked': `a Jarvis restart was asked from ${event.device ?? 'a device'} (Face ID passed; ${event.health === 'up' ? 'health said Jarvis was up' : event.health === 'down' ? 'health said Jarvis was down' : 'health could not say whether Jarvis was up'}${event.stopped === true ? ', and he had been stopped on purpose' : ''}${recoverRunsWords(event)}); the Control Room runs jarvis-recover`,
     // Capped (lib/chat-alert-limit.mjs): a burst of these is how a stolen device cookie would show (L4).
     'recover-refused': event.why === 'key'
       ? 'a Jarvis restart carried a Shortcut key and was refused'

@@ -12,13 +12,15 @@ async function answer(res) {
 }
 const post = (url, body = {}) => fetch(url, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }).then(answer);
 
-// { on, passkey, pending, running, last, blocked, nextAt, command } for an approver
+// { on, passkey, pending, running, last, blocked, nextAt, command, jarvis, agents } for an approver
 // device; a 401, 403 or 404 means no Restart button on this device.
 export const recoverStatus = () => fetch('/api/recover/status', { cache: 'no-store' }).then(answer);
 
 // Face ID, then the restart. Resolves with the server's answer ({ run, note }).
-export async function restartJarvis() {
-  const { publicKey } = await post('/api/recover/challenge');
+// `stopRuns`: the agent runs the sheet said a restart stops (recover.js, runsWarning);
+// while runs are live the server answers 409 with `agents` unless each is named.
+export async function restartJarvis(stopRuns = []) {
+  const { publicKey } = await post('/api/recover/challenge', { stopRuns });
   const cred = await navigator.credentials.get({ publicKey: requestOptions(publicKey) });
-  return post('/api/recover', assertion(cred));
+  return post('/api/recover', { ...assertion(cred), stopRuns });
 }

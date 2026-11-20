@@ -245,6 +245,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-recover-why { margin: 0; font-size: 13px; font-weight: 600; color: var(--accent-ink); }
 /* The sheet's notes before Face ID (Jarvis looks up; stopped on purpose): a caution, not an error. */
 .o-recover-note { font-size: 14px; font-weight: 600; color: var(--c-amber); overflow-wrap: anywhere; }
+.o-recover-runs { margin: 0; padding: 10px 12px; border: 1px solid var(--c-bad); border-radius: 10px; font-size: 15px; font-weight: 600; color: var(--c-bad); overflow-wrap: anywhere; }
 .o-recover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 .o-recover-cmd { flex: 1 1 100%; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .o-recover-where { margin: 0; font-size: 12.5px; color: var(--sub); }
@@ -654,6 +655,9 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-stop-setup { background: var(--c-heading); }
 .o-stop-cancel { border: 1px solid var(--c-rule); background: transparent; color: var(--c-ink); }
 .o-stop-actions button:disabled { opacity: 0.6; cursor: default; }
+/* Restart Jarvis with agent runs live (board d8f27c49): Cancel is the filled button, the restart an outline in red. */
+.o-stop-cancel-main { border: 0; background: var(--c-heading); color: var(--c-bg); }
+.o-stop-anyway { border: 1px solid var(--c-bad); background: transparent; color: var(--c-bad); }
 
 /* ---- the Board tab ---- */
 

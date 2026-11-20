@@ -3694,10 +3694,10 @@ Jarvis from the page" is the reference; this is the state, the choices and the g
   count of `server/data/chat/recover.json`; re-vet `recoverProgram`, `recoverEnv`, `gate`,
   `PURPOSE` and any route added here. Open: L3, the lock in jarvis-recover (jarvis repo).
 
-## 23. Late re-sends from the chat: an old message held for a tap and marked late (board 89248590, P1; staged 2026-11-20 on `jos/stale-resend`)
+## 23. Late re-sends from the chat: an old message held for a tap and marked late (board 89248590, P1; merged as main 66e4011, seen 2026-11-20)
 
-**Staged, not committed, on `jos/stale-resend` (worktree `~/Projects/.worktrees/ccr-stale-resend`,
-from main 70dd8bf, no upstream).** Not reviewed by Ultron yet. The README's "Late sends"
+**Merged as main 66e4011 (seen 2026-11-20; built on `jos/stale-resend`).** Whether the
+restart and web build it needs have happened isn't recorded here. The README's "Late sends"
 paragraph (under the Chat tab) is the reference; this is the evidence, the choices and the
 go-live.
 
@@ -3770,3 +3770,59 @@ go-live.
   and `late: '1'` to the tag's meta, and one line in the instructions ("a tag with late="1"
   was written at `written`, long before it arrived: read it as of then"). Then the server's
   text note could go. Until then the note does the job.
+
+## 24. Restart Jarvis warns before it stops agent runs (board d8f27c49, P1; staged 2026-11-20 on `jos/restart-warn-runs`)
+
+**Staged, not committed, on `jos/restart-warn-runs` (worktree `~/Projects/.worktrees/ccr-restart-warn`,
+from main 66e4011, no upstream).** Not reviewed by Ultron yet. README "Restart Jarvis from
+the page", bullet "Agent runs", is the reference; this is the why, the choices and the
+go-live.
+
+- **What happened (2026-11-20 16:14 ET).** Jeff tapped Restart Jarvis (§22) while two agent
+  runs were going; the restart ended the lead's session and both runs with it. Jeff: "I just
+  don't want you making ridiculous mistakes that should be easily avoidable, like asking to
+  restart mid process".
+- **The fix.** The status lists the runs a restart stops (`agents`), the sheet says so before
+  Face ID with Cancel the default, and the server refuses (409) a restart whose POSTs don't
+  name each run, so a page with an old status can't skip it. With no runs, the sheet is as
+  before (one difference: its button reads "Checking…" for the moment the fresh status read
+  takes after the sheet opens).
+- **Choices to defend.**
+  - The source is the live agents panel, reused, not a new read: `runsAtRisk` filters its
+    rows to subagents in the session named as the lead's (the same name test as the Stop
+    buttons' `stoppable`). Routines (`claude -p --agent`) and other sessions' subagents are
+    left out because a restart doesn't stop them; a warning that names them would be wrong.
+    The cost: a subagent of a lead session that lost its name would go unlisted (the Stop
+    buttons share that limit).
+  - The confirm names run ids, not a yes/no flag: a run that starts after the warning was
+    read needs a new confirm, and a run that ended since doesn't.
+  - Not current is a warning, not a pass: when the panel is stale, missing or cut, the
+    sheet says the runs can't be seen and the confirm must say `unseen`. One extra tap,
+    never a missed warning. A page served before the server restart (no `agents` in the
+    status) warns the same way.
+  - Checked twice on the run POST: before Face ID is used, and after it, just before the
+    run's claim (no await between), so a run that started while Face ID was up is caught.
+  - Quiet runs are still listed, marked "quiet N min": when Jarvis is down his runs may be
+    dead already but stay on the panel up to 15 minutes; the mark says so, the warning
+    still asks.
+  - The ask's event (`recover-asked`) names the runs stopped, so the lead knows what to
+    re-brief when he is back.
+- **Limits.** The panel is read once a minute, so a run started in the last minute isn't
+  listed. Over 20 live runs (the panel's bound) counts as not known.
+- **Checked (2026-11-20):** server 1,730 tests (6 new in `jarvis-recover.test.mjs`), web
+  378 (4 new in `orbit-recover.test.js`), both in local time and `TZ=Asia/Tokyo`. In this
+  agent's shell (umask 077), `acks.test.mjs`'s "a fresh file, with the default mode" fails
+  on main too; with umask 022 all 1,730 pass. 16 mutants over the server module and the
+  event line, 6 over the page logic, all caught. oxlint clean on the changed web files.
+  Built to the scratchpad (live `web/dist` untouched). Headless Chromium against a fake
+  status server, 36 of 36 checks at 390 and 820 px: no warning and today's buttons with no
+  runs; the warning text first, Cancel focused and filled, Enter cancels and posts nothing,
+  Restart anyway sends both ids; "can't see" sends `unseen`; a stale status gets the 409,
+  then shows the list and "changed since this opened". Light and dark screenshots looked
+  right. **Not verified:** Face ID through the real server end to end in a browser (the
+  route tests cover it with a software authenticator), Safari, and the iPhone/iPad.
+- **Go-live (Jeff, after Ultron and C&P):** a Control Room restart, then a web build. Either
+  order is safe: a new page against the old server warns that it can't see the runs (the
+  old status has no `agents`) and sends a field the old routes ignore; an old page against
+  the new server gets the 409 when runs are live and shows the server's error, so a restart
+  waits until the build reaches it.

@@ -18,8 +18,8 @@ import { createStepUp } from '../lib/stepup.mjs';
 import { createAgentStop } from '../lib/agent-stop.mjs';
 import { createChatRoutes } from '../lib/chat-routes.mjs';
 import {
-  createRecover, readRecoverConfig, recoverProgram, recoverEnv, lastLine, cleanLine, verdictOf, publicRun, leadHealth,
-  RECOVER_COMMAND, RECOVER_LINE, CRASHED_START_LINE, STOP_FLAG_PARTS, PURPOSE, RUNS_PER_HOUR, RUNS_PER_DAY, NO_ANSWER_MS, NO_ANSWER_LINE, LINE_MAX, KEEP_OUTS, HOUR_MS, KILL_FILE, ROUTES
+  createRecover, readRecoverConfig, recoverProgram, recoverEnv, lastLine, cleanLine, verdictOf, publicRun, leadHealth, runsAtRisk, missingConfirm,
+  UNSEEN, STOP_RUNS_MAX, RECOVER_COMMAND, RECOVER_LINE, CRASHED_START_LINE, STOP_FLAG_PARTS, PURPOSE, RUNS_PER_HOUR, RUNS_PER_DAY, NO_ANSWER_MS, NO_ANSWER_LINE, LINE_MAX, KEEP_OUTS, HOUR_MS, KILL_FILE, ROUTES
 } from '../lib/jarvis-recover.mjs';
 import { pushableFrom, LEAD_DOWN_WORDS } from '../lib/push-alerts.mjs';
 import { alertPayload, ALERT_PAYLOAD_MAX } from '../lib/chat-push.mjs';
@@ -36,6 +36,8 @@ const PAGE = { host: HOST, origin: ORIGIN, 'sec-fetch-site': 'same-origin' };
 const HOME = '/Users/someone';
 const SCRIPT = `${HOME}/Projects/.worktrees/jarvis-release/bin/jarvis-recover`;
 const MIN = 60e3;
+// An invented roster: the lead first, as config's roster lists him.
+const ROSTER = { agents: [{ key: 'lead', name: 'Jarvis' }, { key: 'vision', name: 'Vision' }, { key: 'ultron', name: 'Ultron' }] };
 const sha = b => createHash('sha256').update(b).digest();
 const b64u = b => Buffer.from(b).toString('base64url');
 
@@ -98,12 +100,14 @@ async function setup({ enabled = true, exists = true, recoverOpts = {}, routesCo
   env.alive = new Set();
   env.health = 'unknown';
   env.stopped = false;
+  // The sessions panel as the cache gives it (lib/live-agents.mjs's block): current and empty.
+  env.live = { status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs: [] } } };
   env.chatDir = join(env.dir, 'chat');
   env.spawn.ledgerPath = join(env.chatDir, 'recover.json');
   env.makeRecover = (over = {}) => createRecover({
     home: HOME, dir: env.chatDir, stepUp, enabled, killed: () => env.killed, now: env.now, spawn: env.spawn,
     exists: async p => (typeof exists === 'function' ? exists(p) : exists), isAlive: pid => env.alive.has(pid),
-    onEvent: e => env.events.push(e), log: l => env.logs.push(l), health: () => env.health, stopped: () => env.stopped, env: { USER: 'someone', LOGNAME: 'someone', TMPDIR: '/tmp/x/', XPC_SERVICE_NAME: 'com.example.control-room', TMUX: '/tmp/tmux-1/default,1,0', SECRET_TOKEN: 'nope', LANG: 'en_GB.UTF-8' },
+    onEvent: e => env.events.push(e), log: l => env.logs.push(l), health: () => env.health, stopped: () => env.stopped, liveAgents: () => env.live, roster: ROSTER, env: { USER: 'someone', LOGNAME: 'someone', TMPDIR: '/tmp/x/', XPC_SERVICE_NAME: 'com.example.control-room', TMUX: '/tmp/tmux-1/default,1,0', SECRET_TOKEN: 'nope', LANG: 'en_GB.UTF-8' },
     ...recoverOpts, ...over
   });
   env.recover = env.makeRecover();
@@ -124,9 +128,9 @@ async function setup({ enabled = true, exists = true, recoverOpts = {}, routesCo
     assert.equal(c.ok, true, c.error);
     return auth;
   };
-  // Face ID, then the restart; `body` is merged into the Face ID answer.
-  env.restart = async (dev, auth, body = {}) => {
-    const c = await env.post(ROUTES.challenge, dev.cookie);
+  // Face ID, then the restart; `body` is merged into the Face ID answer, `ask` is the challenge's body.
+  env.restart = async (dev, auth, body = {}, ask = {}) => {
+    const c = await env.post(ROUTES.challenge, dev.cookie, ask);
     if (c.status !== 200) return c;
     return env.post(ROUTES.run, dev.cookie, { ...auth.get({ challenge: c.json.publicKey.challenge }), ...body });
   };
@@ -244,7 +248,7 @@ test('a restart with Face ID from an approver runs the one fixed program, detach
     assert.equal(opts.env.SECRET_TOKEN, undefined);
     assert.equal(opts.env.HOME, HOME);
     assert.equal(env.spawn.children[0].unrefd, true);
-    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked'), [{ kind: 'recover-asked', device: 'iPhone', health: 'unknown', stopped: false }]);
+    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked'), [{ kind: 'recover-asked', device: 'iPhone', health: 'unknown', stopped: false, agentRuns: [], agentsKnown: true }]);
     s = await env.status(dev);
     assert.equal(s.json.running.verdict, 'running');
     assert.match(s.json.blocked, /already going/);
@@ -712,7 +716,7 @@ test('Q1: a restart runs whether health says up or down; the status says which, 
     assert.equal(s.json.blocked, null, 'up is no reason to refuse');
     const r = await env.restart(dev, auth);
     assert.equal(r.status, 202, r.text);
-    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'up', stopped: false });
+    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'up', stopped: false, agentRuns: [], agentsKnown: true });
     assert.ok(env.logs.some(l => /\(Face ID passed; health said up\)/.test(l)));
     const ledger = JSON.parse(await readFile(join(env.chatDir, 'recover.json'), 'utf8'));
     assert.deepEqual([ledger[0].health, ledger[0].stopped], ['up', false]);
@@ -724,7 +728,7 @@ test('Q1: a restart runs whether health says up or down; the status says which, 
     s = await env.status(dev);
     assert.deepEqual(s.json.jarvis, { health: 'down', stopped: true });
     assert.equal((await env.restart(dev, auth)).status, 202);
-    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'down', stopped: true });
+    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'down', stopped: true, agentRuns: [], agentsKnown: true });
     assert.ok(env.logs.some(l => /\(Face ID passed; health said down, the stop flag was there\)/.test(l)));
     env.spawn.children[1].end(0);
     await env.settle();
@@ -827,7 +831,7 @@ test('the events: an ask and a result are alerted, in one line each', () => {
 
 test('server.mjs: the restart is made with the stop\'s passkeys, the chat folder, the kill file and the chat\'s events, and served by the chat router; it spawns nothing itself', async () => {
   const src = (await readFile(join(HERE, '..', 'server.mjs'), 'utf8')).replace(/^\s*\/\/.*$/gm, '');
-  assert.match(src, /const recover = createRecover\(\{ home: homedir\(\), dir: chatDir, stepUp, enabled: recoverSettings\.on, killed: \(\) => existsSync\(recoverOffPath\), onEvent: chatEvents, health: \(\) => leadHealth\(cache\.get\('health'\), leadName\) \}\);/);
+  assert.match(src, /const recover = createRecover\(\{ home: homedir\(\), dir: chatDir, stepUp, enabled: recoverSettings\.on, killed: \(\) => existsSync\(recoverOffPath\), onEvent: chatEvents, health: \(\) => leadHealth\(cache\.get\('health'\), leadName\), liveAgents: \(\) => cache\.get\('sessions', Date\.now\(\)\), roster \}\);/);
   // The lead's name is the roster's first agent's, as on the page, and is set before the restart is made.
   assert.ok(src.indexOf('const leadName = roster.agents[0]?.name ?? null;') > -1 && src.indexOf('const leadName = roster.agents[0]?.name ?? null;') < src.indexOf('const recover = createRecover('));
   assert.match(src, /const recoverOffPath = join\(stateDir, RECOVER_KILL_FILE\);/);
@@ -844,4 +848,156 @@ test('the page shows the same line, word for word', async () => {
   const m = /export const RECOVER_COMMAND = '([^']+)';/.exec(page);
   assert.ok(m, 'web/src/lib/orbit/recover.js exports RECOVER_COMMAND');
   assert.equal(m[1], RECOVER_COMMAND);
+});
+
+// ---- agent runs a restart would stop (board d8f27c49) ----
+
+// A live agents row as lib/live-agents.mjs builds it; invented ids, names and tasks.
+const liveRow = (id, over = {}) => ({ id, agent: 'vision', type: 'vision', direct: false, task: 'An invented brief', session: 'Jarvis', stoppable: true, start: 1000, last: 2000, tokens: 10, model: 'opus', ...over });
+const A = 'a1a1a1a1a1a1a1a1', B = 'b2b2b2b2b2b2b2b2', C = 'c3c3c3c3c3c3c3c3';
+const panel = (runs, over = {}) => ({ status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs } }, ...over });
+
+test('runsAtRisk: the lead\'s subagent runs from the live agents panel, by roster name; not a --agent run, not another session\'s; anything not current is not known', () => {
+  const rows = [
+    liveRow(A),
+    liveRow(B, { agent: 'ultron', type: 'ultron', stoppable: false }),
+    liveRow(C, { agent: null, type: 'general-purpose', last: null, start: 1500 }),
+    liveRow('d4d4d4d4d4d4d4d4', { direct: true, session: null }),
+    liveRow('e5e5e5e5e5e5e5e5', { session: 'Vision' }),
+    liveRow('f6f6f6f6f6f6f6f6', { session: null }),
+    liveRow('not-a-hash'),
+    null, 'x'
+  ];
+  assert.deepEqual(runsAtRisk(panel(rows), ROSTER), { known: true, runs: [{ id: A, name: 'Vision', last: 2000 }, { id: B, name: 'Ultron', last: 2000 }, { id: C, name: 'general-purpose', last: 1500 }] });
+  assert.deepEqual(runsAtRisk(panel([]), ROSTER), { known: true, runs: [] });
+  // A row with no type at all still counts, by a plain word.
+  assert.equal(runsAtRisk(panel([liveRow(A, { agent: null, type: null })]), ROSTER).runs[0].name, 'subagent');
+  // Stale (an error, or too old): the runs it last had are still listed, but not known.
+  assert.deepEqual(runsAtRisk(panel([liveRow(A)], { status: 'stale' }), ROSTER), { known: false, runs: [{ id: A, name: 'Vision', last: 2000 }] });
+  // Over the panel's bound: the list is cut, so not known.
+  assert.equal(runsAtRisk({ status: 'ok', data: { liveAgents: { more: 2, runs: [liveRow(A)] } } }, ROSTER).known, false);
+  for (const junk of [null, undefined, {}, { status: 'unavailable', data: null }, { status: 'ok', data: {} }, { status: 'ok', data: { liveAgents: { runs: 'x' } } }]) assert.deepEqual(runsAtRisk(junk, ROSTER), { known: false, runs: [] });
+  // No roster (no lead to match): not known.
+  assert.deepEqual(runsAtRisk(panel([liveRow(A)]), null), { known: false, runs: [] });
+  assert.deepEqual(runsAtRisk(panel([liveRow(A)]), { agents: [] }), { known: false, runs: [] });
+});
+
+test('missingConfirm: every run\'s id, and UNSEEN when not known; a confirm that isn\'t an array of strings is none', () => {
+  const two = { known: true, runs: [{ id: A }, { id: B }] };
+  assert.deepEqual(missingConfirm({ known: true, runs: [] }, undefined), []);
+  assert.deepEqual(missingConfirm(two, undefined), [A, B]);
+  assert.deepEqual(missingConfirm(two, [A]), [B]);
+  assert.deepEqual(missingConfirm(two, [B, A, C]), [], 'a run that ended since is no matter');
+  assert.deepEqual(missingConfirm(two, `${A},${B}`), [A, B]);
+  assert.deepEqual(missingConfirm(two, { 0: A, 1: B, length: 2 }), [A, B]);
+  assert.deepEqual(missingConfirm(two, [A, B, ...Array(STOP_RUNS_MAX).fill(C)]), [A, B], 'too long is not a confirm');
+  assert.deepEqual(missingConfirm(two, [A, B, ...Array(STOP_RUNS_MAX - 2).fill(C)]), []);
+  assert.deepEqual(missingConfirm({ known: false, runs: [] }, []), [UNSEEN]);
+  assert.deepEqual(missingConfirm({ known: false, runs: [{ id: A }] }, [A]), [UNSEEN]);
+  assert.deepEqual(missingConfirm({ known: false, runs: [{ id: A }] }, [UNSEEN]), [A]);
+  assert.deepEqual(missingConfirm({ known: false, runs: [{ id: A }] }, [A, UNSEEN]), []);
+  assert.deepEqual(missingConfirm(null, null), [UNSEEN]);
+  assert.equal(UNSEEN, 'unseen');
+});
+
+test('runs live: the status lists them; both POSTs refuse 409 with the runs until each is named, before Face ID; then the restart goes and says what it stopped', async () => {
+  const env = await setup();
+  try {
+    const dev = await env.approver('iPhone');
+    const auth = await env.enrol(dev);
+    env.live = panel([liveRow(A), liveRow(B, { agent: 'ultron', type: 'ultron' }), liveRow('d4d4d4d4d4d4d4d4', { direct: true, session: null })]);
+    const s = await env.status(dev);
+    assert.deepEqual(s.json.agents, { known: true, runs: [{ id: A, name: 'Vision', last: 2000 }, { id: B, name: 'Ultron', last: 2000 }] });
+    assert.equal(s.json.blocked, null, 'runs are no block: a confirm lets the restart through');
+    // No confirm: the challenge is refused, so Face ID is never asked.
+    let c = await env.post(ROUTES.challenge, dev.cookie);
+    assert.equal(c.status, 409, c.text);
+    assert.equal(c.json.publicKey, undefined);
+    assert.equal(c.json.error, '2 agent runs are going; restarting stops them. Confirm to restart anyway.');
+    assert.deepEqual(c.json.agents.runs.map(r => r.id), [A, B]);
+    // Half a confirm is none.
+    c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [A] });
+    assert.equal(c.status, 409);
+    // A page that skipped the warning but has a challenge (an old page, or a forged one): the run POST is refused too, and spawns nothing.
+    c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [A, B] });
+    assert.equal(c.status, 200, c.text);
+    let r = await env.post(ROUTES.run, dev.cookie, auth.get({ challenge: c.json.publicKey.challenge }));
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual(r.json.agents.runs.map(x => x.id), [A, B]);
+    assert.equal(env.spawn.calls.length, 0);
+    assert.ok(env.logs.some(l => /^recover: a restart from iPhone waits for a confirm: 2 agent runs would stop$/.test(l)), env.logs.join('\n'));
+    // Named, both times: it goes.
+    r = await env.restart(dev, auth, { stopRuns: [A, B] }, { stopRuns: [A, B] });
+    assert.equal(r.status, 202, r.text);
+    assert.equal(env.spawn.calls.length, 1);
+    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'unknown', stopped: false, agentRuns: ['Vision', 'Ultron'], agentsKnown: true });
+    assert.ok(env.logs.some(l => /\(Face ID passed; health said unknown; it stops 2 agent runs: Vision, Ultron\)/.test(l)), env.logs.join('\n'));
+    // A Face ID refusal still comes after the runs check, never before it.
+    assert.equal(env.events.filter(e => e.kind === 'recover-refused').length, 0);
+  } finally { await env.close(); }
+});
+
+test('runs live: one that starts while Face ID is up is refused after it, nothing runs; the next confirm names it', async () => {
+  const env = await setup();
+  try {
+    const dev = await env.approver('iPhone');
+    const auth = await env.enrol(dev);
+    env.live = panel([liveRow(A)]);
+    const c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [A] });
+    assert.equal(c.status, 200, c.text);
+    env.live = panel([liveRow(A), liveRow(C, { agent: 'ultron' })]);
+    let r = await env.post(ROUTES.run, dev.cookie, { ...auth.get({ challenge: c.json.publicKey.challenge }), stopRuns: [A] });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.json.error, '2 agent runs are going; restarting stops them. Confirm to restart anyway.');
+    assert.equal(env.spawn.calls.length, 0);
+    r = await env.restart(dev, auth, { stopRuns: [A, C] }, { stopRuns: [A, C] });
+    assert.equal(r.status, 202, r.text);
+    // One run: singular words.
+    env.spawn.children[0].end(0);
+    await env.settle();
+    env.live = panel([liveRow(B)]);
+    const one = await env.post(ROUTES.challenge, dev.cookie);
+    assert.equal(one.json.error, '1 agent run is going; restarting stops it. Confirm to restart anyway.');
+  } finally { await env.close(); }
+});
+
+test('runs not seen (the panel stale, missing, or its read throwing): the confirm must say UNSEEN; the ask says the runs could not be seen', async () => {
+  const env = await setup();
+  try {
+    const dev = await env.approver('iPhone');
+    const auth = await env.enrol(dev);
+    env.live = { status: 'unavailable', data: null };
+    const s = await env.status(dev);
+    assert.deepEqual(s.json.agents, { known: false, runs: [] });
+    let c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [] });
+    assert.equal(c.status, 409);
+    assert.equal(c.json.error, 'The Control Room can\'t see whether agent runs are going; restarting stops any that are. Confirm to restart anyway.');
+    assert.ok(env.logs.some(l => /waits for a confirm: the live agent runs could not be seen$/.test(l)));
+    // Stale with a run in it: both the run and UNSEEN.
+    env.live = panel([liveRow(A)], { status: 'stale' });
+    c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [UNSEEN] });
+    assert.equal(c.status, 409);
+    const r = await env.restart(dev, auth, { stopRuns: [A, UNSEEN] }, { stopRuns: [A, UNSEEN] });
+    assert.equal(r.status, 202, r.text);
+    assert.deepEqual(env.events.filter(e => e.kind === 'recover-asked').at(-1), { kind: 'recover-asked', device: 'iPhone', health: 'unknown', stopped: false, agentRuns: ['Vision'], agentsKnown: false });
+    assert.ok(env.logs.some(l => /it stops 1 agent run: Vision; the live agent runs could not be seen\)/.test(l)), env.logs.join('\n'));
+    // A read that throws can't fail the status: not known. Neither can the module made without one.
+    const throwing = env.makeRecover({ liveAgents: () => { throw new Error('boom'); } });
+    assert.deepEqual(throwing.view().agents, { known: false, runs: [] });
+    throwing.stop();
+    const bare = createRecover({ home: HOME, dir: env.chatDir, stepUp: env.stepUp, enabled: true, log: () => {} });
+    assert.deepEqual(bare.view().agents, { known: false, runs: [] });
+    bare.stop();
+  } finally { await env.close(); }
+});
+
+test('the ask\'s event line names the agent runs the restart stopped, or says they could not be seen', () => {
+  const base = { kind: 'recover-asked', device: 'iPhone', health: 'down', stopped: false };
+  assert.equal(chatEventLine({ ...base, agentRuns: ['Vision', 'Ultron'], agentsKnown: true }), 'a Jarvis restart was asked from iPhone (Face ID passed; health said Jarvis was down; it stopped 2 agent runs he had going (Vision, Ultron), confirmed on the page); the Control Room runs jarvis-recover');
+  assert.equal(chatEventLine({ ...base, agentRuns: ['Vision'], agentsKnown: true }), 'a Jarvis restart was asked from iPhone (Face ID passed; health said Jarvis was down; it stopped 1 agent run he had going (Vision), confirmed on the page); the Control Room runs jarvis-recover');
+  assert.equal(chatEventLine({ ...base, agentRuns: [], agentsKnown: true }), 'a Jarvis restart was asked from iPhone (Face ID passed; health said Jarvis was down); the Control Room runs jarvis-recover');
+  assert.equal(chatEventLine({ ...base, agentRuns: [], agentsKnown: false }), 'a Jarvis restart was asked from iPhone (Face ID passed; health said Jarvis was down; the live agent runs could not be seen, and the restart was confirmed anyway); the Control Room runs jarvis-recover');
+  const many = chatEventLine({ ...base, agentRuns: Array.from({ length: 12 }, (_, i) => `Agent${i}`), agentsKnown: true });
+  assert.match(many, /it stopped 12 agent runs he had going \(Agent0, .*, Agent9, and 2 more\)/);
+  assert.ok(!chatEventLine({ ...base, agentRuns: ['a\nb'], agentsKnown: true }).includes('\n'));
 });

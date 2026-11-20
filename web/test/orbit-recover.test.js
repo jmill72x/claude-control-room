@@ -7,7 +7,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  RECOVER_COMMAND, RECOVER_WHAT, RESULT_SHOW_MS, POLL_MS, OK_GRACE_MS, STOPPED_NOTE, LOOKS_UP_NOTE, leadDownAlert, verdictWords, buttonState, recoverCard, sheetPhase, sheetNotes
+  RECOVER_COMMAND, RECOVER_WHAT, RESULT_SHOW_MS, POLL_MS, OK_GRACE_MS, STOPPED_NOTE, LOOKS_UP_NOTE, leadDownAlert, verdictWords, buttonState, recoverCard, sheetPhase, sheetNotes,
+  UNSEEN, RUN_NAMES_SHOWN, RUNS_CHANGED, runNames, runsWarning
 } from '../src/lib/orbit/recover.js';
 import { waitingCards } from '../src/lib/orbit/waiting.js';
 
@@ -152,4 +153,56 @@ test('the page holds the line in one place: recover.js, and no other source file
   };
   walk(src);
   assert.deepEqual(holders, [join('lib', 'orbit', 'recover.js')]);
+});
+
+// ---- agent runs a restart would stop (board d8f27c49) ----
+
+const A = 'a1a1a1a1a1a1a1a1', B = 'b2b2b2b2b2b2b2b2';
+const agents = (runs, known = true) => ({ agents: { known, runs } });
+
+test('runs warning: none when the server says no run is going; the runs by name, and Restarting stops them, when some are', () => {
+  assert.equal(runsWarning(status(agents([])), T0), null);
+  assert.deepEqual(runsWarning(status(agents([{ id: A, name: 'Vision', last: T0 - 10e3 }, { id: B, name: 'Ultron', last: T0 }])), T0), {
+    text: '2 agent runs are going (Vision, Ultron). Restarting stops them.', ids: [A, B], count: 2, known: true
+  });
+  assert.equal(runsWarning(status(agents([{ id: A, name: 'Pepper', last: T0 }])), T0).text, '1 agent run is going (Pepper). Restarting stops it.');
+  // Not usable, or before the read: nothing (the sheet shows no confirm then).
+  assert.equal(runsWarning({ usable: false, agents: { known: true, runs: [{ id: A, name: 'Vision' }] } }, T0), null);
+  assert.equal(runsWarning(null, T0), null);
+  // A row with no id is not a run the server can be told about.
+  assert.equal(runsWarning(status(agents([{ name: 'Vision' }, null])), T0), null);
+});
+
+test('runs warning: not seen says so and sends UNSEEN with the ids; an older server\'s status (no agents) warns as not seen', () => {
+  assert.deepEqual(runsWarning(status(agents([], false)), T0), { text: 'The Control Room can\'t see whether agent runs are going. Restarting stops any that are.', ids: [UNSEEN], count: 0, known: false });
+  assert.deepEqual(runsWarning(status(agents([{ id: A, name: 'Vision', last: T0 }], false)), T0), {
+    text: '1 agent run was going at the last check (Vision), and the Control Room can\'t see the runs now. Restarting stops any still going.', ids: [A, UNSEEN], count: 1, known: false
+  });
+  assert.equal(runsWarning(status(), T0).ids[0], UNSEEN);
+  assert.equal(UNSEEN, 'unseen');
+});
+
+test('run names: a quiet run is marked as the live pane marks it; a long list is cut', () => {
+  assert.equal(runNames([{ name: 'Vision', last: T0 - 6 * MIN }, { name: 'Ultron', last: T0 - 119e3 }, { name: ' ', last: null }], T0), 'Vision (quiet 6 min), Ultron, subagent');
+  const many = Array.from({ length: RUN_NAMES_SHOWN + 2 }, (_, i) => ({ name: `A${i}` }));
+  assert.equal(runNames(many, T0), 'A0, A1, A2, A3, A4, A5 and 2 more');
+  assert.equal(RUN_NAMES_SHOWN, 6);
+});
+
+test('the sheet: the warning first in the confirm step, Cancel the default (filled, focused), Restart anyway sends the ids; a 409 shows the server\'s runs', () => {
+  const jsx = readFileSync(fileURLToPath(new URL('../src/orbit/Recover.jsx', import.meta.url)), 'utf8');
+  const confirm = jsx.slice(jsx.indexOf("{(phase === 'confirm' || phase === 'working') && ("), jsx.indexOf("{phase === 'setup' && <p"));
+  assert.ok(confirm.indexOf('{warn && <p className="o-recover-runs" role="alert">{warn.text}</p>}') > -1);
+  assert.ok(confirm.indexOf('o-recover-runs') < confirm.indexOf('o-stop-detail'), 'the warning comes before the rest');
+  assert.match(jsx, /const warn = phase === 'confirm' \|\| phase === 'working' \? runsWarning\(status\) : null;/);
+  assert.match(jsx, /await restartJarvis\(warn\?\.ids \?\? \[\]\)/);
+  assert.match(jsx, /className=\{warn \? 'o-stop-anyway' : 'o-stop-go'\} onClick=\{go\} disabled=\{busy \|\| checking \|\| !btn\.can\}>\{busy \? 'Waiting for Face ID…' : checking \? 'Checking…' : warn \? 'Restart anyway' : 'Restart with Face ID'\}/);
+  assert.match(jsx, /className=\{warn \? 'o-stop-cancel o-stop-cancel-main' : 'o-stop-cancel'\} onClick=\{onClose\} disabled=\{busy\} autoFocus=\{Boolean\(warn\)\}/);
+  assert.match(jsx, /if \(err\?\.status === 409 && err\.body\?\.agents\) \{\s*ctx\.setStatus\(s => \(\{ \.\.\.s, agents: err\.body\.agents \}\)\);\s*setError\(RUNS_CHANGED\);/);
+  // Opening the sheet reads the status afresh, and the restart waits for it.
+  assert.match(jsx, /open: \(\) => \{ setOpen\(true\); setChecking\(true\); read\(\)\.finally\(\(\) => setChecking\(false\)\); \}/);
+  assert.match(RUNS_CHANGED, /changed since this opened/);
+  const api = readFileSync(fileURLToPath(new URL('../src/orbit/recoverApi.js', import.meta.url)), 'utf8');
+  assert.match(api, /post\('\/api\/recover\/challenge', \{ stopRuns \}\)/);
+  assert.match(api, /post\('\/api\/recover', \{ \.\.\.assertion\(cred\), stopRuns \}\)/);
 });

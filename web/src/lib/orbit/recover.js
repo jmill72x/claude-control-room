@@ -6,6 +6,7 @@
 // by web/test/orbit-recover.test.js.
 import { clock } from './page.js';
 import { isLeadDownAlert } from './runbook.js';
+import { QUIET_MS, duration } from './live.js';
 
 // The one line, word for word as the server's (server/lib/recover-command.mjs; a server
 // test keeps the two equal), for pasting in a terminal when the button can't be used.
@@ -96,4 +97,45 @@ export function sheetPhase(local, status, mine = null) {
   if (status.usable !== true) return 'unusable';
   if (status.passkey !== true) return status.pending === true ? 'pending' : 'setup';
   return 'confirm';
+}
+
+// Agent runs a restart would stop (board d8f27c49, after 2026-11-20 16:14, when a tap
+// ended two runs mid-work). A restart ends the lead's session and every subagent run in
+// it; the status's `agents` lists them (server/lib/jarvis-recover.mjs, runsAtRisk:
+// `{ known, runs: [{ id, name, last }] }`). The sheet says so before Face ID, with Cancel
+// as its default, and the restart sends `stopRuns`: the ids it named, and UNSEEN when it
+// said the runs can't be seen. The server refuses (409) a restart that doesn't name each
+// run live then, so a page whose status is old can't skip this.
+export const UNSEEN = 'unseen';
+export const RUN_NAMES_SHOWN = 6;
+export const RUNS_CHANGED = 'The agent runs going changed since this opened. Read the list again before you restart.';
+const plural = (n, one, many) => (n === 1 ? one : many);
+
+// The runs by name, a quiet one marked as the live agents pane marks it (live.js), at
+// most RUN_NAMES_SHOWN of them.
+export function runNames(runs, now = Date.now()) {
+  const words = runs.map(r => {
+    const name = typeof r.name === 'string' && r.name.trim() !== '' ? r.name.trim() : 'subagent';
+    return Number.isFinite(r.last) && now - r.last >= QUIET_MS ? `${name} (quiet ${duration(now - r.last)})` : name;
+  });
+  const shown = words.slice(0, RUN_NAMES_SHOWN).join(', ');
+  return words.length > RUN_NAMES_SHOWN ? `${shown} and ${words.length - RUN_NAMES_SHOWN} more` : shown;
+}
+
+// The sheet's warning, or null when the status says no run is going. A status with no
+// `agents` (a server from before this) can't say, so it warns as one that can't see.
+export function runsWarning(status, now = Date.now()) {
+  if (status?.usable !== true) return null;
+  const a = status.agents;
+  const known = a?.known === true;
+  const runs = Array.isArray(a?.runs) ? a.runs.filter(r => r && typeof r.id === 'string') : [];
+  if (known && runs.length === 0) return null;
+  const n = runs.length;
+  const ids = runs.map(r => r.id);
+  if (!known) ids.push(UNSEEN);
+  let text;
+  if (known) text = `${n} agent ${plural(n, 'run is', 'runs are')} going (${runNames(runs, now)}). Restarting stops ${plural(n, 'it', 'them')}.`;
+  else if (n > 0) text = `${n} agent ${plural(n, 'run was', 'runs were')} going at the last check (${runNames(runs, now)}), and the Control Room can't see the runs now. Restarting stops any still going.`;
+  else text = 'The Control Room can\'t see whether agent runs are going. Restarting stops any that are.';
+  return { text, ids, count: n, known };
 }

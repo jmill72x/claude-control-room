@@ -1088,14 +1088,19 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   starts doesn't hand the Control Room's environment to the lead's session.
 - **The routes** (served by the chat's router):
   - `GET /api/recover/status`: `{ on, passkey, pending, pendingUntil, running, last,
-    blocked, nextAt, command, jarvis }`. `running` and `last` are runs as the page sees them
+    blocked, nextAt, command, jarvis, agents }`. `running` and `last` are runs as the page sees them
     (`id`, `by`, `startedAt`, `finishedAt`, `verdict` `starting`/`running`/`ok`/`degraded`/
     `not-ok`/`unknown`, `line`, `exit`), never the pid or the file. `jarvis` is `{ health,
     stopped }`: what the health strip says of the lead's session now (`up`, `down` or
     `unknown`; `leadHealth`, the roster's lead as on the page, and `unknown` when the panel
     isn't current) and whether the stop flag `~/.local/state/jarvis/jarvis-stopped` is there.
+    `agents` is `{ known, runs: [{ id, name, last }] }`: the agent runs a restart would stop
+    (see "Agent runs" below).
   - `POST /api/recover/challenge`: a Face ID challenge for the purpose `recover:jarvis`.
-  - `POST /api/recover`: the Face ID answer; 202 `{ ok, run, note }`, and the script starts.
+    Body `{ stopRuns }`.
+  - `POST /api/recover`: the Face ID answer, plus `stopRuns`; 202 `{ ok, run, note }`, and
+    the script starts. Either POST answers 409 `{ error, agents }` while a live run isn't
+    named in `stopRuns`.
   Every route: no `Authorization` header (a Shortcut key never restarts anything), a
   paired device by its cookie and the owner's login header, an approver device; the two
   POSTs also the write guard (same origin, JSON) and the page's own https `Origin` (the
@@ -1108,6 +1113,24 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   his current turn" when health says up, and "Jarvis was stopped on purpose; this restart
   clears that" when the stop flag is there (jarvis-recover's step 4 removes it). The ask's
   event and log line record both, and the ledger keeps them with the run.
+- **Agent runs** (board d8f27c49, 2026-11-20: a tap at 16:14 ET ended two runs mid-work). A
+  restart ends the lead's session, and every subagent run inside it. The status's `agents`
+  lists those runs (`runsAtRisk`): the live agents panel's rows (`lib/live-agents.mjs`, the
+  sessions collector's minute pass, the same source as the Overview's pane, the Stop
+  buttons and the idle wake-up) that are subagents in the session named as the roster's
+  first agent. A `claude -p --agent` run, or a subagent of another session, is left out: a
+  restart of the lead stops neither. `known` is false when the panel isn't current, its list
+  is cut (`more`), or there is no roster; its last rows are still listed. With any run
+  listed, or `known` false, the sheet says so first ("2 agent runs are going (Vision,
+  Ultron). Restarting stops them.", a quiet run marked as on the pane), Cancel becomes the
+  filled, focused button, and the restart is an outline "Restart anyway". Opening the sheet
+  reads the status afresh, and its restart waits for that read. The server holds the line
+  too: both POSTs need `stopRuns` naming each listed run's id, plus `unseen` when `known` is
+  false, else 409 with the runs, checked before Face ID is asked and again after it, just
+  before the run starts (a run that started while Face ID was up is refused). A page with
+  an old status gets the 409, shows the list, and says the runs changed. The ask's log line
+  and its `recover-asked` event name the runs it stopped, for the lead once he is back. A
+  run started within the panel's last minute isn't listed yet.
 - **Limits,** checked before Face ID is asked and again after it: one run at a time (409);
   at most **3** started in any hour and **8** in any day (429, with `nextAt`), counted from
   the ledger, so a restart of the server keeps them; off (403) or the kill file (503). A run

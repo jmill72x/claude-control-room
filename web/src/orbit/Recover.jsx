@@ -7,7 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { recoverStatus, restartJarvis } from './recoverApi.js';
 import { setUpFaceId } from './stopApi.js';
 import { faceIdError } from '../lib/orbit/stop.js';
-import { RECOVER_COMMAND, RECOVER_WHERE, POLL_MS, buttonState, recoverCard, sheetPhase, sheetNotes, verdictWords } from '../lib/orbit/recover.js';
+import { RECOVER_COMMAND, RECOVER_WHERE, POLL_MS, RUNS_CHANGED, buttonState, recoverCard, sheetPhase, sheetNotes, runsWarning, verdictWords } from '../lib/orbit/recover.js';
 import { clock } from '../lib/orbit/page.js';
 import { RunbookLink } from './Runbook.jsx';
 
@@ -21,6 +21,9 @@ export function RecoverProvider({ down, children }) {
   const [status, setStatus] = useState(null);
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(null);
+  // True from the sheet's opening until its fresh status read is back: the sheet's
+  // restart waits for it, so it warns from what is live now (board d8f27c49).
+  const [checking, setChecking] = useState(false);
   const read = useCallback(async () => {
     try {
       const s = await recoverStatus();
@@ -38,9 +41,9 @@ export function RecoverProvider({ down, children }) {
     return () => clearInterval(t);
   }, [running, read]);
   const value = {
-    status, read, setStatus, down, dismissed,
+    status, read, setStatus, down, dismissed, checking,
     dismiss: setDismissed,
-    open: () => { setOpen(true); read(); }
+    open: () => { setOpen(true); setChecking(true); read().finally(() => setChecking(false)); }
   };
   return (
     <RecoverContext.Provider value={value}>
@@ -138,18 +141,27 @@ function RecoverSheet({ onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, busy]);
   const btn = buttonState(status);
+  // Agent runs it would stop: said before Face ID, with Cancel the default (d8f27c49).
+  const warn = phase === 'confirm' || phase === 'working' ? runsWarning(status) : null;
+  const checking = ctx.checking === true;
   const go = async () => {
     setLocal('working');
     setError(null);
     try {
-      const r = await restartJarvis();
+      const r = await restartJarvis(warn?.ids ?? []);
       setMine(r.run?.id ?? null);
       ctx.setStatus(s => ({ ...s, running: r.run, blocked: 'A restart is going now.' }));
       setLocal(null);
       ctx.read();
     } catch (err) {
       setLocal(null);
-      setError(err?.status ? err.message : faceIdError(err));
+      // The server saw runs this sheet didn't name: show its list, and say it changed.
+      if (err?.status === 409 && err.body?.agents) {
+        ctx.setStatus(s => ({ ...s, agents: err.body.agents }));
+        setError(RUNS_CHANGED);
+      } else {
+        setError(err?.status ? err.message : faceIdError(err));
+      }
       ctx.read();
     }
   };
@@ -180,6 +192,7 @@ function RecoverSheet({ onClose }) {
         {phase === 'loading' && <p className="o-stop-small">Checking…</p>}
         {(phase === 'confirm' || phase === 'working') && (
           <>
+            {warn && <p className="o-recover-runs" role="alert">{warn.text}</p>}
             <p className="o-stop-detail">The Mac mini runs jarvis-recover: it fixes what has stopped Jarvis before, then restarts him. A turn he is in ends. It takes a minute or two.</p>
             {sheetNotes(status).map(note => <p key={note} className="o-recover-note" role="status">{note}</p>)}
             {!btn.can && btn.why && <p className="o-stop-error" role="status">{btn.why}</p>}
@@ -208,12 +221,13 @@ function RecoverSheet({ onClose }) {
         <CommandLine />
         <div className="o-stop-actions">
           {(phase === 'confirm' || phase === 'working') && (
-            <button type="button" className="o-stop-go" onClick={go} disabled={busy || !btn.can}>{busy ? 'Waiting for Face ID…' : 'Restart with Face ID'}</button>
+            <button type="button" className={warn ? 'o-stop-anyway' : 'o-stop-go'} onClick={go} disabled={busy || checking || !btn.can}>{busy ? 'Waiting for Face ID…' : checking ? 'Checking…' : warn ? 'Restart anyway' : 'Restart with Face ID'}</button>
           )}
           {phase === 'setup' && (
             <button type="button" className="o-stop-go o-stop-setup" onClick={setUp} disabled={busy}>{settingUp ? 'Waiting for Face ID…' : 'Set up Face ID'}</button>
           )}
-          <button type="button" className="o-stop-cancel" onClick={onClose} disabled={busy}>{phase === 'confirm' || phase === 'setup' ? 'Cancel' : 'Close'}</button>
+          {/* With runs live, Cancel is the default: filled, and focused, so Enter cancels. */}
+          <button type="button" key={warn ? 'cancel-main' : 'cancel'} className={warn ? 'o-stop-cancel o-stop-cancel-main' : 'o-stop-cancel'} onClick={onClose} disabled={busy} autoFocus={Boolean(warn)}>{phase === 'confirm' || phase === 'setup' ? 'Cancel' : 'Close'}</button>
         </div>
       </div>
     </div>

@@ -44,6 +44,19 @@
 //     on purpose; this restart clears that" (jarvis-recover's step 4 removes the flag),
 //     and `recover-asked` records both.
 //
+// Agent runs a restart would stop (board d8f27c49, after 2026-11-20 16:14, when a tap
+// on Restart Jarvis ended two runs in the middle of their work). A restart ends the
+// lead's session, and with it every subagent run inside it. The status lists those runs
+// (`agents`), from the live agents panel (lib/live-agents.mjs, the sessions collector's
+// minute pass: the source the Overview's pane, the Stop buttons and the idle wake-up
+// read), and the page says so before Face ID with Cancel as its default. The server
+// holds the line too, so a page whose status is old can't skip the warning: while runs
+// are live, both POSTs must name each of them in `stopRuns` (their ids, as the status
+// gave them), else the answer is 409 with the runs, and no Face ID is asked or used.
+// When the panel isn't current, nobody can say no run is going, so `stopRuns` must also
+// hold UNSEEN, the page's word for "I said the runs can't be seen". A run started in the
+// panel's last minute is not seen yet: the panel reads the transcripts once a minute.
+//
 // A refusal that means more than a slip of the finger (a Shortcut key from the owner's
 // login, a paired device that is not an approver, a Face ID answer that fails) is
 // alerted as `recover-refused`, at most once per 10 minutes (lib/chat-alert-limit.mjs,
@@ -95,6 +108,11 @@ export const NO_ANSWER_LINE = 'No answer from jarvis-recover after 45 minutes; s
 export const CRASHED_START_LINE = 'The Control Room restarted while starting jarvis-recover; it may have run; see ~/Library/Logs/jarvis-recover.log';
 // The stop flag jarvis-start leaves after a deliberate stop (c1e78ff5), under the home.
 export const STOP_FLAG_PARTS = Object.freeze(['.local', 'state', 'jarvis', 'jarvis-stopped']);
+// The word a confirm sends in `stopRuns` when the page said the runs can't be seen.
+export const UNSEEN = 'unseen';
+// At most this many entries in a confirm's `stopRuns`; more is not a confirm.
+export const STOP_RUNS_MAX = 64;
+const RUN_HASH = /^[a-f0-9]{16}$/;
 const HEALTH_WORDS = new Set(['up', 'down', 'unknown']);
 const NO_STORE = { 'Cache-Control': 'no-store' };
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -171,6 +189,41 @@ export function leadHealth(panel, leadName) {
   return lead && HEALTH_WORDS.has(lead.state) ? lead.state : 'unknown';
 }
 
+// The agent runs a restart of the lead would stop: the live agents panel's subagent runs
+// in the session named as the lead's (the roster's first agent). A `claude -p --agent`
+// run is a process of its own, and a subagent of another session lives in that session:
+// a restart of the lead stops neither. `panel` is the cache's `sessions` entry
+// ({ status, data }); `known` is false unless it is current, and its runs, if any, are
+// still listed (they may be going). A list over the panel's bound (`more`) is not known
+// either. Each run: its id (the panel's hash), the agent's roster name (or the
+// subagent's type), and when it last wrote.
+export function runsAtRisk(panel, roster) {
+  const live = panel?.data?.liveAgents;
+  const agents = Array.isArray(roster?.agents) ? roster.agents : [];
+  const lead = agents[0] ?? null;
+  const rows = isObject(live) && Array.isArray(live.runs) ? live.runs : null;
+  const known = panel?.status === 'ok' && rows !== null && lead !== null && !(Number.isFinite(live.more) && live.more > 0);
+  const runs = [];
+  if (rows === null || lead === null) return { known: false, runs };
+  for (const r of rows) {
+    if (!isObject(r) || r.direct === true || r.session !== lead.name || typeof r.id !== 'string' || !RUN_HASH.test(r.id)) continue;
+    const agent = typeof r.agent === 'string' ? agents.find(a => a.key === r.agent) : null;
+    const name = agent?.name ?? (typeof r.type === 'string' && r.type !== '' ? r.type : 'subagent');
+    runs.push({ id: r.id, name, last: Number.isFinite(r.last) ? r.last : Number.isFinite(r.start) ? r.start : null });
+  }
+  return { known, runs };
+}
+
+// The confirm a POST must carry for these runs: every run's id, and UNSEEN when the list
+// isn't known. `sent` is the body's `stopRuns`; anything but an array of strings is none.
+// Returns the ids missing from it ([] when the restart may go).
+export function missingConfirm(atRisk, sent) {
+  const have = new Set(Array.isArray(sent) && sent.length <= STOP_RUNS_MAX ? sent.filter(v => typeof v === 'string') : []);
+  const need = (atRisk?.runs ?? []).map(r => r.id);
+  if (atRisk?.known !== true) need.push(UNSEEN);
+  return need.filter(id => !have.has(id));
+}
+
 const defaultIsAlive = pid => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (err) { return err?.code === 'EPERM'; }
@@ -194,7 +247,7 @@ export function createRecover({
   now = () => Date.now(), spawn = nodeSpawn, isAlive = defaultIsAlive, exists = path => access(path, constants.R_OK).then(() => true, () => false),
   onEvent = () => {}, log: logLine = console.log, watchMs = WATCH_MS, setTimer = setTimeout, clearTimer = clearTimeout,
   setRepeat = setInterval, clearRepeat = clearInterval, env = process.env,
-  health = () => 'unknown', stopped = null
+  health = () => 'unknown', stopped = null, liveAgents = () => null, roster = null
 }) {
   const ledgerPath = join(dir, 'recover.json');
   const outDir = join(dir, 'recover');
@@ -208,6 +261,11 @@ export function createRecover({
     try { const v = health(); if (HEALTH_WORDS.has(v)) h = v; } catch { h = 'unknown'; }
     try { s = isStopped() === true; } catch { s = false; }
     return { health: h, stopped: s };
+  }
+  // The agent runs a restart would stop, now. It can't fail a request: a broken read is
+  // "not known", which asks for the confirm.
+  function agentsNow() {
+    try { return runsAtRisk(liveAgents(), roster); } catch { return { known: false, runs: [] }; }
   }
   let runs = [];          // oldest first
   let current = null;     // the run going now (starting or running), or null
@@ -326,10 +384,11 @@ export function createRecover({
 
   // Starts the one program. The run is the current one before any await, so two taps
   // at once start one run; it is in the ledger before the script starts.
-  async function start(by) {
+  async function start(by, stops = null) {
     const no = blocked();
     if (no) return { ok: false, status: no.status, error: no.why };
     const seen = jarvisNow();
+    const stopping = Array.isArray(stops?.runs) ? stops.runs.map(x => x.name) : [];
     const r = { id: randomBytes(8).toString('hex'), by, startedAt: now(), finishedAt: null, verdict: 'starting', line: '', exit: null, pid: null, health: seen.health, stopped: seen.stopped };
     current = r;
     runs.push(r);
@@ -364,8 +423,8 @@ export function createRecover({
     if (!ended) r.verdict = 'running';
     await persist().catch(err => log(`recover: the ledger could not be written (${err?.code ?? err?.name ?? 'error'})`));
     noAnswerLater(r);
-    log(`recover: ${by} asked for a Jarvis restart (Face ID passed; health said ${seen.health}${seen.stopped ? ', the stop flag was there' : ''}); run ${r.id} started jarvis-recover${r.pid ? ` (pid ${r.pid})` : ''}`);
-    onEvent({ kind: 'recover-asked', device: by, health: seen.health, stopped: seen.stopped });
+    log(`recover: ${by} asked for a Jarvis restart (Face ID passed; health said ${seen.health}${seen.stopped ? ', the stop flag was there' : ''}${stopping.length ? `; it stops ${stopping.length} agent run${stopping.length === 1 ? '' : 's'}: ${stopping.join(', ')}` : ''}${stops && stops.known !== true ? '; the live agent runs could not be seen' : ''}); run ${r.id} started jarvis-recover${r.pid ? ` (pid ${r.pid})` : ''}`);
+    onEvent({ kind: 'recover-asked', device: by, health: seen.health, stopped: seen.stopped, ...(stops ? { agentRuns: stopping, agentsKnown: stops.known === true } : {}) });
     return { ok: true, run: r };
   }
 
@@ -373,7 +432,7 @@ export function createRecover({
   function view(at = now()) {
     const last = [...runs].reverse().find(r => r.finishedAt !== null) ?? null;
     const no = blocked(at);
-    return { on: enabled, running: publicRun(current), last: publicRun(last), blocked: no ? no.why : null, nextAt: no?.nextAt ?? null, command: RECOVER_COMMAND, jarvis: jarvisNow() };
+    return { on: enabled, running: publicRun(current), last: publicRun(last), blocked: no ? no.why : null, nextAt: no?.nextAt ?? null, command: RECOVER_COMMAND, jarvis: jarvisNow(), agents: agentsNow() };
   }
 
   // ---- the routes (served by the chat's router) ----
@@ -415,19 +474,36 @@ export function createRecover({
     // Asked before Face ID, so a refused restart never asks for it.
     const no = blocked();
     if (no) throw new HttpError(no.status, no.why);
+    const body = await readBody(req);
+    // The agent runs it would stop must each be named in the confirm (board d8f27c49):
+    // checked before Face ID is asked or used, and again just before the run starts.
+    const unconfirmed = () => {
+      const atRisk = agentsNow();
+      const missing = missingConfirm(atRisk, isObject(body) ? body.stopRuns : null);
+      return missing.length ? atRisk : null;
+    };
+    const runsRefusal = atRisk => {
+      const n = atRisk.runs.length;
+      log(`recover: a restart from ${device.name} waits for a confirm: ${atRisk.known ? `${n} agent run${n === 1 ? '' : 's'} would stop` : 'the live agent runs could not be seen'}`);
+      return json(res, 409, { error: atRisk.known ? `${n} agent run${n === 1 ? ' is' : 's are'} going; restarting stops ${n === 1 ? 'it' : 'them'}. Confirm to restart anyway.` : 'The Control Room can\'t see whether agent runs are going; restarting stops any that are. Confirm to restart anyway.', agents: atRisk }, NO_STORE);
+    };
+    const before = unconfirmed();
+    if (before) return runsRefusal(before);
     if (path === ROUTES.challenge) {
       const r = stepUp.challenge(device.id, PURPOSE, origin);
       if (!r.ok) throw new HttpError(r.status, r.error);
       return json(res, 200, { publicKey: r.publicKey }, NO_STORE);
     }
-    const body = await readBody(req);
     const v = await stepUp.verifyAssertion(device.id, PURPOSE, isObject(body) ? body : null, origin);
     if (!v.ok) {
       log(`recover: a restart from ${device.name} was refused (${v.error})`);
       onEvent({ kind: 'recover-refused', why: 'face-id', device: device.name, error: v.error });
       throw new HttpError(v.status, v.error);
     }
-    const s = await start(device.name);
+    // A run may have started while Face ID was up; nothing awaits between this and start's claim.
+    const after = unconfirmed();
+    if (after) return runsRefusal(after);
+    const s = await start(device.name, agentsNow());
     if (!s.ok) { log(`recover: a restart from ${device.name} did not start (${s.error})`); throw new HttpError(s.status, s.error); }
     return json(res, 202, { ok: true, run: publicRun(s.run), note: 'Restarting Jarvis: the Mac mini runs jarvis-recover. It takes a minute or two; the result shows here.' }, NO_STORE);
   }

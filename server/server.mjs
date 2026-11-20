@@ -596,7 +596,10 @@ if (chatSettings.on && socketsReady) {
   const recoverOffPath = join(stateDir, RECOVER_KILL_FILE);
   // `health`: what the health strip says of the lead now, for the sheet's words and the
   // ask's event; a run never waits on it (Ultron's Q1). The stop flag is read by the module.
-  const recover = createRecover({ home: homedir(), dir: chatDir, stepUp, enabled: recoverSettings.on, killed: () => existsSync(recoverOffPath), onEvent: chatEvents, health: () => leadHealth(cache.get('health'), leadName) });
+  // `liveAgents`: the sessions panel the live agents pane, the Stop buttons and the idle
+  // wake-up read; a restart stops the lead's runs in it, so the page and the POSTs say so
+  // first (board d8f27c49).
+  const recover = createRecover({ home: homedir(), dir: chatDir, stepUp, enabled: recoverSettings.on, killed: () => existsSync(recoverOffPath), onEvent: chatEvents, health: () => leadHealth(cache.get('health'), leadName), liveAgents: () => cache.get('sessions', Date.now()), roster });
   const recoverRuns = await recover.load();
   console.log(`recover: Restart Jarvis from the page is ${recoverSettings.on ? 'on' : recoverSettings.state === 'unset' ? 'off (no recover block in config)' : 'off'}${existsSync(recoverOffPath) ? ` (the kill file ${RECOVER_KILL_FILE} is there: every restart is refused)` : ''}; ${recoverRuns} run${recoverRuns === 1 ? '' : 's'} in its ledger`);
   chat = createChatRoutes({ store: chatStore, devices: chatDevices, socket: socketRouter, config, onEvent: chatEvents, push, approvals, agentStop, shortcutKeys: shortcutSettings.on, speech, healTaps, recover });
