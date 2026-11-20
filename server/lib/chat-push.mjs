@@ -19,6 +19,9 @@
 //   looking or not, at any hour. The one push whose body is not a fixed line: it is
 //   the usage panel's own numbers in a fixed shape (WARNING_BODY), and a body that is
 //   not in that shape is not sent. A tap opens the Overview. Titled "Control Room".
+//   The same route carries the full line ("Jarvis is at the session limit until 5:30
+//   pm", FULL_BODY) and the fixed back line ("Jarvis is back under the limit",
+//   BACK_TEXT): isLimitPush is the check, and nothing else passes it.
 // - A local alert (lib/local-alerts.mjs; the ingest socket's local-alert route calls
 //   localAlert): "Local alert: " and a script's own title, its body, already cleaned and bounded there, to
 //   every device at once, looking or not, at any hour; urgent unless its severity is
@@ -34,7 +37,7 @@
 // windows above, so the next message or request pushes as if it never happened.
 import { sendPush, vapidKeys } from './webpush.mjs';
 import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
-import { WARNING_BODY } from './limit-warnings.mjs';
+import { isLimitPush } from './limit-warnings.mjs';
 
 export const CHAT_QUIET_MS = 10e3;
 export const CHAT_REPEAT_MS = 60e3;
@@ -125,7 +128,7 @@ export function payloadFor(kind, origin, body = null) {
   // A limit warning: its own title, the Overview on a tap, and no badge (the badge
   // counts unseen chat messages).
   if (kind === 'limit') {
-    return { web_push: 8030, notification: { title: 'Control Room', body: typeof body === 'string' && WARNING_BODY.test(body) ? body : LIMIT_FALLBACK, navigate: `${site}/#overview` } };
+    return { web_push: 8030, notification: { title: 'Control Room', body: isLimitPush(body) ? body : LIMIT_FALLBACK, navigate: `${site}/#overview` } };
   }
   const navigate = `${site}/#chat`;
   return { web_push: 8030, notification: { title: 'Jarvis', body: BODIES[kind], navigate, app_badge: 1 } };
@@ -197,7 +200,7 @@ export function createPushService({
   async function limitWarning(body, { only = null } = {}) {
     const none = { tried: 0, reached: 0, missed: [] };
     if (!vapid) return none;
-    if (typeof body !== 'string' || !WARNING_BODY.test(body)) {
+    if (!isLimitPush(body)) {
       log('push: a limit warning that is not in the fixed shape was not sent');
       return none;
     }

@@ -3,7 +3,9 @@
 // local time, so the words read the same in any time zone. Every figure is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { limitWarnings, ruleFor, windowOf, warningKey, keyWindow, keyParts, mayTell, resetWords, WARNING_BODY, SESSION_STEPS, WEEKLY_STEPS, KIND, REPEAT_MS, DAILY_MAX, DAY_MS } from '../lib/limit-warnings.mjs';
+import { limitWarnings, ruleFor, windowOf, warningKey, keyWindow, keyParts, mayTell, resetWords, WARNING_BODY, SESSION_STEPS, WEEKLY_STEPS, KIND, REPEAT_MS, dailyMax, DAY_MS } from '../lib/limit-warnings.mjs';
+
+const DAILY_MAX = dailyMax('Current session');
 
 const at = (...parts) => new Date(...parts).getTime();
 // A Tuesday afternoon; the session resets at 5:30 pm, the week the next Monday at 7 pm.
@@ -145,7 +147,7 @@ test('a key gives back its limit, its step and its window', () => {
   }
 });
 
-test('the backstop\'s rule: one telling per limit in 30 minutes unless its step rises, 12 per limit in 24 hours', () => {
+test('the backstop\'s rule: one telling per limit in 30 minutes unless its step rises, 18 per limit in 24 hours', () => {
   const session = step => ({ label: 'Current session', step });
   const told = (ago, step = 80, label = 'Current session') => ({ at: NOW - ago, label, step });
   assert.equal(mayTell([], session(80), NOW), true);
@@ -161,7 +163,7 @@ test('the backstop\'s rule: one telling per limit in 30 minutes unless its step 
   assert.equal(mayTell([told(10 * 60e3, 95), told(60e3, 80)], session(95), NOW), false, 'a lower telling since does not reopen the higher step');
   assert.equal(mayTell([told(60e3, 90, 'Weekly · all models'), null], session(80), NOW), true, 'another limit\'s telling does not count');
   const day = n => Array.from({ length: n }, (_, i) => told(DAY_MS - 1 - i * 60e3));
-  assert.equal(mayTell(day(DAILY_MAX), session(95), NOW), false, 'twelve in the day, even for a higher step');
+  assert.equal(mayTell(day(DAILY_MAX), session(95), NOW), false, 'eighteen in the day, even for a higher step');
   assert.equal(mayTell(day(DAILY_MAX - 1), session(80), NOW), true);
   assert.equal(mayTell([...day(DAILY_MAX - 1), told(DAY_MS)], session(80), NOW), true, 'one 24 hours old no longer counts');
   assert.equal(mayTell([...day(DAILY_MAX - 1), told(DAY_MS - 1, 90, 'Weekly · all models')], session(80), NOW), true);

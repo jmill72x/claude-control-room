@@ -780,11 +780,14 @@ test('through the notifier: the session at 80% wakes the lead once, and again at
     assert.equal((await run(81)).events.made, 1);
     assert.equal((await run(88)).events.made, 0, 'the alert bar\'s 85% makes no event, and the step is told');
     assert.equal((await run(96)).events.made, 1);
+    assert.equal(env.events.deliverable(env.eventsOf()[1]), true);
+    // At 100% the full line makes no event (the lead is the one at the limit), and the
+    // 95% line, no longer the live alert, is not delivered late.
     assert.equal((await run(100)).events.made, 0);
     const made = env.eventsOf();
     assert.deepEqual(made.map(m => m.text), ['Claude session at 81%, resets 5:30 pm', 'Claude session at 96%, resets 5:30 pm']);
     assert.deepEqual(made.map(m => [m.meta.event.source, m.meta.event.type, m.meta.event.count, m.meta.event.live]), [['limit', 'limit-warning', 1, true], ['limit', 'limit-warning', 1, true]]);
-    assert.equal(env.events.deliverable(made[1]), true);
+    assert.equal(env.events.deliverable(made[1]), false);
     assert.ok(!JSON.stringify(made).includes('limit-step:'), 'the key leaves only as a hash');
   } finally { await env.done(); }
 });

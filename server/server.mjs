@@ -327,10 +327,14 @@ registry.register('notifier', async () => {
     readSent: sentStore.read,
     writeSent: sentStore.write,
     acks: await ackStore.read(now),
-    send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message }), devices: limitPush }),
+    // A limit's full line names #jarvis as its feed (lib/limit-warnings.mjs); every
+    // other alert goes to #pepper.
+    send: entrySender({ alert: entry => sendAlert({ topic, title: entry.title, message: entry.message, feed: entry.feed }), devices: limitPush }),
     events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys })),
     // A heal hold skips a key the events ledger has (Ultron's L4, 11-13).
-    eventKnown: key => Boolean(events?.knows(key))
+    eventKnown: key => Boolean(events?.knows(key)),
+    // Back under every full limit: one "limit reset" event to the lead (lib/events.mjs).
+    limitReset: events && (() => events.limitReset())
   });
   return { configured: Boolean(topic), ...out };
 }, 5 * 60 * 1000);

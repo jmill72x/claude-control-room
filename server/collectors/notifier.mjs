@@ -1,7 +1,7 @@
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, newKeys, prune, observableSources } from '../lib/push-alerts.mjs';
 import { applyAcks } from '../lib/acks.mjs';
-import { limitWarnings, keyParts, mayTell, DAY_MS, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS, RESET_BELOW_PCT } from '../lib/limit-warnings.mjs';
+import { limitWarnings, keyParts, mayTell, ruleFor, backFrom, fullNow, DAY_MS, DEVICE_RETRIES, DEVICE_RETRY_GAP_MS, RESET_BELOW_PCT, FULL_STEP, BACK_TEXT } from '../lib/limit-warnings.mjs';
 import { oneLine } from '../lib/chat-events.mjs';
 
 // Only push from panels that are actually current. A `stale` panel still holds
@@ -69,7 +69,12 @@ export const entrySender = ({ alert, devices = null, log = console.error }) => a
 // (`{ passes, missed, at }`: the tries made since the telling, the devices, `null` for
 // every one, and when the last try or the telling was; a file that has no time there,
 // or one still ahead, is read as `at: 0`, long ago, so its next try is due).
+// Since 2026-11-20 also `out`, by label, the limits told full and not yet read reset
+// (`{ win, at }`, lib/limit-warnings.mjs's backFrom), and `back`, what the back line
+// still owes the devices (a debt as in `owed`), or null.
 export const LIMIT_STATE = 'limit-step-state';
+const readDebt = (debt, now) => (!Number.isInteger(debt?.passes) || debt.passes < 0 || debt.passes >= DEVICE_RETRIES ? null
+  : { passes: debt.passes, missed: Array.isArray(debt.missed) ? debt.missed.filter(isDeviceId) : null, at: Number.isFinite(debt.at) && debt.at <= now ? debt.at : 0 });
 export function readLimitState(raw, now) {
   const told = (Array.isArray(raw?.told) ? raw.told : [])
     .filter(t => typeof t?.label === 'string' && Number.isInteger(t.step) && Number.isFinite(t.at) && t.at <= now && now - t.at < DAY_MS)
@@ -77,21 +82,42 @@ export function readLimitState(raw, now) {
   const owed = {};
   // Whatever `owed` is, only an entry under a warning's key with a count is read.
   for (const [key, debt] of Object.entries(raw?.owed ?? {})) {
-    if (!keyParts(key) || !Number.isInteger(debt?.passes) || debt.passes < 0 || debt.passes >= DEVICE_RETRIES) continue;
-    owed[key] = { passes: debt.passes, missed: Array.isArray(debt.missed) ? debt.missed.filter(isDeviceId) : null, at: Number.isFinite(debt.at) && debt.at <= now ? debt.at : 0 };
+    const read = keyParts(key) ? readDebt(debt, now) : null;
+    if (read) owed[key] = read;
   }
-  return { told, owed };
+  // Only a limit that has a full line, told at a time that has come, with a window that
+  // is a time or none.
+  const out = {};
+  for (const [label, o] of Object.entries(raw?.out ?? {})) {
+    if (!ruleFor(label)?.full || !Number.isFinite(o?.at) || o.at > now || !(o.win === null || Number.isFinite(o.win))) continue;
+    out[label] = { win: o.win, at: o.at };
+  }
+  return { told, owed, out, back: readDebt(raw?.back, now) };
 }
 // What a send left owing to the devices: the ids it missed, null for all of them (the
 // call threw), or nothing.
 const owedAfter = result => (result?.devices?.failed ? { missed: null }
   : Array.isArray(result?.devices?.missed) && result.devices.missed.length > 0 ? { missed: result.devices.missed } : null);
 
+// One later try of a debt to the devices (a told warning's, or the back line's): the
+// entry again, to the devices it missed only, with no alert. The debt after it, or null
+// when nothing is owed any more; the last failed try is logged.
+async function retryDevices(send, entry, debt, now, log) {
+  let again;
+  try { again = await send({ ...entry, devicesOnly: true, only: debt.missed }); } catch { again = { devices: { failed: true } }; }
+  const still = owedAfter(again);
+  if (still && debt.passes + 1 < DEVICE_RETRIES) return { passes: debt.passes + 1, missed: still.missed ?? debt.missed, at: now };
+  if (still) log(`push: a limit warning did not reach every device in ${DEVICE_RETRIES} more tries; no more are made`);
+  return null;
+}
+
 // `events` (optional): `(alerts, { observable }) => Promise`, the event
 // hook (lib/events.mjs), given the alerts after acks. It keeps a ledger of its own and
 // runs in its own try, so a failed push and a failed event never block each other.
 // `eventKnown(key)` (optional): whether that hook's ledger already has the key.
-export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [], events = null, eventKnown = () => false, log = console.error }) {
+// `limitReset` (optional): `() => Promise<{ status }>`, the lead's "limit reset" event
+// (lib/events.mjs), called once when every limit told full has reset.
+export async function runNotifier({ snapshot, config, now, readSent, writeSent, send, acks = [], events = null, eventKnown = () => false, limitReset = null, log = console.error }) {
   // An acknowledged alert (lib/acks.mjs) is not pushed. Its key is then forgotten
   // by the rule below, so when the ack lapses with the condition still live, the
   // alert is new again and pushed again: an expiry re-notifies, which is its job.
@@ -137,16 +163,10 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
       // DEVICE_RETRY_GAP_MS after the one before: a pass sooner than that leaves it.
       const debt = warning ? limitState.owed[entry.keys[0]] : null;
       if (!debt || now - debt.at < DEVICE_RETRY_GAP_MS) { skipped++; continue; }
-      let again;
-      try { again = await send({ ...entry, devicesOnly: true, only: debt.missed }); } catch { again = { devices: { failed: true } }; }
+      const next = await retryDevices(send, entry, debt, now, log);
       retried++;
-      const still = owedAfter(again);
-      if (!still || debt.passes + 1 >= DEVICE_RETRIES) {
-        delete limitState.owed[entry.keys[0]];
-        if (still) log(`push: a limit warning did not reach every device in ${DEVICE_RETRIES} more tries; no more are made`);
-      } else {
-        limitState.owed[entry.keys[0]] = { passes: debt.passes + 1, missed: still.missed ?? debt.missed, at: now };
-      }
+      if (next) limitState.owed[entry.keys[0]] = next;
+      else delete limitState.owed[entry.keys[0]];
       continue;
     }
     // The backstop: over a cap, a warning waits for a pass that has room.
@@ -170,15 +190,56 @@ export async function runNotifier({ snapshot, config, now, readSent, writeSent, 
         for (const k of entry.keys) delete limitState.owed[k];
         const owes = owedAfter(result);
         if (owes) limitState.owed[entry.keys[0]] = { passes: 0, missed: owes.missed, at: now };
+        // The full line: the lead is out until this limit resets. What an earlier back
+        // line still owed the devices is dropped: it would now say something untrue.
+        if (warning.step === FULL_STEP) {
+          limitState.out[warning.label] = { win: warning.window, at: now };
+          limitState.back = null;
+        }
       }
     }
   }
 
-  const keepState = limitState.told.length > 0 || Object.keys(limitState.owed).length > 0;
+  // Back under the limit: once every limit told full has reset (lib/limit-warnings.mjs,
+  // backFrom), read from this pass's current panel only, one fixed line to the devices
+  // (no ntfy and no #pepper: the full line's #jarvis post is the record) and one event
+  // to the lead. A panel that is not current has no readings here (okOnly), so it says
+  // nothing either way.
+  let back = 0;
+  const backEntry = { keys: [], title: 'Control Room', message: BACK_TEXT, devices: true };
+  if (limitState.back && now - limitState.back.at >= DEVICE_RETRY_GAP_MS) {
+    limitState.back = await retryDevices(send, backEntry, limitState.back, now, log);
+    retried++;
+  }
+  if (Object.keys(limitState.out).length > 0) {
+    const limits = current.usage?.data?.limits;
+    const { still, back: turned, dropped } = backFrom(limitState.out, limits, now);
+    for (const label of dropped) log(`push: ${oneLine(label, 80)} was told full more than eight days ago and never read reset; no back line for it`);
+    // A limit read full now (its own full line not told yet, say) keeps everyone out:
+    // the limits that turned stay out, to be back with it.
+    const blocked = fullNow(limits);
+    limitState.out = blocked ? Object.fromEntries(Object.entries(limitState.out).filter(([label]) => !dropped.includes(label))) : still;
+    if (turned.length > 0 && Object.keys(still).length === 0 && !blocked) {
+      back = 1;
+      let result;
+      try { result = await send({ ...backEntry, devicesOnly: true, only: null }); } catch { result = { devices: { failed: true } }; }
+      const owes = owedAfter(result);
+      limitState.back = owes ? { passes: 0, missed: owes.missed, at: now } : null;
+      let lead = 'none';
+      if (limitReset) {
+        try { lead = (await limitReset())?.status ?? 'unknown'; } catch (err) { lead = 'failed'; log(`events: the limit-reset event failed (${err?.message ?? err})`); }
+      }
+      const d = result?.devices ?? {};
+      log(`push: back under the limit; the line went to ${Number.isInteger(d.reached) ? d.reached : 0} of ${Number.isInteger(d.tried) ? d.tried : 0} devices${d.failed ? ' (the push failed)' : ''}, the lead's event: ${lead}`);
+    }
+  }
+
+  const keepState = limitState.told.length > 0 || Object.keys(limitState.owed).length > 0
+    || Object.keys(limitState.out).length > 0 || limitState.back !== null;
   await writeSent(keepState ? { ...alreadySent, [LIMIT_STATE]: limitState } : alreadySent);
   return {
     alerts: alerts.length, sent, skipped,
-    ...(capped ? { capped } : {}), ...(retried ? { retried } : {}),
+    ...(capped ? { capped } : {}), ...(retried ? { retried } : {}), ...(back ? { back } : {}),
     ...(held.size ? { held: held.size } : {}), ...(eventsOut ? { events: eventsOut } : {})
   };
 }

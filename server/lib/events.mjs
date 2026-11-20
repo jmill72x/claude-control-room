@@ -11,6 +11,9 @@
 //   lib/proactive-text.mjs.
 // - The event socket (lib/event-socket.mjs): a typed body from a source on config's
 //   allowlist, empty by default.
+// - The notifier, once every limit it told full has reset (`limitReset`): one fixed
+//   line saying so, and that messages may have come in while he was out. Source
+//   `limit`, type `limit-reset`; no count, no time, no message's words.
 // The words come from fixed templates with typed fields only. A job is named only by
 // config's own `jobs` entry for its label (Ultron's M1, 11-11: a launchd label is a plist
 // file name any same-user program can choose); otherwise "a launchd job". A cron's `last`
@@ -82,6 +85,12 @@ export const PROACTIVE_SOURCE = 'proactive';
 const reservedSource = name => Object.hasOwn(ALERT_SOURCES, name) || name === PRESENCE_SOURCE || name.startsWith(`${PROACTIVE_SOURCE}-`);
 // What a limit warning's event says when its words are not in the fixed shape.
 export const LIMIT_WORDS = 'a limit warning';
+// The "limit reset" event's words: fixed, and a fact, not an instruction (an event is
+// data to the lead; Ultron's 11-20 M1): the lead's own style says what to do on it. The
+// jarvis repo's answer watch sends its own `answer-watch` event, with a count, when a
+// message of the owner's went unanswered; this one goes after every reset that
+// followed a full line, whether or not anything waits, and names nothing.
+export const RESET_WORDS = 'Limit reset: Jarvis is back under the Claude limit; messages may have come in while he was at the limit.';
 // Presence (lib/shortcut-routes.mjs): what a paired Shortcut may report, each a fixed
 // word. The Shortcut sends the name alone; no text of its own ever reaches an event.
 export const PRESENCE_SOURCE = 'presence';
@@ -138,7 +147,8 @@ export function eventText(source, items, { title = null } = {}) {
   }
   // A limit warning's own line (lib/limit-warnings.mjs), checked on the way in and
   // again here: a candidate held overnight comes back from the ledger's file.
-  if (source === 'limit') return listed(items, c => (typeof c.words === 'string' && WARNING_BODY.test(c.words) ? c.words : LIMIT_WORDS));
+  // The reset's own fixed line (`reset`, set only by limitReset below).
+  if (source === 'limit') return listed(items, c => (c.reset === true ? RESET_WORDS : typeof c.words === 'string' && WARNING_BODY.test(c.words) ? c.words : LIMIT_WORDS));
   // The proactive check's hits (lib/proactive-text.mjs): typed fields only, checked
   // again here, whoever handed them in.
   if (source === PROACTIVE_SOURCE) return proactiveText(items.map(c => c.hit), { now: items[0]?.since ?? Date.now() }) ?? 'Heads up';
@@ -175,7 +185,9 @@ export function candidatesFromAlerts(alerts, { jobNames = {}, serviceNames = new
     } else if (a.kind === LIMIT_STEP && key.startsWith(`${LIMIT_STEP}:`) && typeof a.text === 'string' && WARNING_BODY.test(a.text)) {
       // A limit warning (lib/limit-warnings.mjs): not a failure, so quiet hours hold
       // it. Its words are numbers in a fixed shape; a line in any other shape makes
-      // no event. `until` is its window's reset: past it, a held one is dropped.
+      // no event. `until` is its window's reset: past it, a held one is dropped. The
+      // full line ("Jarvis is at the session limit…") is not in that shape, so it makes
+      // none: the lead is the one at the limit, and the reset's event follows it.
       out.push({ source: 'limit', key, failure: false, words: a.text, until: Number.isFinite(a.resetsAt) ? a.resetsAt : null, since });
     }
   }
@@ -324,7 +336,7 @@ export function createEvents({
   const typeFor = (source, items = []) => {
     if (source === 'launchd') return 'job-failed';
     if (source === 'service') return 'service-down';
-    if (source === 'limit') return 'limit-warning';
+    if (source === 'limit') return items.every(c => c.reset === true) ? 'limit-reset' : 'limit-warning';
     if (source === PROACTIVE_SOURCE) return 'heads-up';
     if (source !== PRESENCE_SOURCE) return 'count';
     const whats = new Set(items.map(c => c.what));
@@ -591,6 +603,29 @@ export function createEvents({
     });
   }
 
+  // The notifier's "limit reset" (collectors/notifier.mjs): every limit it told full
+  // has reset. One item of fixed words (RESET_WORDS) and no alert key, so liveness is
+  // not checked at delivery, only the 2-hour life. Told at any hour (`immediate`):
+  // messages that waited out the limit should not wait for 07:00 as well. The coalesce
+  // window, the caps (as source `limit`) and the kill switch apply, as for a post.
+  function limitReset() {
+    return serial(async () => {
+      const item = { source: 'limit', immediate: true, reset: true, since: clock() };
+      let status;
+      if (killed()) {
+        suppress([item]);
+        await flushSuppressed();
+        status = 'off';
+      } else {
+        const r = await admit('limit', [item]);
+        status = r.made ? 'made' : r.held ? 'held' : 'coalescing';
+        await release();
+      }
+      await save();
+      return { status };
+    });
+  }
+
   // Whether a stored event may go to the channel now (chat-socket's toInbound).
   function deliverable(m, at = clock()) {
     if (m?.kind !== 'event' || m.from !== 'system') return false;
@@ -619,7 +654,7 @@ export function createEvents({
   }
 
   return {
-    load, fromAlerts, post, presence, proactive, idle, deliverable, takeTriage, killed,
+    load, fromAlerts, post, presence, proactive, idle, limitReset, deliverable, takeTriage, killed,
     // Whether an alert's key is in the ledger, or waits out a coalesce window: the lead
     // has been, or is about to be, told of it (the notifier's heal hold, Ultron's L4).
     knows: key => typeof key === 'string' && (Object.hasOwn(ledger.keys, key) || isPending(key)),

@@ -2243,7 +2243,10 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   95%, a weekly limit at 90%. This is a deliberate change to the rule that limits never
   make events. It was made after a morning when two agent runs took the session limit from
   3% to 100% in three hours and one died mid-fix, so the lead now hears of it while there
-  is room to stop starting work. The alert bar's own `limit` line (config's
+  is room to stop starting work. The full line at 100% makes none (the lead is the one at
+  the limit); **since 2026-11-20 the reset after it makes one instead** (source `limit`,
+  type `limit-reset`; see "The full line and the back line" under "Push notifications"),
+  told at any hour. The alert bar's own `limit` line (config's
   `warnThreshold`), ingested crons, waits, projections, the board and credits still never
   make events. An acked alert makes none.
 - **What it says.** Fixed templates with typed fields only: `Job <name> failed (exit N) at
@@ -2255,7 +2258,10 @@ and `web/test/orbit-events.test.js`. Events run only while the chat is on.
   warning's line (`Claude session at 80%, resets 5:30 pm`) is checked against its fixed
   shape before it becomes a candidate and again when the event's words are written (a
   candidate held overnight comes back from the ledger's file); one that does not fit is
-  said as `a limit warning`. Several at once are joined with `; `. A cron's
+  said as `a limit warning`. The reset's event is one fixed line, `Limit reset: Jarvis is
+  back under the Claude limit; messages may have come in while he was at the limit.`, a
+  fact and not an instruction (an event is data to the lead; what he does on it is his
+  own style's rule), with no count, time or message's words. Several at once are joined with `; `. A cron's
   `last` words, labels, log text and ingest names never go in. The exit code
   comes from the crons panel's numeric `exit` field. Times are the server's local time.
 - **Limits, on the server.** Dedupe by alert key while the condition lives, in a ledger of
@@ -3392,7 +3398,7 @@ quoted:**
 | kind | pushed as |
 |---|---|
 | `limit` | full text — e.g. `Monthly spend at 88%`. Only for a limit with no warning steps of its own: the session and the weekly limits are told by `limit-step` instead, and their alert-bar line is not pushed |
-| `limit-step` | full text, and to the paired devices too — e.g. `Claude session at 80%, resets 5:30 pm` (see "Limit warnings" below) |
+| `limit-step` | full text, and to the paired devices too — e.g. `Claude session at 80%, resets 5:30 pm` (see "Limit warnings" below). At 100% the session's and the all-models week's line is `Jarvis is at the session limit until 5:30 pm`, posted to `#jarvis` in place of `#pepper` ("The full line and the back line" below) |
 | `projection` | full text — e.g. `Weekly · all models projected to reach 140% by reset at the last 24 h rate` |
 | `credits` | full text — e.g. `Promotional credit expires in 12 days` |
 | `board` | full text — e.g. `The board is at 78% of its save limit`; it is built from two numbers, never from an item |
@@ -3433,8 +3439,9 @@ minutes left. So the limits now have warning steps of their own, and these reach
 (`server/lib/limit-warnings.mjs`, tested in `server/test/limit-warnings.test.mjs`):
 
 - **The steps.** "Current session" at **80%** and again at **95%**; each weekly limit
-  ("Weekly · all models" and the model's own, such as "Weekly · Fable") at **90%**. They
-  are fixed in the code, apart from `warnThreshold`, which still colours the bars and
+  ("Weekly · all models" and the model's own, such as "Weekly · Fable") at **90%**; and
+  the session and "Weekly · all models" at **100%**, the full line (its own section
+  below). They are fixed in the code, apart from `warnThreshold`, which still colours the bars and
   writes the alert bar's line but no longer pushes for these limits (it would land between
   the steps and say the same thing).
 - **Where a warning goes.** Three places: (1) a **Web Push to every paired device**
@@ -3493,9 +3500,12 @@ minutes left. So the limits now have warning steps of their own, and these reach
   caps below still hold after such a reset.
 - **A backstop under the keys.** Whatever the keys miss (a reset that starts to move off
   its 10-minute mark, a reading whose reset comes and goes) is held by two caps: a limit
-  is told at most once in 30 minutes unless its step rises, and at most 12 times in any
-  24 hours (24 hours touch at most six session windows of two steps, so twelve is exactly
-  what an honest day can need). A warning over a cap is put off, not dropped: it goes on
+  is told at most once in 30 minutes unless its step rises, and at most six times a
+  step in any 24 hours, for the steps it has (`dailyMax`): 18 for the session (80%, 95%
+  and the full line), 12 for "Weekly · all models" (90% and the full line), 6 for a
+  model's own week (90%). Six because 24 hours touch at most six session windows, so the
+  session's 18 is exactly what an honest day can need. (It was 12 for every limit before
+  the full line.) A warning over a cap is put off, not dropped: it goes on
   the first pass with room. The tellings of the last 24 hours and what the devices are
   owed live in `server/data/notified.json` beside the told keys, under the one name
   `limit-step-state`, read strictly (anything not in shape is dropped). The file is
@@ -3513,6 +3523,57 @@ minutes left. So the limits now have warning steps of their own, and these reach
   only `cron` and `service` alerts can be acked.
 - **Not done here.** No quiet hours on the device push (no other alert push has them;
   the phone's own Focus decides at night). The steps and the caps are not in config.
+
+### The full line and the back line: Jarvis at 100%, and after the reset (2026-11-20)
+
+At 100% the lead goes silent until the reset, and the 95% warning was the last anyone
+heard. Two more lines close that gap (board 1e2d7926, Ultron's 11-19 M5; the code is in
+`server/lib/limit-warnings.mjs` and `server/collectors/notifier.mjs`, tested in
+`server/test/limit-full.test.mjs` and `server/test/notifier-limit-full.test.mjs`):
+
+- **The full line, at 100%.** `Jarvis is at the session limit until 5:30 pm`, or `Jarvis
+  is at the weekly limit until Mon Nov 23, 7:00 pm`: the reset in the server's local
+  time, with the weekday and the date when it is not today, and no time at all when the
+  reading has none. Only "Current session" and "Weekly · all models" have this step, at
+  100% or more. A model's own weekly limit ("Weekly · Fable") stops only the runs on that
+  model, and the lead runs on the default model, so at 100% it keeps its 90% line and no
+  full line (change `ruleFor` if the lead moves to a model with a limit of its own).
+- **Where it goes.** The same Web Push to every paired device as a warning (urgent, any
+  hour, titled "Control Room", a tap to the Overview, the same Topic, so a phone that was
+  away gets the newest line), ntfy where a topic is set, and **`#jarvis`** in place of
+  `#pepper`: the poster (`discord-post --agent jarvis`) posts to the feed the lead's own
+  routines post to, through that feed's webhook in the Keychain (`FEEDS` in
+  `server/notify.mjs` allows `pepper` and `jarvis`; any other name posts to `#pepper`).
+  **No event to the lead:** he is the one at the limit, and the line is not in a step
+  line's shape, which is what the event check takes.
+- **Once per window, like a step.** It is the 100 step of the warning keys
+  (`limit-step:<label>:100:<reset>`), carrying the 80% and 95% keys, so a jump from 70%
+  to 100% is the one line, and everything above holds: the key kept until the reset or a
+  reading under 40%, the device debt, the 30-minute and day caps.
+- **The back line, after the reset.** The notifier keeps, beside its told keys
+  (`limit-step-state` in `server/data/notified.json`, as `out`), each limit it told full
+  and when. A limit is back when a current reading is under 100% **and** its window has
+  turned over: the told reset has passed, the reading names another window (a reading
+  with no reset time, or one that does not parse, names none), or it reads under 40% (an
+  early reset). A dip to 99% inside the told window is not back. Once every limit told
+  full is back, and no limit with a full step reads 100% or more now (the session can
+  reset while the week is still full, even when the week's own full line has not gone
+  out yet: then the session stays out with it), the notifier sends `Jarvis is back under the limit` to the paired devices
+  only (no ntfy, no `#pepper` or `#jarvis`), and the lead gets one event. A device it
+  missed is tried again alone, as for a warning; a new full line drops that debt. A stale
+  panel says nothing, either way. A limit kept out more than eight days is dropped with a
+  log line and no back line. The log says `push: back under the limit; the line went to
+  N of N devices, the lead's event: made`.
+- **The lead's "limit reset" event.** Source `limit`, type `limit-reset`, one fixed line
+  (see "Events"): that he is back, and that messages may have come in while he was out,
+  as a fact with no count and no message's words; how to act on it is the lead's own
+  rule. It is told at any hour (messages that waited out the
+  limit should not wait for 07:00 too), and the coalesce window, the caps and the kill
+  switch apply as to any event. The jarvis repo's answer watch sends an `answer-watch`
+  event of its own, with the count of unanswered messages, when one of the owner's
+  messages actually waited; this one goes after every reset that followed a full line,
+  whether anything waited or not. A full line that landed nowhere keeps nobody out, so
+  no back line or event follows it.
 
 **One-time setup** — the topic lives in Keychain, never in this public repo:
 

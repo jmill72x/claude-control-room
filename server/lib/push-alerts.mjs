@@ -37,10 +37,11 @@ export function pushableFrom(alerts) {
 
   // A limit warning: its words are the usage panel's own numbers, so they go out as
   // written, and to the paired devices too (`devices`; collectors/notifier.mjs). It
-  // carries the keys of the steps it has passed, so each is told once.
+  // carries the keys of the steps it has passed, so each is told once. The full line
+  // (`feed: 'jarvis'`) is posted to #jarvis in place of #pepper (notify.mjs).
   for (const a of keyed.filter(a => a.kind === LIMIT_STEP)) {
     const covers = (Array.isArray(a.covers) ? a.covers : []).filter(k => typeof k === 'string' && k);
-    out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, devices: true });
+    out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, devices: true, ...(a.feed === 'jarvis' ? { feed: 'jarvis' } : {}) });
   }
 
   const groups = new Map();

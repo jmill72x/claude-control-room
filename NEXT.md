@@ -3359,10 +3359,10 @@ is the reference for where the link shows and when.
   single timings is the trap; a median of several runs, or a cap on work rather than on
   milliseconds, would hold. Asked for as a board item.
 
-## 20. Jarvis-down alerts without Discord: a local script's alert to the paired devices (board 5f892918, P0; staged 2026-11-19 on `jos/alert-push`, Ultron's review folded in)
+## 20. Jarvis-down alerts without Discord: a local script's alert to the paired devices (board 5f892918, P0; merged as main 0efa83f, seen 2026-11-20; live only after a restart and a web build)
 
-**Staged, not committed, on `jos/alert-push` (worktree `~/Projects/.worktrees/ccr-alertpush`,
-from main c8ecec8, no upstream).** Jeff decided 2026-11-19 that the backup path for
+**Merged as main 0efa83f (built on `jos/alert-push`, from main c8ecec8); whether the
+restart and the web build below have happened was not checked from here.** Jeff decided 2026-11-19 that the backup path for
 Jarvis-down alerts is the Control Room's own Web Push, which already works for "Jarvis is
 offline". The Jarvis repo's `bin/jarvis-start` (`fail()` and the new "Jarvis started
 degraded") and `bin/routine` alert to Discord first, and every fallback after it has a weak
@@ -3464,3 +3464,97 @@ Jarvis side (calling it from `bin/jarvis-start` and `bin/routine`) is a separate
   alert when Jarvis comes back (`{"clear": "jarvis-down"}` or similar), so the strip
   doesn't keep "Jarvis failed to start" until it is acked or a day passes; and the Jarvis
   side's calls (`bin/jarvis-start`, `bin/routine`), which this contract is for.
+
+## 21. Jarvis at 100%, and back under: the full line and the back line (board 1e2d7926, P0; staged 2026-11-20 on `jos/limit-full`, Ultron GO with his fixes in)
+
+**Staged, not committed, on `jos/limit-full` (worktree `~/Projects/.worktrees/ccr-limit-full`,
+from main 0efa83f, no upstream).** Ultron's 11-19 M5 on board 1e2d7926: at 100% the lead
+goes silent until the reset, and the 95% warning was the last word anyone got. Two pieces,
+on top of §11's warnings; the README's "The full line and the back line" (under "Push
+notifications") is the reference.
+
+- **The full line.** At 100% of the session or of "Weekly · all models": `Jarvis is at the
+  session limit until 5:30 pm` / `Jarvis is at the weekly limit until Mon Nov 23, 7:00 pm`
+  (no time when the reading has no reset). To the paired devices (the warnings' Web Push)
+  and ntfy, and posted to **`#jarvis`** through `discord-post --agent jarvis` (the feed the
+  lead's routines post to) in place of `#pepper`. It is the 100 step of the warning keys,
+  so once per window with the same dedupe, caps, device debt and early-reset rule. No event.
+- **The back line and the reset event.** Once every limit told full reads under 100% in a
+  window that has turned over (reset passed, another window named, or under 40%), and no
+  limit with a full step reads 100% now: `Jarvis is back under the limit` to the paired
+  devices only, and one Control Room event to the lead, source `limit`, type
+  `limit-reset`, fixed words stating a fact: `Limit reset: Jarvis is back under the Claude
+  limit; messages may have come in while he was at the limit.` (no count, no message
+  content, no instruction).
+- **Ultron's review, 2026-11-20: GO, one medium and six lows; all handled in the same
+  staged change.** M1: the event's words were an imperative ("Check the chat…"); events
+  are data to the lead, so they now state a fact, and Jarvis adds his own style rule for
+  acting on it. L1: a week whose full line failed to send was in no `out`, so the session's
+  reset could say "back" while the week read 100%; now no back line while any limit with a
+  full step reads 100% or more (`fullNow`), and the limits that turned stay out with it.
+  L2: a reading with no window (no reset time, or one that does not parse) counted as
+  "another window"; now it names none, and only the 40% mark or the told reset's passing
+  says back. L5: the 18-a-day cap applied to every limit; now six a step, the full step
+  counted (`dailyMax`): 18 for the session, 12 for the all-models week, 6 for a model's
+  week. L6: the wording of choice (3) below. L4, accepted, no code change: the reset event
+  has no alert key, so a restart in the middle of the pass that makes it (after the
+  event, before `notified.json` is written, or the reverse) can lose it or send it twice.
+  L3 (a double wake with the answer watch's event) is Jarvis's to handle in his style
+  rule.
+- **Checked against what was there:** the existing event to the lead (§11) fires only at
+  the steps, never at a reset, so it did not already do the catch-up. The jarvis repo's
+  answer watch sends its own `answer-watch` event (with a count) only when one of the
+  owner's messages actually waited; this one goes after every reset that followed a full
+  line and names nothing, so the two overlap in purpose but not in content.
+- **Choices to defend.** (1) Only the session and the all-models week have the full step:
+  the lead runs on the default model, so a model's own weekly limit (Fable) at 100% does
+  not silence him; at 100% it keeps its 90% line. (2) No event at 100%: the lead is the
+  one at the limit, and the full line is outside WARNING_BODY's shape, which is the
+  event check; the 95% event, if still undelivered, is no longer deliverable then (its key
+  is not the live alert). (3) Back needs the window to turn over, not just a reading under
+  100%. Ultron replayed 29,143 readings (2026-08-06 to 11-20) and found no dip from 100%
+  to 40-99% inside a window, so this guards a case not yet seen; the rule stays, because
+  "back" followed by silence would be worse than waiting. (4) Back waits for every limit told full (session reset while the
+  week is full says nothing). (5) The back line goes to the devices only; the `#jarvis`
+  post of the full line is the record. (6) The reset event is told at any hour, not held
+  to 07:00 like a warning: messages that waited out the limit should not wait longer.
+  (7) The day cap is six tellings a step, the full step counted: 18 for the session (six
+  session windows of three steps), 12 for the all-models week, 6 for a model's week.
+  (8) 12-hour times ("5:30 pm"), like the warnings, though the brief wrote HH:MM; the date
+  is added off-day because a weekly reset can be days away. (9) A limit kept out more
+  than eight days is dropped with a log line and no back line.
+- **To go live:** C&P, then a **restart of the server** (Needs Jeff: the LaunchAgent is
+  Vision's; the notifier and its hooks are wired at start). No web build, no config, no
+  new `claude -p`.
+- **After the restart, check:** at the next 100% (not to be caused on purpose), the log has
+  `push: a limit warning went to N of N devices`, the phone shows "Jarvis is at the session
+  limit until h:mm pm" titled Control Room, `#jarvis` has the same line (a `[discord]
+  posted` line in the log), and no event line. After the reset: `push: back under the
+  limit; the line went to N of N devices, the lead's event: made`, the phone shows "Jarvis
+  is back under the limit", and the lead gets the `Limit reset:` line (its tag reads
+  `event="unknown"` until the channel learns `limit-reset`).
+- **Checked (2026-11-20, after Ultron's fixes):** server 1,688 tests (1,658 on main; 15
+  new in `limit-full.test.mjs`, 15 in `notifier-limit-full.test.mjs`; six existing tests
+  changed on purpose: the day cap read through `dailyMax`, the 95% event no longer deliverable at 100%, the
+  run to 100% in the step test now stops at 99, the kept state's new fields, the feed in
+  `sendAlert`'s call and in `server.mjs`'s source), under umask 022, in local time and
+  `TZ=Asia/Tokyo` (the new files also in `TZ=America/St_Johns`). 116 mutants over the
+  changed code: 108 caught on the first run; of the seven that survived, four got a test
+  (the event's status in the log, reached against tried, a debt alone keeping the state,
+  the ledger saved), and three were code that did nothing (a reading guard and a
+  freshness check the panel's blanking already made, and an inert `failure` flag on an
+  `immediate` event), now removed; a rerun of those and three replacements, all caught.
+  After Ultron's fixes, 18 more mutants over the new lines (the cap per rule, `fullNow`
+  and the hold, the no-window rule, the event's words): 17 caught at once, and one (a
+  limit dropped after eight days kept while another reads full) after a test was added.
+  oxlint clean on every changed line (two older warnings in `chat-push.mjs` and
+  `server.mjs` are not this branch's). **Not verified:** a real push or a real `#jarvis`
+  post (no restart here), iOS's showing of the two new lines, and the lead's reading of
+  the `limit-reset` event.
+- **Follow-ups:** (a) the channel's `EVENT_NAMES` (jarvis repo) knows neither
+  `limit-warning` nor `limit-reset`, so the lead's tag says `event="unknown"`; a channel
+  release, through Jarvis. (b) What the lead does on `limit-reset` (read the chat history
+  and Discord, answer what is open, and not twice when the answer watch's event comes
+  too) is his style rule to write; the event only states the fact. (c) If
+  the lead moves to a model with its own weekly limit, that limit needs the full step
+  (`ruleFor` in `server/lib/limit-warnings.mjs`).

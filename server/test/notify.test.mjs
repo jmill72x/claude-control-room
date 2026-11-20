@@ -156,7 +156,7 @@ test('the caller attempts both channels', async () => {
       },
       discord: async args => {
         tried.push('discord');
-        assert.deepEqual(args, alert);
+        assert.deepEqual(args, { ...alert, feed: 'pepper' });
         return discordSent ? { sent: true, reason: null } : { sent: false, reason: 'discord-post exited 2' };
       }
     });

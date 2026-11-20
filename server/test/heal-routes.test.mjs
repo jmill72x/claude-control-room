@@ -158,7 +158,7 @@ test("sendAlert passes ntfy's priority; #pepper gets the words", async () => {
   const got = {};
   await sendAlert({ topic: 't', title: 'Control Room', message: 'm', priority: 'high', ntfy: async m => { got.ntfy = m; return { sent: true }; }, discord: async m => { got.discord = m; return { sent: true }; } });
   assert.equal(got.ntfy.priority, 'high');
-  assert.deepEqual(got.discord, { title: 'Control Room', message: 'm' });
+  assert.deepEqual(got.discord, { title: 'Control Room', message: 'm', feed: 'pepper' });
   await sendAlert({ topic: 't', title: 'x', message: 'm', ntfy: async m => { got.plain = m; return { sent: true }; }, discord: async () => ({ sent: true }) });
   assert.equal(got.plain.priority, 'default');
 });

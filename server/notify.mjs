@@ -55,14 +55,20 @@ export async function publish({ topic, title, message, priority = 'default', fet
 // message that looks like a secret) and 3 when Discord or the network failed.
 export const DISCORD_POSTER = join(homedir(), 'Projects', 'jarvis', 'bin', 'discord-post');
 
-// One alert to #pepper. Never rejects: like a failed push, a failed post must
-// never fail the run that made it. A reason holds an exit status, an error code
-// or the poster's path, never the message. One thing the poster refuses is a
-// message that looks like a secret, and a reason quoting it would copy that
-// text into the log.
-export async function publishDiscord({ title, message, run = runPoster }) {
+// The feeds an alert may be posted to: #pepper, every alert's, and #jarvis, where
+// the lead's own routines post and where the limit's full line goes
+// (lib/limit-warnings.mjs). Any other name posts to #pepper.
+export const FEEDS = Object.freeze(['pepper', 'jarvis']);
+const feedOf = feed => (FEEDS.includes(feed) ? feed : 'pepper');
+
+// One alert to #pepper, or to #jarvis with `feed: 'jarvis'`. Never rejects: like a
+// failed push, a failed post must never fail the run that made it. A reason holds an
+// exit status, an error code or the poster's path, never the message. One thing the
+// poster refuses is a message that looks like a secret, and a reason quoting it would
+// copy that text into the log.
+export async function publishDiscord({ title, message, feed = 'pepper', run = runPoster }) {
   try {
-    const code = await run(DISCORD_POSTER, ['--agent', 'pepper', '--title', title], { input: message });
+    const code = await run(DISCORD_POSTER, ['--agent', feedOf(feed), '--title', title], { input: message });
     return code === 0 ? { sent: true, reason: null } : { sent: false, reason: `discord-post exited ${code}` };
   } catch (err) {
     // No poster is the normal state wherever Jarvis isn't installed, and this
@@ -119,13 +125,14 @@ export function runPoster(file, args, { input }) {
 // carrying the alert the run reads as sent, so nothing else would say #pepper missed it.
 // A poster that could not start logs its own line, and one that isn't installed is the
 // normal state elsewhere.
+// `feed` is the Discord feed (FEEDS): #pepper unless the alert names #jarvis.
 const POSTER_EXIT_WORDS = Object.freeze({ 2: 'refused: secret-shaped text, or no webhook stored', 3: 'Discord or the network failed' });
-export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', ntfy = publish, discord = publishDiscord, logError = console.error }) {
+export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', feed = 'pepper', ntfy = publish, discord = publishDiscord, logError = console.error }) {
   const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message, priority });
-  const viaDiscord = await discord({ title, message });
+  const viaDiscord = await discord({ title, message, feed: feedOf(feed) });
   // A sent post has no reason, so only a failed one matches.
   const exit = /^discord-post exited (\d+)$/.exec(String(viaDiscord?.reason ?? ''));
-  if (exit) logError(`push: the #pepper copy of an alert was not sent (discord-post exited ${exit[1]}${Object.hasOwn(POSTER_EXIT_WORDS, exit[1]) ? `: ${POSTER_EXIT_WORDS[exit[1]]}` : ''})`);
+  if (exit) logError(`push: the #${feedOf(feed)} copy of an alert was not sent (discord-post exited ${exit[1]}${Object.hasOwn(POSTER_EXIT_WORDS, exit[1]) ? `: ${POSTER_EXIT_WORDS[exit[1]]}` : ''})`);
   return { sent: Boolean(viaNtfy.sent || viaDiscord.sent), ntfy: viaNtfy, discord: viaDiscord };
 }
 

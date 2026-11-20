@@ -7,7 +7,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runNotifier, entrySender, readLimitState, LIMIT_STATE } from '../collectors/notifier.mjs';
-import { REPEAT_MS, DAILY_MAX, DEVICE_RETRIES, NO_RESET_KEEP_MS } from '../lib/limit-warnings.mjs';
+import { REPEAT_MS, dailyMax, DEVICE_RETRIES, NO_RESET_KEEP_MS } from '../lib/limit-warnings.mjs';
+
+const DAILY_MAX = dailyMax('Current session');
 
 // The told keys in a store, without the limit warnings' own entry.
 const toldKeys = store => Object.keys(store).filter(k => k !== LIMIT_STATE);
@@ -52,9 +54,9 @@ test('the session limit warns at 80% and again at 95%, once each per window; the
   assert.equal(h.sent.length, 2);
   assert.equal(h.sent[1].message, 'Claude session at 96%, resets 5:30 pm');
   assert.deepEqual(h.sent[1].keys, [`limit-step:Current session:95:${W1}`, `limit-step:Current session:80:${W1}`]);
-  await run(100);
-  await run(100);
-  assert.equal(h.sent.length, 2, 'nothing more in this window');
+  await run(99);
+  await run(99);
+  assert.equal(h.sent.length, 2, 'nothing more in this window under the full step (notifier-limit-full.test.mjs)');
   // The window rolls over: low again, then the same steps tell again.
   now = W1 + 60e3;
   await run(3, W2);
@@ -186,7 +188,7 @@ test('entrySender: landing on the devices or as an alert counts as sent, and nei
 // exists.
 test('server.mjs sends every notifier entry through entrySender, with the push service\'s limitWarning for the devices', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  assert.match(src, /send: entrySender\(\{ alert: entry => sendAlert\(\{ topic, title: entry\.title, message: entry\.message \}\), devices: limitPush \}\),/);
+  assert.match(src, /send: entrySender\(\{ alert: entry => sendAlert\(\{ topic, title: entry\.title, message: entry\.message, feed: entry\.feed \}\), devices: limitPush \}\),/);
   assert.match(src, /\n {2}limitPush = body => push\.limitWarning\(body\);\n/);
   assert.equal(src.match(/limitPush = /g).length, 2, 'null until the chat is on, then set once');
 });
@@ -330,8 +332,9 @@ test('what is owed ends with its window: after the reset nothing is tried; the n
 
 test('the kept state is read strictly: anything not in shape is dropped, and with nothing to keep the file holds no entry', async () => {
   const now = at(2026, 10, 17, 14, 0);
-  assert.deepEqual(readLimitState(undefined, now), { told: [], owed: {} });
-  for (const junk of [null, 7, 'x', [], { told: 'x', owed: [] }, { told: {}, owed: 'x' }, { owed: 7 }, { owed: [{ passes: 0 }] }]) assert.deepEqual(readLimitState(junk, now), { told: [], owed: {} });
+  const empty = { told: [], owed: {}, out: {}, back: null };
+  assert.deepEqual(readLimitState(undefined, now), empty);
+  for (const junk of [null, 7, 'x', [], { told: 'x', owed: [] }, { told: {}, owed: 'x' }, { owed: 7 }, { owed: [{ passes: 0 }] }]) assert.deepEqual(readLimitState(junk, now), empty);
   const read = readLimitState({
     told: [
       { at: now - 60e3, label: 'Current session', step: 80, extra: 'x' }, { at: now, label: 'A', step: 90 },
@@ -355,7 +358,7 @@ test('the kept state is read strictly: anything not in shape is dropped, and wit
   const weekKey = `limit-step:Weekly · all models:90:${at(2026, 10, 23, 19, 0)}`;
   const owing = harness({ [weekKey]: now - 25 * 3600e3, [LIMIT_STATE]: { told: [{ at: now - 25 * 3600e3, label: 'Weekly · all models', step: 90 }], owed: { [weekKey]: { passes: 1, missed: ['aa'] } } } });
   await runNotifier({ snapshot: sessionAt(10), config: cfg85, now, ...owing });
-  assert.deepEqual(owing.store[LIMIT_STATE], { told: [], owed: { [weekKey]: { passes: 1, missed: ['aa'], at: 0 } } });
+  assert.deepEqual(owing.store[LIMIT_STATE], { told: [], owed: { [weekKey]: { passes: 1, missed: ['aa'], at: 0 } }, out: {}, back: null });
 });
 
 // ---- the backstop caps (Ultron, 11-17) ----
@@ -394,15 +397,15 @@ test('the backstop: a limit whose key keeps changing is told once in 30 minutes,
   assert.equal(week.sent, 1);
 });
 
-test('the backstop: at most 12 tellings of one limit in any 24 hours; one over waits for room', async () => {
-  assert.equal(DAILY_MAX, 12);
+test('the backstop: at most 18 tellings of one limit in any 24 hours; one over waits for room', async () => {
+  assert.equal(DAILY_MAX, 18);
   const h = harness();
   let now = at(2026, 10, 17, 0, 0);
   let reset = at(2026, 10, 18, 12, 0);
   const run = (step = 31 * 60e3) => { now += step; reset += 20 * 60e3; return runNotifier({ snapshot: sessionAt(81, reset), config: cfg85, now, ...h }); };
-  for (let i = 0; i < 12; i++) assert.equal((await run()).sent, 1, `telling ${i + 1}`);
-  const first = now - 11 * 31 * 60e3;
-  for (let i = 0; i < 3; i++) assert.deepEqual([(await run()).capped, h.sent.length], [1, 12]);
+  for (let i = 0; i < DAILY_MAX; i++) assert.equal((await run()).sent, 1, `telling ${i + 1}`);
+  const first = now - (DAILY_MAX - 1) * 31 * 60e3;
+  for (let i = 0; i < 3; i++) assert.deepEqual([(await run()).capped, h.sent.length], [1, DAILY_MAX]);
   // A weekly limit is counted on its own.
   assert.equal((await runNotifier({ snapshot: base([{ label: 'Weekly · all models', pct: 91, resetsAt: iso(at(2026, 10, 23, 19, 0)) }]), config: cfg85, now: now + 1, ...h })).sent, 1);
   // The first telling is 24 hours old: room for one more.
@@ -410,7 +413,7 @@ test('the backstop: at most 12 tellings of one limit in any 24 hours; one over w
   assert.equal((await run()).capped, 1, 'a minute short of 24 hours');
   now = first + 24 * 3600e3 - 31 * 60e3;
   assert.equal((await run()).sent, 1);
-  assert.equal(h.store[LIMIT_STATE].told.filter(t => t.label === 'Current session').length, 12, 'the list holds only the last 24 hours');
+  assert.equal(h.store[LIMIT_STATE].told.filter(t => t.label === 'Current session').length, DAILY_MAX, 'the list holds only the last 24 hours');
 });
 
 test('a warning with no reset time is kept for five hours once told: a reading that comes and goes is one telling', async () => {
