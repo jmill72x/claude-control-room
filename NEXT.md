@@ -3897,7 +3897,7 @@ process to run?") and said "Yes fix it and go" on 638d21d2 (21:33 ET).
   restart. Check for live agent runs before the restart.
 - **Next:** the log line when the rule is held is §26 (board 5c27ade0).
 
-## 26. The idle wake-up says why it is held (board 5c27ade0, P2; staged 2026-11-21 on `jos/idle-blocked-log`)
+## 26. The idle wake-up says why it is held (board 5c27ade0, P2; merged as main d5d4aaf, 2026-11-21)
 
 **Staged, not committed, on `jos/idle-blocked-log` (worktree
 `~/Projects/.worktrees/ccr-idle-blocked-log`, from main dc929c2), one commit with §27.**
@@ -3954,7 +3954,10 @@ quiet afternoon took two replays to read as `week-high` (§25).
   config). Check live agent runs first. After it, the second pass logs a held line if
   anything holds the wake-up.
 
-## 27. A quiet night opens the idle gate: the lower of the day's and the last six hours' pace (board 07cb0505, P1; staged 2026-11-21 on `jos/idle-blocked-log`)
+## 27. A quiet night opens the idle gate: the lower of the day's and the last six hours' pace (board 07cb0505, P1; merged as main d5d4aaf, 2026-11-21; superseded by §29)
+
+**Superseded 2026-11-21 by §29:** the weekly gate no longer reads any pace, and the six-hour
+`pace.short` is gone. Kept below as the record of what was tried.
 
 **Staged with §26, not committed (same worktree and branch). Jeff said "Go" 11-21.** README
 "The weekly projection follows the last day's rate", bullet "A second, shorter rate", and
@@ -4019,7 +4022,7 @@ quiet afternoon took two replays to read as `week-high` (§25).
   **Not verified:** the live log after the restart.
 - **Go-live (after C&P):** the restart in §26.
 
-## 28. Two fixes in one branch: the restart warning on a partial read, and Waiting on you per tool use (boards 54b191ec and 9fb32c4d, P2; staged 2026-11-21 on `jos/warn-wait-1121`)
+## 28. Two fixes in one branch: the restart warning on a partial read, and Waiting on you per tool use (boards 54b191ec and 9fb32c4d, P2; merged as main bb64ee0, 2026-11-21)
 
 **Staged, not committed, on `jos/warn-wait-1121` (worktree `~/Projects/.worktrees/ccr-warn-wait-1121`,
 from main d5d4aaf, no upstream).** Ultron reviewed it on 11-21: GO once his M1 was in; his
@@ -4111,3 +4114,30 @@ ends a permission wait", the hook entry and the apply script) are the reference.
   The new server clears as before on the old entries; on the old server the new entries
   would open a wait on `PermissionRequest` a few seconds early and get 400s for
   `PostToolUseFailure` and `SubagentStop` (posts lost, no harm). Restart first.
+
+## 29. The idle wake-up's weekly gate is the percent now, under 90% (Jeff's decision 2026-11-21; staged on `jos/flat-week`)
+
+**Jeff, 2026-11-21:** "Yes just freaking do it but can the weekly at 90". The day-ahead
+gate held the wake-up at 72% weekly that day, and he had seen runs not going three days
+running. So the only weekly gate is now: every weekly limit's percent now under 90%
+(`IDLE.weekPct`). The session gate (under 75%) is unchanged. README "The idle wake-up"
+is the reference.
+
+- **Gone:** `weekPace`, `weekBar`, `weekAhead`, `daysToReset` (`lib/proactive.mjs`),
+  `IDLE.aheadMs` and `IDLE.reservePerDay` (`lib/proactive-text.mjs`), the wake-up's
+  `ahead` field, and the six-hour `pace.short` with `SHORT_LOOKBACK_MS`,
+  `SHORT_MAX_GAP_MS` and `recentBaseline`'s `maxGapMs` (`lib/pace.mjs`,
+  `lib/usage-panel.mjs`), which nothing else read. Their tests went with them. The
+  24 h projection stays: the dashboard, the mod, the alerts and the proactive check's
+  `week` rule read it.
+- **Words:** the event now ends `Session at 12%; weekly limits at most 40%.` (no "a day
+  from now"); the held line reads `proactive: the idle wake-up is held (week-high): week
+  (all models) at 91%, its bar 90%` (the highest weekly limit). The cleared line and the
+  rest of the held-line rules (two passes, flips) are unchanged.
+- **Checked (2026-11-21):** server 1,758 tests, web 378 (the markdown timing test failed
+  once while the server suite ran beside it, then passed alone). Five mutants on the new
+  gate and its words, all caught. The replay of the 11-20/21 night through the real panel
+  now opens at 03:05Z, the first pass after the 5-minute settle, never held. **Not
+  verified:** the live service (it needs the restart below).
+- **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build),
+  with no agent runs going.

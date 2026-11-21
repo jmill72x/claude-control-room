@@ -22,7 +22,6 @@ import { ruleFor, windowOf, SESSION_STEPS, NO_RESET_KEEP_MS } from './limit-warn
 import { distinctHeals } from './heal.mjs';
 import { isDueDate } from '../todos.mjs';
 import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit, checkIdle, IDLE } from './proactive-text.mjs';
-import { basisWords } from './pace.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const CHECK_EVERY_MS = 5 * MIN;
@@ -272,13 +271,10 @@ export function expiryHits({ keys, now }) {
 //   usage-not-current     the usage panel was not read this pass, or has no session
 //                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
 //   session-high          the session limit is at IDLE.sessionPct or over (with its `pct`)
-//   week-high             a weekly limit a day from now at its pace (weekPace: the lower
-//                         of the day's rate and the last six hours', never under its
-//                         percent) is at its bar or over (weekBar: IDLE.weekPct less the
-//                         reserve for the days left; Ultron's M1s, 11-19, 11-20);
-//                         `limit` is the one furthest over: its name (lib/limit-warnings.mjs,
-//                         ruleFor), pct, ahead, the rate it was read at (`rate`), bar and
-//                         daysLeft (null with no reset), for the log line (heldWords)
+//   week-high             a weekly limit is at IDLE.weekPct or over now (Jeff, 11-21: no
+//                         projection, no reserve, no pace); `limit` is the highest: its
+//                         name (lib/limit-warnings.mjs, ruleFor) and pct, for the log
+//                         line (heldWords)
 //   board-unreadable      the board file could not be read
 //   no-work               no open item (idea or doing) without an ask
 // A source that can't be read never reads as idle. The lead's own session is not read
@@ -293,24 +289,18 @@ export function idleCheck({ sessions, usage, todos, now }) {
   const session = limits?.find(l => ruleFor(l?.label)?.name === 'session');
   if (!finite(session?.pct)) return { state: 'usage-not-current' };
   if (session.pct >= IDLE.sessionPct) return { state: 'session-high', pct: session.pct };
-  let week = null, ahead = null, high = null;
+  let week = null, high = null;
   for (const l of limits) {
     const rule = ruleFor(l?.label);
     if (!rule || rule.name === 'session' || !finite(l.pct)) continue;
-    // Never under its percent, so a limit at its bar already is too high (Ultron's M1).
-    const { ahead: later, rate } = weekPace(l, now), bar = weekBar(l, now);
-    if (later >= bar && (high === null || later - bar > high.ahead - high.bar)) {
-      const days = daysToReset(l, now);
-      high = { name: rule.name, pct: l.pct, ahead: later, rate, bar, daysLeft: days === null ? null : Math.max(0, days) };
-    }
+    if (l.pct >= IDLE.weekPct && (high === null || l.pct > high.pct)) high = { name: rule.name, pct: l.pct };
     week = Math.max(week ?? 0, l.pct);
-    ahead = Math.max(ahead ?? 0, later);
   }
   if (week === null) return { state: 'usage-not-current' };
   if (high) return { state: 'week-high', limit: high };
 
   if (!Array.isArray(todos)) return { state: 'board-unreadable' };
-  const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week: Math.round(week), ahead: Math.round(ahead) };
+  const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week: Math.round(week) };
   for (const t of todos) {
     if (!isObject(t) || !OPEN_LANES.has(t.lane) || (t.ask !== undefined && t.ask !== null)) continue;
     fields.workable++;
@@ -320,65 +310,6 @@ export function idleCheck({ sessions, usage, todos, now }) {
   }
   return fields.workable === 0 ? { state: 'no-work' } : { state: 'idle', fields };
 }
-
-// The time to a weekly limit's reset in spans of IDLE.aheadMs (days), negative once it is
-// past, or null when it prints none: the bar and the log line read the same figure
-// (Ultron's 11-21 low on 5c27ade0).
-export function daysToReset(limit, now) {
-  const left = Date.parse(limit?.resetsAt ?? '') - now;
-  return finite(left) ? left / IDLE.aheadMs : null;
-}
-
-// The bar a weekly limit's day-ahead percent must stay under: IDLE.weekPct less
-// IDLE.reservePerDay points for each day (fractions too) past the first left to its reset,
-// so 90% with a day or less left, 80% with three, 60% with seven. A limit that prints no
-// reset (a weekly limit at 0% prints none) gets a whole week's: the strictest bar.
-export function weekBar(limit, now) {
-  const days = daysToReset(limit, now) ?? 7;
-  return IDLE.weekPct - IDLE.reservePerDay * Math.max(0, days - 1);
-}
-
-// A weekly limit's percent IDLE.aheadMs from now at its pace, as `{ ahead, rate }`, the
-// lower of two (board 07cb0505, 2026-11-21):
-// - the day's: the panel's projection to the reset (lib/pace.mjs: the last 24 h rate, or
-//   the week's average early on) cut to that span, so pct + (projected - pct) x aheadMs /
-//   time left, and the projection itself when the reset is nearer than that;
-// - the last few hours': `pace.short` (lib/usage-panel.mjs: the percent SHORT_LOOKBACK_MS
-//   ago and the span, only when no reading is missing), its rise plus one point over its
-//   span times the same span, aheadMs or the time left when that is shorter.
-// A quiet night lowers the second while the first still remembers the busy day (11-21:
-// flat at 69% all night, the day's rate read about 83% a day on against a bar of
-// 81-82%); a busy stretch raises both, so it still holds. With no projection the percent
-// stands in (no rate known) and the short one is not read; a projection with no reset to
-// cut it by stands as it is. Never under `pct`. `rate` says which was read, for the log:
-// { basis: 'short' | 'recent' | 'window' | null, ms } (null: no rate, or an older panel's).
-export function weekPace(limit, now) {
-  const pct = limit.pct;
-  const projected = limit.pace?.projectedPct;
-  const day = { basis: limit.pace?.basis ?? null, ms: limit.pace?.basisMs ?? null };
-  if (!finite(projected)) return { ahead: pct, rate: day };
-  const gain = Math.max(0, projected - pct);
-  const left = Date.parse(limit.resetsAt ?? '') - now;
-  if (!finite(left)) return { ahead: pct + gain, rate: day };
-  if (left <= 0) return { ahead: pct, rate: day };
-  const span = Math.min(IDLE.aheadMs, left);
-  const byDay = pct + gain * (span / left);
-  const short = limit.pace?.short;
-  if (isObject(short) && finite(short.pct) && finite(short.spanMs) && short.spanMs > 0) {
-    // Plus one point (Ultron's M1, 11-21): the percents are whole, so a rise of up to a
-    // point can read as none, which is up to 4 points a day. Counting it keeps a flat
-    // reading near a bar from opening the gate on a pace it can't see.
-    const byShort = pct + ((Math.max(0, pct - short.pct) + 1) / short.spanMs) * span;
-    if (byShort < byDay) return { ahead: byShort, rate: { basis: 'short', ms: short.spanMs } };
-  }
-  return { ahead: byDay, rate: day };
-}
-export const weekAhead = (limit, now) => weekPace(limit, now).ahead;
-
-// The rate a day-ahead figure was read at, as the held line says it: "at the last 6 h
-// rate", "at the last 24 h rate", "at the week's average rate", or "at its pace" when the
-// panel gave no basis.
-const rateWords = rate => basisWords(rate?.basis === 'short' ? { basis: 'recent', basisMs: rate.ms } : { basis: rate?.basis, basisMs: rate?.ms }, true) || 'at its pace';
 
 // A span as the log says it: "40 min", "2 h", "2 h 35 min" (whole minutes, rounded).
 export function spanWords(ms) {
@@ -397,12 +328,7 @@ export function heldWords(found) {
     case 'sessions-not-current': return 'the live agents list was not read this pass';
     case 'usage-not-current': return 'the usage panel was not read this pass, or has no session or weekly percent';
     case 'session-high': return `the session limit at ${tenth(found.pct)}%, its bar ${IDLE.sessionPct}%`;
-    case 'week-high': {
-      const l = found.limit;
-      const days = finite(l?.daysLeft) ? tenth(l.daysLeft) : null;
-      const left = days === null ? 'no reset printed' : `${days} day${days === 1 ? '' : 's'} to its reset`;
-      return `${l?.name ?? 'a weekly limit'} at ${tenth(l?.ahead)}% a day from now ${rateWords(l?.rate)}, its bar ${tenth(l?.bar)}% (${tenth(l?.pct)}% now, ${left})`;
-    }
+    case 'week-high': return `${found.limit?.name ?? 'a weekly limit'} at ${tenth(found.limit?.pct)}%, its bar ${IDLE.weekPct}%`;
     case 'board-unreadable': return 'the board file could not be read';
     case 'no-work': return 'no open item without an ask';
     case 'quiet-hours': return `quiet ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)}, nights off in config; the ${hh(QUIET_END_HOUR)} pass decides afresh`;

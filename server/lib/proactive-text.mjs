@@ -175,20 +175,16 @@ export function proactiveText(hits, { now = Date.now() } = {}) {
 
 const MIN_MS = 60e3;
 // Its numbers: constants, like RULES. A wake-up goes when no agent run is live, the
-// session limit is under `sessionPct`, every weekly limit is under `weekPct` (the limit
-// warnings' weekly step) now and a day from now (`aheadMs`) at its pace, less a reserve of
-// `reservePerDay` points for each day past the first left to its reset, the board holds
-// an open item with no ask, and all of that has held for `settleMs`. Whatever the lead's
-// own session is doing (board 638d21d2, 11-20): a lead busy talking still gets the cue
-// to start the next run.
+// session limit is under `sessionPct`, every weekly limit is under `weekPct` now, the
+// board holds an open item with no ask, and all of that has held for `settleMs`.
+// Whatever the lead's own session is doing (board 638d21d2, 11-20): a lead busy talking
+// still gets the cue to start the next run.
 //
-// A day ahead, not the projection to the reset (board 8a13e971, 11-20): a busy day of
-// runs puts the 24-hour rate up, so the projection to the reset passed 100% and the
-// wake-up stopped itself for the rest of the day, with a third of the week left. The
-// step a day ahead still closes the gate before a limit nears the step, a day early at
-// the pace it is going. The reserve (Ultron's M1, 11-20) keeps room for the days still to
-// come: in the week before, one model's limit reached 100% about four days before its
-// reset and all models 97%. With three days left the bar is 80%, with one or less 90%.
+// The weekly gate is the percent now and nothing else (Jeff, 2026-11-21: "Yes just
+// freaking do it but can the weekly at 90"). The day-ahead projection, its reserve per
+// day left and the six-hour pace went: they held the wake-up three days running, at 72%
+// weekly on 11-21, with the week's runs not going. The limit warnings still say a fast
+// pace; this gate only stops the burn-down near the top.
 //
 // The spacing: `gapMs` after a wake-up a run followed (the cue worked, so the next may
 // come once the board is idle again), `everyMs` after one no run followed, the wait
@@ -196,8 +192,6 @@ const MIN_MS = 60e3;
 export const IDLE = Object.freeze({
   sessionPct: RULES.sessionPct,
   weekPct: WEEKLY_STEPS[0],
-  aheadMs: 24 * 60 * MIN_MS,
-  reservePerDay: 5,
   settleMs: 5 * MIN_MS,
   gapMs: 15 * MIN_MS,
   everyMs: 60 * MIN_MS,
@@ -206,17 +200,17 @@ export const IDLE = Object.freeze({
 
 // A wake-up's fields, each a whole number in its range, or null when one is not:
 // `workable` open items with no ask, `p0` and `p1` of them, `doing` of them in that
-// lane, the `session` percent, the highest weekly percent `week` and the highest
-// weekly percent a day from now `ahead` (a wake-up always has both: with no weekly limit
-// read there is none; Ultron's L1, 11-19; both said rounded, so up to the step itself),
+// lane, the `session` percent, the highest weekly percent `week` (a wake-up always has
+// one: with no weekly limit read there is none; Ultron's L1, 11-19; said rounded, so up
+// to the step itself),
 // and `unanswered`, the wake-ups made since a run was last seen. No id, no word from
 // the board.
 export function checkIdle(f) {
   if (!isObject(f) || !whole(f.workable, 1, 100000)) return null;
   for (const k of ['p0', 'p1', 'doing']) if (!whole(f[k], 0, f.workable)) return null;
   if (!whole(f.session, 0, IDLE.sessionPct - 1) || !whole(f.unanswered, 0, 100000)) return null;
-  if (!whole(f.ahead, 0, IDLE.weekPct) || !whole(f.week, 0, f.ahead)) return null;
-  return { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, ahead: f.ahead, unanswered: f.unanswered };
+  if (!whole(f.week, 0, IDLE.weekPct)) return null;
+  return { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, unanswered: f.unanswered };
 }
 
 // The wake-up's words: facts in a fixed order, numbers only; null for fields that fail.
@@ -226,6 +220,6 @@ export function idleText(fields) {
   const urgent = [f.p0 > 0 ? `${f.p0} P0` : null, f.p1 > 0 ? `${f.p1} P1` : null].filter(Boolean).join(', ');
   const detail = [urgent, f.doing > 0 ? `${f.doing} in doing` : ''].filter(Boolean).join('; ');
   return `Idle: no agent run is live. ${plural(f.workable, 'open board item')} ${f.workable === 1 ? 'has' : 'have'} no ask${detail ? ` (${detail})` : ''}. `
-    + `Session at ${f.session}%; weekly limits at most ${f.week}% now and ${f.ahead}% a day from now at their pace.`
+    + `Session at ${f.session}%; weekly limits at most ${f.week}%.`
     + (f.unanswered > 0 ? ` ${plural(f.unanswered, 'idle event')} since the last run.` : '');
 }

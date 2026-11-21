@@ -1,6 +1,5 @@
 import {
-  inferWindowMs, computePace, recentBaseline, WEEKLY_FALLBACK_MS, limitsOf, MIN_PLAUSIBLE_WINDOW_MS, MAX_ROLLOVER_LATENESS_MS,
-  SHORT_LOOKBACK_MS, SHORT_MAX_GAP_MS
+  inferWindowMs, computePace, recentBaseline, WEEKLY_FALLBACK_MS, limitsOf, MIN_PLAUSIBLE_WINDOW_MS, MAX_ROLLOVER_LATENESS_MS
 } from './pace.mjs';
 import { RETENTION_MS } from '../history.mjs';
 
@@ -101,10 +100,6 @@ export function buildUsagePanel({ parsed, records, now, historyStatus = null }) 
     // reading of this window that old (lib/pace.mjs, recentBaseline); the session keeps
     // the straight line.
     const baseline = weekly ? recentBaseline(records, limit, { now, windowMs }) : null;
-    // And for the idle wake-up's gate only, the last six hours' rise when they are covered
-    // (`pace.short`: the percent then and the span; board 07cb0505). The projection and
-    // every line that says it stay on the day's rate.
-    const short = weekly ? recentBaseline(records, limit, { now, windowMs, lookbackMs: SHORT_LOOKBACK_MS, maxGapMs: SHORT_MAX_GAP_MS }) : null;
     const since = now - seriesRangeMs(limit.label);
     const series = records
       .filter(r => r?.t >= since)
@@ -118,10 +113,7 @@ export function buildUsagePanel({ parsed, records, now, historyStatus = null }) 
     const last = lastWindowPct(records, limit, now);
     return {
       ...limit,
-      pace: {
-        ...computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now, baseline }),
-        ...(short === null ? {} : { short: { pct: short.pct, spanMs: now - short.t } })
-      },
+      pace: computePace({ pct: limit.pct, resetsAt: limit.resetsAt, windowMs, now, baseline }),
       series: decimate(series),
       // Left out, not zero, when it isn't known.
       ...(last === null ? {} : { lastWindowPct: last })

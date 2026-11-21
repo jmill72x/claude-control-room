@@ -230,16 +230,8 @@ On the same readings that is 64% and 78%.
   was wrongly over 100% on 8% of readings against the straight line's 12%, and in the one
   week that reached 100% it said so on every reading. The sample is small.
 - **Who reads it**: `lib/alerts.mjs` (the `projection` alert, over 100%) and the proactive
-  check (`week`, and the idle wake-up's room). The limit warnings never used a
-  projection: they fire on the percent itself.
-- **A second, shorter rate for the idle wake-up only** (board 07cb0505, 2026-11-21): a
-  weekly limit's pace also carries `pace.short`, `{ pct, spanMs }`, its percent at the
-  newest reading at least six hours old (`SHORT_LOOKBACK_MS`) and the true span, when no
-  two readings in those hours (nor the newest one and now) are more than 30 minutes apart
-  (`SHORT_MAX_GAP_MS`; an early reset and a climb back inside a gap would read as a quiet
-  stretch). The same walls as the day's rate stand (this window only, a fall of more than
-  5 points). Nothing says it: the projection, its basis and every line above stay on the
-  day's rate. "The idle wake-up" below reads it.
+  check (`week`). The limit warnings and the idle wake-up (since 2026-11-21) never use a
+  projection: they read the percent itself.
 
 Tests: `server/test/pace-recent.test.mjs`, `web/test/orbit-overview.test.js`.
 
@@ -2858,7 +2850,7 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   `idle` the lead's tag reads `event="unknown"`; the words still arrive
   (`source="proactive"`).
 
-#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default; rule changed 2026-11-20)
+#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default; weekly gate flat at 90% since 2026-11-21)
 
 The lead wakes only on events, so when the last agent run ends nothing starts the next
 one, though the board holds work and the limits have room. The check's pass makes **one
@@ -2870,46 +2862,20 @@ in that pass:
    2026-11-20): a lead talking with the owner still gets the cue, since the runs it
    starts are what burn the board down.
 2. **There is room**: the usage panel is current, the session limit is under 75%, at
-   least one weekly limit has a percent, and every weekly limit **a day from now** at its
-   pace is under its **bar** (`weekPace` and `weekBar` in `lib/proactive.mjs`). A day from
-   now is the lower of two paces (board 07cb0505, 2026-11-21): the day's, the panel's
-   projection to the reset cut to one day, so `pct + (projected - pct) x 24 h / time
-   left`; and the last six hours', `pct + (pct - pace.short.pct + 1) x 24 h / its span`
-   (see "A second, shorter rate" above; none when those hours have a gap). The added point
-   (Ultron's M1, 11-21) is the most whole percents can hide: flat at 78% for six hours may
-   be 78.95%, a day pace near 82% that would read as 78. Both run to the
-   reset instead when it is a day away or less. With no projection it is the percent, and
-   it is never under the percent. The bar is 90% (the limit warnings' weekly step) less a reserve of 5 points for
-   each day past the first left to that limit's reset: 90% with a day or less left, 80%
-   with three, 60% with seven or with no reset printed. The reserve (Ultron's M1,
-   2026-11-20) keeps room for the days still to come: the week before, one model's limit
-   reached 100% about four days before its reset and all models 97%.
+   least one weekly limit has a percent, and every weekly limit's percent **now** is
+   under 90% (`IDLE.weekPct`, the limit warnings' weekly step). Nothing else: no
+   projection, no reserve for the days left, no pace.
 3. **There is work**: the board file holds an open item (`idea` or `doing`) with no `ask`.
 4. **It has lasted 5 minutes** from the first pass that found it, so the moment between
    one run's end and the lead starting the next is not idle.
 
-Why a day ahead and not the projection to the reset (board 8a13e971, 2026-11-20): a busy
-day of runs puts the 24-hour rate up, so the projection passed 100% (all models at 67%,
-105% to 113% projected, three days to the reset) and the old gate held every wake-up from
-15:30 to the night, with a third of the week left. The only two that went that day fell in
-the two spells the projection dipped under 100%. Over the whole usage history (hourly, from
-2026-08-13 to 11-20) the day-ahead rule with its reserve opens 89 hours the old one closed
-and closes 170 as `week-high`. On 11-20 at 22:00 ET (all models 68%, 108% projected, 2.9
-days left) it reads 82% a day on against a bar of 81%: held while that evening's pace lasts.
-
-Why the lower of two paces (board 07cb0505, 2026-11-21): the day's rate alone remembered a
-busy day all night. All models stood at 69% from 22:02 ET on 11-20 until 07:53 ET (no
-run from 23:49), yet the last 24 hours' rise (+14) read about 83% a day on against a bar of
-81-82%, so the wake-up was held until 07:35 ET. The last six hours' rise falls within a
-few idle hours: at 23:40 ET it read 81% (2 points in six hours, plus the hidden one)
-against a bar of 81%, and the gate opened; from 04:02 ET, flat for six hours, it read 73%.
-A busy stretch puts both up, so it still holds: at 16:30 ET on 11-20 (10 points in six
-hours) the six hours read 110% and the day's 80%, over its 79.5% bar. Hourly over the
-history from 2026-10-08 to 11-21 the new rule opens 29 of the 183 hours the day's rate
-held as `week-high` and closes none it opened (the lower of two can't be higher); in 28
-of the 29 the highest weekly limit rose 2 points or less in those six hours. The busiest
-case is the morning of 11-12 (all models 51%, 4 points in six hours, bar 72%): it opened
-from 06:10 to 11:15 ET and held again as that day's heavy afternoon began.
+Why the percent now and nothing else (Jeff, 2026-11-21: "Yes just freaking do it but can
+the weekly at 90"): the earlier gates all read a pace. The projection to the reset (to
+11-20) held every wake-up after a busy day; the day-ahead figure with a reserve of 5
+points a day left (11-20) and then the lower of the day's and the last six hours' pace
+(11-21 morning) still held it, at 72% weekly on 11-21, and Jeff saw runs not going three
+days running. The limit warnings still say a fast pace at their steps; this gate only
+stops the burn-down near the top. NEXT.md §29 has the history.
 
 A source that can't be read this pass means no wake-up. It **starts nothing**: the lead
 decides what to run.
@@ -2917,7 +2883,7 @@ decides what to run.
 - **The words** are fixed and built from whole numbers only (`checkIdle`, `idleText` in
   `lib/proactive-text.mjs`, checked again in `events.idle`): `Idle: no agent run is live.
   14 open board items have no ask (1 P0, 5 P1; 3 in doing). Session at 12%; weekly limits
-  at most 61% now and 70% a day from now at their pace. 2 idle events since the last run.`
+  at most 61%. 2 idle events since the last run.`
   No id, no title.
 - **The spacing**, kept in the check's state (`proactive.json`'s `idle`, so a restart
   repeats nothing): after a wake-up a run followed, the next may go 15 minutes after it
@@ -2941,12 +2907,9 @@ decides what to run.
   not once a pass. A wake-up logs `proactive: an idle wake-up to the lead's event (made): N
   open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h`
   (the back-off it starts). When something else holds it, one line names the reason and
-  this pass's numbers and the rate the day ahead was read at: `proactive: the idle wake-up
-  is held (week-high): week (all models) at 81.9% a day from now at the last 24 h rate, its
-  bar 80.6% (68% now, 2.9 days to its reset)` (or "at the last 6 h rate", "at the week's
-  average rate"; the days to the reset are the bar's own figure, `daysToReset`). The
-  reasons are `killed`, `sessions-not-current`, `usage-not-current`, `session-high`,
-  `week-high` (the limit furthest over its bar), `board-unreadable`, `no-work`,
+  this pass's numbers: `proactive: the idle wake-up is held (week-high): week (all models)
+  at 91%, its bar 90%`. The reasons are `killed`, `sessions-not-current`,
+  `usage-not-current`, `session-high`, `week-high` (the highest weekly limit), `board-unreadable`, `no-work`,
   `quiet-hours`, `waiting` and `no-events` (`HELD_STATES` and `heldWords` in
   `lib/proactive.mjs`). A new reason is a new line once it holds two passes in a row
   (Ultron's 11-21 low): a reason that flips pass to pass, such as `usage-not-current` and

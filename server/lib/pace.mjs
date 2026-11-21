@@ -146,13 +146,6 @@ export const RATE_LOOKBACK_MS = 24 * 60 * MINUTE;
 // the printed time (2026-10-19: 93% to 0% on the same printed reset), not a dip: the
 // three dips in the history were one point each. No rate is measured across it.
 export const RESET_DROP_PCT = 5;
-// The idle wake-up's second, shorter look back (board 07cb0505, 2026-11-21): the rise of
-// the last six hours, so a few idle hours lower the pace the gate reads while the day's
-// rate still holds a busy day (lib/proactive.mjs, weekPace). Read only when those hours
-// are covered: no two readings in them more than SHORT_MAX_GAP_MS apart (six polls), since
-// an early reset and a climb back inside a gap would read as a quiet stretch.
-export const SHORT_LOOKBACK_MS = 6 * 60 * MINUTE;
-export const SHORT_MAX_GAP_MS = 30 * MINUTE;
 
 // The reading a recent rate is measured from: the newest one of THIS window taken at
 // least `lookbackMs` before `now`, as { t, pct }, or null when there is none (early
@@ -162,15 +155,13 @@ export const SHORT_MAX_GAP_MS = 30 * MINUTE;
 // Walking back from now, a reading belongs to this window while its printed reset is
 // within MIN_PLAUSIBLE_WINDOW_MS of the current one (the printed minute flaps), or,
 // when it prints no reset (a weekly limit at 0% prints none), while it was taken after
-// the window's start. The walk ends at another window's reading and at an early reset,
-// and, with `maxGapMs`, at two readings (or the newest one and `now`) further apart.
+// the window's start. The walk ends at another window's reading and at an early reset.
 // `records` are in ascending `t` order, as the store keeps them.
-export function recentBaseline(records, limit, { now, windowMs, lookbackMs = RATE_LOOKBACK_MS, maxGapMs = Infinity }) {
+export function recentBaseline(records, limit, { now, windowMs, lookbackMs = RATE_LOOKBACK_MS }) {
   const end = Date.parse(limit?.resetsAt ?? '');
   if (!Number.isFinite(end) || !Number.isFinite(limit?.pct) || !(windowMs > 0)) return null;
   const start = end - windowMs;
   let newer = limit.pct;
-  let newerAt = now;
   for (let i = (records?.length ?? 0) - 1; i >= 0; i--) {
     const r = records[i];
     if (!Number.isFinite(r?.t) || r.t > now) continue;
@@ -179,10 +170,8 @@ export function recentBaseline(records, limit, { now, windowMs, lookbackMs = RAT
     const reset = Date.parse(seen.resetsAt ?? '');
     if (Number.isFinite(reset) ? Math.abs(reset - end) > MIN_PLAUSIBLE_WINDOW_MS : r.t < start) return null;
     if (seen.pct - newer > RESET_DROP_PCT) return null;
-    if (newerAt - r.t > maxGapMs) return null;
     if (r.t <= now - lookbackMs) return { t: r.t, pct: seen.pct };
     newer = seen.pct;
-    newerAt = r.t;
   }
   return null;
 }
