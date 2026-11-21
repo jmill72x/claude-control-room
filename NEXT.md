@@ -3179,7 +3179,7 @@ on (per Jarvis's notes; I did not check the log). What follows is how it was sta
   lead's heads-up event, a new line under each weekly figure on the Usage panel ("heading
   for 64% at the last 24 h rate"), and the mod's pace line. The limit warnings never used a
   projection (they fire at 80%, 95% and 90% of the limit itself), so nothing changed there.
-- **The idle wake-up.** A new rule in the proactive check's pass: one event for Jarvis
+- **The idle wake-up** (its gate, settle and spacing changed 2026-11-20: §25). A new rule in the proactive check's pass: one event for Jarvis
   (`source: proactive`, `type: idle`) when no agent run is live, the session is under 75%,
   every weekly limit is under 90% and projected under 100%, the board holds an open item with no `ask`,
   and that has lasted 10 minutes (counted from Jarvis's own last request too). Fixed words,
@@ -3826,3 +3826,64 @@ go-live.
   old status has no `agents`) and sends a field the old routes ignore; an old page against
   the new server gets the 409 when runs are live and shows the server's error, so a restart
   waits until the build reaches it.
+
+## 25. The idle wake-up goes after a busy day and while Jarvis talks (boards 8a13e971 and 638d21d2, P0; staged 2026-11-20 on `jos/idle-wake-fix`)
+
+**Staged, not committed, on `jos/idle-wake-fix` (worktree `~/Projects/.worktrees/ccr-idle-wake`,
+from main b8c148d, no upstream).** Not reviewed by Ultron yet. README "The idle wake-up" is
+the reference; this is the why, the evidence, the choices and the go-live. Jeff raised the
+burn-down not running three times on 11-20 ("Why is it so hard to get this next best to due
+process to run?") and said "Yes fix it and go" on 638d21d2 (21:33 ET).
+
+- **Why it went quiet (8a13e971).** Not the lead tracking: the weekly gate. The wake-up
+  needed every weekly limit projected under 100% to its reset, and the projection follows the
+  last 24 hours (§18), so a busy day of runs pushed it over. Replaying the real `/usage`
+  history through main's `idleCheck`: all models sat at 60-67% and projected 100-113% from
+  11:00 ET, so the rule read `week-high` every pass except 10:15-10:45, 14:30 and 15:00-15:15
+  ET, exactly where the two made wake-ups fell (10:13 and 15:15). Replaying the transcripts for
+  the sessions half: no live run and the lead quiet 10 to 140 minutes over 17:00-19:00 and
+  19:10-21:29 ET, and the new lead session after the 19:02 restart was found by its name. The
+  log has no line for `week-high` (only made and not-sent are logged), which is why it looked
+  like nothing at all. Morning 07:00-10:13 was the same: 100-122% projected.
+- **The fix.**
+  - Weekly gate: every weekly limit under 90% now and **a day from now** at its pace
+    (`weekAhead`: the projection to the reset cut to one day). On 11-20 that reads 79-82%
+    a day ahead at 67%, so it opens; near a week's end at the same pace it closes. The real
+    history replayed through the new rule reads `idle` every hour of 11-20 from 06:00 to 21:00.
+    Over the whole history (hourly) it opens 140 hours the old rule closed and still closes 119.
+  - Lead's own session not read (638d21d2): `idleCheck` no longer looks at `agentWork`; the
+    settle is 5 minutes from the first idle pass (it was 10 minutes from the later of that
+    and the lead's last request).
+  - Spacing: 15 minutes after a wake-up a run followed; 1, 2, then 4 hours while unanswered
+    (as before). Events ledger floor: one in 15 minutes and 48 in any 24 hours.
+  - Words: `… Session at 12%; weekly limits at most 61% now and 70% a day from now at their
+    pace. …` (was "highest weekly projection N%"; the channel passes the text through, and
+    only its tests quote the old words).
+- **Choices to defend.**
+  - A day ahead at 90%, not dropping the projection: without it nothing would slow the
+    wake-ups before a limit reached 90% at a heavy pace; with it they stop a day early. The
+    alternatives were percent-only (simplest, no warning before 90%) or keeping the
+    projection under 100% (silent after every busy day, the bug).
+  - 5-minute settle: one pass of confirmation after a run ends, so the lead can chain the next
+    run itself after reading a report before a wake-up lands.
+  - 48 a day, not 30: with nights on (Jeff 21:37 ET, `quietHours: false`) a day of half-hour
+    runs, each answering a wake-up, makes about 41 (scratch integration of the real check and
+    events module); 30 would have stopped it by late afternoon. The back-off, not this cap,
+    is what stops spam: an ignoring lead gets 8 in 24 hours.
+  - Any live run answers a wake-up (a routine's or one Jarvis started for a chat too): it
+    shows the lead is acting, and the 15-minute floor still holds.
+- **Checked (2026-11-20):** server 1,734 tests in local time and `TZ=Asia/Tokyo`, web 378.
+  New or rewritten: `proactive-idle.test.mjs` (34; the busy-day reproductions, one through
+  the real `buildUsagePanel`, and the lead-busy one), `proactive-idle-events.test.mjs` (13,
+  the 15-minute floor and the 48 cap). 26 mutants, all caught after two redundant checks were
+  removed (a percent gate implied by the day-ahead one, and the week's upper bound implied by
+  ahead's). **Not verified:** a wake-up made by the live server (it needs the restart), and
+  how Jarvis acts on one mid-conversation.
+- **Go-live (Jeff, after Ultron and C&P):** a Control Room restart only (server code; no web
+  build, no config change; `proactive.idle` already has `enabled: true` and
+  `quietHours: false`). Check after: the start line still ends `idle wake-up on (nights too)`,
+  and within about 10 minutes of the board sitting idle a line `proactive: an idle wake-up to
+  the lead's event (made)`. Undo: `~/.local/state/jarvis-os/idle-off` stops wake-ups with no
+  restart. Check for live agent runs before the restart.
+- **Next:** a log line when the rule changes state (`week-high`, `settling` …), at most one a
+  spell, so a quiet wake-up can be read from the log (this diagnosis needed two replays).

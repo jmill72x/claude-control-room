@@ -266,46 +266,42 @@ export function expiryHits({ keys, now }) {
 // and `usage` are the cache's panels ({ status, data }), `todos` the board file's list
 // or null when it could not be read. The answer is `{ state }`, the first of these that
 // holds, and with `idle` the wake-up's `fields` (lib/proactive-text.mjs, checkIdle):
-//   sessions-not-current  the live agents list was not read this pass, or the lead is
-//                         not known (no agent work block, or its `lead` is null)
+//   sessions-not-current  the live agents list was not read this pass
 //   running               an agent run is live (lib/live-agents.mjs)
 //   usage-not-current     the usage panel was not read this pass, or has no session
 //                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
 //   session-high          the session limit is at IDLE.sessionPct or over
-//   week-high             a weekly limit is at IDLE.weekPct or over, whatever its
-//                         projection (Ultron's M1, 11-19: after a quiet day the 24-hour
-//                         rate is about 0 and a limit at 97% projects 97%), or is
-//                         projected at IDLE.weekProjectedPct or over (by its percent,
-//                         while it has no projection)
+//   week-high             a weekly limit is at IDLE.weekPct or over (Ultron's M1,
+//                         11-19), or will be a day from now at its pace (weekAhead)
 //   board-unreadable      the board file could not be read
 //   no-work               no open item (idea or doing) without an ask
-// A source that can't be read never reads as idle. With `idle` comes `leadLast`, the
-// lead's own session's latest request: null only when the lead is known and has made
-// none in the transcripts read (Ultron's L2, 11-19). The caller counts the quiet from it.
+// A source that can't be read never reads as idle. The lead's own session is not read
+// (board 638d21d2, 11-20): a lead talking with the owner still gets the cue, since the
+// runs it starts are what burn the board down.
 export function idleCheck({ sessions, usage, todos, now }) {
   const live = sessions?.status === 'ok' ? sessions.data?.liveAgents : null;
   if (!isObject(live) || !Array.isArray(live.runs)) return { state: 'sessions-not-current' };
   if (live.runs.length > 0) return { state: 'running' };
-  const work = sessions.data.agentWork;
-  if (!isObject(work) || typeof work.lead !== 'string' || work.lead === '') return { state: 'sessions-not-current' };
-  const leadLast = work.leadLast;
 
   const limits = usage?.status === 'ok' && Array.isArray(usage.data?.limits) ? usage.data.limits : null;
   const session = limits?.find(l => ruleFor(l?.label)?.name === 'session');
   if (!finite(session?.pct)) return { state: 'usage-not-current' };
   if (session.pct >= IDLE.sessionPct) return { state: 'session-high' };
-  let week = null, high = false;
+  let week = null, ahead = null, high = false;
   for (const l of limits) {
     const rule = ruleFor(l?.label);
     if (!rule || rule.name === 'session' || !finite(l.pct)) continue;
-    if (l.pct >= IDLE.weekPct) high = true;
-    week = Math.max(week ?? 0, Math.round(finite(l.pace?.projectedPct) ? l.pace.projectedPct : l.pct));
+    // Never under its percent, so a limit at the step already is too high (Ultron's M1).
+    const later = weekAhead(l, now);
+    if (later >= IDLE.weekPct) high = true;
+    week = Math.max(week ?? 0, l.pct);
+    ahead = Math.max(ahead ?? 0, later);
   }
   if (week === null) return { state: 'usage-not-current' };
-  if (high || week >= IDLE.weekProjectedPct) return { state: 'week-high' };
+  if (high) return { state: 'week-high' };
 
   if (!Array.isArray(todos)) return { state: 'board-unreadable' };
-  const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week };
+  const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week: Math.round(week), ahead: Math.round(ahead) };
   for (const t of todos) {
     if (!isObject(t) || !OPEN_LANES.has(t.lane) || (t.ask !== undefined && t.ask !== null)) continue;
     fields.workable++;
@@ -313,7 +309,23 @@ export function idleCheck({ sessions, usage, todos, now }) {
     if (t.priority === 'P1') fields.p1++;
     if (t.lane === 'doing') fields.doing++;
   }
-  return fields.workable === 0 ? { state: 'no-work' } : { state: 'idle', fields, leadLast: finite(leadLast) && leadLast <= now ? leadLast : null };
+  return fields.workable === 0 ? { state: 'no-work' } : { state: 'idle', fields };
+}
+
+// A weekly limit's percent IDLE.aheadMs from now at its pace: the panel's projection to
+// the reset (lib/pace.mjs: the last day's rate, or the week's average early on) cut to
+// that span, so pct + (projected - pct) x aheadMs / time left, and the projection itself
+// when the reset is nearer than that. A projection with no reset to cut it by stands as
+// it is; with no projection the percent stands in (no rate known). Never under `pct`.
+export function weekAhead(limit, now) {
+  const pct = limit.pct;
+  const projected = limit.pace?.projectedPct;
+  if (!finite(projected)) return pct;
+  const gain = Math.max(0, projected - pct);
+  const left = Date.parse(limit.resetsAt ?? '') - now;
+  if (!finite(left)) return pct + gain;
+  if (left <= 0) return pct;
+  return pct + gain * Math.min(1, IDLE.aheadMs / left);
 }
 
 // A heal target's name for a hit (config's `heal.targets`, a Map by label of { id,
@@ -502,10 +514,11 @@ export function createProactive({
   const isCurrent = src => sources[src] === 'ok' || (src === 'keys' && sources.keys === 'none');
 
   // The idle rule, after the hits: at most one wake-up, when the board has sat idle
-  // with room to work, and the lead's own session has made no request, for IDLE.settleMs. Not at night unless config says so, and never
-  // held for the morning: the 07:00 pass decides afresh. One every IDLE.everyMs at most,
-  // the wait doubling (to IDLE.backoffMax times) after each one no run followed; a run
-  // seen live puts it back.
+  // with room to work for IDLE.settleMs, whatever the lead's own session is doing (board
+  // 638d21d2). Not at night unless config says so, and never held for the morning: the
+  // 07:00 pass decides afresh. After a wake-up a run followed, the next waits IDLE.gapMs;
+  // after one no run followed, IDLE.everyMs, doubling (to IDLE.backoffMax times) with
+  // each further one. A run seen live sets the count back to none.
   async function idleStep(now) {
     if (!idleSettings.on) return { state: 'off' };
     const idle = state.idle;
@@ -515,10 +528,11 @@ export function createProactive({
     if (found.state !== 'idle') { idle.since = null; return { state: found.state }; }
     if (!finite(idle.since) || idle.since > now) idle.since = now;
     const base = { since: idle.since, ...found.fields, unanswered: idle.unanswered };
-    if (now - Math.max(idle.since, found.leadLast ?? 0) < IDLE.settleMs) return { state: 'settling', ...base };
+    if (now - idle.since < IDLE.settleMs) return { state: 'settling', ...base };
     if (idleSettings.quietHours && isQuiet(now)) return { state: 'quiet-hours', ...base };
-    // One hour after a wake-up, two after a second with no run between, then four.
-    const wait = IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** Math.max(0, idle.unanswered - 1));
+    // A quarter of an hour after one a run followed; one hour after one none did, two
+    // after a second, then four.
+    const wait = idle.unanswered === 0 ? IDLE.gapMs : IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** (idle.unanswered - 1));
     if (finite(idle.sentAt) && idle.sentAt <= now && now - idle.sentAt < wait) return { state: 'waiting', ...base, nextAt: idle.sentAt + wait };
     const ev = events();
     if (!ev) return { state: 'no-events', ...base };

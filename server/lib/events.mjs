@@ -54,15 +54,20 @@ export const PER_SOURCE_HOURLY = 6;
 export const DAILY_TOTAL = 30;
 // The proactive check's own day cap, outside DAILY_TOTAL.
 export const PROACTIVE_DAILY = 8;
-// The idle wake-up (lib/proactive.mjs): at most one in this long, whoever asks. That
-// spacing is its whole cap (24 a day at most); its events count toward neither the
-// heads-ups' 8 nor the others' 30, under a name of their own in the ledger.
-export const IDLE_EVERY_MS = IDLE.everyMs;
+// The idle wake-up (lib/proactive.mjs): at most one in IDLE_GAP_MS and IDLE_DAILY in any
+// 24 hours, whoever asks. The check's own spacing (a quarter of an hour after a wake-up
+// a run followed, an hour and more after one none did) sits inside these; they are the
+// floor if it ever asks more often. Its events count toward neither the heads-ups' 8
+// nor the others' 30, under a name of their own in the ledger. 48 a day is one each half
+// hour around the clock (nights may be on, 11-20): a day of half-hour runs, each started
+// on a wake-up, stays under it (board 638d21d2).
+export const IDLE_GAP_MS = IDLE.gapMs;
+export const IDLE_DAILY = 48;
 export const IDLE_LEDGER = 'proactive-idle';
 export const EVENT_TTL_MS = 2 * HOUR;
 // An idle wake-up's life (Ultron's L4, 11-19): it says the board sat idle a moment ago,
-// and the check sends another within the hour while that still holds, so an old one
-// would only tell the lead something that may have stopped being true.
+// and the check sends another later while that still holds, so an old one would only
+// tell the lead something that may have stopped being true.
 export const IDLE_EVENT_TTL_MS = 15 * 60e3;
 export const QUIET_START_HOUR = 22;
 export const QUIET_END_HOUR = 7;
@@ -587,7 +592,7 @@ export function createEvents({
   // checked here too, whoever calls (Ultron's L5, 11-19): from 22:00 to 07:00 the answer
   // is `quiet` unless the caller passes `nights: true` (the check does, when config's
   // `proactive.idle.quietHours` is false). `held` is the spacing: one was made within
-  // IDLE_EVERY_MS.
+  // IDLE_GAP_MS, or IDLE_DAILY in the last 24 hours.
   function idle(fields, { nights = false } = {}) {
     return serial(async () => {
       const at = clock();
@@ -596,7 +601,8 @@ export function createEvents({
       if (killed()) return { status: 'off' };
       if (nights !== true && isQuiet(at)) return { status: 'quiet' };
       trimMade(at);
-      if (ledger.made.some(e => e.source === IDLE_LEDGER && at - e.at < IDLE_EVERY_MS)) return { status: 'held' };
+      const made = ledger.made.filter(e => e.source === IDLE_LEDGER);
+      if (made.length >= IDLE_DAILY || made.some(e => at - e.at < IDLE_GAP_MS)) return { status: 'held' };
       await append({ source: PROACTIVE_SOURCE, type: 'idle', text: idleText(checked), items: [{ source: PROACTIVE_SOURCE, failure: false, since: at }], countAs: IDLE_LEDGER });
       await save();
       return { status: 'made' };

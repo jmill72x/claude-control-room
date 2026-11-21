@@ -2796,43 +2796,54 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   `idle` the lead's tag reads `event="unknown"`; the words still arrive
   (`source="proactive"`).
 
-#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default)
+#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default; rule changed 2026-11-20)
 
 The lead wakes only on events, so when the last agent run ends nothing starts the next
 one, though the board holds work and the limits have room. The check's pass makes **one
 event for the lead** (`source: proactive`, `type: idle`) when all of this holds, each read
 in that pass:
 
-1. **Nothing is running**: the sessions panel is current, its live agents list is
-   empty (`lib/live-agents.mjs`), and the lead is known (`agentWork.lead`; with no roster
-   its quiet can't be counted).
+1. **Nothing is running**: the sessions panel is current and its live agents list is
+   empty (`lib/live-agents.mjs`). The lead's own session is not read (board 638d21d2,
+   2026-11-20): a lead talking with the owner still gets the cue, since the runs it
+   starts are what burn the board down.
 2. **There is room**: the usage panel is current, the session limit is under 75%, at
    least one weekly limit has a percent, and every weekly limit is under 90% (the limit
-   warnings' weekly step) and projected under 100% (above); a weekly limit with no
-   projection yet counts by its percent. The 90% holds whatever the projection: after a
-   quiet day the 24-hour rate is about 0, and a limit at 97% projects 97%.
+   warnings' weekly step) now **and a day from now** at its pace (`weekAhead` in
+   `lib/proactive.mjs`): the panel's projection to the reset cut to one day, so
+   `pct + (projected - pct) x 24 h / time left`, the projection itself when the reset is a
+   day away or less, the percent when there is no projection.
 3. **There is work**: the board file holds an open item (`idea` or `doing`) with no `ask`.
-4. **It has lasted 10 minutes**, counted from the later of the first idle pass and the
-   lead's own session's last request, so the moment between one run's end and the next
-   one's start is not idle.
+4. **It has lasted 5 minutes** from the first pass that found it, so the moment between
+   one run's end and the lead starting the next is not idle.
+
+Why a day ahead and not the projection to the reset (board 8a13e971, 2026-11-20): a busy
+day of runs puts the 24-hour rate up, so the projection passed 100% (all models at 67%,
+105% to 113% projected, three days to the reset) and the old gate held every wake-up from
+15:30 to the night, with a third of the week left. The only two that went that day fell in
+the two spells the projection dipped under 100%. Over the whole usage history (hourly, from
+2026-08-13 to 11-20) the day-ahead rule opens 140 hours the old one closed and still
+closes 119 as `week-high`.
 
 A source that can't be read this pass means no wake-up. It **starts nothing**: the lead
 decides what to run.
 
 - **The words** are fixed and built from whole numbers only (`checkIdle`, `idleText` in
   `lib/proactive-text.mjs`, checked again in `events.idle`): `Idle: no agent run is live.
-  14 open board items have no ask (1 P0, 5 P1; 3 in doing). Session at 12%, highest weekly
-  projection 64%. 2 idle events since the last run.` No id, no title.
-- **At most one an hour**, kept twice: in the check's state (`proactive.json`'s `idle`, so
-  a restart repeats nothing) and in the events ledger, which refuses a second within the
-  hour whoever asks (`held`). **It backs off while nothing follows**: after a wake-up no
-  run followed, the next waits 2 hours, then 4; a run seen live puts it back to 1.
+  14 open board items have no ask (1 P0, 5 P1; 3 in doing). Session at 12%; weekly limits
+  at most 61% now and 70% a day from now at their pace. 2 idle events since the last run.`
+  No id, no title.
+- **The spacing**, kept in the check's state (`proactive.json`'s `idle`, so a restart
+  repeats nothing): after a wake-up a run followed, the next may go 15 minutes after it
+  (once idle 5 minutes); after one no run followed, an hour, then 2, then 4 (the cap). A
+  run seen live sets the count back to none. The events ledger is the floor whoever asks:
+  at most one in 15 minutes and 48 in any 24 hours (`held`).
 - **Not from 22:00 to 07:00**, and none held for the morning: the 07:00 pass decides
   afresh. `"quietHours": false` lets it go at night too. `events.idle` checks the hours
   again itself (`quiet`), unless its caller passes `nights: true`, which the check does
   only with that switch.
 - **A life of 15 minutes** at delivery, not the 2 hours of other events: an idle board
-  told an hour late may be busy by then, and the next wake-up follows within the hour.
+  told an hour late may be busy by then, and a later pass sends another while it holds.
 - **Not made means not sent**: `held`, `off` (the `events-off` file), `quiet` or a store that
   refused it changes nothing, and a later pass asks again; the log says each spell once.
 - **Switches.** `"proactive": { "enabled": true, "idle": { "enabled": true, "quietHours":

@@ -4,6 +4,16 @@ Board items f66a4a7e ("the projections need to be more dynamic") and 5ffd0041 (c
 burn-down). Written 2026-11-19, before the build. Both build on the proactive check
 (`docs/design/2026-11-18-proactive-check.md`) and change nothing in its other rules.
 
+**Amended 2026-11-20 (boards 8a13e971 and 638d21d2).** Three parts of §2 below no longer
+hold, and README's "The idle wake-up" has the rule as built now: (a) the weekly gate is
+under 90% now and a day from now at its pace, not projected under 100% to the reset,
+because a busy day of runs pushed the projection over 100% and the wake-up stopped
+itself with a third of the week left; (b) the lead's own session is no longer read, so a
+lead talking with the owner still gets the cue, and the settle is 5 minutes from the
+first idle pass; (c) after a wake-up a run followed, the next may go 15 minutes after it
+(an hour, 2, then 4 while unanswered, as before), and the events ledger's floor is one in
+15 minutes and 48 a day.
+
 ## 1. The projection
 
 **The problem.** A weekly limit's projection was a straight line from the start of the
