@@ -232,6 +232,14 @@ On the same readings that is 64% and 78%.
 - **Who reads it**: `lib/alerts.mjs` (the `projection` alert, over 100%) and the proactive
   check (`week`, and the idle wake-up's room). The limit warnings never used a
   projection: they fire on the percent itself.
+- **A second, shorter rate for the idle wake-up only** (board 07cb0505, 2026-11-21): a
+  weekly limit's pace also carries `pace.short`, `{ pct, spanMs }`, its percent at the
+  newest reading at least six hours old (`SHORT_LOOKBACK_MS`) and the true span, when no
+  two readings in those hours (nor the newest one and now) are more than 30 minutes apart
+  (`SHORT_MAX_GAP_MS`; an early reset and a climb back inside a gap would read as a quiet
+  stretch). The same walls as the day's rate stand (this window only, a fall of more than
+  5 points). Nothing says it: the projection, its basis and every line above stay on the
+  day's rate. "The idle wake-up" below reads it.
 
 Tests: `server/test/pace-recent.test.mjs`, `web/test/orbit-overview.test.js`.
 
@@ -2809,11 +2817,15 @@ in that pass:
    starts are what burn the board down.
 2. **There is room**: the usage panel is current, the session limit is under 75%, at
    least one weekly limit has a percent, and every weekly limit **a day from now** at its
-   pace is under its **bar** (`weekAhead` and `weekBar` in `lib/proactive.mjs`). A day from
-   now is the panel's projection to the reset cut to one day, so
-   `pct + (projected - pct) x 24 h / time left`, the projection itself when the reset is a
-   day away or less, the percent when there is no projection; it is never under the
-   percent. The bar is 90% (the limit warnings' weekly step) less a reserve of 5 points for
+   pace is under its **bar** (`weekPace` and `weekBar` in `lib/proactive.mjs`). A day from
+   now is the lower of two paces (board 07cb0505, 2026-11-21): the day's, the panel's
+   projection to the reset cut to one day, so `pct + (projected - pct) x 24 h / time
+   left`; and the last six hours', `pct + (pct - pace.short.pct + 1) x 24 h / its span`
+   (see "A second, shorter rate" above; none when those hours have a gap). The added point
+   (Ultron's M1, 11-21) is the most whole percents can hide: flat at 78% for six hours may
+   be 78.95%, a day pace near 82% that would read as 78. Both run to the
+   reset instead when it is a day away or less. With no projection it is the percent, and
+   it is never under the percent. The bar is 90% (the limit warnings' weekly step) less a reserve of 5 points for
    each day past the first left to that limit's reset: 90% with a day or less left, 80%
    with three, 60% with seven or with no reset printed. The reserve (Ultron's M1,
    2026-11-20) keeps room for the days still to come: the week before, one model's limit
@@ -2829,7 +2841,21 @@ day of runs puts the 24-hour rate up, so the projection passed 100% (all models 
 the two spells the projection dipped under 100%. Over the whole usage history (hourly, from
 2026-08-13 to 11-20) the day-ahead rule with its reserve opens 89 hours the old one closed
 and closes 170 as `week-high`. On 11-20 at 22:00 ET (all models 68%, 108% projected, 2.9
-days left) it reads 82% a day on against a bar of 81%: held until the day's rate eases.
+days left) it reads 82% a day on against a bar of 81%: held while that evening's pace lasts.
+
+Why the lower of two paces (board 07cb0505, 2026-11-21): the day's rate alone remembered a
+busy day all night. All models stood at 69% from 22:02 ET on 11-20 until 07:53 ET (no
+run from 23:49), yet the last 24 hours' rise (+14) read about 83% a day on against a bar of
+81-82%, so the wake-up was held until 07:35 ET. The last six hours' rise falls within a
+few idle hours: at 23:40 ET it read 81% (2 points in six hours, plus the hidden one)
+against a bar of 81%, and the gate opened; from 04:02 ET, flat for six hours, it read 73%.
+A busy stretch puts both up, so it still holds: at 16:30 ET on 11-20 (10 points in six
+hours) the six hours read 110% and the day's 80%, over its 79.5% bar. Hourly over the
+history from 2026-10-08 to 11-21 the new rule opens 29 of the 183 hours the day's rate
+held as `week-high` and closes none it opened (the lower of two can't be higher); in 28
+of the 29 the highest weekly limit rose 2 points or less in those six hours. The busiest
+case is the morning of 11-12 (all models 51%, 4 points in six hours, bar 72%): it opened
+from 06:10 to 11:15 ET and held again as that day's heavy afternoon began.
 
 A source that can't be read this pass means no wake-up. It **starts nothing**: the lead
 decides what to run.
@@ -2856,8 +2882,30 @@ decides what to run.
   true } }`, read at start. Without `idle.enabled` none goes. The file
   `~/.local/state/jarvis-os/idle-off` stops the wake-ups at the next pass with no restart
   (the rest of the check runs on); `proactive-off` stops everything. The start line ends
-  `; idle wake-up on (not 22:00-07:00)`, `on (nights too)` or `off`. A wake-up logs
-  `proactive: an idle wake-up to the lead's event (made): N open items with no ask`.
+  `; idle wake-up on (not 22:00-07:00)`, `on (nights too)` or `off`.
+- **The log** (board 5c27ade0, 2026-11-21) says why a wake-up is not going, once a spell,
+  not once a pass. A wake-up logs `proactive: an idle wake-up to the lead's event (made): N
+  open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h`
+  (the back-off it starts). When something else holds it, one line names the reason and
+  this pass's numbers and the rate the day ahead was read at: `proactive: the idle wake-up
+  is held (week-high): week (all models) at 81.9% a day from now at the last 24 h rate, its
+  bar 80.6% (68% now, 2.9 days to its reset)` (or "at the last 6 h rate", "at the week's
+  average rate"; the days to the reset are the bar's own figure, `daysToReset`). The
+  reasons are `killed`, `sessions-not-current`, `usage-not-current`, `session-high`,
+  `week-high` (the limit furthest over its bar), `board-unreadable`, `no-work`,
+  `quiet-hours`, `waiting` and `no-events` (`HELD_STATES` and `heldWords` in
+  `lib/proactive.mjs`). A new reason is a new line once it holds two passes in a row
+  (Ultron's 11-21 low): a reason that flips pass to pass, such as `usage-not-current` and
+  `week-high` while the usage poll fails every other time, or lasts one pass, is never
+  said as a spell; after six such flips one more line names both (`... is held
+  (week-high), flipping pass to pass with usage-not-current`, once a spell; Ultron's L1).
+  The same one on later passes is not said again, and a live run or the 5-minute
+  settle in between neither ends the spell nor confirms or forgets a new reason (a run is the
+  burn-down working; the settle is one pass after every run). When a wake-up is next
+  offered, `proactive: the idle wake-up is no longer held (week-high, first seen 2 h 50 min
+  ago)` comes before its line. The wait right after a wake-up is not said (the wake-up's
+  own line gave it); a wait met any other way is, as after a restart: the spell lives in
+  memory, so the second pass after a start says what holds it.
 - **The page** has no row for it. `GET /api/proactive` carries `idle`: the switch, the
   last pass's state (`settling`, `quiet-hours`, `waiting`, `sent`, `running`,
   `session-high`, `week-high`, `no-work`, …), its counts and when one last went.

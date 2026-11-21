@@ -3827,12 +3827,11 @@ go-live.
   the new server gets the 409 when runs are live and shows the server's error, so a restart
   waits until the build reaches it.
 
-## 25. The idle wake-up goes after a busy day and while Jarvis talks (boards 8a13e971 and 638d21d2, P0; fd65a3f pushed 2026-11-20, Ultron's M1 staged on top)
+## 25. The idle wake-up goes after a busy day and while Jarvis talks (boards 8a13e971 and 638d21d2, P0; on main as dc929c2 with Ultron's M1, live per Jarvis's 2026-11-21 brief)
 
-**Committed and pushed as fd65a3f on `jos/idle-wake-fix` (worktree `~/Projects/.worktrees/ccr-idle-wake`,
-from main b8c148d), with Ultron's GO (2026-11-20). His one medium, M1 (no weekly reserve for
-the days left), is folded in and staged on top, not committed; Jeff picked option (a), the
-day-ahead gate.** README "The idle wake-up" is
+**On main: fd65a3f (the fix, Ultron's GO 2026-11-20) and dc929c2 (his one medium, M1,
+the weekly reserve for the days left), from `jos/idle-wake-fix`; Jarvis's 11-21 brief calls
+dc929c2 live. Jeff picked option (a), the day-ahead gate.** README "The idle wake-up" is
 the reference; this is the why, the evidence, the choices and the go-live. Jeff raised the
 burn-down not running three times on 11-20 ("Why is it so hard to get this next best to due
 process to run?") and said "Yes fix it and go" on 638d21d2 (21:33 ET).
@@ -3895,5 +3894,126 @@ process to run?") and said "Yes fix it and go" on 638d21d2 (21:33 ET).
   `proactive: an idle wake-up to the lead's event (made)` (on the 22:00 ET reading of 11-20
   the bar was shut, so none may come until the day's rate eases). Undo: `~/.local/state/jarvis-os/idle-off` stops wake-ups with no
   restart. Check for live agent runs before the restart.
-- **Next:** a log line when the rule changes state (`week-high`, `settling` …), at most one a
-  spell, so a quiet wake-up can be read from the log (this diagnosis needed two replays).
+- **Next:** the log line when the rule is held is §26 (board 5c27ade0).
+
+## 26. The idle wake-up says why it is held (board 5c27ade0, P2; staged 2026-11-21 on `jos/idle-blocked-log`)
+
+**Staged, not committed, on `jos/idle-blocked-log` (worktree
+`~/Projects/.worktrees/ccr-idle-blocked-log`, from main dc929c2), one commit with §27.**
+README "The idle wake-up", bullet "The log", is the reference. A held wake-up wrote nothing, so on 11-20 a
+quiet afternoon took two replays to read as `week-high` (§25).
+
+- **What it does.** One line when a held spell starts, with the reason and that pass's
+  numbers, and one when a wake-up is next offered. Replayed over the real `/usage` history
+  for 11-20 06:00 ET to 11-21 07:30 ET (an invented board, no run ever live), the check
+  would have logged:
+  `2026-11-20T21:25Z proactive: the idle wake-up is held (week-high): week (all models) at 79.8% a day from now at the last 24 h rate, its bar 79.5% (66% now, 3.1 days to its reset)`,
+  `2026-11-21T00:10Z proactive: the idle wake-up is no longer held (week-high, first seen 2 h 50 min ago)`,
+  the wake-up's line, then `02:45Z … held (week-high): … at 81.9% … its bar 80.6% (68% now,
+  2.9 days to its reset)`; with §27 it opens again at 03:40Z (the replay is in §27).
+- **Ultron's two lows (board 2190d996, 11-21), in:** a new reason is said only once it
+  holds two passes in a row, so a reason flipping pass to pass (`usage-not-current` and
+  `week-high`) or lasting one pass is never said (`heard` beside `held`; the passes a spell
+  doesn't count neither confirm nor forget it; an offer forgets it). He offered that or
+  "skip a repeat within 30 min"; two in a row was picked because a strict flip then logs
+  nothing at all, where a 30-minute rule still logs both reasons twice an hour. Cost: a
+  held line comes one pass (5 min) later, with that pass's numbers. His delta L1 (11-21)
+  is in too: after six flips with nothing said, one line names both reasons (`… is held
+  (week-high), flipping pass to pass with usage-not-current`), once a spell. And
+  `daysToReset` is the one figure for the bar and the line (in spans of `IDLE.aheadMs`, as
+  he asked).
+- **Choices to defend.**
+  - `running` and `settling` neither start nor end a spell. A run is the burn-down
+    working, and a week-high spell interrupted by runs all day would otherwise repeat once
+    a run; the settle is one pass after every run by design, so saying it would be a line
+    a run with nothing in it. Anything held longer shows as another reason.
+  - The wait right after a wake-up is not said: the wake-up's own line now ends with the
+    back-off it starts (`the next no sooner than 15 min on if a run follows, else 1 h`, then
+    2 h, 4 h), so a log of them reads 1-2-4-4 without a second line each. A wait met any
+    other way (after a restart, or a week-high spell that opened inside the back-off) is
+    said.
+  - The spell is in memory, not in `proactive.json`: the second pass after a restart says
+    what holds it, which is what a reader after a restart wants. No state-file change.
+  - The "no longer held" line comes before the offer, sent or not (a daily cap shows as
+    the existing `was not sent (held)` line after it); its span counts from the spell's
+    first pass, runs in between included, so it says "first seen … ago", not "held for".
+  - `week-high` names the limit furthest over its bar (by its limit-warnings name, never
+    the panel's raw label: an odd label reads `week (one model)`). Percent and bar to a
+    tenth, as the gate compares raw figures.
+  - The view (`GET /api/proactive`) is unchanged: the numbers go to the log only.
+- **Also:** Ultron's 11-20 delta L1/L2: `weekAhead`'s comment is back above `weekAhead`
+  (it had ended up above `weekBar`'s).
+- **Checked (2026-11-21):** server 1,743 tests in local time and `TZ=Asia/Tokyo` (7 new in
+  `proactive-idle.test.mjs`: the reserve bar on 11-20's real reading with 13 passes and one
+  line, no repeat across a run, every reason's words, quiet hours, the unsaid and said
+  waits, the end line before a not-sent and an error, the words' edge cases), web 378.
+  21 mutants, all caught (one first missed: the days clamp, until the test used a reset six
+  hours past instead of one). **Not verified:** the live server's log (needs the restart).
+- **Go-live (after C&P):** with §27, a Control Room restart only (server code; no build, no
+  config). Check live agent runs first. After it, the second pass logs a held line if
+  anything holds the wake-up.
+
+## 27. A quiet night opens the idle gate: the lower of the day's and the last six hours' pace (board 07cb0505, P1; staged 2026-11-21 on `jos/idle-blocked-log`)
+
+**Staged with §26, not committed (same worktree and branch). Jeff said "Go" 11-21.** README
+"The weekly projection follows the last day's rate", bullet "A second, shorter rate", and
+"The idle wake-up", rule 2 and "Why the lower of two paces", are the reference.
+
+- **The miss.** Overnight 11-20/21 all models sat at 69% from 22:02 ET (no run from 23:49
+  to 07:39), but the day-ahead figure used the last 24 hours' rise (+14 from the busy
+  11-20): about 83% against a bar of 81-82%, so the wake-up was held until 07:35 ET and
+  the board was not burned down overnight, which Jeff wants ("so we're not wasting tokens
+  on them during the day").
+- **What it does.** The usage panel gives each weekly limit `pace.short` (its percent six
+  hours back and the true span, only when no two readings in those hours are over 30
+  minutes apart); `weekPace` takes the lower of the day's figure and `pct + (six-hour rise
+  + 1) x 24 h / span` (to the reset when under a day). The added point is Ultron's delta
+  M1 (11-21): percents are whole, so a rise of up to a point reads as none, up to 4
+  points a day (flat at 78% may be 78.95%, a pace near 82% against a bar of 80.6%). The held line names the rate it read
+  ("at the last 6 h rate" / "at the last 24 h rate"). The session gate, the bar and
+  reserve, the spacing and the projection on the page, the alerts and the mod are
+  unchanged.
+- **Replay (real `/usage` history, the real check, an invented 3-item board, no run ever
+  live, nights on, 11-20 06:00 ET to 11-21 08:00 ET).** Old: wake-ups at 00:10Z, then held
+  from 02:40Z to 12:35Z (07:35 ET). New, with M1's point: held 02:45Z (68-69%, the day's
+  rate), open from 04:40Z (23:40 ET; 81.0% a day on, 2 points in six hours plus one,
+  against a bar of 81.0%; 73% once flat six hours, from 09:02Z), wake-ups at 04:45Z,
+  08:45Z and 12:45Z (23:45, 03:45, 07:45 ET), spaced by the unanswered back-off (4 h,
+  since no run ever follows in a replay). From a fresh state at 02:30Z, after the 02:35Z
+  wake-up both make: new 04:45Z, 06:45Z, 10:45Z; old none until 12:35Z. Without M1's point
+  it had opened at 03:40Z. The gate alone, every 5 min of that span: 159 passes open under
+  both, 57 held under both, 96 opened by the new rule, none closed.
+- **Busy stretches still hold.** 11-20 21:20Z-00:05Z (16:20-19:05 ET, 10 points in six
+  hours; 110% at six hours, 80% at the day's rate, bar 79.5%): held under both. Hourly over
+  2026-10-08 to 11-21 the new rule opens 29 of the 183 hours the old one held (28 with a
+  six-hour rise of 2 points or less) and closes none. The busiest days, 11-13 to 11-16 (a
+  limit at 100%), stay held every hour. The trade-off is 11-12: after a heavy night the
+  morning ran 4 points in six hours on all models (51%, bar 72%), so it opened 06:10-11:15
+  ET and held again as the heavy afternoon began, through the evening (Fable from 51% to
+  82%).
+- **Choices to defend.**
+  - The lower of the two, not a blend: a blend (say half each) keeps 11-12's morning held
+    but opens the quiet night later and less often; the gate is read every 5 minutes, so
+    a run that picks the pace back up closes it within a pass or two, and the reserve bar
+    is what bounds the week. If Jeff wants it stricter, a blend or a cap on the six-hour
+    rise is a one-line change.
+  - Six hours, plus a point: it opened the night at 23:40 ET, 98 minutes after the last
+    point. The day's rate keeps no added point: whole percents hide at most a point a
+    day there.
+  - A gap over 30 minutes in the six hours drops the short rate (the day's rate stands):
+    an early reset and a climb back inside a gap would read as quiet. The history had 9
+    gaps over 6 minutes in 14,362 readings since 10-01.
+  - Read only by the gate: the page, alerts and mod keep the 24 h projection and its words.
+  - With no projection (the first 10% of the week) the percent stands, as before; the short
+    rate can only lower a figure, never raise it.
+- **Checked (2026-11-21):** server 1,752 tests in local time and `TZ=Asia/Tokyo` (9 new:
+  the gap rule and the panel's `pace.short` in `pace-recent.test.mjs`; `weekPace`,
+  `daysToReset`, the real night through the panel at 05:00Z, the busy evening at 21:30Z,
+  the night pass by pass (first wake-up 04:55Z on these readings, 12:35Z without the
+  short rate), Ultron's flat 78% against an 80.6% bar (held), the two-pass rule with the
+  six-flip line, and the rate words in `proactive-idle.test.mjs`), web 378. 37 new
+  mutants: 35 caught (a null percent only after a test for it was added), 2 equivalent and
+  their code removed as redundant; 9 more over M1 and L1, all caught; a no-op baseline
+  survived each run, as it must. The 18 mutants of §26 that still apply, all caught.
+  **Not verified:** the live log after the restart.
+- **Go-live (after C&P):** the restart in §26.

@@ -22,6 +22,7 @@ import { ruleFor, windowOf, SESSION_STEPS, NO_RESET_KEEP_MS } from './limit-warn
 import { distinctHeals } from './heal.mjs';
 import { isDueDate } from '../todos.mjs';
 import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit, checkIdle, IDLE } from './proactive-text.mjs';
+import { basisWords } from './pace.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const CHECK_EVERY_MS = 5 * MIN;
@@ -270,10 +271,14 @@ export function expiryHits({ keys, now }) {
 //   running               an agent run is live (lib/live-agents.mjs)
 //   usage-not-current     the usage panel was not read this pass, or has no session
 //                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
-//   session-high          the session limit is at IDLE.sessionPct or over
-//   week-high             a weekly limit a day from now at its pace (weekAhead, never
-//                         under its percent) is at its bar or over (weekBar: IDLE.weekPct
-//                         less the reserve for the days left; Ultron's M1s, 11-19, 11-20)
+//   session-high          the session limit is at IDLE.sessionPct or over (with its `pct`)
+//   week-high             a weekly limit a day from now at its pace (weekPace: the lower
+//                         of the day's rate and the last six hours', never under its
+//                         percent) is at its bar or over (weekBar: IDLE.weekPct less the
+//                         reserve for the days left; Ultron's M1s, 11-19, 11-20);
+//                         `limit` is the one furthest over: its name (lib/limit-warnings.mjs,
+//                         ruleFor), pct, ahead, the rate it was read at (`rate`), bar and
+//                         daysLeft (null with no reset), for the log line (heldWords)
 //   board-unreadable      the board file could not be read
 //   no-work               no open item (idea or doing) without an ask
 // A source that can't be read never reads as idle. The lead's own session is not read
@@ -287,19 +292,22 @@ export function idleCheck({ sessions, usage, todos, now }) {
   const limits = usage?.status === 'ok' && Array.isArray(usage.data?.limits) ? usage.data.limits : null;
   const session = limits?.find(l => ruleFor(l?.label)?.name === 'session');
   if (!finite(session?.pct)) return { state: 'usage-not-current' };
-  if (session.pct >= IDLE.sessionPct) return { state: 'session-high' };
-  let week = null, ahead = null, high = false;
+  if (session.pct >= IDLE.sessionPct) return { state: 'session-high', pct: session.pct };
+  let week = null, ahead = null, high = null;
   for (const l of limits) {
     const rule = ruleFor(l?.label);
     if (!rule || rule.name === 'session' || !finite(l.pct)) continue;
     // Never under its percent, so a limit at its bar already is too high (Ultron's M1).
-    const later = weekAhead(l, now);
-    if (later >= weekBar(l, now)) high = true;
+    const { ahead: later, rate } = weekPace(l, now), bar = weekBar(l, now);
+    if (later >= bar && (high === null || later - bar > high.ahead - high.bar)) {
+      const days = daysToReset(l, now);
+      high = { name: rule.name, pct: l.pct, ahead: later, rate, bar, daysLeft: days === null ? null : Math.max(0, days) };
+    }
     week = Math.max(week ?? 0, l.pct);
     ahead = Math.max(ahead ?? 0, later);
   }
   if (week === null) return { state: 'usage-not-current' };
-  if (high) return { state: 'week-high' };
+  if (high) return { state: 'week-high', limit: high };
 
   if (!Array.isArray(todos)) return { state: 'board-unreadable' };
   const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week: Math.round(week), ahead: Math.round(ahead) };
@@ -313,31 +321,102 @@ export function idleCheck({ sessions, usage, todos, now }) {
   return fields.workable === 0 ? { state: 'no-work' } : { state: 'idle', fields };
 }
 
-// A weekly limit's percent IDLE.aheadMs from now at its pace: the panel's projection to
-// the reset (lib/pace.mjs: the last day's rate, or the week's average early on) cut to
-// that span, so pct + (projected - pct) x aheadMs / time left, and the projection itself
-// when the reset is nearer than that. A projection with no reset to cut it by stands as
-// it is; with no projection the percent stands in (no rate known). Never under `pct`.
+// The time to a weekly limit's reset in spans of IDLE.aheadMs (days), negative once it is
+// past, or null when it prints none: the bar and the log line read the same figure
+// (Ultron's 11-21 low on 5c27ade0).
+export function daysToReset(limit, now) {
+  const left = Date.parse(limit?.resetsAt ?? '') - now;
+  return finite(left) ? left / IDLE.aheadMs : null;
+}
+
 // The bar a weekly limit's day-ahead percent must stay under: IDLE.weekPct less
 // IDLE.reservePerDay points for each day (fractions too) past the first left to its reset,
 // so 90% with a day or less left, 80% with three, 60% with seven. A limit that prints no
 // reset (a weekly limit at 0% prints none) gets a whole week's: the strictest bar.
 export function weekBar(limit, now) {
-  const left = Date.parse(limit?.resetsAt ?? '') - now;
-  const days = finite(left) ? left / IDLE.aheadMs : 7;
+  const days = daysToReset(limit, now) ?? 7;
   return IDLE.weekPct - IDLE.reservePerDay * Math.max(0, days - 1);
 }
 
-export function weekAhead(limit, now) {
+// A weekly limit's percent IDLE.aheadMs from now at its pace, as `{ ahead, rate }`, the
+// lower of two (board 07cb0505, 2026-11-21):
+// - the day's: the panel's projection to the reset (lib/pace.mjs: the last 24 h rate, or
+//   the week's average early on) cut to that span, so pct + (projected - pct) x aheadMs /
+//   time left, and the projection itself when the reset is nearer than that;
+// - the last few hours': `pace.short` (lib/usage-panel.mjs: the percent SHORT_LOOKBACK_MS
+//   ago and the span, only when no reading is missing), its rise plus one point over its
+//   span times the same span, aheadMs or the time left when that is shorter.
+// A quiet night lowers the second while the first still remembers the busy day (11-21:
+// flat at 69% all night, the day's rate read about 83% a day on against a bar of
+// 81-82%); a busy stretch raises both, so it still holds. With no projection the percent
+// stands in (no rate known) and the short one is not read; a projection with no reset to
+// cut it by stands as it is. Never under `pct`. `rate` says which was read, for the log:
+// { basis: 'short' | 'recent' | 'window' | null, ms } (null: no rate, or an older panel's).
+export function weekPace(limit, now) {
   const pct = limit.pct;
   const projected = limit.pace?.projectedPct;
-  if (!finite(projected)) return pct;
+  const day = { basis: limit.pace?.basis ?? null, ms: limit.pace?.basisMs ?? null };
+  if (!finite(projected)) return { ahead: pct, rate: day };
   const gain = Math.max(0, projected - pct);
   const left = Date.parse(limit.resetsAt ?? '') - now;
-  if (!finite(left)) return pct + gain;
-  if (left <= 0) return pct;
-  return pct + gain * Math.min(1, IDLE.aheadMs / left);
+  if (!finite(left)) return { ahead: pct + gain, rate: day };
+  if (left <= 0) return { ahead: pct, rate: day };
+  const span = Math.min(IDLE.aheadMs, left);
+  const byDay = pct + gain * (span / left);
+  const short = limit.pace?.short;
+  if (isObject(short) && finite(short.pct) && finite(short.spanMs) && short.spanMs > 0) {
+    // Plus one point (Ultron's M1, 11-21): the percents are whole, so a rise of up to a
+    // point can read as none, which is up to 4 points a day. Counting it keeps a flat
+    // reading near a bar from opening the gate on a pace it can't see.
+    const byShort = pct + ((Math.max(0, pct - short.pct) + 1) / short.spanMs) * span;
+    if (byShort < byDay) return { ahead: byShort, rate: { basis: 'short', ms: short.spanMs } };
+  }
+  return { ahead: byDay, rate: day };
 }
+export const weekAhead = (limit, now) => weekPace(limit, now).ahead;
+
+// The rate a day-ahead figure was read at, as the held line says it: "at the last 6 h
+// rate", "at the last 24 h rate", "at the week's average rate", or "at its pace" when the
+// panel gave no basis.
+const rateWords = rate => basisWords(rate?.basis === 'short' ? { basis: 'recent', basisMs: rate.ms } : { basis: rate?.basis, basisMs: rate?.ms }, true) || 'at its pace';
+
+// A span as the log says it: "40 min", "2 h", "2 h 35 min" (whole minutes, rounded).
+export function spanWords(ms) {
+  const m = Math.max(0, Math.round(ms / MIN));
+  if (m < 60) return `${m} min`;
+  return m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+const tenth = v => Math.round(v * 10) / 10;
+
+// What holds the idle wake-up, as the log line says it (board 5c27ade0): the reason's
+// numbers from this pass, never a name or a title from outside. `found` is idleCheck's
+// answer, or for the step's own reasons `{ state, nextAt, unanswered, now }`.
+export function heldWords(found) {
+  switch (found?.state) {
+    case 'killed': return 'the kill file idle-off is there';
+    case 'sessions-not-current': return 'the live agents list was not read this pass';
+    case 'usage-not-current': return 'the usage panel was not read this pass, or has no session or weekly percent';
+    case 'session-high': return `the session limit at ${tenth(found.pct)}%, its bar ${IDLE.sessionPct}%`;
+    case 'week-high': {
+      const l = found.limit;
+      const days = finite(l?.daysLeft) ? tenth(l.daysLeft) : null;
+      const left = days === null ? 'no reset printed' : `${days} day${days === 1 ? '' : 's'} to its reset`;
+      return `${l?.name ?? 'a weekly limit'} at ${tenth(l?.ahead)}% a day from now ${rateWords(l?.rate)}, its bar ${tenth(l?.bar)}% (${tenth(l?.pct)}% now, ${left})`;
+    }
+    case 'board-unreadable': return 'the board file could not be read';
+    case 'no-work': return 'no open item without an ask';
+    case 'quiet-hours': return `quiet ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)}, nights off in config; the ${hh(QUIET_END_HOUR)} pass decides afresh`;
+    case 'waiting': return `${found.unanswered === 0 ? 'a run followed the last one' : `${found.unanswered} unanswered since the last run`}; the next in ${spanWords(found.nextAt - found.now)}`;
+    case 'no-events': return 'the events module is off';
+    default: return found?.state ?? 'unknown';
+  }
+}
+
+// The reasons that hold the wake-up and are logged once a spell. Not here: `running`
+// (the burn-down is working, and the spell it interrupts goes on when it ends),
+// `settling` (one pass by design after any run), `off` (said at start), and `sent` /
+// `not-sent`, which have their own lines.
+export const HELD_STATES = Object.freeze(['killed', 'sessions-not-current', 'usage-not-current', 'session-high', 'week-high', 'board-unreadable', 'no-work', 'quiet-hours', 'waiting', 'no-events']);
 
 // A heal target's name for a hit (config's `heal.targets`, a Map by label of { id,
 // label }): its job's name from config's `jobs`, else its id when that is a plain name.
@@ -419,6 +498,38 @@ export function createProactive({
   // left a wake-up unsent, so the log says each spell once.
   let idleNow = { state: idleSettings.on ? 'not checked yet' : 'off' };
   let idleUnsentSaid = null;
+  // The spell the wake-up is held in (board 5c27ade0): its reason, when it was first seen
+  // and whether a line said it. A held line when the reason changes and the new one holds
+  // a second pass in a row, a "no longer held" line when a wake-up is next offered;
+  // nothing on the passes between. `heard` is a new reason seen on one pass: a reason that
+  // flips back and forth (usage-not-current and week-high, Ultron's 11-21 low) or lasts one
+  // pass is never said, and the passes the spell does not count (a run, the settle) neither
+  // confirm nor forget it. A wake-up sent opens the waiting spell unsaid (its own line gives
+  // the next time). In memory only, so the second pass after a restart says what holds it.
+  // A said spell that a one-pass reason keeps interrupting is said once more after
+  // FLIPS_SAID such flips, naming both (Ultron's 11-21 L1), so a flip is not invisible.
+  // The waiting spell a wake-up opens unsaid keeps no count.
+  let held = null;
+  let heard = null;
+  const FLIPS_SAID = 6;
+  function holdFor(found, now) {
+    if (held?.reason === found.state) {
+      if (heard && finite(held.flips) && !held.flipSaid && ++held.flips >= FLIPS_SAID) {
+        held.flipSaid = true;
+        log(`proactive: the idle wake-up is held (${held.reason}), flipping pass to pass with ${heard.reason}`);
+      }
+      heard = null;
+      return;
+    }
+    if (heard?.reason !== found.state) { heard = { reason: found.state, since: now }; return; }
+    held = { reason: found.state, since: heard.since, said: true, flips: 0, flipSaid: false };
+    log(`proactive: the idle wake-up is held (${found.state}): ${heldWords(found)}`);
+  }
+  function holdEnds(now) {
+    if (held?.said) log(`proactive: the idle wake-up is no longer held (${held.reason}, first seen ${spanWords(now - held.since)} ago)`);
+    held = null;
+    heard = null;
+  }
   // This pass's board list (null when unreadable) and panels, for the idle rule.
   let boardNow = null;
   let snapNow = {};
@@ -532,11 +643,19 @@ export function createProactive({
   // each further one. A run seen live sets the count back to none.
   async function idleStep(now) {
     if (!idleSettings.on) return { state: 'off' };
+    const r = await idleRule(now);
+    if (HELD_STATES.includes(r.state)) holdFor(r.state === 'waiting' ? { state: 'waiting', nextAt: r.nextAt, unanswered: r.unanswered, now } : r.found ?? r, now);
+    return r.found ? { state: r.state } : r;
+  }
+
+  // The rule itself: its state for the view, and for a state idleCheck gave, `found`.
+  async function idleRule(now) {
     const idle = state.idle;
     if (idleKilled()) { idle.since = null; return { state: 'killed' }; }
     const found = idleCheck({ sessions: snapNow.sessions, usage: snapNow.usage, todos: boardNow, now });
     if (found.state === 'running') idle.unanswered = 0;
-    if (found.state !== 'idle') { idle.since = null; return { state: found.state }; }
+    // The view gets the state only; the log line its numbers too.
+    if (found.state !== 'idle') { idle.since = null; return { state: found.state, found }; }
     if (!finite(idle.since) || idle.since > now) idle.since = now;
     const base = { since: idle.since, ...found.fields, unanswered: idle.unanswered };
     if (now - idle.since < IDLE.settleMs) return { state: 'settling', ...base };
@@ -547,6 +666,8 @@ export function createProactive({
     if (finite(idle.sentAt) && idle.sentAt <= now && now - idle.sentAt < wait) return { state: 'waiting', ...base, nextAt: idle.sentAt + wait };
     const ev = events();
     if (!ev) return { state: 'no-events', ...base };
+    // Offered: whatever held it is over.
+    holdEnds(now);
     let status;
     try {
       const r = await ev.idle(checkIdle({ ...found.fields, unanswered: idle.unanswered }), { nights: !idleSettings.quietHours });
@@ -559,7 +680,9 @@ export function createProactive({
       idle.sentAt = now;
       idle.unanswered++;
       idleUnsentSaid = null;
-      log(`proactive: an idle wake-up to the lead's event (${status}): ${found.fields.workable} open item${found.fields.workable === 1 ? '' : 's'} with no ask`);
+      const backoff = IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** (idle.unanswered - 1));
+      log(`proactive: an idle wake-up to the lead's event (${status}): ${found.fields.workable} open item${found.fields.workable === 1 ? '' : 's'} with no ask; the next no sooner than ${spanWords(IDLE.gapMs)} on if a run follows, else ${spanWords(backoff)}`);
+      held = { reason: 'waiting', since: now, said: false };
       return { state: 'sent', ...base, sentAt: now };
     }
     if (status !== 'error' && idleUnsentSaid !== status) log(`proactive: the idle wake-up was not sent (${status}); offered again each pass`);

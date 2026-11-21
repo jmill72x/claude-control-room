@@ -6,7 +6,7 @@
 // data/ or ~/.local/state/jarvis-os.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { idleCheck, weekAhead, weekBar, createProactive, readProactiveConfig, proactiveStart, cleanState, STATE_VERSION } from '../lib/proactive.mjs';
+import { idleCheck, weekAhead, weekBar, weekPace, daysToReset, createProactive, readProactiveConfig, proactiveStart, cleanState, STATE_VERSION, heldWords, spanWords, HELD_STATES } from '../lib/proactive.mjs';
 import { checkIdle, idleText, IDLE, RULES } from '../lib/proactive-text.mjs';
 import { WEEKLY_STEPS } from '../lib/limit-warnings.mjs';
 
@@ -114,6 +114,55 @@ test('a day ahead: the projection to the reset cut to one day of its rate', () =
   assert.equal(weekAhead({ label: WEEK, pct: 80 }, T0), 80);
   assert.equal(weekAhead(lim(80, 95, null), T0), 95, 'no reset to cut it by: the projection stands');
   assert.equal(weekAhead({ ...lim(80, 95, 3 * DAY), resetsAt: 'soon' }, T0), 95);
+});
+
+test('a day ahead at the lower of two paces: the day\'s rate and the last six hours\' (board 07cb0505)', () => {
+  const lim = (pct, projectedPct, left, short, pace = {}) => ({ label: WEEK, pct, resetsAt: left === null ? null : new Date(T0 + left).toISOString(), pace: { projectedPct, ...pace, ...(short === undefined ? {} : { short }) } });
+  // 69% with 67 hours left, 108% at the day's rate: 83% a day on. Two points in the last
+  // six hours, plus the one whole percents can hide (Ultron's M1): 69 + 3 x 4 = 81, the
+  // lower, read.
+  const night = lim(69, 108, 67 * HOUR, { pct: 67, spanMs: 6 * HOUR }, { basis: 'recent', basisMs: DAY });
+  assert.deepEqual(weekPace(night, T0), { ahead: 81, rate: { basis: 'short', ms: 6 * HOUR } });
+  assert.equal(weekAhead(night, T0), 81);
+  // Flat for six hours: the percent and the hidden point, 69 + 4.
+  assert.equal(weekAhead(lim(69, 108, 67 * HOUR, { pct: 69, spanMs: 6 * HOUR }), T0), 73);
+  // A busy stretch: the six hours run faster than the day, so the day's figure stands.
+  const busy = lim(66, 103, 74.5 * HOUR, { pct: 56, spanMs: 6 * HOUR }, { basis: 'recent', basisMs: DAY });
+  assert.deepEqual(weekPace(busy, T0), { ahead: 66 + 37 * 24 / 74.5, rate: { basis: 'recent', ms: DAY } });
+  assert.deepEqual(weekPace(lim(50, 80, 3 * DAY, { pct: 50 - 10 / 4 + 1, spanMs: 6 * HOUR }, { basis: 'window', basisMs: 2 * DAY }), T0), { ahead: 60, rate: { basis: 'window', ms: 2 * DAY } }, 'equal: the day\'s');
+  // The span the short rate covers is its own (a longer one after a gap is its true span).
+  assert.equal(weekAhead(lim(69, 108, 67 * HOUR, { pct: 66, spanMs: 9 * HOUR }), T0), 69 + 4 * 24 / 9);
+  // The reset under a day away: both run to the reset, not a whole day.
+  assert.equal(weekAhead(lim(80, 95, 6 * HOUR, { pct: 79, spanMs: 6 * HOUR }), T0), 82);
+  assert.equal(weekAhead(lim(80, 95, 6 * HOUR, { pct: 60, spanMs: 6 * HOUR }), T0), 95, 'faster than the day\'s: the projection');
+  // A dip is no gain (only the hidden point); never under the percent.
+  assert.equal(weekAhead(lim(69, 108, 67 * HOUR, { pct: 72, spanMs: 6 * HOUR }), T0), 73);
+  // Ultron's M1: flat at 78% for six hours (78.95 may be the truth), the day's rate higher,
+  // a bar of 80.6%: 78 + 4 = 82 holds it, where 78 would have opened the gate.
+  const flat = { label: WEEK, pct: 78, resetsAt: new Date(T0 + 2.88 * DAY).toISOString(), pace: { projectedPct: 108, short: { pct: 78, spanMs: 6 * HOUR } } };
+  assert.equal(Math.round(weekBar(flat, T0) * 10) / 10, 80.6);
+  assert.equal(weekAhead(flat, T0), 82);
+  assert.equal(idleCheck({ sessions: sessions(), usage: usage([limits()[0], flat]), todos: BOARD, now: T0 }).state, 'week-high');
+  // No projection (early in the week): the percent, whatever the six hours say.
+  assert.deepEqual(weekPace(lim(30, null, 6 * DAY, { pct: 10, spanMs: 6 * HOUR }), T0), { ahead: 30, rate: { basis: null, ms: null } });
+  // A reset past, or none printed: as before, the short rate not read.
+  assert.equal(weekAhead(lim(80, 95, -HOUR, { pct: 80, spanMs: 6 * HOUR }), T0), 80);
+  assert.equal(weekAhead(lim(80, 95, null, { pct: 80, spanMs: 6 * HOUR }), T0), 95);
+  // A short pace that is not one is ignored: the day's figure.
+  for (const short of [null, 'x', [], { pct: 'x', spanMs: 6 * HOUR }, { pct: 67 }, { pct: 67, spanMs: 0 }, { pct: 67, spanMs: -HOUR }, { pct: 67, spanMs: Infinity }, { pct: NaN, spanMs: 6 * HOUR }])
+    assert.equal(weekAhead(lim(69, 108, 67 * HOUR, short), T0), 69 + 39 * 24 / 67, JSON.stringify(short));
+  // A percent of null is no reading, not 0% (as 0 it would read 2 + 2 x 4 = 10 here).
+  assert.equal(weekAhead(lim(2, 90, 67 * HOUR, { pct: null, spanMs: 6 * HOUR }), T0), 2 + 88 * 24 / 67);
+});
+
+test('days to the reset: one figure for the bar and the held line, in spans of a day ahead', () => {
+  const l = left => ({ label: WEEK, pct: 10, resetsAt: left === null ? null : new Date(T0 + left).toISOString() });
+  assert.equal(daysToReset(l(2.5 * DAY), T0), 2.5 * DAY / IDLE.aheadMs);
+  assert.equal(daysToReset(l(-6 * HOUR), T0), -0.25, 'past: negative, the callers clamp');
+  assert.equal(daysToReset(l(null), T0), null);
+  assert.equal(daysToReset(undefined, T0), null);
+  const high = idleCheck({ sessions: sessions(), usage: usage([limits()[0], { label: WEEK, pct: 88, resetsAt: new Date(T0 + 1.5 * DAY).toISOString() }]), todos: BOARD, now: T0 });
+  assert.deepEqual([high.state, high.limit.daysLeft, high.limit.bar], ['week-high', 1.5, 87.5]);
 });
 
 test('the bar: 90% less 5 points for each day past the first to the reset (Ultron\'s M1, 11-20)', () => {
@@ -308,7 +357,7 @@ test('a wake-up goes once the board has sat idle five minutes, with the counted 
   await h.p.pass();
   assert.deepEqual(h.calls, [{ at: T0 + 5 * MIN, fields: { ...FIELDS, unanswered: 0 } }]);
   assert.equal(h.state(), 'sent');
-  assert.deepEqual(h.logs, ['proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask']);
+  assert.deepEqual(h.logs, ['proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h']);
   assert.ok(!h.logs.join('\n').includes('aa11aa11'), 'the log names no item');
   assert.equal(h.heads.length, 0, 'never a heads-up');
   const v = h.p.view().idle;
@@ -320,7 +369,7 @@ test('the log says one item as one', async () => {
   const h = harness({ board: [item(1)] });
   await h.p.pass();
   await h.run(T0 + 5 * MIN);
-  assert.deepEqual(h.logs, ['proactive: an idle wake-up to the lead\'s event (made): 1 open item with no ask']);
+  assert.deepEqual(h.logs, ['proactive: an idle wake-up to the lead\'s event (made): 1 open item with no ask; the next no sooner than 15 min on if a run follows, else 1 h']);
 });
 
 // Board 638d21d2 (11-20): the wake-up waited for ten minutes with no request from the
@@ -647,4 +696,315 @@ test('a busy day through the real panel: projected past 100%, a day ahead under 
   const r = idleCheck({ sessions: sessions(), usage: { status: 'ok', data: panel }, todos: BOARD, now });
   assert.equal(r.state, 'idle');
   assert.deepEqual([r.fields.week, r.fields.ahead], [67, 79]);
+});
+
+// The night of 11-20 to 11-21, readings shaped on the real ones (all models by the
+// minute it rose a point; the model's own limit flat at 60%; every 5 minutes). Weekly
+// all models stood at 69% from 03:02Z until 12:53Z with nothing run; the day's rate
+// (+14 from the busy day) read about 83% a day on against a bar of 81-82%.
+const NIGHT_RESET = '2026-11-24T00:00:00.000Z';
+const NIGHT_STEPS = [['11-19T10:00', 37], ['11-19T13:09', 38], ['11-19T13:24', 39], ['11-19T13:49', 40], ['11-19T14:14', 41], ['11-19T14:39', 42],
+  ['11-19T14:49', 43], ['11-19T15:00', 44], ['11-19T15:05', 45], ['11-19T16:29', 46], ['11-19T16:54', 47], ['11-19T17:49', 48], ['11-19T18:19', 49],
+  ['11-19T18:44', 50], ['11-19T19:24', 51], ['11-19T19:58', 52], ['11-19T22:13', 53], ['11-19T22:53', 54], ['11-20T03:53', 55], ['11-20T12:28', 56],
+  ['11-20T15:39', 57], ['11-20T15:54', 58], ['11-20T16:09', 59], ['11-20T16:14', 60], ['11-20T17:40', 61], ['11-20T18:25', 62], ['11-20T19:40', 63],
+  ['11-20T20:20', 64], ['11-20T20:57', 65], ['11-20T21:17', 66], ['11-20T21:38', 67], ['11-21T02:37', 68], ['11-21T03:02', 69], ['11-21T12:53', 70]]
+  .map(([d, pct]) => [Date.parse(`2026-${d}:00Z`), pct]);
+const nightRecords = (() => {
+  const out = [];
+  for (let t = NIGHT_STEPS[0][0]; t <= Date.parse('2026-11-21T13:00:00Z'); t += 5 * MIN) {
+    const pct = NIGHT_STEPS.filter(([at]) => at <= t).at(-1)[1];
+    out.push({ t, limits: [{ label: SESSION, pct: 5, resetsAt: new Date(t + 2 * HOUR).toISOString() }, { label: WEEK, pct, resetsAt: NIGHT_RESET }, { label: MODEL, pct: 60, resetsAt: NIGHT_RESET }] });
+  }
+  return out;
+})();
+async function nightPanel(now, { dayOnly = false } = {}) {
+  const { buildUsagePanel } = await import('../lib/usage-panel.mjs');
+  const records = nightRecords.filter(r => r.t <= now);
+  const panel = buildUsagePanel({ parsed: { limits: records.at(-1).limits }, records, now });
+  // The rule before board 07cb0505 read the day's rate only.
+  if (dayOnly) for (const l of panel.limits) delete l.pace.short;
+  return { status: 'ok', data: panel };
+}
+
+test('the quiet night of 11-21 through the real panel: the last six hours open the gate the day\'s rate held', async () => {
+  const now = Date.parse('2026-11-21T05:00:00Z');
+  const u = await nightPanel(now);
+  const week = u.data.limits.find(l => l.label === WEEK);
+  assert.deepEqual([week.pct, week.pace.projectedPct, week.pace.basis], [69, 108, 'recent']);
+  assert.deepEqual(week.pace.short, { pct: 67, spanMs: 6 * HOUR });
+  const r = idleCheck({ sessions: sessions(), usage: u, todos: BOARD, now });
+  assert.equal(r.state, 'idle');
+  // 69 + (2 + 1) x 4 = 81, just under the 81.04% bar.
+  assert.deepEqual([r.fields.week, r.fields.ahead], [69, 81]);
+  // The day's rate alone: 69 + 39 x 24 / 67 = 83% against a bar of 81%: held.
+  const old = idleCheck({ sessions: sessions(), usage: await nightPanel(now, { dayOnly: true }), todos: BOARD, now });
+  assert.equal(old.state, 'week-high');
+  assert.deepEqual([Math.round(old.limit.ahead * 10) / 10, Math.round(old.limit.bar * 10) / 10], [83, 81]);
+});
+
+test('the busy evening of 11-20 through the real panel: both paces are high, so the reserve still holds', async () => {
+  const now = Date.parse('2026-11-20T21:30:00Z');
+  const u = await nightPanel(now);
+  const week = u.data.limits.find(l => l.label === WEEK);
+  // Ten points in the last six hours: 66 + 11 x 4 = 110 a day on, over the day's 80%.
+  assert.deepEqual([week.pct, week.pace.short], [66, { pct: 56, spanMs: 6 * HOUR }]);
+  const r = idleCheck({ sessions: sessions(), usage: u, todos: BOARD, now });
+  assert.equal(r.state, 'week-high');
+  assert.deepEqual(r.limit.rate, { basis: 'recent', ms: DAY });
+  assert.equal(heldWords(r), `week (all models) at ${Math.round(r.limit.ahead * 10) / 10}% a day from now at the last 24 h rate, its bar 79.5% (66% now, 3.1 days to its reset)`);
+  assert.ok(r.limit.ahead > r.limit.bar && r.limit.ahead < 80, String(r.limit.ahead));
+});
+
+test('the night pass by pass, nothing run: the first wake-up at 04:55Z (23:55 ET), not 12:35Z', async () => {
+  const first = async dayOnly => {
+    const h = harness({ start: Date.parse('2026-11-21T03:00:00Z'), idle: NIGHTS });
+    for (; h.clock.t <= Date.parse('2026-11-21T13:00:00Z'); h.clock.t += 5 * MIN) {
+      h.world.usage = await nightPanel(h.clock.t, { dayOnly });
+      await h.p.pass();
+      if (h.calls.length > 0) break;
+    }
+    return { at: h.calls[0]?.at ?? null, lines: idleLines(h) };
+  };
+  const now = await first(false);
+  assert.equal(new Date(now.at).toISOString(), '2026-11-21T04:55:00.000Z');
+  assert.match(now.lines[0], /^proactive: the idle wake-up is held \(week-high\): week \(all models\) at 84% a day from now at the last 24 h rate, its bar 80\.6% \(69% now, 2\.9 days to its reset\)$/);
+  const old = await first(true);
+  assert.equal(new Date(old.at).toISOString(), '2026-11-21T12:35:00.000Z');
+});
+
+// ---- the held line (board 5c27ade0) ----
+
+// A wake-up held by its rule wrote nothing to the log, so a quiet one looked like a bug
+// (11-20 needed two replays to see `week-high`). One line when a spell starts, naming the
+// reason and its numbers, and one when a wake-up is next offered; none between.
+const idleLines = h => h.logs.filter(l => l.includes('idle wake-up'));
+const HELD = 'proactive: the idle wake-up is held';
+const NIGHTS = { on: true, quietHours: false };
+
+test('the reserve bar: one line when 11-20\'s 68% reading holds it, none on the ticks after, one when it opens', async () => {
+  const now = Date.parse('2026-11-21T03:00:00Z');
+  const real = projectedPct => [{ label: SESSION, pct: 9, resetsAt: '2026-11-21T04:50:00.000Z' },
+    { label: WEEK, pct: 68, resetsAt: '2026-11-24T00:00:00.000Z', pace: { projectedPct } },
+    { label: MODEL, pct: 60, resetsAt: '2026-11-24T00:00:00.000Z', pace: { projectedPct: 60 } }];
+  const h = harness({ start: now, idle: NIGHTS });
+  h.world.usage = usage(real(108));
+  await h.p.pass();
+  await h.run(now + HOUR);
+  assert.equal(h.state(), 'week-high');
+  // 68 + 40 x 24 / 69 hours = 81.9% a day on; 90 - 5 x 1.875 days = 80.6%.
+  assert.deepEqual(idleLines(h), [`${HELD} (week-high): week (all models) at 81.9% a day from now at its pace, its bar 80.6% (68% now, 2.9 days to its reset)`],
+    'thirteen passes, one line, though the numbers move each pass');
+  h.world.usage = usage(real(100));
+  await h.run(now + HOUR + 5 * MIN);
+  assert.equal(h.state(), 'settling');
+  assert.equal(idleLines(h).length, 1, 'settling says nothing');
+  await h.run(now + HOUR + 10 * MIN);
+  assert.deepEqual(idleLines(h).slice(1), [
+    'proactive: the idle wake-up is no longer held (week-high, first seen 1 h 10 min ago)',
+    'proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h'
+  ]);
+  // The view still carries the state only, never the line's numbers.
+  const g = harness({ start: now, idle: NIGHTS });
+  g.world.usage = usage(real(108));
+  await g.p.pass();
+  assert.deepEqual(g.p.view().idle, { on: true, quietHours: false, state: 'week-high', lastSentAt: null, rules: IDLE });
+});
+
+test('a held spell is said once: a run in between does not repeat it; a new reason is a new line', async () => {
+  const h = harness({ idle: NIGHTS });
+  h.world.usage = usage(limits({ projected: 95 }));
+  await h.p.pass();
+  await h.run(T0 + 30 * MIN);
+  h.world.sessions = sessions({ runs: [{ id: 'aaaa' }] });
+  await h.run(T0 + HOUR);
+  assert.equal(h.state(), 'running');
+  h.world.sessions = sessions();
+  await h.run(T0 + 90 * MIN);
+  assert.equal(h.state(), 'week-high');
+  const week = `${HELD} (week-high): week (all models) at 95% a day from now at its pace, its bar 90% (40% now, 1 day to its reset)`;
+  assert.deepEqual(idleLines(h), [week]);
+  // The weekly bar comes before the board, so the board only shows once it opens.
+  h.world.usage = usage();
+  h.world.board = '[]';
+  await h.run(T0 + 2 * HOUR);
+  h.world.usage = usage(limits({ projected: 95 }));
+  await h.run(T0 + 3 * HOUR);
+  assert.deepEqual(idleLines(h), [week, `${HELD} (no-work): no open item without an ask`, week.replace('1 day', '0.9 days')], 'the numbers as they stand when the spell starts');
+  assert.equal(h.calls.length, 0);
+});
+
+test('each reason\'s words, once an hour of passes: numbers and fixed words only', async () => {
+  const cases = [
+    ['killed', w => { w.idleKilled = true; }, 'the kill file idle-off is there'],
+    ['sessions-not-current', w => { w.sessions = sessions({ status: 'stale' }); }, 'the live agents list was not read this pass'],
+    ['usage-not-current', w => { w.usage = usage(limits(), 'stale'); }, 'the usage panel was not read this pass, or has no session or weekly percent'],
+    ['session-high', w => { w.usage = usage(limits({ session: 80.04 })); }, 'the session limit at 80%, its bar 75%'],
+    ['board-unreadable', w => { w.board = null; }, 'the board file could not be read'],
+    ['no-work', w => { w.board = '[]'; }, 'no open item without an ask'],
+    ['no-events', w => { w.eventsOn = false; }, 'the events module is off']
+  ];
+  for (const [state, change, words] of cases) {
+    const h = harness();
+    change(h.world);
+    await h.p.pass();
+    await h.run(T0 + HOUR);
+    assert.equal(h.state(), state);
+    assert.deepEqual(idleLines(h), [`${HELD} (${state}): ${words}`], state);
+    assert.ok(!h.logs.join('\n').includes('IGNORE') && !h.logs.join('\n').includes('aa11aa11'), state);
+  }
+  assert.deepEqual([...HELD_STATES].sort(), [...cases.map(c => c[0]), 'week-high', 'quiet-hours', 'waiting'].sort(), 'every held reason has a case here or its own test');
+});
+
+test('quiet hours: one line at night, and the 07:00 pass says it opened', async () => {
+  const h = harness({ start: at(18, 22) });
+  await h.p.pass();
+  await h.run(at(19, 7));
+  assert.deepEqual(idleLines(h), [
+    `${HELD} (quiet-hours): quiet 22:00-07:00, nights off in config; the 07:00 pass decides afresh`,
+    'proactive: the idle wake-up is no longer held (quiet-hours, first seen 8 h 55 min ago)',
+    'proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h'
+  ]);
+});
+
+test('after a wake-up the wait is unsaid (its own line gives the back-off); said when it is not straight after one', async () => {
+  const h = harness({ start: at(18, 7), idle: NIGHTS });
+  await h.p.pass();
+  await h.run(at(18, 7) + 15 * HOUR);
+  assert.deepEqual(idleLines(h).map(l => l.replace(/^.*else /, '')), ['1 h', '2 h', '4 h', '4 h', '4 h'], 'the sent lines and nothing else');
+  // After a restart the spell is new: the first pass says what holds it.
+  const g = harness({ idle: NIGHTS });
+  await g.p.pass();
+  await g.run(T0 + 5 * MIN);
+  const r = harness({ start: T0 + 20 * MIN, store: g.store, idle: NIGHTS });
+  await r.p.pass();
+  await r.run(T0 + 60 * MIN);
+  assert.deepEqual(idleLines(r), [`${HELD} (waiting): 1 unanswered since the last run; the next in 40 min`], 'said on the second pass, with its numbers');
+  await r.run(T0 + 65 * MIN);
+  assert.deepEqual(idleLines(r).slice(1), [
+    'proactive: the idle wake-up is no longer held (waiting, first seen 45 min ago)',
+    'proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask; the next no sooner than 15 min on if a run follows, else 2 h'
+  ]);
+  // A spell between two waits: the wait is said again when it comes back.
+  const b = harness({ idle: NIGHTS });
+  await b.p.pass();
+  await b.run(T0 + 5 * MIN);
+  b.world.usage = usage(limits({ projected: 95 }));
+  await b.run(T0 + 15 * MIN);
+  b.world.usage = usage();
+  await b.run(T0 + 30 * MIN);
+  assert.deepEqual(idleLines(b).slice(1), [
+    `${HELD} (week-high): week (all models) at 95% a day from now at its pace, its bar 90% (40% now, 1 day to its reset)`,
+    `${HELD} (waiting): 1 unanswered since the last run; the next in 35 min`
+  ], 'settling between them says nothing; the wait is said on its second pass');
+});
+
+test('a held spell ends when a wake-up is offered, sent or not, and is said before it', async () => {
+  const h = harness({ idle: NIGHTS });
+  h.world.board = '[]';
+  await h.p.pass();
+  await h.run(T0 + 20 * MIN);
+  h.world.board = JSON.stringify(BOARD);
+  h.world.status = 'held';
+  await h.run(T0 + 30 * MIN);
+  assert.deepEqual(idleLines(h), [
+    `${HELD} (no-work): no open item without an ask`,
+    'proactive: the idle wake-up is no longer held (no-work, first seen 30 min ago)',
+    'proactive: the idle wake-up was not sent (held); offered again each pass'
+  ]);
+  await h.run(T0 + HOUR);
+  assert.equal(idleLines(h).length, 3, 'not sent again and again: no held line, no second end');
+  const e = harness({ idle: NIGHTS });
+  e.world.board = '[]';
+  await e.p.pass();
+  await e.run(T0 + 5 * MIN);
+  e.world.board = JSON.stringify(BOARD);
+  e.world.fail = Object.assign(new Error(HOSTILE), { code: 'EFAKE' });
+  await e.run(T0 + 15 * MIN);
+  assert.deepEqual(idleLines(e).slice(1), ['proactive: the idle wake-up is no longer held (no-work, first seen 15 min ago)', 'proactive: the idle wake-up was not made (EFAKE); tried again each pass']);
+});
+
+test('a reason is said once it holds two passes in a row: a flip or a one-pass blip is never said (Ultron\'s 11-21 low)', async () => {
+  const h = harness({ idle: NIGHTS });
+  const high = () => { h.world.usage = usage(limits({ projected: 95 })); };
+  const stale = () => { h.world.usage = usage(limits(), 'stale'); };
+  high();
+  await h.p.pass();
+  assert.deepEqual(idleLines(h), [], 'one pass: not yet');
+  await h.run(T0 + 5 * MIN);
+  const week = `${HELD} (week-high): week (all models) at 95% a day from now at its pace, its bar 90% (40% now, 1 day to its reset)`;
+  assert.deepEqual(idleLines(h), [week]);
+  // Flipping every pass for two hours (a usage poll that fails every other time): the
+  // other reason is never said as a spell; after six flips one line names both (L1).
+  const flip = `${HELD} (week-high), flipping pass to pass with usage-not-current`;
+  for (let i = 0; i < 10; i++) { (i % 2 === 0 ? stale : high)(); await h.run(h.clock.t + 5 * MIN); }
+  assert.deepEqual(idleLines(h), [week], 'five flips: nothing more');
+  for (let i = 0; i < 2; i++) { (i % 2 === 0 ? stale : high)(); await h.run(h.clock.t + 5 * MIN); }
+  assert.deepEqual(idleLines(h), [week, flip], 'the sixth');
+  for (let i = 0; i < 24; i++) { (i % 2 === 0 ? stale : high)(); await h.run(h.clock.t + 5 * MIN); }
+  assert.deepEqual(idleLines(h), [week, flip], 'once a spell');
+  // Two passes in a row of the other reason is a new spell, said with that pass's words.
+  stale();
+  await h.run(h.clock.t + 10 * MIN);
+  assert.deepEqual(idleLines(h).slice(2), [`${HELD} (usage-not-current): the usage panel was not read this pass, or has no session or weekly percent`]);
+  // A pass the spell does not count (a run, the settle) neither confirms nor forgets a
+  // new reason: high, a run, high again is two in a row.
+  high();
+  await h.run(h.clock.t + 5 * MIN);
+  h.world.sessions = sessions({ runs: [{ id: 'aaaa' }] });
+  await h.run(h.clock.t + 30 * MIN);
+  h.world.sessions = sessions();
+  await h.run(h.clock.t + 5 * MIN);
+  assert.equal(idleLines(h).length, 4);
+  assert.match(idleLines(h)[3], /^proactive: the idle wake-up is held \(week-high\): /);
+  // A one-pass blip just before a wake-up is offered: neither held nor "no longer held"
+  // for it; the end line names the spell that was said.
+  const b = harness({ idle: NIGHTS });
+  b.world.board = '[]';
+  await b.p.pass();
+  await b.run(T0 + 5 * MIN);
+  b.world.board = JSON.stringify(BOARD);
+  b.world.usage = usage(limits({ projected: 95 }));
+  await b.run(T0 + 10 * MIN);
+  b.world.usage = usage();
+  await b.run(T0 + 20 * MIN);
+  assert.deepEqual(idleLines(b), [
+    `${HELD} (no-work): no open item without an ask`,
+    'proactive: the idle wake-up is no longer held (no-work, first seen 20 min ago)',
+    'proactive: an idle wake-up to the lead\'s event (made): 5 open items with no ask; the next no sooner than 15 min on if a run follows, else 1 h'
+  ]);
+  // The offer forgets the blip: one pass of it after the wake-up is again not said.
+  b.world.usage = usage(limits({ projected: 95 }));
+  await b.run(T0 + 25 * MIN);
+  b.world.usage = usage();
+  await b.run(T0 + 40 * MIN);
+  assert.equal(idleLines(b).length, 3);
+});
+
+test('the held words name the rate the day ahead was read at', () => {
+  const words = pace => heldWords(idleCheck({ sessions: sessions(), usage: usage([limits()[0], { label: WEEK, pct: 70, resetsAt: new Date(T0 + 2 * DAY).toISOString(), pace }]), todos: BOARD, now: T0 }));
+  assert.equal(words({ projectedPct: 120, basis: 'recent', basisMs: DAY, short: { pct: 67, spanMs: 6 * HOUR } }),
+    'week (all models) at 86% a day from now at the last 6 h rate, its bar 85% (70% now, 2 days to its reset)');
+  assert.equal(words({ projectedPct: 110, basis: 'recent', basisMs: 26 * HOUR, short: { pct: 60, spanMs: 6 * HOUR } }),
+    'week (all models) at 90% a day from now at the last 26 h rate, its bar 85% (70% now, 2 days to its reset)');
+  assert.equal(words({ projectedPct: 110, basis: 'window', basisMs: 3 * DAY }),
+    'week (all models) at 90% a day from now at the week\'s average rate, its bar 85% (70% now, 2 days to its reset)');
+  assert.equal(words({ projectedPct: 110, basis: HOSTILE, basisMs: DAY }),
+    'week (all models) at 90% a day from now at its pace, its bar 85% (70% now, 2 days to its reset)', 'a basis it does not know: no words from outside');
+});
+
+test('the held words: a weekly limit with no reset, a name from outside, a wait a run answered; spans', () => {
+  const noReset = idleCheck({ sessions: sessions(), usage: usage([limits()[0], { label: MODEL, pct: 60, resetsAt: null }]), todos: BOARD, now: T0 });
+  assert.equal(heldWords(noReset), 'week (Invented) at 60% a day from now at its pace, its bar 60% (60% now, no reset printed)');
+  const outside = idleCheck({ sessions: sessions(), usage: usage([limits()[0], { label: `Weekly · ${HOSTILE}`, pct: 95, resetsAt: RESET_1D }]), todos: BOARD, now: T0 });
+  assert.equal(heldWords(outside), 'week (one model) at 95% a day from now at its pace, its bar 90% (95% now, 1 day to its reset)');
+  // The limit furthest over its bar is the one said, whichever comes first.
+  const two = idleCheck({ sessions: sessions(), usage: usage(limits({ projected: 92, model: { pct: 50, resetsAt: RESET_1D, pace: { projectedPct: 99 } } })), todos: BOARD, now: T0 });
+  assert.match(heldWords(two), /^week \(Invented\) at 99% /);
+  const first = idleCheck({ sessions: sessions(), usage: usage(limits({ projected: 99, model: { pct: 50, resetsAt: RESET_1D, pace: { projectedPct: 92 } } })), todos: BOARD, now: T0 });
+  assert.match(heldWords(first), /^week \(all models\) at 99% /);
+  const past = idleCheck({ sessions: sessions(), usage: usage([limits()[0], { label: WEEK, pct: 95, resetsAt: new Date(T0 - 6 * HOUR).toISOString() }]), todos: BOARD, now: T0 });
+  assert.equal(heldWords(past), 'week (all models) at 95% a day from now at its pace, its bar 90% (95% now, 0 days to its reset)', 'a reset just past: never under none');
+  assert.equal(heldWords({ state: 'waiting', unanswered: 0, nextAt: T0 + 10 * MIN, now: T0 }), 'a run followed the last one; the next in 10 min');
+  assert.equal(heldWords({ state: 'waiting', unanswered: 3, nextAt: T0 + 3 * HOUR + 50 * MIN, now: T0 }), '3 unanswered since the last run; the next in 3 h 50 min');
+  assert.deepEqual([0, -MIN, 59 * MIN + 29e3, 59 * MIN + 31e3, 2 * HOUR, 155 * MIN].map(spanWords), ['0 min', '0 min', '59 min', '1 h', '2 h', '2 h 35 min']);
 });

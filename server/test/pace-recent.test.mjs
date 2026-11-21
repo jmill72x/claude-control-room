@@ -4,7 +4,7 @@
 // local dates, so the tests hold in any time zone. Every reading is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recentBaseline, computePace, basisWords, RATE_LOOKBACK_MS, RESET_DROP_PCT, WEEKLY_FALLBACK_MS } from '../lib/pace.mjs';
+import { recentBaseline, computePace, basisWords, RATE_LOOKBACK_MS, RESET_DROP_PCT, WEEKLY_FALLBACK_MS, SHORT_LOOKBACK_MS, SHORT_MAX_GAP_MS } from '../lib/pace.mjs';
 import { buildUsagePanel } from '../lib/usage-panel.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 import { usageHits } from '../lib/proactive.mjs';
@@ -190,6 +190,54 @@ test('the panel: the session never takes a recent rate, whatever the history hol
   const weekly = records.map(r => ({ t: r.t, limits: [{ ...r.limits[0], label: WEEK }] }));
   const wp = buildUsagePanel({ parsed: { limits: [{ label: WEEK, pct: 40, resetsAt: iso(w3) }] }, records: weekly, now }).limits[0].pace;
   assert.deepEqual([wp.projectedPct, wp.basis], [40, 'recent']);
+});
+
+// ---- the idle gate's short look back (board 07cb0505) ----
+
+test('the short look back: six hours, read only with no gap over half an hour', () => {
+  assert.equal(SHORT_LOOKBACK_MS, 6 * HOUR);
+  assert.equal(SHORT_MAX_GAP_MS, 30 * MIN);
+  const now = START + 3 * DAY;
+  const short = (records, pct = 37) => base(records, pct, now, { lookbackMs: SHORT_LOOKBACK_MS, maxGapMs: SHORT_MAX_GAP_MS });
+  const every = (from, to, pct) => { const out = []; for (let t = from; t <= to; t += 5 * MIN) out.push(rec(t, pct(t))); return out; };
+  const steady = every(now - 8 * HOUR, now, t => t < now - 2 * HOUR ? 35 : 37);
+  assert.deepEqual(short(steady), { t: now - 6 * HOUR, pct: 35 }, 'the newest reading six hours old');
+  // A gap of exactly half an hour is covered; a minute more is not, anywhere in the six
+  // hours, the one next to the baseline and the one before now included.
+  const cut = (records, from, to) => records.filter(r => r.t <= from || r.t >= to);
+  assert.deepEqual(short(cut(steady, now - 3 * HOUR, now - 2.5 * HOUR)), { t: now - 6 * HOUR, pct: 35 });
+  assert.equal(short(cut(steady, now - 3 * HOUR, now - 3 * HOUR + 31 * MIN)), null);
+  assert.equal(short(cut(steady, now - 6 * HOUR - 5 * MIN, now - 5.5 * HOUR + MIN)), null, 'the gap after the baseline reading');
+  assert.equal(short(steady.filter(r => r.t <= now - 31 * MIN)), null, 'no reading in the last half hour');
+  assert.deepEqual(short(steady.filter(r => r.t <= now - 30 * MIN)), { t: now - 6 * HOUR, pct: 35 });
+  // A gap before the baseline is outside the six hours: it does not count.
+  assert.deepEqual(short(cut(steady, now - 8 * HOUR, now - 6.5 * HOUR)), { t: now - 6 * HOUR, pct: 35 });
+  // Without maxGapMs (the day's rate) a gap is only a longer span, as before.
+  assert.deepEqual(base(cut(steady, now - 3 * HOUR, now - HOUR), 37, now, { lookbackMs: SHORT_LOOKBACK_MS }), { t: now - 6 * HOUR, pct: 35 });
+  // The other walls stand: an early reset inside the six hours, another window.
+  assert.equal(short(every(now - 8 * HOUR, now, t => t < now - 4 * HOUR ? 60 : 3), 3), null, 'a fall of more than 5 points');
+  assert.equal(short(every(now - 8 * HOUR, now, () => 37).map(r => r.t < now - 4 * HOUR ? rec(r.t, 37, { resetsAt: new Date(START).toISOString() }) : r)), null, 'another window');
+});
+
+test('the panel: a weekly limit carries pace.short, its percent six hours back and the span; the projection is unchanged', () => {
+  const now = START + 3 * DAY;
+  const records = [];
+  // 20% a day ago, 30% six hours ago, standing still since; read three minutes off the
+  // five, so the reading six hours back is 6 h 3 min old.
+  for (let t = now - 30 * HOUR - 3 * MIN; t <= now; t += 5 * MIN) records.push({ t, limits: [{ label: SESSION, pct: 10, resetsAt: new Date(now + HOUR).toISOString() }, rec(t, t < now - 6 * HOUR ? Math.round(20 + 10 * (t - (now - DAY)) / (18 * HOUR)) : 30).limits[0]] });
+  const out = panel(records, now, [{ label: SESSION, pct: 10, resetsAt: new Date(now + HOUR).toISOString() }, { label: WEEK, pct: 30, resetsAt: RESET }]);
+  const week = out.limits.find(l => l.label === WEEK).pace;
+  assert.deepEqual(week.short, { pct: 30, spanMs: 6 * HOUR + 3 * MIN }, 'its true span');
+  // The day's rate still projects: 10 points a day over four days left.
+  assert.deepEqual([week.projectedPct, week.basis, week.basisMs], [70, 'recent', DAY + 3 * MIN]);
+  const without = panel(records.filter(r => r.t <= now - 7 * HOUR || r.t >= now - 6 * HOUR + 31 * MIN), now, [{ label: WEEK, pct: 30, resetsAt: RESET }]).limits[0].pace;
+  assert.equal('short' in without, false, 'a gap in the six hours: no pace.short');
+  assert.deepEqual([without.projectedPct, without.basis], [70, 'recent'], 'and the projection as it was');
+  assert.equal('short' in out.limits.find(l => l.label === SESSION).pace, false, 'the session never carries one');
+  // Early in the week, under six hours of it: none.
+  const early = [];
+  for (let t = START + 5 * MIN; t <= START + 5 * HOUR; t += 5 * MIN) early.push(rec(t, 1));
+  assert.equal('short' in panel(early, START + 5 * HOUR, [{ label: WEEK, pct: 1, resetsAt: RESET }]).limits[0].pace, false);
 });
 
 // ---- the alert line ----
