@@ -271,8 +271,9 @@ export function expiryHits({ keys, now }) {
 //   usage-not-current     the usage panel was not read this pass, or has no session
 //                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
 //   session-high          the session limit is at IDLE.sessionPct or over
-//   week-high             a weekly limit is at IDLE.weekPct or over (Ultron's M1,
-//                         11-19), or will be a day from now at its pace (weekAhead)
+//   week-high             a weekly limit a day from now at its pace (weekAhead, never
+//                         under its percent) is at its bar or over (weekBar: IDLE.weekPct
+//                         less the reserve for the days left; Ultron's M1s, 11-19, 11-20)
 //   board-unreadable      the board file could not be read
 //   no-work               no open item (idea or doing) without an ask
 // A source that can't be read never reads as idle. The lead's own session is not read
@@ -291,9 +292,9 @@ export function idleCheck({ sessions, usage, todos, now }) {
   for (const l of limits) {
     const rule = ruleFor(l?.label);
     if (!rule || rule.name === 'session' || !finite(l.pct)) continue;
-    // Never under its percent, so a limit at the step already is too high (Ultron's M1).
+    // Never under its percent, so a limit at its bar already is too high (Ultron's M1).
     const later = weekAhead(l, now);
-    if (later >= IDLE.weekPct) high = true;
+    if (later >= weekBar(l, now)) high = true;
     week = Math.max(week ?? 0, l.pct);
     ahead = Math.max(ahead ?? 0, later);
   }
@@ -317,6 +318,16 @@ export function idleCheck({ sessions, usage, todos, now }) {
 // that span, so pct + (projected - pct) x aheadMs / time left, and the projection itself
 // when the reset is nearer than that. A projection with no reset to cut it by stands as
 // it is; with no projection the percent stands in (no rate known). Never under `pct`.
+// The bar a weekly limit's day-ahead percent must stay under: IDLE.weekPct less
+// IDLE.reservePerDay points for each day (fractions too) past the first left to its reset,
+// so 90% with a day or less left, 80% with three, 60% with seven. A limit that prints no
+// reset (a weekly limit at 0% prints none) gets a whole week's: the strictest bar.
+export function weekBar(limit, now) {
+  const left = Date.parse(limit?.resetsAt ?? '') - now;
+  const days = finite(left) ? left / IDLE.aheadMs : 7;
+  return IDLE.weekPct - IDLE.reservePerDay * Math.max(0, days - 1);
+}
+
 export function weekAhead(limit, now) {
   const pct = limit.pct;
   const projected = limit.pace?.projectedPct;

@@ -6,7 +6,8 @@ burn-down). Written 2026-11-19, before the build. Both build on the proactive ch
 
 **Amended 2026-11-20 (boards 8a13e971 and 638d21d2).** Three parts of §2 below no longer
 hold, and README's "The idle wake-up" has the rule as built now: (a) the weekly gate is
-under 90% now and a day from now at its pace, not projected under 100% to the reset,
+a day from now at its pace under 90% less 5 points for each day past the first left to
+the reset (Ultron's M1), not projected under 100% to the reset,
 because a busy day of runs pushed the projection over 100% and the wake-up stopped
 itself with a third of the week left; (b) the lead's own session is no longer read, so a
 lead talking with the owner still gets the cue, and the settle is 5 minutes from the

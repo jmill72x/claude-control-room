@@ -176,7 +176,8 @@ export function proactiveText(hits, { now = Date.now() } = {}) {
 const MIN_MS = 60e3;
 // Its numbers: constants, like RULES. A wake-up goes when no agent run is live, the
 // session limit is under `sessionPct`, every weekly limit is under `weekPct` (the limit
-// warnings' weekly step) now and a day from now (`aheadMs`) at its pace, the board holds
+// warnings' weekly step) now and a day from now (`aheadMs`) at its pace, less a reserve of
+// `reservePerDay` points for each day past the first left to its reset, the board holds
 // an open item with no ask, and all of that has held for `settleMs`. Whatever the lead's
 // own session is doing (board 638d21d2, 11-20): a lead busy talking still gets the cue
 // to start the next run.
@@ -185,7 +186,9 @@ const MIN_MS = 60e3;
 // runs puts the 24-hour rate up, so the projection to the reset passed 100% and the
 // wake-up stopped itself for the rest of the day, with a third of the week left. The
 // step a day ahead still closes the gate before a limit nears the step, a day early at
-// the pace it is going.
+// the pace it is going. The reserve (Ultron's M1, 11-20) keeps room for the days still to
+// come: in the week before, one model's limit reached 100% about four days before its
+// reset and all models 97%. With three days left the bar is 80%, with one or less 90%.
 //
 // The spacing: `gapMs` after a wake-up a run followed (the cue worked, so the next may
 // come once the board is idle again), `everyMs` after one no run followed, the wait
@@ -194,6 +197,7 @@ export const IDLE = Object.freeze({
   sessionPct: RULES.sessionPct,
   weekPct: WEEKLY_STEPS[0],
   aheadMs: 24 * 60 * MIN_MS,
+  reservePerDay: 5,
   settleMs: 5 * MIN_MS,
   gapMs: 15 * MIN_MS,
   everyMs: 60 * MIN_MS,

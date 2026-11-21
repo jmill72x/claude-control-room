@@ -2808,11 +2808,16 @@ in that pass:
    2026-11-20): a lead talking with the owner still gets the cue, since the runs it
    starts are what burn the board down.
 2. **There is room**: the usage panel is current, the session limit is under 75%, at
-   least one weekly limit has a percent, and every weekly limit is under 90% (the limit
-   warnings' weekly step) now **and a day from now** at its pace (`weekAhead` in
-   `lib/proactive.mjs`): the panel's projection to the reset cut to one day, so
+   least one weekly limit has a percent, and every weekly limit **a day from now** at its
+   pace is under its **bar** (`weekAhead` and `weekBar` in `lib/proactive.mjs`). A day from
+   now is the panel's projection to the reset cut to one day, so
    `pct + (projected - pct) x 24 h / time left`, the projection itself when the reset is a
-   day away or less, the percent when there is no projection.
+   day away or less, the percent when there is no projection; it is never under the
+   percent. The bar is 90% (the limit warnings' weekly step) less a reserve of 5 points for
+   each day past the first left to that limit's reset: 90% with a day or less left, 80%
+   with three, 60% with seven or with no reset printed. The reserve (Ultron's M1,
+   2026-11-20) keeps room for the days still to come: the week before, one model's limit
+   reached 100% about four days before its reset and all models 97%.
 3. **There is work**: the board file holds an open item (`idea` or `doing`) with no `ask`.
 4. **It has lasted 5 minutes** from the first pass that found it, so the moment between
    one run's end and the lead starting the next is not idle.
@@ -2822,8 +2827,9 @@ day of runs puts the 24-hour rate up, so the projection passed 100% (all models 
 105% to 113% projected, three days to the reset) and the old gate held every wake-up from
 15:30 to the night, with a third of the week left. The only two that went that day fell in
 the two spells the projection dipped under 100%. Over the whole usage history (hourly, from
-2026-08-13 to 11-20) the day-ahead rule opens 140 hours the old one closed and still
-closes 119 as `week-high`.
+2026-08-13 to 11-20) the day-ahead rule with its reserve opens 89 hours the old one closed
+and closes 170 as `week-high`. On 11-20 at 22:00 ET (all models 68%, 108% projected, 2.9
+days left) it reads 82% a day on against a bar of 81%: held until the day's rate eases.
 
 A source that can't be read this pass means no wake-up. It **starts nothing**: the lead
 decides what to run.
