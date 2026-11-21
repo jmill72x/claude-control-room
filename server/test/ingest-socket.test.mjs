@@ -564,13 +564,16 @@ const readmeEntries = async () => {
   const entry = heading => JSON.parse(readme.slice(readme.indexOf(heading)).match(/```json\n([\s\S]*?)\n```/)[1]);
   const waits = entry('### A session waiting on you');
   const denied = entry('**The classifier-block hook.**');
-  return [...Object.values(waits.hooks), ...Object.values(denied.hooks)].flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)));
+  // The needs-you block shows PermissionRequest merged, with the exact-command hook's Bash
+  // entry first; that one posts to another route and is tested with it.
+  return [...Object.values(waits.hooks), ...Object.values(denied.hooks)].flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)))
+    .filter(c => !c.includes('/api/ingest/exact-command'));
 };
 
 test('the README\'s needs-you and PermissionDenied hooks post to the socket under $HOME, never to a TCP port, and exit 0 silently with the server down', async t => {
   if (!existsSync('/usr/bin/jq') || !existsSync('/usr/bin/curl')) return t.skip('needs /usr/bin/jq and /usr/bin/curl');
   const commands = await readmeEntries();
-  assert.equal(commands.length, 6);
+  assert.equal(commands.length, 9);
   for (const c of commands) {
     assert.ok(!/127\.0\.0\.1|8322|:\/\/[^/]*:\d/.test(c), `no TCP address: ${c}`);
     assert.ok(c.includes('--unix-socket "$HOME/.local/state/jarvis-os/ingest.sock"'), c);
@@ -595,10 +598,13 @@ test('the README\'s needs-you and PermissionDenied hooks post to the socket unde
     const [notification, ...rest] = commands;
     assert.deepEqual(await run(notification, hookInput('Notification')), { code: 0, out: '', err: '' });
     assert.equal(d.needsYou.view(Date.now()).length, 1, 'the wait opened over the socket');
-    // PostToolUse, UserPromptSubmit, Stop, SessionEnd clear; PermissionDenied blocks.
-    const events = ['PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'PermissionDenied'];
+    // PermissionRequest names the ask (the wait stays open), the asked tool's PostToolUse
+    // ends it, the rest find nothing left to clear; PermissionDenied blocks.
+    const events = ['PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionEnd', 'PermissionDenied'];
+    const openAfter = [1, 0, 0, 0, 0, 0, 0, 0];
     for (const [k, c] of rest.entries()) {
       assert.deepEqual(await run(c, hookInput(events[k])), { code: 0, out: '', err: '' }, events[k]);
+      assert.equal(d.needsYou.view(Date.now()).length, openAfter[k], events[k]);
     }
     assert.equal(d.needsYou.view(Date.now()).length, 0, 'cleared over the socket');
     assert.equal(d.blocks.length, 1, 'the PermissionDenied post reached the gate');

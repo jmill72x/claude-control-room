@@ -1232,9 +1232,11 @@ else" describe both parts; the header of `server/lib/approvals.mjs` has the rule
   device) now count every Bash approval; a busy hour can hit 30, and the page then answers
   429 until the hour moves on. (5) The Mac has no push subscription, so a page that is not
   on the Chat tab, or hidden, learns of a request only from the tab's badge. (6) The
-  needs-you wait for a permission prompt is cleared by any `PostToolUse` from the same
-  session, a helper's included (11-12: opened 15:37:37.017, cleared 15:37:37.296), so
-  "Waiting on you" and its 5-minute alert never showed the 17-minute wait.
+  needs-you wait for a permission prompt was cleared by any `PostToolUse` from the same
+  session, a helper's included (11-12: opened 15:37:37.017, cleared 15:37:37.296 by a
+  background general-purpose subagent's Bash), so "Waiting on you" and its 5-minute
+  alert never showed the 17-minute wait. Fixed in §28 (board 9fb32c4d), once the new hook
+  entries are in.
 - *Unverified:* everything live (no config change, no restart, no build); WebKit; that the
   lead's session is named by the sessions panel when its hooks post (the close counts only
   a session named for the lead, as the exact-command reports do); that `Stop` and
@@ -3771,12 +3773,11 @@ go-live.
   was written at `written`, long before it arrived: read it as of then"). Then the server's
   text note could go. Until then the note does the job.
 
-## 24. Restart Jarvis warns before it stops agent runs (board d8f27c49, P1; staged 2026-11-20 on `jos/restart-warn-runs`)
+## 24. Restart Jarvis warns before it stops agent runs (board d8f27c49, P1; on main as b8c148d, live per Jarvis's 2026-11-21 brief)
 
-**Staged, not committed, on `jos/restart-warn-runs` (worktree `~/Projects/.worktrees/ccr-restart-warn`,
-from main 66e4011, no upstream).** Not reviewed by Ultron yet. README "Restart Jarvis from
-the page", bullet "Agent runs", is the reference; this is the why, the choices and the
-go-live.
+**On main as b8c148d (2026-11-20), live.** Ultron's M1 on it (a partial sessions read
+counted as known) is fixed in §28. README "Restart Jarvis from the page", bullet "Agent
+runs", is the reference; this is the why, the choices and the go-live.
 
 - **What happened (2026-11-20 16:14 ET).** Jeff tapped Restart Jarvis (§22) while two agent
   runs were going; the restart ended the lead's session and both runs with it. Jeff: "I just
@@ -4017,3 +4018,96 @@ quiet afternoon took two replays to read as `week-high` (§25).
   survived each run, as it must. The 18 mutants of §26 that still apply, all caught.
   **Not verified:** the live log after the restart.
 - **Go-live (after C&P):** the restart in §26.
+
+## 28. Two fixes in one branch: the restart warning on a partial read, and Waiting on you per tool use (boards 54b191ec and 9fb32c4d, P2; staged 2026-11-21 on `jos/warn-wait-1121`)
+
+**Staged, not committed, on `jos/warn-wait-1121` (worktree `~/Projects/.worktrees/ccr-warn-wait-1121`,
+from main d5d4aaf, no upstream).** Ultron reviewed it on 11-21: GO once his M1 was in; his
+M1, M2 and L2 are in; L1 and L3 are a P3 follow-up (below). README "Restart Jarvis from the
+page" (bullet "Agent runs") and "A session waiting on you" (the paragraph "Which tool use
+ends a permission wait", the hook entry and the apply script) are the reference.
+
+- **54b191ec, the restart warning (Ultron's M1 on §24).** `runsAtRisk` counted the panel as
+  known whenever its status was ok, so a pass that missed the lead's transcript (his
+  subagents then carry no session name and drop out) or a run's `.meta.json` gave
+  `known: true, runs: []` and the warning passed quietly. Now `known` is false when the
+  pass has any `unreadablePaths` or `unavailableRoots` (or lacks either list), and when any
+  live subagent run is in no named session (new `liveAgents.unplaced`, counted over every
+  live run, not only the 20 sent; a panel without the count is not known either). Not
+  known means the sheet asks for the `unseen` confirm, one extra tap.
+  - *Ultron's M1 on the first draft:* that draft asked "health up and no lead-named
+    session read" (`leadSeen`), but the week's read nearly always holds an older Jarvis
+    session, so it was true when it mattered. The real gap is the current lead session
+    before its first name line: its runs land in no session. `unplaced` catches that
+    whatever health says; `leadSeen` and the health argument are gone.
+  - *Cost:* a live subagent of any unnamed session (a terminal started without `-n`) also
+    makes a restart ask for `unseen`. Both lists were empty on the live panel on 11-21 during
+    this run (read-only GET); a file with an oversized line stays in `unreadablePaths` for
+    its week, and every restart asks for `unseen` until it ages out.
+- **9fb32c4d, Waiting on you.** The 11-12 wait (opened 15:37:37.017) was cleared at .296 by
+  a background general-purpose subagent of the lead's session, whose Bash ended then
+  (checked in its transcript, names and times only); the lead's own Bash waited
+  15:37:18 to 15:54:12. Subagents post hooks under their session's id, with `agent_id`.
+  No hook that sees a prompt carries a `tool_use_id` (2.1.330's schema: `Notification` has
+  the session only; `PermissionRequest` the tool, input and `agent_id`), so the match is by
+  thread and tool, with the run's start time (`at - duration_ms`). The rules are in the
+  header of `server/lib/needs-you.mjs` and the README.
+  - **Choices to defend:** `PermissionRequest` notes an ask and opens no wait (the
+    Notification still does, a few seconds later, so quick answers never flash on the
+    page); a same-tool call that started before the ask is not its answer; a same-thread
+    call that started 10 s after an ask ends it (a denied prompt writes no PostToolUse);
+    `Stop`/`UserPromptSubmit` no longer end a subagent's ask (Jarvis's turns end while his
+    agents wait on a prompt), so `SubagentStop` is hooked to end those; an idle or question
+    wait ignores subagent tool calls; with no ask known (the old entries, or a restart
+    between ask and Notification) everything clears as before; agent ids are kept only as a
+    16-hex hash and never logged; a subagent's event is checked for order but never moves
+    the session's newest time (else its newer posts would make the lead's Notification
+    stale); an ask is never stale; a stale post that answers the last ask still ends the
+    wait (times are compared on the ask).
+  - *Ultron's L2:* an odd `agent_id`, `tool_name` or `duration_ms` is read as absent, never
+    a 400 (a lost post would lose its clear); tool names may run to 200 characters for long
+    MCP names, and any non-empty agent id is hashed.
+  - **Limits:** two calls of one tool in one thread at once, one asked and one not, where
+    the unasked one started after the ask: it clears the wait (the old bug, narrowed to that
+    case). A denied prompt whose thread neither calls another tool 10 s later nor ends keeps
+    the wait until the 30-minute lapse. In the restart window (asks forgotten), any call
+    clears, as before.
+- **The hook change, Ultron's M2.** A hand paste of README's `PermissionRequest` key would
+  replace the live synchronous Bash exact-command entry, so README now shows that list
+  merged (the Bash entry first, as its own section gives it; a test keeps the two equal),
+  and `deploy/add-needs-you-matching.py` makes the change: a dry run by default (prints the
+  change to `hooks` only, never the rest of the file, which can hold an `env` token), then
+  `--apply` (a 0600 backup first, a temp file renamed over, read back). It swaps the filter
+  in the five needs-you commands and appends the three entries; it refuses, changing
+  nothing, unless it finds exactly the five 2026-11-12 commands and exactly one
+  synchronous Bash exact-command entry, and unless the result only appends (which keeps
+  that entry unchanged in its place); a second run refuses. It writes two-space JSON, as
+  Claude Code does, and says so when the old layout was another. Tested only on fixture
+  copies (`add-needs-you-matching.test.mjs`); never run on the real file. The swap
+  script's test and this one share the frozen 11-12 entries
+  (`server/test/helpers/needs-you-hooks-1112.mjs`).
+- **Checked (2026-11-21, after the review fixes):** server 1,768 tests in local time and
+  `TZ=Asia/Tokyo` (under umask 022), web 378 in both. 58 mutants over the three modules and
+  the script: 56 caught, 2 equivalent (PermissionRequest in `OPENING_EVENTS`, unreachable
+  behind the ask check; and a separate "Bash entry unchanged" check that the append-only
+  check already implied, which I folded into it, naming the Bash entry in its refusal);
+  two no-op baselines survived, as they must. oxlint clean on the changed files (one older
+  warning in the recover test). The README filter was run through `/usr/bin/jq` on a
+  2.1.330-shaped subagent PostToolUse: thread, tool and run time through; input, response
+  and id not. **Not verified:** real hook posts from Claude Code (they need the settings
+  change), that `PermissionRequest` hooks fire for every prompt a `permission_prompt`
+  Notification follows (if one doesn't, that wait clears as before), that `duration_ms`
+  excludes the prompt time as the schema says (Ultron's L3), and the script on the real
+  settings file.
+- **Follow-up (P3, Ultron's L1 and L3):** an ask left over (say, a classifier-approved
+  call whose `PermissionRequest` fired and whose answer didn't match) can hold a later
+  wait open past its own answer until the 10-second rule or `Stop` clears it, which could
+  push a false "waiting" at 5 minutes; and `duration_ms` is read on the schema's word.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build),
+  with no agent runs going. Then, in a terminal, the hook script: a dry run, read its diff,
+  then `--apply`:
+  `cd ~/Projects && /usr/bin/python3 -I claude-control-room/deploy/add-needs-you-matching.py`
+  `cd ~/Projects && /usr/bin/python3 -I claude-control-room/deploy/add-needs-you-matching.py --apply`
+  The new server clears as before on the old entries; on the old server the new entries
+  would open a wait on `PermissionRequest` a few seconds early and get 400s for
+  `PostToolUseFailure` and `SubagentStop` (posts lost, no harm). Restart first.

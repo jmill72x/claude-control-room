@@ -467,7 +467,8 @@ to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   call; `endsRun` in `lib/parse-transcript.mjs`) and while it wrote a line within 15
   minutes. It sends no path, session id or prompt text; `id` is a hash of the transcript's
   path. Top-level sessions (the lead's own, `/usage` polls, other terminals) are not
-  listed. A run that ends shows for up to about 90 s more (the minute's collector pass
+  listed; `unplaced` counts the live subagent runs in no named session, over all live
+  runs (Restart Jarvis's run warning reads it). A run that ends shows for up to about 90 s more (the minute's collector pass
   plus the page's 30 s poll).
   **Stop (slice 2, option B with Face ID; built 2026-11-13, not live):** a row the server
   marks `stoppable` (a background subagent of a roster agent, in the session named as
@@ -992,22 +993,52 @@ job):
 ### A session waiting on you
 
 `POST /api/ingest/needs-you` takes the JSON a Claude Code hook receives on stdin and
-records that the session it names waits for a person, or has moved on. It reads four
-fields and keeps one: `hook_event_name` (`Notification` or `PermissionRequest` open a
-wait; `PostToolUse`, `UserPromptSubmit`, `Stop` and `SessionEnd` end it; anything else is
-400), `session_id` (kept, in memory only, to match the clear), and for a Notification its
-`notification_type` (`permission_prompt`, `idle_prompt` and `elicitation_dialog` open a
-wait; any other type, such as `auth_success`, ends one), and `at`, when the hook ran
-(whole milliseconds since 1970; optional). The message text, the tool's input, the
-transcript path and the working directory are never read, and the hook entry below
-filters them out before sending (a body of exactly those four fields, with
-`notification_type` null for events that have none, is the normal case). The hooks run
+records that the session it names waits for a person, or has moved on. It reads
+`hook_event_name` (`Notification` opens a wait; `PermissionRequest` names the tool a
+prompt asks about; `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`,
+`SubagentStop` and `SessionEnd` end one; anything else is 400), `session_id` (kept, in
+memory only, to match the clear), for a Notification its `notification_type`
+(`permission_prompt`, `idle_prompt` and `elicitation_dialog` open a wait; any other type,
+such as `auth_success`, ends one), `at`, when the hook ran (whole milliseconds since 1970;
+optional), and, each optional: `agent_id` (set when a subagent's hook fires; kept only as
+a short hash), `tool_name` and `duration_ms` (how long the tool ran, leaving out the
+prompt). An odd value in any of those three is read as absent, never a 400, so the post
+still counts and falls back to clearing as before (a tool name may run to 200 characters,
+for long MCP names; any non-empty agent id is hashed). The message text, the tool's input
+and response, the transcript path and the working directory are never read, and the hook entry below filters them out before
+sending (a body of exactly those seven fields, with null for the ones an event has none
+of, is the normal case).
+
+**Which tool use ends a permission wait** (board 9fb32c4d). Subagents post their hooks
+under their session's id, so "any PostToolUse ends the wait" let a background helper's
+tool call clear the lead's prompt 0.3 s after it opened (2026-11-12, a 17-minute wait
+that never alerted). The exact match would be the tool use's id, but no hook that sees a
+prompt carries one (Claude Code 2.1.330: `Notification` names only the session,
+`PermissionRequest` the tool and, from a subagent, `agent_id`). So the server matches as
+closely as the hooks allow. A `PermissionRequest` notes an ask: this thread (the subagent
+by `agent_id`, or the session's own) asked for this tool, at `at`. A `PostToolUse` or
+`PostToolUseFailure` answers the oldest ask of the same thread for the same tool whose
+call started (`at` less `duration_ms`) no earlier than the ask; a call of the same thread
+that started 10 s or more after an ask ends it too (a denied prompt writes no
+PostToolUse, so the thread's next call says it moved on). `Stop` and `UserPromptSubmit`
+end the session's own thread's asks made before them, `SubagentStop` that subagent's, and
+`SessionEnd` all. A permission wait ends with the session's last ask. With no ask known
+(the entries from before 2026-11-21, which send no tool, or a restart between the ask and
+its Notification, which Claude Code sends a few seconds after the prompt shows), any of
+the clearing events ends it, as before. An idle or question wait is the session's own,
+so a subagent's tool call leaves it alone. What this can't tell apart: two calls of the
+same tool in the same thread at once, one asked and one not, when the one not asked
+started after the ask (its permission check took longer). The hooks run
 async, so their posts can land out of order: a "waiting" post arriving after the clear
 that followed it would leave a stale card. So the server keeps the newest `at` it has
 taken for each session (in memory, for 30 minutes, at most 200 sessions) and ignores an
 event older than that, answering `{ ok: true, open, stale: true }` and logging it
 (`needs-you: Notification (permission), older than the last event seen, ignored, 0 open`).
-An event with no `at` can't be ordered, so it is always taken, as before. At most 20 waits
+An event with no `at` can't be ordered, so it is always taken, as before. A subagent's
+event is checked against that time but never moves it (its thread runs beside the
+session's, so its newer posts say nothing about the order of the session's own prompt
+and turn), an ask is never stale, and an old post whose call answers the session's last
+ask still ends the wait (the times were compared on the ask). At most 20 waits
 are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
 
 `/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
@@ -1016,29 +1047,44 @@ roster name of the agent whose session it is (the lead's session by its `agent-n
 `kind` is `permission`, `idle` or `question`; `key` is a short hash of the session id.
 A wait older than 5 minutes is an alert of kind `needs-you` ("Jarvis is waiting on a
 permission"), pushed as a count ("1 session is waiting on you"), never with a name. The
-service log gets one line per event (`needs-you: Notification (permission), 1 open`).
+service log gets one line per event (`needs-you: Notification (permission), 1 open`;
+`needs-you: PostToolUse (Bash, a subagent), 1 open`), never with an id.
 
 The hook is global in `~/.claude/settings.json`, so every Claude Code session on the
 machine posts, which is why the server matches the session rather than trusting a name.
 Only the owner adds it (the dashboard never writes that file). The entry posts to the
 ingest socket (see "What the ingest endpoints require"); `$HOME` is expanded by the shell
-that runs the hook:
+that runs the hook. Its `PermissionRequest` list is shown whole, as it stands merged: the
+first item is the exact-command hook's synchronous Bash entry ("Approvals as buttons",
+below), kept first and unchanged, and the second is this section's. Pasting the key by
+hand with only the second item would drop the first, so on a machine that has the
+2026-11-12 entries, `deploy/add-needs-you-matching.py` makes the change instead (a dry run
+by default, printing only the change to `hooks`; `--apply` writes, after a backup): it
+swaps the filter in the five needs-you commands, appends the three new entries, and
+refuses unless the Bash entry is there, synchronous, and unchanged in its place after.
+Tested on fixture copies (`server/test/add-needs-you-matching.test.mjs`), never on the
+real file:
 
 ```json
 {
   "hooks": {
-    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 1 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
+    "Notification": [{ "matcher": "permission_prompt|idle_prompt|elicitation_dialog", "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "PermissionRequest": [{ "matcher": "Bash", "hooks": [{ "type": "command", "timeout": 3, "command": "/usr/bin/jq -c '{hook_event_name,session_id,tool_name,command:.tool_input.command}' 2>/dev/null | /usr/bin/curl -q -s -m 2 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/exact-command -H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1 || true" }] }, { "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "async": true, "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 3 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m 1 --noproxy '*' --unix-socket \"$HOME/.local/state/jarvis-os/ingest.sock\" -X POST http://localhost/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true" }] }]
   }
 }
 ```
 
-Each hook filters before it sends: `jq` keeps the three fields the server reads and adds
-`at` (jq's `now` is in seconds, hence `now*1000|floor`), so the message text, the tool's input and the transcript path never leave the session (the
-server drops anything else anyway). The path is spelled out because a hook runs with a
+Each hook filters before it sends: `jq` keeps the six fields the server reads and adds
+`at` (jq's `now` is in seconds, hence `now*1000|floor`), so the message text, the tool's
+input and response and the transcript path never leave the session (the server drops
+anything else anyway). One filter serves every event: a field an event lacks comes out
+null. The path is spelled out because a hook runs with a
 short PATH: macOS ships `/usr/bin/jq` (checked on the Serve host); a Homebrew jq would be
 `/opt/homebrew/bin/jq`, and there isn't one on that machine. curl is `/usr/bin/curl` for
 the same reason, with `-q` first (no `~/.curlrc` is read) and `--noproxy '*'` (no proxy
@@ -1048,9 +1094,11 @@ supports it: its hook schema has `async`, "runs in background without blocking",
 hooks reference documents it); `SessionEnd` stays synchronous with a 1 s limit, since that
 hook runs as the process leaves and shares a 1.5 s budget. The `Notification` matcher
 names the three types that open a wait, so a sign-in or a plugin notice posts nothing. The
-`PermissionRequest` event is not hooked: its payload is unconfirmed against the docs for
-2.1.321, and the `Notification` hook with `permission_prompt` is the documented path; the
-server still accepts a `PermissionRequest` post as an opening event. Each command ends in
+`PermissionRequest` entry here is async and prints nothing, so it decides nothing: it sits
+beside the exact-command hook's synchronous `PermissionRequest` entry ("Approvals as
+buttons"), as a second item of the same list. It opens no wait by itself (the
+`Notification` does, as before), so a prompt answered within its first seconds never shows
+on the page. Each command ends in
 `|| true`, so the hook always exits 0 and the session goes on: without it, a curl that
 can't reach the server exits 7 (curl's `-s` only silences curl's own messages), and the
 pipe's status is curl's alone, so a jq failure was never seen either way. A post that
@@ -1128,7 +1176,13 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   buttons and the idle wake-up) that are subagents in the session named as the roster's
   first agent. A `claude -p --agent` run, or a subagent of another session, is left out: a
   restart of the lead stops neither. `known` is false when the panel isn't current, its list
-  is cut (`more`), or there is no roster; its last rows are still listed. With any run
+  is cut (`more`), or there is no roster; its last rows are still listed. It is false too
+  when that pass missed something (board 54b191ec): a file it could not read
+  (`unreadablePaths`, a transcript or a `.meta.json`) or a root it could not list
+  (`unavailableRoots`), either of which can leave a run out or put it in no session, and
+  when any live subagent run is in no named session (the panel's `unplaced`): the lead's
+  current session before its first name line is read puts his runs there, so they would
+  drop out of his list, and the server can't tell them from another terminal's. With any run
   listed, or `known` false, the sheet says so first ("2 agent runs are going (Vision,
   Ultron). Restarting stops them.", a quiet run marked as on the pane), Cancel becomes the
   filled, focused button, and the restart is an outline "Restart anyway". Opening the sheet

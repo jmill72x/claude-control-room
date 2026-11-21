@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkNeedsYou, recordNeedsYou, activeWaits, needsYouView, needsYouAlerts, waitKey, createNeedsYouStore, needsYouLogLine,
-  isStaleEvent, noteSeen, NEEDS_YOU_SEEN_MAX, NEEDS_YOU_MAX, NEEDS_YOU_TTL_MS, NEEDS_YOU_ALERT_MS
+  isStaleEvent, noteSeen, NEEDS_YOU_SEEN_MAX, NEEDS_YOU_MAX, NEEDS_YOU_TTL_MS, NEEDS_YOU_ALERT_MS,
+  noteAsks, agentKey, ASKS_MAX, ASK_MOVED_ON_MS
 } from '../lib/needs-you.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, observableSources } from '../lib/push-alerts.mjs';
@@ -24,8 +25,10 @@ test('the hook\'s JSON is read down to the event, the session and the kind of wa
   assert.equal(checkNeedsYou(hook({ notification_type: 'elicitation_dialog' })).value.kind, 'question');
   assert.equal(checkNeedsYou(hook({ notification_type: 'auth_success' })).value.kind, null, 'a notification nobody must answer opens nothing');
   assert.equal(checkNeedsYou(hook({ notification_type: undefined })).value.kind, null);
-  assert.equal(checkNeedsYou(hook({ hook_event_name: 'PermissionRequest', notification_type: undefined, tool_name: 'Bash', tool_input: { command: 'rm -rf /' } })).value.kind, 'permission');
-  for (const event of ['PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionEnd']) {
+  // A PermissionRequest names the ask and opens nothing itself (board 9fb32c4d): the
+  // tool's name is read, its input never.
+  assert.deepEqual(checkNeedsYou(hook({ hook_event_name: 'PermissionRequest', notification_type: undefined, tool_name: 'Bash', tool_input: { command: 'rm -rf /' } })).value, { event: 'PermissionRequest', sessionId: SID, kind: null, at: null, tool: 'Bash' });
+  for (const event of ['PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionEnd']) {
     assert.deepEqual(checkNeedsYou(hook({ hook_event_name: event })).value, { event, sessionId: SID, kind: null, at: null }, event);
   }
   const value = checkNeedsYou(hook()).value;
@@ -194,6 +197,241 @@ test('the newest-seen times lapse with the waits and are capped', () => {
   assert.equal(seen.has('s6'), false);
 });
 
+// ---- which tool use ends a permission wait (board 9fb32c4d) ----
+
+const AGENT = 'a0b1c2d3e4f5a6b7c'; // an invented subagent id
+const post = (extra = {}) => checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, notification_type: null, agent_id: null, tool_name: 'Bash', duration_ms: 50, at: NOW, ...extra }).value;
+const ask = (extra = {}) => checkNeedsYou({ hook_event_name: 'PermissionRequest', session_id: SID, notification_type: null, agent_id: null, tool_name: 'Bash', duration_ms: null, at: NOW, ...extra }).value;
+const prompt = (at = NOW + 6000) => checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'permission_prompt', agent_id: null, tool_name: null, duration_ms: null, at }).value;
+
+test('the newer entry\'s fields: agent_id kept only as a hash, tool_name and duration_ms; nulls are absent; bad ones say what is wrong', () => {
+  const v = post({ agent_id: AGENT, tool_input: { command: 'secret' }, tool_response: 'secret', tool_use_id: 'toolu_x' });
+  assert.deepEqual(v, { event: 'PostToolUse', sessionId: SID, kind: null, at: NOW, agent: agentKey(AGENT), tool: 'Bash', ms: 50 });
+  assert.match(v.agent, /^[0-9a-f]{16}$/);
+  assert.ok(!JSON.stringify(v).includes(AGENT) && !JSON.stringify(v).includes('secret'));
+  assert.deepEqual(post(), { event: 'PostToolUse', sessionId: SID, kind: null, at: NOW, tool: 'Bash', ms: 50 }, 'the session\'s own thread: no agent');
+  assert.deepEqual(prompt(NOW), { event: 'Notification', sessionId: SID, kind: 'permission', at: NOW }, 'jq\'s nulls are no fields');
+  assert.equal(checkNeedsYou({ hook_event_name: 'PostToolUseFailure', session_id: SID, tool_name: 'Read', duration_ms: 0 }).value.ms, 0);
+  // An odd value is read as absent, never a 400 (Ultron's L2): the post still counts, and
+  // without the field it falls back to clearing as before.
+  const read = extra => { const r = checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, at: NOW, ...extra }); assert.equal(r.ok, true, JSON.stringify(extra)); return r.value; };
+  const bare = { event: 'PostToolUse', sessionId: SID, kind: null, at: NOW };
+  for (const agent_id of ['', 7, {}, ['x'], true]) assert.deepEqual(read({ agent_id }), bare, JSON.stringify(agent_id));
+  for (const agent_id of ['x'.repeat(201), 'odd id: with/marks', 'a'.repeat(5000)]) assert.equal(read({ agent_id }).agent, agentKey(agent_id), 'any non-empty id is hashed, whatever its form');
+  for (const tool_name of ['a b', '', 7, 'x'.repeat(201), 'Bash\n']) assert.deepEqual(read({ tool_name }), bare, JSON.stringify(tool_name));
+  const longMcp = `mcp__plugin_${'x'.repeat(60)}__${'y'.repeat(40)}`;
+  assert.ok(longMcp.length > 80);
+  assert.equal(read({ tool_name: longMcp }).tool, longMcp, 'a long MCP name is a name');
+  assert.equal(read({ tool_name: 'x'.repeat(200) }).tool.length, 200);
+  for (const duration_ms of [-1, 1.5, '50', true, Number.MAX_SAFE_INTEGER + 2]) assert.deepEqual(read({ duration_ms }), bare, JSON.stringify(duration_ms));
+  // A permission wait with an ask: a post whose tool name was odd is toolless, so it
+  // clears as the older entries do (the fallback), rather than being lost.
+  const st = createNeedsYouStore();
+  st.record(ask(), NOW);
+  st.record(prompt(), NOW + 6000);
+  assert.deepEqual(st.record(read({ tool_name: 'x'.repeat(300), at: NOW + 7000 }), NOW + 7000), { open: 0, stale: false });
+  assert.equal(agentKey(AGENT), agentKey(AGENT));
+  assert.notEqual(agentKey(AGENT), agentKey('other'));
+  assert.equal(needsYouLogLine(post({ agent_id: AGENT }), 1), 'needs-you: PostToolUse (Bash, a subagent), 1 open');
+  assert.equal(needsYouLogLine(ask(), 0), 'needs-you: PermissionRequest (Bash), 0 open');
+  assert.equal(needsYouLogLine(checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT }).value, 0), 'needs-you: SubagentStop (a subagent), 0 open');
+});
+
+test('11-12: a subagent\'s PostToolUse in the same session no longer clears the lead\'s permission wait; the asked tool\'s does', () => {
+  const store = createNeedsYouStore();
+  // The lead asks for Bash at t; the Notification comes 6 s later.
+  assert.deepEqual(store.record(ask(), NOW + 50), { open: 0, stale: false }, 'an ask opens nothing');
+  assert.deepEqual(store.record(prompt(), NOW + 6017), { open: 1, stale: false });
+  // 279 ms later a background subagent's Bash ends (it ran 1.65 s): the wait stays.
+  assert.deepEqual(store.record(post({ agent_id: AGENT, duration_ms: 1650, at: NOW + 6296 }), NOW + 6300), { open: 1, stale: false });
+  // The lead's own calls that were already running when it asked are not the answer either.
+  store.record(post({ tool_name: 'Bash', duration_ms: 9000, at: NOW + 7000 }), NOW + 7000);
+  store.record(post({ tool_name: 'Read', duration_ms: 20, at: NOW + 7100 }), NOW + 7100);
+  assert.equal(store.size(NOW + 7100), 1);
+  // Five minutes on it is an alert (this is what never fired on 11-12).
+  assert.equal(needsYouAlerts(store.view(NOW + 6017 + NEEDS_YOU_ALERT_MS), NOW + 6017 + NEEDS_YOU_ALERT_MS).length, 1);
+  // Seventeen minutes on the prompt is allowed and the lead's Bash runs: that ends it.
+  const answered = NOW + 17 * MIN;
+  assert.deepEqual(store.record(post({ duration_ms: 1200, at: answered + 1200 }), answered + 1300), { open: 0, stale: false });
+});
+
+test('asks: matched by thread and tool, the oldest first; a call started before the ask is not its answer; one started 10 s after any ask of its thread ends it', () => {
+  const asks0 = new Map();
+  let r = noteAsks(asks0, ask(), NOW);
+  assert.deepEqual([r.before, r.after], [0, 1]);
+  assert.deepEqual(r.asks.get(SID), [{ agent: null, tool: 'Bash', at: NOW, receivedAt: NOW }]);
+  r = noteAsks(r.asks, ask({ agent_id: AGENT, tool_name: 'Write', at: NOW + 1 }), NOW + 1);
+  r = noteAsks(r.asks, ask({ at: NOW + 2 }), NOW + 2);
+  assert.equal(r.after, 3);
+  const at = r.asks;
+  // Another thread's Bash, or the same thread's other tool started soon after: nothing.
+  assert.equal(noteAsks(at, post({ agent_id: 'someone-else', at: NOW + 5000, duration_ms: 10 }), NOW + 5000).after, 3);
+  assert.equal(noteAsks(at, post({ tool_name: 'Read', at: NOW + 5000, duration_ms: 10 }), NOW + 5000).after, 3);
+  // Same thread and tool, started before the ask: a call that was already running.
+  assert.equal(noteAsks(at, post({ at: NOW + 3000, duration_ms: 3001 }), NOW + 3000).after, 3);
+  // Started at the ask's own millisecond: it may be the answer.
+  r = noteAsks(at, post({ at: NOW + 3000, duration_ms: 3000 }), NOW + 3000);
+  assert.equal(r.after, 2);
+  assert.deepEqual(r.asks.get(SID).map(a => a.at), [NOW + 1, NOW + 2], 'the oldest of the two Bash asks went');
+  // A post with no duration can't be placed in time: the tool alone matches.
+  assert.equal(noteAsks(at, post({ duration_ms: null, at: NOW - 60e3 }), NOW).after, 2);
+  // The thread moved on: the same thread's Read started 10 s after both its asks ends them; 1 ms less does not.
+  assert.equal(noteAsks(at, post({ tool_name: 'Read', at: NOW + 2 + ASK_MOVED_ON_MS + 10, duration_ms: 10 }), NOW + 20e3).after, 1);
+  assert.equal(noteAsks(at, post({ tool_name: 'Read', at: NOW + 2 + ASK_MOVED_ON_MS + 9, duration_ms: 10 }), NOW + 20e3).after, 2, 'only the older ask is 10 s past');
+  assert.equal(noteAsks(at, post({ tool_name: 'Read', at: NOW + ASK_MOVED_ON_MS - 1 + 10, duration_ms: 10 }), NOW + 20e3).after, 3);
+  assert.equal(noteAsks(at, post({ tool_name: 'Read', at: NOW + 60e3, duration_ms: null }), NOW + 60e3).after, 3, 'no duration, no "moved on"');
+  // The subagent's Write answer.
+  assert.equal(noteAsks(at, post({ agent_id: AGENT, tool_name: 'Write', at: NOW + 9000, duration_ms: 5 }), NOW + 9000).after, 2);
+  // PostToolUseFailure answers like PostToolUse (the asked command failed).
+  assert.equal(noteAsks(at, { ...post({ at: NOW + 9000, duration_ms: 5 }), event: 'PostToolUseFailure' }, NOW + 9000).after, 2);
+  // A post that names no tool (the older entry) answers nothing, even with a run time
+  // that would say its thread moved on.
+  assert.equal(noteAsks(at, checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, at: NOW + 9000 }).value, NOW + 9000).after, 3);
+  assert.equal(noteAsks(at, checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, duration_ms: 5, at: NOW + 60e3 }).value, NOW + 60e3).after, 3);
+  // Stop and UserPromptSubmit end the session's own thread's asks made before them, never a subagent's.
+  for (const event of ['Stop', 'UserPromptSubmit']) {
+    const e = checkNeedsYou({ hook_event_name: event, session_id: SID, at: NOW + 9000 }).value;
+    assert.deepEqual(noteAsks(at, e, NOW + 9000).asks.get(SID).map(a => a.tool), ['Write'], event);
+    assert.equal(noteAsks(at, { ...e, at: NOW + 1 }, NOW + 9000).after, 2, `${event}: an ask made after it stays`);
+  }
+  // SubagentStop ends that subagent's asks made before it.
+  const stop = checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT, at: NOW + 9000 }).value;
+  assert.deepEqual(noteAsks(at, stop, NOW + 9000).asks.get(SID).map(a => a.tool), ['Bash', 'Bash']);
+  assert.equal(noteAsks(at, { ...stop, at: NOW }, NOW + 9000).after, 3, 'its ask came after');
+  assert.equal(noteAsks(at, checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: 'someone-else', at: NOW + 9000 }).value, NOW + 9000).after, 3);
+  assert.equal(noteAsks(at, checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, at: NOW + 9000 }).value, NOW + 9000).after, 3, 'no agent named: nothing');
+  assert.equal(noteAsks(at, checkNeedsYou({ hook_event_name: 'SessionEnd', session_id: SID, at: NOW + 9000 }).value, NOW + 9000).after, 0);
+  // Another session's events are its own.
+  assert.equal(noteAsks(at, post({ session_id: 'other', at: NOW + 9000, duration_ms: 5 }), NOW + 9000).asks.get(SID).length, 3);
+  // Asks lapse with the 30 minutes a wait lives, and at most ASKS_MAX a session are kept.
+  assert.equal(noteAsks(at, post({ session_id: 'other' }), NOW + NEEDS_YOU_TTL_MS - 1).asks.get(SID).length, 3);
+  assert.equal(noteAsks(at, post({ session_id: 'other' }), NOW + NEEDS_YOU_TTL_MS).asks.get(SID).length, 2, 'the one received first lapsed');
+  assert.equal(noteAsks(at, post({ session_id: 'other' }), NOW + NEEDS_YOU_TTL_MS + 2).asks.has(SID), false);
+  let many = new Map();
+  for (let i = 0; i < ASKS_MAX + 3; i++) many = noteAsks(many, ask({ at: NOW + i }), NOW + i).asks;
+  assert.equal(many.get(SID).length, ASKS_MAX);
+  assert.equal(many.get(SID)[0].at, NOW + 3);
+  // At most NEEDS_YOU_SEEN_MAX sessions, the one asked longest ago going first.
+  let wide = new Map();
+  for (let i = 0; i < NEEDS_YOU_SEEN_MAX + 2; i++) wide = noteAsks(wide, ask({ session_id: `s${i}` }), NOW).asks;
+  assert.equal(wide.size, NEEDS_YOU_SEEN_MAX);
+  assert.equal(wide.has('s1'), false);
+  assert.equal(wide.has('s2'), true);
+  // A session asked again moves to the back, so it is not the next to go.
+  wide = noteAsks(wide, ask({ session_id: 's2' }), NOW).asks;
+  wide = noteAsks(wide, ask({ session_id: 'fresh' }), NOW).asks;
+  assert.equal(wide.has('s2'), true);
+  assert.equal(wide.has('s3'), false);
+  assert.equal(noteAsks(null, ask(), NOW).after, 1, 'no map yet');
+});
+
+test('the wait with asks: it ends with the session\'s last ask; Stop leaves a subagent\'s ask waiting; SubagentStop, a denied prompt\'s next call and SessionEnd end it', () => {
+  const fresh = () => createNeedsYouStore();
+  // Two asks (the lead's Bash, a subagent's Write): the lead's answer leaves the wait open.
+  let s = fresh();
+  s.record(ask(), NOW);
+  s.record(ask({ agent_id: AGENT, tool_name: 'Write' }), NOW + 10);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(post({ at: NOW + 20e3, duration_ms: 100 }), NOW + 20e3).open, 1);
+  assert.equal(s.record(post({ agent_id: AGENT, tool_name: 'Write', at: NOW + 30e3, duration_ms: 100 }), NOW + 30e3).open, 0);
+  // The lead's turn ends while a subagent's prompt waits: the wait stays (Stop did clear it before).
+  s = fresh();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, at: NOW + 7000 }).value, NOW + 7000).open, 1);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'UserPromptSubmit', session_id: SID, at: NOW + 8000 }).value, NOW + 8000).open, 1);
+  // ...and the lead's own work goes on beside it.
+  assert.equal(s.record(post({ at: NOW + 60e3, duration_ms: 100 }), NOW + 60e3).open, 1);
+  // The subagent ends (denied, it reported and stopped): the wait goes.
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT, at: NOW + 70e3 }).value, NOW + 70e3).open, 0);
+  // The lead's prompt denied: no PostToolUse; its next call, started over 10 s later, ends the wait.
+  s = fresh();
+  s.record(ask(), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(post({ tool_name: 'Read', at: NOW + 9000, duration_ms: 5 }), NOW + 9000).open, 1);
+  assert.equal(s.record(post({ tool_name: 'Read', at: NOW + 40e3, duration_ms: 5 }), NOW + 40e3).open, 0);
+  // Or its turn ends.
+  s = fresh();
+  s.record(ask(), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, at: NOW + 9000 }).value, NOW + 9000).open, 0);
+  // SessionEnd ends it all.
+  s = fresh();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'SessionEnd', session_id: SID, at: NOW + 9000 }).value, NOW + 9000).open, 0);
+  // A SubagentStop says nothing of a wait whose ask is the lead's, or of one with no ask known.
+  s = fresh();
+  s.record(ask(), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT, at: NOW + 9000 }).value, NOW + 9000).open, 1);
+  s = fresh();
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT, at: NOW + 9000 }).value, NOW + 9000).open, 1);
+});
+
+test('no ask known, or the older entry: cleared as before; an idle or question wait is the session\'s own, so a subagent\'s call leaves it', () => {
+  // The older entry sends no tool: any PostToolUse clears, as it did.
+  let s = createNeedsYouStore();
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, notification_type: null, at: NOW + 6100 }).value, NOW + 6100).open, 0);
+  // The newer entry but no ask seen (a restart between ask and prompt): any call clears, as before.
+  s = createNeedsYouStore();
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(post({ agent_id: AGENT, at: NOW + 6100 }), NOW + 6100).open, 0);
+  // Even with the newer entry and asks, a post that names no tool clears.
+  s = createNeedsYouStore();
+  s.record(ask(), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'PostToolUse', session_id: SID, at: NOW + 6100 }).value, NOW + 6100).open, 0);
+  // Idle: a subagent's call is not the session coming back; its own thread's call is.
+  for (const type of ['idle_prompt', 'elicitation_dialog']) {
+    s = createNeedsYouStore();
+    s.record(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: type, at: NOW }).value, NOW);
+    assert.equal(s.record(post({ agent_id: AGENT, at: NOW + 100 }), NOW + 100).open, 1, type);
+    assert.equal(s.record(checkNeedsYou({ hook_event_name: 'SubagentStop', session_id: SID, agent_id: AGENT, at: NOW + 150 }).value, NOW + 150).open, 1, type);
+    assert.equal(s.record(post({ at: NOW + 200 }), NOW + 200).open, 0, type);
+  }
+  // Idle while a subagent's ask is open: the subagent's answer ends the ask, not the idle wait.
+  s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'idle_prompt', at: NOW + 100 }).value, NOW + 100);
+  assert.equal(s.record(post({ agent_id: AGENT, at: NOW + 9000, duration_ms: 10 }), NOW + 9000).open, 1, 'still idle');
+  // A wait with none of these: Stop clears as before.
+  s = createNeedsYouStore();
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, at: NOW + 6100 }).value, NOW + 6100).open, 0);
+  // A clear for a session with no wait is nothing.
+  assert.deepEqual(recordNeedsYou([], post(), NOW, { before: 1, after: 0 }), []);
+  assert.deepEqual(recordNeedsYou([], ask(), NOW), [], 'an ask is no wait');
+});
+
+test('out of order with asks: a subagent\'s newer post never makes the Notification stale; a late answer still ends the wait; an ask is never stale', () => {
+  let s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  // The lead's thread works on; a subagent's post from after the prompt lands first.
+  assert.equal(s.record(post({ agent_id: 'someone-else', at: NOW + 6500 }), NOW + 6500).stale, false);
+  assert.deepEqual(s.record(prompt(NOW + 6000), NOW + 6600), { open: 1, stale: false }, 'a subagent\'s post is checked, never noted');
+  // A subagent's post older than the session's newest is stale, and changes no wait.
+  assert.deepEqual(s.record(post({ agent_id: 'someone-else', at: NOW + 5000 }), NOW + 6700), { open: 1, stale: true });
+  // The asked tool's answer lands after a newer event of the session's own thread: it is
+  // older than that, but it answers the last ask, so the wait goes and it is not ignored.
+  s.record(checkNeedsYou({ hook_event_name: 'UserPromptSubmit', session_id: SID, at: NOW + 50e3 }).value, NOW + 50e3);
+  assert.equal(s.size(NOW + 50e3), 1, 'the subagent\'s ask still waits');
+  assert.deepEqual(s.record(post({ agent_id: AGENT, at: NOW + 40e3, duration_ms: 10 }), NOW + 50e3), { open: 0, stale: false });
+  // An ask arriving after a newer post of its own thread is still noted.
+  s = createNeedsYouStore();
+  s.record(post({ tool_name: 'Read', at: NOW + 200 }), NOW + 200);
+  s.record(ask({ at: NOW }), NOW + 250);
+  s.record(prompt(NOW + 6000), NOW + 6000);
+  assert.equal(s.record(post({ agent_id: AGENT, at: NOW + 6100 }), NOW + 6100).open, 1, 'the ask is known, so a subagent\'s post doesn\'t clear');
+  assert.equal(isStaleEvent(new Map([[SID, { at: NOW + 9, receivedAt: NOW }]]), ask()), false);
+  assert.equal(noteSeen(new Map(), ask(), NOW).size, 0, 'nor noted');
+  assert.equal(noteSeen(new Map(), post({ agent_id: AGENT }), NOW).size, 0);
+  assert.equal(noteSeen(new Map(), post(), NOW).get(SID).at, NOW, 'the session\'s own thread is noted');
+  assert.equal(isStaleEvent(new Map([[SID, { at: NOW + 9, receivedAt: NOW }]]), post({ agent_id: AGENT })), true, 'a subagent\'s old post is checked');
+});
+
 // ---- the route ----
 
 const mockRes = () => {
@@ -305,12 +543,29 @@ test('the README\'s hook entry: every command sends `at`, ends in `|| true`, and
   const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
   const section = readme.slice(readme.indexOf('### A session waiting on you'));
   const entry = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)[1]);
-  const commands = Object.values(entry.hooks).flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)));
-  assert.equal(commands.length, 5);
+  // PermissionRequest is shown merged (Ultron's M2): the exact-command hook's synchronous
+  // Bash entry first, exactly as its own section gives it, then this section's.
+  const exactSection = readme.slice(readme.indexOf('**The exact-command hook.**'));
+  const exactEntry = JSON.parse(exactSection.match(/```json\n([\s\S]*?)\n```/)[1]).hooks.PermissionRequest;
+  assert.equal(entry.hooks.PermissionRequest.length, 2);
+  assert.deepEqual(entry.hooks.PermissionRequest[0], exactEntry[0], 'the Bash entry first, unchanged');
+  assert.equal(entry.hooks.PermissionRequest[0].hooks[0].async, undefined, 'and synchronous');
+  const ours = Object.fromEntries(Object.entries(entry.hooks).map(([event, list]) => [event, list.filter(g => !g.hooks.some(h => h.command.includes('/api/ingest/exact-command')))]));
+  const commands = Object.values(ours).flatMap(list => list.flatMap(m => m.hooks.map(h => h.command)));
+  assert.deepEqual(Object.keys(entry.hooks), ['Notification', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionEnd']);
+  assert.equal(commands.length, 8);
   for (const c of commands) {
-    assert.match(c, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,notification_type,at:\(now\*1000\|floor\)\}' \| \/usr\/bin\/curl -q -s -m [13] --noproxy '\*' --unix-socket "\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock" -X POST http:\/\/localhost\/api\/ingest\/needs-you /, c);
+    assert.match(c, /^\/usr\/bin\/jq -c '\{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:\(now\*1000\|floor\)\}' \| \/usr\/bin\/curl -q -s -m [13] --noproxy '\*' --unix-socket "\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock" -X POST http:\/\/localhost\/api\/ingest\/needs-you /, c);
     assert.match(c, / >\/dev\/null \|\| true$/, c);
   }
+  // Every event the entry hooks is one the server takes, and all but SessionEnd are async
+  // (the PermissionRequest one above all: it must never decide a prompt).
+  for (const [event, list] of Object.entries(ours)) {
+    assert.equal(list.length, 1, event);
+    assert.equal(checkNeedsYou({ hook_event_name: event, session_id: SID }).ok, true, event);
+    assert.equal(list[0].hooks[0].async === true, event !== 'SessionEnd', event);
+  }
+  assert.equal(ours.PermissionRequest[0].matcher, undefined, 'every tool');
   // Where macOS's jq is there, the filter itself: the hook's JSON in, a body the
   // check takes out, with `at` in milliseconds now.
   const { existsSync } = await import('node:fs');
@@ -319,10 +574,18 @@ test('the README\'s hook entry: every command sends `at`, ends in `|| true`, and
   const filter = commands[0].match(/^\/usr\/bin\/jq -c '([^']+)'/)[1];
   const before = Date.now();
   const out = JSON.parse(execFileSync('/usr/bin/jq', ['-c', filter], { input: JSON.stringify(hook()) }).toString());
-  assert.deepEqual(Object.keys(out).sort(), ['at', 'hook_event_name', 'notification_type', 'session_id']);
+  assert.deepEqual(Object.keys(out).sort(), ['agent_id', 'at', 'duration_ms', 'hook_event_name', 'notification_type', 'session_id', 'tool_name']);
   const checked = checkNeedsYou(out);
   assert.equal(checked.ok, true, checked.error);
   assert.ok(checked.value.at >= before - 1000 && checked.value.at <= Date.now() + 1000, 'milliseconds, not seconds');
+  assert.deepEqual(Object.keys(checked.value).sort(), ['at', 'event', 'kind', 'sessionId'], 'jq\'s nulls are no fields');
+  // A subagent's PostToolUse as Claude Code 2.1.330 sends it (invented values): its
+  // thread, tool and run time get through; its input, response and id don't.
+  const sent = { session_id: SID, transcript_path: '/private/somewhere/x.jsonl', cwd: '/private/somewhere', permission_mode: 'auto', agent_id: AGENT, agent_type: 'general-purpose', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'secret stuff' }, tool_response: { stdout: 'secret out' }, tool_use_id: 'toolu_invented', duration_ms: 1650 };
+  const sub = JSON.parse(execFileSync('/usr/bin/jq', ['-c', filter], { input: JSON.stringify(sent) }).toString());
+  assert.ok(!JSON.stringify(sub).includes('secret') && !JSON.stringify(sub).includes('/private'));
+  const v = checkNeedsYou(sub).value;
+  assert.deepEqual({ ...v, at: 0 }, { event: 'PostToolUse', sessionId: SID, kind: null, at: 0, agent: agentKey(AGENT), tool: 'Bash', ms: 1650 });
 });
 
 // ---- the classifier-block hook (approvals, decision 3) ----

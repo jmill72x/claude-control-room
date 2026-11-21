@@ -10,6 +10,7 @@ import { createServer } from 'node:net';
 import { mkdtemp, chmod, rm, readFile, writeFile, readdir, stat, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { SOCKET_HOOKS } from './helpers/needs-you-hooks-1112.mjs';
 
 const SCRIPT = new URL('../../deploy/swap-needs-you-hooks.py', import.meta.url).pathname;
 const PY = '/usr/bin/python3';
@@ -18,12 +19,9 @@ const TCP_PART = m => `curl -s -m ${m} -X POST http://127.0.0.1:8322/api/ingest/
 // One old command exactly as README gave it before 2026-11-12 (main 1e1da2d).
 const OLD_NOTIFICATION = "/usr/bin/jq -c '{hook_event_name,session_id,notification_type,at:(now*1000|floor)}' | curl -s -m 3 -X POST http://127.0.0.1:8322/api/ingest/needs-you -H 'Content-Type: application/json' -d @- >/dev/null || true";
 
-// README's six new entries (the five needs-you ones and PermissionDenied).
-const readmeHooks = async () => {
-  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
-  const entry = heading => JSON.parse(readme.slice(readme.indexOf(heading)).match(/```json\n([\s\S]*?)\n```/)[1]).hooks;
-  return { ...entry('### A session waiting on you'), ...entry('**The classifier-block hook.**') };
-};
+// The six entries this script moves to, frozen as README gave them from 2026-11-12 to
+// 2026-11-21 (the helper says why).
+const readmeHooks = async () => JSON.parse(JSON.stringify(SOCKET_HOOKS));
 const toOld = hooks => JSON.parse(JSON.stringify(hooks).replace(/\/usr\/bin\/curl -q -s -m (\d+) --noproxy '\*' --unix-socket \\"\$HOME\/\.local\/state\/jarvis-os\/ingest\.sock\\" -X POST http:\/\/localhost\/api\/ingest\/needs-you/g, (_, m) => TCP_PART(m)));
 
 // A settings file like the owner's: other keys, other hooks with their own matchers,

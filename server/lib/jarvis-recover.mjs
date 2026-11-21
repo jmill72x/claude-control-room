@@ -197,12 +197,23 @@ export function leadHealth(panel, leadName) {
 // still listed (they may be going). A list over the panel's bound (`more`) is not known
 // either. Each run: its id (the panel's hash), the agent's roster name (or the
 // subagent's type), and when it last wrote.
+//
+// Nor is a read that missed something (Ultron's M1 on d8f27c49, board 54b191ec): a
+// transcript or .meta.json that could not be read (`unreadablePaths`), or a root that
+// could not be listed (`unavailableRoots`), may be the lead's or a run's, and the list
+// would come back short with nothing to say so; a panel without both lists can't show
+// it was whole. Nor is a list with a live subagent in no named session (`unplaced`, Ultron's
+// M1 on this fix): the lead's current session before its name line is read puts his runs
+// there, so they would drop out of his list; a panel that doesn't count them can't say.
+const missedSome = data => !Array.isArray(data?.unreadablePaths) || !Array.isArray(data?.unavailableRoots)
+  || data.unreadablePaths.length > 0 || data.unavailableRoots.length > 0;
 export function runsAtRisk(panel, roster) {
   const live = panel?.data?.liveAgents;
   const agents = Array.isArray(roster?.agents) ? roster.agents : [];
   const lead = agents[0] ?? null;
   const rows = isObject(live) && Array.isArray(live.runs) ? live.runs : null;
-  const known = panel?.status === 'ok' && rows !== null && lead !== null && !(Number.isFinite(live.more) && live.more > 0);
+  const known = panel?.status === 'ok' && rows !== null && lead !== null && !(Number.isFinite(live.more) && live.more > 0)
+    && !missedSome(panel.data) && live.unplaced === 0;
   const runs = [];
   if (rows === null || lead === null) return { known: false, runs };
   for (const r of rows) {

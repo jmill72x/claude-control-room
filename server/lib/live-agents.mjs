@@ -96,5 +96,12 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
   }
 
   live.sort((a, b) => b.start - a.start);
-  return { windowMs: LIVE_WINDOW_MS, more: Math.max(0, live.length - MAX_LIVE), runs: live.slice(0, MAX_LIVE) };
+  // `unplaced`: live subagent runs in no named session. A subagent is placed in its
+  // session by that session's `claude -n` name alone, so the lead's current session before
+  // its first name line (or with that line unread) puts his runs here, not under his name.
+  // Restart Jarvis can't tell those from another terminal's, so any counts as "not known"
+  // (lib/jarvis-recover.mjs, runsAtRisk; board 54b191ec, Ultron's M1). Over all live
+  // runs, not only the MAX_LIVE sent.
+  const unplaced = live.filter(r => !r.direct && r.session === null).length;
+  return { windowMs: LIVE_WINDOW_MS, more: Math.max(0, live.length - MAX_LIVE), runs: live.slice(0, MAX_LIVE), unplaced };
 }

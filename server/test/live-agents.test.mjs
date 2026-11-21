@@ -107,3 +107,23 @@ test('the parser keeps the latest line time and whether the last assistant line 
   ].join('\n'), 'Code');
   assert.equal(resumed.ended, false);
 });
+
+test('unplaced: live subagent runs in no named session, counted over all live runs; an old session named as the lead\'s does not place a new one\'s run (board 54b191ec, Ultron\'s M1)', () => {
+  // s-lead is named (atlas); s-new, today's lead session before its name line, is not.
+  const placed = sub({ agentType: 'forge', description: 'Build the widget' }, [rec(MIN, 10)]);
+  const unnamed = sub({ agentType: 'forge', description: 'Build the widget' }, [rec(MIN, 10)], { sessionId: 's-new', filePath: '/home/someone/p/s-new/subagents/agent-b.jsonl' });
+  const otherNamed = sub({ agentType: 'quill', description: 'Write it' }, [rec(MIN, 10)], { sessionId: 's-other', filePath: '/home/someone/p/s-other/subagents/agent-c.jsonl' });
+  const direct = { sessionId: 's-d', subagent: false, meta: null, agentSetting: 'quill', agentName: null, records: [rec(MIN, 70)], lastLineTs: NOW, ended: false, filePath: '/home/someone/p/s-d.jsonl' };
+  const ended = sub({ agentType: 'forge', description: 'Done' }, [rec(MIN, 10)], { sessionId: 's-new', ended: true, filePath: '/home/someone/p/s-new/subagents/agent-d.jsonl' });
+  assert.equal(build([placed, otherNamed, direct]).unplaced, 0, 'named sessions and a direct run are placed');
+  const out = build([placed, unnamed, otherNamed, direct, ended]);
+  assert.equal(out.unplaced, 1, 'only the live run of the unnamed session; an ended one is not live');
+  assert.deepEqual(out.runs.find(r => r.session === null)?.type, 'forge');
+  assert.equal(build([unnamed], { sessionNames: new Map() }).unplaced, 1);
+  // Counted over every live run, not only the MAX_LIVE sent.
+  const many = Array.from({ length: MAX_LIVE + 3 }, (_, i) => sub({ agentType: 'forge', description: 'x' }, [rec(MIN + i, 10)], { sessionId: 's-new', filePath: `/home/someone/p/s-new/subagents/agent-${i}.jsonl` }));
+  const big = build(many);
+  assert.equal(big.runs.length, MAX_LIVE);
+  assert.equal(big.unplaced, MAX_LIVE + 3);
+  assert.equal(build([]).unplaced, 0);
+});

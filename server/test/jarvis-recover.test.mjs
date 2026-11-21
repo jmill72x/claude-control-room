@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { makeChatEnv } from './helpers/chat-env.mjs';
 import { createStepUp } from '../lib/stepup.mjs';
 import { createAgentStop } from '../lib/agent-stop.mjs';
+import { buildLiveAgents } from '../lib/live-agents.mjs';
 import { createChatRoutes } from '../lib/chat-routes.mjs';
 import {
   createRecover, readRecoverConfig, recoverProgram, recoverEnv, lastLine, cleanLine, verdictOf, publicRun, leadHealth, runsAtRisk, missingConfirm,
@@ -100,8 +101,9 @@ async function setup({ enabled = true, exists = true, recoverOpts = {}, routesCo
   env.alive = new Set();
   env.health = 'unknown';
   env.stopped = false;
-  // The sessions panel as the cache gives it (lib/live-agents.mjs's block): current and empty.
-  env.live = { status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs: [] } } };
+  // The sessions panel as the cache gives it (lib/live-agents.mjs's block): current, whole
+  // (nothing unread) and empty, with no run in an unnamed session.
+  env.live = { status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs: [], unplaced: 0 }, unreadablePaths: [], unavailableRoots: [] } };
   env.chatDir = join(env.dir, 'chat');
   env.spawn.ledgerPath = join(env.chatDir, 'recover.json');
   env.makeRecover = (over = {}) => createRecover({
@@ -855,7 +857,7 @@ test('the page shows the same line, word for word', async () => {
 // A live agents row as lib/live-agents.mjs builds it; invented ids, names and tasks.
 const liveRow = (id, over = {}) => ({ id, agent: 'vision', type: 'vision', direct: false, task: 'An invented brief', session: 'Jarvis', stoppable: true, start: 1000, last: 2000, tokens: 10, model: 'opus', ...over });
 const A = 'a1a1a1a1a1a1a1a1', B = 'b2b2b2b2b2b2b2b2', C = 'c3c3c3c3c3c3c3c3';
-const panel = (runs, over = {}) => ({ status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs } }, ...over });
+const panel = (runs, over = {}, data = {}, live = {}) => ({ status: 'ok', data: { liveAgents: { windowMs: 900e3, more: 0, runs, unplaced: 0, ...live }, unreadablePaths: [], unavailableRoots: [], ...data }, ...over });
 
 test('runsAtRisk: the lead\'s subagent runs from the live agents panel, by roster name; not a --agent run, not another session\'s; anything not current is not known', () => {
   const rows = [
@@ -875,11 +877,76 @@ test('runsAtRisk: the lead\'s subagent runs from the live agents panel, by roste
   // Stale (an error, or too old): the runs it last had are still listed, but not known.
   assert.deepEqual(runsAtRisk(panel([liveRow(A)], { status: 'stale' }), ROSTER), { known: false, runs: [{ id: A, name: 'Vision', last: 2000 }] });
   // Over the panel's bound: the list is cut, so not known.
-  assert.equal(runsAtRisk({ status: 'ok', data: { liveAgents: { more: 2, runs: [liveRow(A)] } } }, ROSTER).known, false);
+  assert.equal(runsAtRisk(panel([liveRow(A)], {}, {}, { more: 2 }), ROSTER).known, false);
+  assert.equal(runsAtRisk(panel([liveRow(A)], {}, {}, { more: 0 }), ROSTER).known, true, 'the same panel, not cut');
   for (const junk of [null, undefined, {}, { status: 'unavailable', data: null }, { status: 'ok', data: {} }, { status: 'ok', data: { liveAgents: { runs: 'x' } } }]) assert.deepEqual(runsAtRisk(junk, ROSTER), { known: false, runs: [] });
   // No roster (no lead to match): not known.
   assert.deepEqual(runsAtRisk(panel([liveRow(A)]), null), { known: false, runs: [] });
   assert.deepEqual(runsAtRisk(panel([liveRow(A)]), { agents: [] }), { known: false, runs: [] });
+});
+
+test('runsAtRisk (board 54b191ec): a read that missed a transcript, a .meta.json or a root is not known, and neither is a panel that can\'t say', () => {
+  // A missed lead transcript: its subagents lose their session name, so the list is
+  // empty and would pass. The unread path is what says the list may be short.
+  const missedLead = panel([], {}, { unreadablePaths: ['/invented/projects/p/s-lead.jsonl'] });
+  assert.deepEqual(runsAtRisk(missedLead, ROSTER), { known: false, runs: [] });
+  // A missed .meta.json (the collector lists it by its own path): that run is left out.
+  const missedMeta = panel([liveRow(A)], {}, { unreadablePaths: ['/invented/projects/p/s-lead/subagents/agent-x.meta.json'] });
+  assert.deepEqual(runsAtRisk(missedMeta, ROSTER), { known: false, runs: [{ id: A, name: 'Vision', last: 2000 }] }, 'the runs it did see are still listed');
+  // A root that could not be listed.
+  assert.equal(runsAtRisk(panel([liveRow(A)], {}, { unavailableRoots: ['/invented/root'] }), ROSTER).known, false);
+  // A panel without either list can't show it was whole.
+  for (const gone of [{ unreadablePaths: undefined }, { unavailableRoots: undefined }, { unreadablePaths: 'none' }, { unavailableRoots: {} }]) {
+    assert.equal(runsAtRisk(panel([], {}, gone), ROSTER).known, false, JSON.stringify(gone));
+  }
+  // Both empty: whole, so known.
+  assert.equal(runsAtRisk(panel([]), ROSTER).known, true);
+});
+
+test('runsAtRisk (board 54b191ec, Ultron\'s M1): a live subagent in no named session makes the list not known, whatever health says; a panel that does not count them can\'t say', () => {
+  for (const unplaced of [1, 3]) assert.deepEqual(runsAtRisk(panel([liveRow(A)], {}, {}, { unplaced }), ROSTER), { known: false, runs: [{ id: A, name: 'Vision', last: 2000 }] }, String(unplaced));
+  for (const unplaced of [undefined, null, '0', -1, Number.NaN]) assert.equal(runsAtRisk(panel([], {}, {}, { unplaced }), ROSTER).known, false, String(unplaced));
+  assert.equal(runsAtRisk(panel([], {}, {}, { unplaced: 0 }), ROSTER).known, true);
+});
+
+test('runsAtRisk through the real panel (Ultron\'s M1): an old session named as the lead\'s plus a live subagent of an unnamed session is not known; once named, the run is listed', () => {
+  const NOW = Date.parse('2026-11-21T12:00:00Z');
+  const rec = ago => ({ ts: NOW - ago, tokens: 10, model: 'claude-opus-5' });
+  // Yesterday's lead session is named (it is in the week's read); today's lead session has
+  // no agent-name line yet, and its background Vision run is live.
+  const yesterday = { sessionId: 's-old', subagent: false, meta: null, agentSetting: null, agentName: 'Jarvis', records: [rec(20 * 3600e3)], lastLineTs: NOW - 20 * 3600e3, ended: false, filePath: '/invented/p/s-old.jsonl' };
+  const run = { sessionId: 's-new', subagent: true, meta: { agentType: 'vision', description: 'An invented brief', requestShape: 'background' }, agentSetting: null, agentName: null, records: [rec(60e3)], lastLineTs: NOW - 60e3, ended: false, filePath: '/invented/p/s-new/subagents/agent-a.jsonl' };
+  const sessionsPanel = names => ({ status: 'ok', data: { liveAgents: buildLiveAgents({ transcripts: [yesterday, run], sessionNames: names, roster: ROSTER, now: NOW }), unreadablePaths: [], unavailableRoots: [] } });
+  const unnamed = sessionsPanel(new Map([['s-old', 'Jarvis']]));
+  assert.equal(unnamed.data.liveAgents.unplaced, 1);
+  assert.deepEqual(runsAtRisk(unnamed, ROSTER), { known: false, runs: [] }, 'the run went unlisted, so the list is not known');
+  const named = sessionsPanel(new Map([['s-old', 'Jarvis'], ['s-new', 'Jarvis']]));
+  assert.equal(named.data.liveAgents.unplaced, 0);
+  const risk = runsAtRisk(named, ROSTER);
+  assert.equal(risk.known, true);
+  assert.deepEqual(risk.runs.map(r => r.name), ['Vision']);
+});
+
+test('the restart sheet: an unplaced run or a partial read asks for UNSEEN, whatever health says', async () => {
+  const env = await setup();
+  try {
+    const dev = await env.approver('iPhone');
+    await env.enrol(dev);
+    for (const health of ['up', 'down', 'unknown']) {
+      env.health = health;
+      env.live = panel([], {}, {}, { unplaced: 1 });
+      const s = await env.status(dev);
+      assert.deepEqual(s.json.agents, { known: false, runs: [] }, health);
+      const c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [] });
+      assert.equal(c.status, 409, `${health}: an empty list is no longer a free pass`);
+    }
+    env.live = panel([]);
+    assert.deepEqual((await env.status(dev)).json.agents, { known: true, runs: [] });
+    env.live = panel([], {}, { unreadablePaths: ['/invented/x.jsonl'] });
+    assert.deepEqual((await env.status(dev)).json.agents, { known: false, runs: [] });
+    const c = await env.post(ROUTES.challenge, dev.cookie, { stopRuns: [UNSEEN] });
+    assert.equal(c.status, 200, c.text);
+  } finally { await env.close(); }
 });
 
 test('missingConfirm: every run\'s id, and UNSEEN when not known; a confirm that isn\'t an array of strings is none', () => {
