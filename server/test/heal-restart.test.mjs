@@ -71,7 +71,7 @@ function fakeGit(env) {
 async function setup({ at = NOW, dir = null, head = START, changes = {}, self = { label: LABEL, launchd: true }, settings = settingsOf(), start = true, git = true, firstPass = null, catalogEntries = CATALOG } = {}) {
   const home = dir ?? await mkdtemp(join(tmpdir(), 'heal-restart-'));
   const env = {
-    dir: home, clock: { t: at }, head, changes, logs: [], pushes: [], programs: [], gitCalls: [], timers: [], killed: false,
+    dir: home, clock: { t: at }, head, changes, logs: [], pushes: [], ntfyTitles: [], programs: [], gitCalls: [], timers: [], killed: false,
     headFails: false, changedFails: false, headGates: [], programFails: null, programAnswer: null,
     why: null, checkoutFrom: [], pid: SELF_PID, printFails: false, failing: [], prints: []
   };
@@ -102,7 +102,7 @@ async function setup({ at = NOW, dir = null, head = START, changes = {}, self = 
     startedAt: at,
     now: () => env.clock.t,
     log: l => env.logs.push(l),
-    notify: async (m, o) => { env.pushes.push([m, o?.priority]); },
+    notify: async (m, o) => { env.pushes.push([m, o?.priority]); env.ntfyTitles.push(o?.ntfyTitle); },
     defer: (fn, ms) => { const t = { fn, at: env.clock.t + ms, ms, done: false }; env.timers.push(t); return t; }
   });
   // The loop's lines but the push marks (`proposed`), which env.proposed() lists.
@@ -382,6 +382,7 @@ test('a merge that touches only web/ or docs/ opens no card; one that touches se
   const c = env.card();
   assert.deepEqual([c.name, c.class, c.tier, c.merges, c.from, c.to, c.actions, c.state, c.canAct, c.expiresAt], ['Control Room', CLASS, 'T2', 2, START.slice(0, 7), H3.slice(0, 7), [RESTART], 'waiting', true, null]);
   assert.deepEqual(env.pushes, [[restartPush(2), 'default']]);
+  assert.deepEqual(env.ntfyTitles, ['Server restart waiting'], 'ntfy gets only its title (lib/ntfy-note.mjs)');
   assert.equal(restartPush(1), 'A Control Room restart waits for your tap (1 merge since it started): Needs you on the Control Room.');
   // Another merge: the same card, its count and commit brought up to date, no second push.
   env.head = H4;
@@ -656,6 +657,7 @@ test('launchctl fails, or answers while this process stays: T3 with a page, and 
   assert.deepEqual(env.outcomes(), [['verifying', 'tapped'], ['escalated', 'restart-failed']]);
   assert.equal(env.lines()[1].tier, 'T3');
   assert.deepEqual(env.pushes.at(-1), [RESTART_PAGE, 'high']);
+  assert.equal(env.ntfyTitles.at(-1), 'Server restart needs a look');
   assert.equal(env.lines()[1].ref, env.lines()[0].ref);
   await env.loop.pass();
   assert.equal(env.card(), null, 'one attempt per instance');

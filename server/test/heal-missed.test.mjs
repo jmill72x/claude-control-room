@@ -231,7 +231,7 @@ test('replaying the 11-05 restart gives one card, for the Friday job, pushed onc
   assert.deepEqual([c.name, c.class, c.tier, c.missedAt, c.why, c.fingerprint, c.actions, c.canAct, c.blocked, c.expiresAt, c.nextRunAt, c.state],
     ['Friday alert', 'missed-run', 'T2', FIRE, 'restart', WHY_WORDS.restart, [RERUN, ACK], true, null, NOW + PROPOSAL_MS, NEXT, 'waiting']);
   assert.match(c.id, /^[a-f0-9]{32}$/);
-  assert.deepEqual(env.pushes, [{ message: proposalPush(1), priority: 'default' }]);
+  assert.deepEqual(env.pushes, [{ message: proposalPush(1), priority: 'default', ntfyTitle: 'Missed runs' }]);
   assert.ok(!/Friday|example/.test(env.pushes[0].message), 'a push counts, never names');
   assert.deepEqual(outcomes(env), ['proposed']);
   const open = env.runner.view().open;
@@ -307,7 +307,7 @@ for (const [name, script, wait, why] of [
     await env.runner.pass(crons());
     const last = env.ledger.lines().at(-1);
     assert.deepEqual([last.outcome, last.why, last.tier], ['escalated', why, 'T3']);
-    assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high' });
+    assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high', ntfyTitle: 'Missed-run heal needs a look' });
     assert.ok(!/Friday|example/.test(PAGE_PUSH));
     assert.equal(env.runner.view().open.length, 0);
   });
@@ -373,7 +373,7 @@ test('the tap reads launchd again: a run since, a run going, or launchd unreadab
   assert.deepEqual(blind.programs, [], "can't tell never acts");
   const last = blind.ledger.lines().at(-1);
   assert.deepEqual([last.outcome, last.why, last.tier], ['escalated', 'unreadable', 'T3']);
-  assert.deepEqual(blind.pushes.at(-1), { message: PAGE_PUSH, priority: 'high' });
+  assert.deepEqual(blind.pushes.at(-1), { message: PAGE_PUSH, priority: 'high', ntfyTitle: 'Missed-run heal needs a look' });
 });
 
 test('Ack until its next run acks the instance by heal until the next run plus 2 hours, and closes the card', async t => {
@@ -427,7 +427,7 @@ test('an ack that cannot be saved writes its line and pages', async t => {
   assert.equal(r.status, 500);
   assert.deepEqual(outcomes(env), ['proposed', 'acked', 'escalated']);
   assert.equal(env.ledger.lines().at(-1).why, 'ack-failed');
-  assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high' });
+  assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high', ntfyTitle: 'Missed-run heal needs a look' });
 });
 
 test('Not now closes the card for good, across a restart too', async t => {
@@ -467,7 +467,7 @@ test('quiet hours: a card made at night waits without a push and without expirin
   const seven = new Date(2026, 10, 7, 7, 0).getTime();
   go(env, seven);
   await env.runner.pass(crons());
-  assert.deepEqual(env.pushes, [{ message: proposalPush(1), priority: 'default' }]);
+  assert.deepEqual(env.pushes, [{ message: proposalPush(1), priority: 'default', ntfyTitle: 'Missed runs' }]);
   assert.equal(env.card().expiresAt, seven + PROPOSAL_MS);
   go(env, seven + PROPOSAL_MS - 1);
   await env.runner.pass(crons());
@@ -652,7 +652,7 @@ test('a restart neither pushes a card twice nor loses a run it started', async t
   await d.runner.pass(crons());
   const last = d.ledger.lines().at(-1);
   assert.deepEqual([last.outcome, last.why, last.tier], ['escalated', 'unverified', 'T3']);
-  assert.deepEqual(d.pushes, [{ message: PAGE_PUSH, priority: 'high' }]);
+  assert.deepEqual(d.pushes, [{ message: PAGE_PUSH, priority: 'high', ntfyTitle: 'Missed-run heal needs a look' }]);
 });
 
 test('launchd unreadable at the first reading: no card until it reads, said once', async t => {
@@ -849,7 +849,7 @@ test('a program that fails to start: T3 with a page, nothing left in flight, no 
   assert.equal(r.status, 502);
   const last = env.ledger.lines().at(-1);
   assert.deepEqual([last.outcome, last.why, last.tier], ['escalated', 'start-failed', 'T3']);
-  assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high' });
+  assert.deepEqual(env.pushes.at(-1), { message: PAGE_PUSH, priority: 'high', ntfyTitle: 'Missed-run heal needs a look' });
   assert.deepEqual(env.runner.view().open, [], 'nothing left being checked');
   await env.runner.scan();
   await env.runner.pass(crons());

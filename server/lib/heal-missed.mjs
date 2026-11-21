@@ -29,6 +29,7 @@
 import { randomBytes } from 'node:crypto';
 import { sameSince, makeAck } from './acks.mjs';
 import { oneLine } from './chat-events.mjs';
+import { NTFY } from './ntfy-note.mjs';
 import { parseLaunchctlPrint, LAUNCHD_LABEL } from './health.mjs';
 import {
   CATALOG, loadCatalog, toolsFor, capStop, targetName, CLOSING, CLASS_WORDS, WHY_WORDS, t2ActsToday,
@@ -51,6 +52,7 @@ export const MISSED_WHYS = Object.freeze(['restart', 'gap']);
 export const ACK_NOTE = 'missed during a restart: Ack until its next run, from the Loops card';
 
 // The pushes. Counted, never named (README, "Push notifications"); the page names the job.
+// These words go to #pepper; ntfy gets only each push's title (`ntfyTitle`, lib/ntfy-note.mjs).
 export const proposalPush = n => `${n} scheduled run${n === 1 ? '' : 's'} missed during a restart ${n === 1 ? 'waits' : 'wait'} for your tap: Needs you on the Control Room.`;
 export const PAGE_PUSH = "A missed-run heal needs a look: a job didn't run clean after Run it now. The Loops panel on the Control Room says which.";
 
@@ -108,7 +110,7 @@ const reading = raw => {
 // `status()` is the heal runner's (lib/heal-runner.mjs): one switch for both loops.
 // `launchctlPrint(label)` is the read; `runProgram(entry, { uid, label })` runs the
 // entry's catalog program (lib/heal-programs.mjs); `missedRuns()` answers the report; `addAck(ack, now)` stores an
-// ack (server/acks.mjs). `notify(message, { priority })` pushes; `onAck(stored)` hears
+// ack (server/acks.mjs). `notify(message, { priority, ntfyTitle })` pushes; `onAck(stored)` hears
 // each ack made, for its log line and notice.
 export function createMissedRunLoops({
   settings,
@@ -189,7 +191,7 @@ export function createMissedRunLoops({
     }
   }
   async function page(why) {
-    try { await notify(PAGE_PUSH, { priority: 'high' }); } catch (err) { log(`heal: the page could not be sent (${err?.code ?? err?.name ?? why})`); }
+    try { await notify(PAGE_PUSH, { priority: 'high', ntfyTitle: NTFY.missedRunPage }); } catch (err) { log(`heal: the page could not be sent (${err?.code ?? err?.name ?? why})`); }
   }
   async function closeRun(v, outcome, why, at, after = null) {
     verifying.delete(v.label);
@@ -323,7 +325,7 @@ export function createMissedRunLoops({
         }
       }
       if (told) {
-        try { await notify(proposalPush(told), { priority: 'default' }); } catch (err) { log(`heal: the card's push failed (${err?.code ?? err?.name ?? 'error'})`); }
+        try { await notify(proposalPush(told), { priority: 'default', ntfyTitle: NTFY.missedRuns }); } catch (err) { log(`heal: the card's push failed (${err?.code ?? err?.name ?? 'error'})`); }
       }
 
       for (const v of [...verifying.values()]) await verify(v, at);

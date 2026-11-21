@@ -46,6 +46,7 @@
 // every read and every tap; "can't tell" never acts.
 import { randomBytes } from 'node:crypto';
 import { oneLine } from './chat-events.mjs';
+import { NTFY } from './ntfy-note.mjs';
 import { inQuietHours } from './heal-missed.mjs';
 import { parseLaunchdPid } from './health.mjs';
 import {
@@ -82,7 +83,8 @@ export const RESTART_PAGE = "A Control Room restart needs a look: it didn't come
 // `label` (launchd's XPC_SERVICE_NAME), `launchd` (its parent is launchd) and `pid`.
 // `firstPass()` resolves with the registry's first pass ({ failed: [names] });
 // `failingNow()` names the collectors failing at this moment. `defer(fn, ms)` is
-// setTimeout; `notify(message, { priority })` pushes.
+// setTimeout; `notify(message, { priority, ntfyTitle })` pushes (ntfy gets only the title,
+// lib/ntfy-note.mjs; #pepper the message).
 export function createRestartLoop({
   settings,
   ledger,
@@ -146,7 +148,7 @@ export function createRestartLoop({
     }
   }
   async function page(why) {
-    try { await notify(RESTART_PAGE, { priority: 'high' }); } catch (err) { log(`heal: the page could not be sent (${err?.code ?? err?.name ?? why})`); }
+    try { await notify(RESTART_PAGE, { priority: 'high', ntfyTitle: NTFY.restartPage }); } catch (err) { log(`heal: the page could not be sent (${err?.code ?? err?.name ?? why})`); }
   }
 
   async function closeCard(outcome, why, at, extra = {}) {
@@ -345,7 +347,7 @@ export function createRestartLoop({
           card.pushWait = pushWait(at);
           if (card.pushWait === null && await append(lineOf('proposed', 'due', at, { expected: head }))) {
             card.announcedAt = at;
-            try { await notify(restartPush(card.merges), { priority: 'default' }); } catch (err) { log(`heal: the card's push failed (${err?.code ?? err?.name ?? 'error'})`); }
+            try { await notify(restartPush(card.merges), { priority: 'default', ntfyTitle: NTFY.restartCard }); } catch (err) { log(`heal: the card's push failed (${err?.code ?? err?.name ?? 'error'})`); }
           }
         }
       } finally {

@@ -679,7 +679,7 @@ socket file needs no such inference. The server starts it whether or not the cha
 A start that fails is tried again: four tries, 10 s apart, without holding the dashboard's
 start. Each failed try logs why (`ingest: the ingest socket … is mode 666, not 0600; trying
 again in 10 s (try 1 of 4)`); after the last, `…; the ingest socket stays off after 4
-tries`, and one alert goes out (#pepper the details, ntfy generic words, no path). **While
+tries`, and one alert goes out (#pepper the details, ntfy only `Ingest socket off: details are in the Control Room.`). **While
 the socket is off (never started, or lost at run time) and `ingest.tcp` is not `"legacy"`,
 every request on the page's
 approvals is Deny-only** ("the ingest socket is off, so a block by auto mode would go
@@ -1200,7 +1200,7 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   The service log says `recover: iPhone asked for a Jarvis restart (Face ID passed; health
   said down); run <id> started jarvis-recover (pid N)` and `recover: run <id> ended (exit
   0): OK: ...`; the chat's events `recover-asked` and `recover-done` go to `#pepper` like a
-  Stop (ntfy gets its generic words). A refusal that is more than a slip, `recover-refused`
+  Stop (ntfy gets only its fixed title, "Push notifications" below). A refusal that is more than a slip, `recover-refused`
   (a Shortcut key from the owner's login, a paired device that is not an approver, or a
   Face ID answer that fails on a POST), is alerted the same way, at most once per 10 minutes
   with the rest counted (`lib/chat-alert-limit.mjs`, like `heal-tap-refused`; Ultron's
@@ -1229,13 +1229,12 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   for both. Each says: "To bring him back: Restart Jarvis in the Control Room (Face ID), or
   paste in a terminal on the mini, outside the jarvis tmux session: cd ~/Projects &&
   ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover".
-- **Never a command in ntfy** (Ultron's L1, 2026-11-20). Anyone who knows the ntfy topic can
-  publish to it, so a forged "Jarvis is down, paste this" would look exactly like the real
-  one. The lead-down alert's ntfy copy (`ntfyMessage`, sent by `entryAlert` in `notify.mjs`)
-  names the ways back with no command: "To bring him back: Restart Jarvis in the Control
-  Room (Face ID), or paste the line from the run sheet (Bring Jarvis Back) in a terminal on
-  the mini." (`RECOVER_NTFY_LINE`). Web Push (signed with this server's own key), `#pepper`
-  and the page carry the command.
+- **Never a command in ntfy** (Ultron's L1, 2026-11-20; board 704e981b, 2026-11-21). Anyone
+  who knows the ntfy topic can publish to it, so a forged "Jarvis is down, paste this" would
+  look exactly like the real one. The lead-down alert's ntfy push is only `Jarvis down:
+  details are in the Control Room.`, with no command and no way back to follow, like every
+  ntfy push ("Push notifications" below). Web Push (signed with this server's own key),
+  `#pepper` and the page carry the command.
 
 ### The chat with the lead agent (Jarvis OS, built, not live)
 
@@ -1741,7 +1740,7 @@ it. Writes keep the board's write guards (JSON only, same origin or none); a pai
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
 log and pushed like an alert: the details to #pepper, and to ntfy (which shows on a lock
-screen) only the generic "A chat security event on the Control Room: details in #pepper". A refused channel and a takeover push at
+screen) only "Chat security event: details are in the Control Room." A refused channel and a takeover push at
 most once per kind per 10 minutes (`server/lib/chat-alert-limit.mjs`), since a channel
 stuck in a restart loop would otherwise push on every try: the rest are held back and
 counted, the count riding on the kind's next push ("… (and 3 more held back in the last 10
@@ -2391,7 +2390,7 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   A form with no file in it (a blank `file` field, or none) is refused in words that say
   so; words alone go as JSON.
 - **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
-  ntfy the generic line): a code made, a key made, a key revoked, three wrong codes, five
+  ntfy its fixed title): a code made, a key made, a key revoked, three wrong codes, five
   wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no
   code waiting; the first is logged, the rest only counted), a key over a limit (once per
   key and limit in 10 minutes, however often it is refused; the limits are messages,
@@ -2603,8 +2602,10 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   checked before the ack, since an ack holds back a push, never a mark; a loop still
   checking that crosses it closes the same way. The allowance is read again each pass, so
   a plist change applies at once. The
-  page's quiet entries carry `endsBy`, when the ceiling ends that mark (the Loops panel
-  doesn't show it yet).
+  page's quiet entries carry `endsBy`, when the ceiling ends that mark, and the Loops
+  panel's quiet row says it: `quiet, ran clean (checked 11:29 PM): its log is old; the quiet
+  ends by Sat 3:00 PM` (board 0b0dcf81; a moment already past reads `the quiet ends at the
+  next check`, and a server without `endsBy` leaves the line as it was).
 - **"Can't tell" never acts.** No counter, a last terminating signal (reason `signal`), a
   last exit that isn't 0, a
   counter that went back (launchd loaded the job again), no schedule to check against, or a
@@ -3082,9 +3083,9 @@ for a request with an Origin header, `from a script, not the page` for one witho
 `from a heal card on the page` for loop 2's tap: `by` is the caller's own word) and until
 when, e.g. `jarvis renewed the acknowledgement of a down service (down
 since Mon, Nov 9, 8:00 AM EST, 2 days ago), renewed 1 time for this failure: it is off the
-alerts until …`. ntfy, which shows on a lock screen, gets only "An alert on the Control
-Room was acknowledged: details in #pepper" (for a renewal, "An acknowledgement on the
-Control Room was renewed: details in #pepper"), at ntfy's `low` priority. Neither gets the key, the job's or service's name or the note: those alerts are
+alerts until …`. ntfy, which shows on a lock screen, gets only "Alert acknowledged:
+details are in the Control Room." (for a renewal, "Acknowledgement renewed: …"), at ntfy's
+`low` priority. Neither gets the key, the job's or service's name or the note: those alerts are
 counted, never quoted (see "Push notifications"), and the note is free text. The notice
 and the log line go through a one-line guard: a line break or separator, another control
 character or a direction or invisible character shows as `⟦U+XXXX⟧`. There is no cap on
@@ -3106,12 +3107,12 @@ limit.
   ends on the latest held notice (`… (the latest of 3 …)`), so who and until when are
   current. Either push opens a new window, so one alert posts at most once per 10
   minutes. The key groups the notices and is never sent.
-- **ntfy, one budget for every alert.** Its words are generic, so grouping alerts loses
-  nothing: at most one push an hour (the first at once, later ones counted into the next
-  push or the hour's end: `… (the latest of 4 in the last 60 minutes)`), and at most 12 a
-  day. The day's 12th carries a second line, `Ack notices are Discord-only until
-  tomorrow.`; after it, ack notices go to #pepper only until the day ends, and the ones
-  in between are not held over. **A day is the server's local calendar day**, ending at
+- **ntfy, one budget for every alert.** It says only a fixed title, with no count (a count
+  is text of the alert's own, which ntfy never gets: "Push notifications"), so grouping
+  alerts loses nothing: at most one push an hour (the first at once, later ones held for the
+  hour's end, when the latest goes), and at most 12 a day. The day's 12th is titled `Ack
+  notices paused until tomorrow` in place of its own; after it, ack notices go to #pepper
+  only until the day ends, and the ones in between are not held over. **A day is the server's local calendar day**, ending at
   local midnight in the mini's time zone (so a daylight-saving day is 23 or 25 hours).
   With no ntfy topic set, the budget is still counted and nothing is logged.
 
@@ -3638,8 +3639,8 @@ render as unknown rather than a guess.
 Alerts (the same ones the on-page alert bar shows, except a local script's alert, which
 is pushed to the paired devices by its own route: "A local script's alert" above) can
 also be pushed to a phone via
-[ntfy.sh](https://ntfy.sh), so a limit crossing 85% or a cron job failing reaches
-you when you are not looking at the dashboard. This is off by default: with no topic
+[ntfy.sh](https://ntfy.sh), so you hear that a limit crossed 85% or a cron job failed
+when you are not looking at the dashboard. This is off by default: with no topic
 configured, nothing goes to ntfy and the rest of the dashboard is completely
 unaffected — the notifier reports `configured: false` rather than erroring.
 
@@ -3647,12 +3648,37 @@ Each alert is also posted to the `#pepper` Discord feed through the Jarvis toolk
 poster (`~/Projects/jarvis/bin/discord-post`), topic or no topic. The poster reads the
 feed's webhook URL from Keychain itself, so that URL never passes through this repo.
 Where there is no poster, or no webhook stored for it, the post fails and nothing else
-changes. Discord gets the same title and text as ntfy, so the rules below apply to
-both. An alert that lands on either channel counts as notified: a channel that is down
+changes. An alert that lands on either channel counts as notified: a channel that is down
 can't make the next run post it again on the one that worked.
 
-**Only five kinds of alert are quoted in full — everything else is counted, never
-quoted:**
+**ntfy gets a fixed title and fixed words, never an alert's text** (board 704e981b,
+2026-11-21). Anyone who knows the topic can publish to it, so the rule for the phone is:
+an ntfy alert that tells you to run something, or has a link or a button, is forged. For
+that to hold, every ntfy push from this server is one of the titles in
+`server/lib/ntfy-note.mjs` followed by `: details are in the Control Room.`, for example
+`Job failure: details are in the Control Room.`, with the fixed `Title: Control Room`
+header and a priority, and no other header (no Click, Actions or Attach). The titles are
+plain names of what happened, never an order: `Claude usage limit`, `Jarvis at a usage
+limit`, `Claude credits`, `Board nearly full`, `Jarvis down`, `Job failure`, `Service down`,
+`Waiting on you`, `Needs attention`, `Missed runs`, `Missed-run heal needs a look`, `Server
+restart waiting`, `Server restart needs a look`, `Ingest socket off`, `Old ingest route
+used`, `Chat security event`, `Alert acknowledged`, `Acknowledgement renewed`, `Ack notices
+paused until tomorrow`. A title not on the list goes as `Control Room alert`. No number or
+label goes either: a limit's percent, a credit grant's label, a count. `publish` in
+`server/notify.mjs` is the only code that posts to ntfy and takes no text at all
+(`test/ntfy-note.test.mjs` sweeps the titles and checks that no other file names ntfy's
+URL). The details stay where they were: `#pepper`, the page, the service log, and for a
+limit warning or the lead-down alert the paired devices' Web Push.
+
+Before 2026-11-21 ntfy got the text below for most alerts. Of those, the old-ingest-route
+alert told you to move a hook or set `ingest.tcp` in config, the lead-down one to paste the
+run sheet's line in a terminal, and a limit's or a credit grant's label came from the
+`/usage` reading or a feed, so it could in principle have held a link.
+
+**What `#pepper` gets.**
+
+Only five kinds of alert are quoted in full — everything else is counted, never
+quoted:
 
 | kind | pushed as |
 |---|---|
@@ -3675,10 +3701,9 @@ this rule is counted rather than disclosed, so the failure mode of a future mist
 over-redaction, not a private name leaving the machine. Cron alerts never include a job
 name or exit status — their identifiers come from `~/Library/LaunchAgents` and can
 include jobs from a private repo, and this project deliberately scrubbed those names
-from its own committed fixtures. The topic on free ntfy.sh is the only access control
-there is — anyone who knows it can read everything published to it — and the message
-body transits a third party. Usage and credits figures are your own, so they're worth
-sending in full.
+from its own committed fixtures. Discord is a third party too, so the same allowlist
+holds there. Usage and credits figures are your own, so they're worth sending in full to
+`#pepper`; ntfy, whose topic is the only access control there is, gets none of it (above).
 
 Each alert notifies once per condition, keyed on its subject rather than its wording
 (a limit's percentage moves every poll; the key does not), and a persisted set of

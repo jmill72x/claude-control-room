@@ -11,6 +11,7 @@
 import { UNSAFE_CHARS, UNSAFE_SAYS } from './text.mjs';
 import { jobDisplayName } from './health.mjs';
 import { oneLine } from './chat-events.mjs';
+import { NTFY } from './ntfy-note.mjs';
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
@@ -256,7 +257,7 @@ export const unackLogLine = key => oneLine(`un-ack: ${key}`);
 // can't hide an outage quietly: #pepper gets who, what kind of alert, how long it
 // has been failing, until when it is set aside, and for a renewal how many times
 // this failure has been renewed; ntfy, which shows on a lock screen, gets only
-// generic words (like the chat's verdicts). Neither gets the key, the job's or
+// a fixed title in fixed words (like every ntfy push: lib/ntfy-note.mjs). Neither gets the key, the job's or
 // service's name or the note: a cron or service alert is counted, never quoted,
 // on both channels (push-alerts.mjs, README "Push notifications"), and the note is
 // free text. The dashboard and the service log name the alert.
@@ -268,8 +269,10 @@ export const unackLogLine = key => oneLine(`un-ack: ${key}`);
 // character (text.mjs), but U+2028 and U+2029 pass that rule, and acks.json can be
 // edited by hand. `oneLine` is lib/chat-events.mjs's.
 
-export const NTFY_ACK_WORDS = 'An alert on the Control Room was acknowledged: details in #pepper';
-export const NTFY_RENEW_WORDS = 'An acknowledgement on the Control Room was renewed: details in #pepper';
+// ntfy's title for each (lib/ntfy-note.mjs): "Alert acknowledged: details are in the
+// Control Room." or "Acknowledgement renewed: …", and nothing else.
+export const ACK_NTFY_TITLE = NTFY.ack;
+export const RENEW_NTFY_TITLE = NTFY.renew;
 export const ACK_NOTICE_PRIORITY = 'low';
 
 // A time as the server's own zone writes it ("Fri, Nov 13, 6:45 PM EST").
@@ -290,7 +293,7 @@ const KIND_WORDS = {
 export const VIA_WORDS = Object.freeze({ page: 'from the page', script: 'from a script, not the page', 'heal-card': 'from a heal card on the page' });
 
 // The notice for an ack as stored (addAck's entry, with `renewals`), at `now`:
-// `{ message, ntfyMessage, priority }`, the message one line. `via` is how it arrived.
+// `{ message, ntfyTitle, priority }`, the message one line. `via` is how it arrived.
 export function ackNotice(ack, now, { via = null } = {}) {
   const words = KIND_WORDS[ack.kind] ?? { what: 'an alert', since: 'raised since', which: 'Which one' };
   const n = renewalsOf(ack);
@@ -302,7 +305,7 @@ export function ackNotice(ack, now, { via = null } = {}) {
   const how = typeof via === 'string' && Object.hasOwn(VIA_WORDS, via) ? `; ${VIA_WORDS[via]}` : '';
   return {
     message: oneLine(`${ack.by} ${did} (${since}${how})${count}: it is off the alerts until ${noticeTime(ack.until)}. ${words.which}, and any note, are on the dashboard.`),
-    ntfyMessage: n ? NTFY_RENEW_WORDS : NTFY_ACK_WORDS,
+    ntfyTitle: n ? RENEW_NTFY_TITLE : ACK_NTFY_TITLE,
     priority: ACK_NOTICE_PRIORITY
   };
 }

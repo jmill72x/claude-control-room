@@ -51,7 +51,7 @@ test('at 100% the session is told once in its window: the full line, to the devi
   const run = (pct, reset = W1) => { now += 5 * 60e3; return h.run([sess(pct, reset)], now); };
   await run(90);
   await run(100);
-  assert.deepEqual(h.sent[1], { keys: [KEY(S, 100, W1), KEY(S, 80, W1), KEY(S, 95, W1)], title: 'Control Room', message: FULL_S, devices: true, feed: 'jarvis' });
+  assert.deepEqual(h.sent[1], { keys: [KEY(S, 100, W1), KEY(S, 80, W1), KEY(S, 95, W1)], title: 'Control Room', message: FULL_S, ntfyTitle: 'Jarvis at a usage limit', devices: true, feed: 'jarvis' });
   assert.deepEqual(h.store[LIMIT_STATE].out, { [S]: { win: W1, at: now } });
   await run(100);
   await run(100, W1 - 60e3);
@@ -285,9 +285,9 @@ test('a limit kept out more than eight days is dropped with a log line and no ba
 test('server.mjs passes each entry\'s feed to the alert and the events\' limitReset to the notifier', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   assert.match(src, /alert: entryAlert\(\{ topic \}\)/);
-  // entryAlert keeps the entry's feed (and its ntfy words: test/jarvis-recover.test.mjs, L1).
+  // entryAlert keeps the entry's feed (and its ntfy title: test/notify.test.mjs).
   const seen = [];
   await entryAlert({ topic: 't', send: async a => { seen.push(a); return { sent: true }; } })({ title: 'Control Room', message: 'm', feed: 'jarvis' });
-  assert.deepEqual(seen, [{ topic: 't', title: 'Control Room', message: 'm', ntfyMessage: null, feed: 'jarvis' }]);
+  assert.deepEqual(seen, [{ topic: 't', title: 'Control Room', message: 'm', ntfyTitle: null, feed: 'jarvis' }]);
   assert.match(src, /\n {4}limitReset: events && \(\(\) => events\.limitReset\(\)\)\n/);
 });

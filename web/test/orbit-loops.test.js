@@ -69,6 +69,18 @@ test('quiet and held rows, and the closed ones of the week with their outcome an
   assert.equal(loopsView(view(), NOW).empty, true);
 });
 
+// Board 0b0dcf81: the quiet ceiling's `endsBy` (server/lib/heal.mjs) on the quiet row.
+test('a quiet row says when its quiet ends at the latest, and a moment already past says the next check', () => {
+  const line = endsBy => loopsView(view({ quiet: [{ name: 'NAS mount', since: NOW - 10 * 3600e3, checkedAt: NOW - MIN, tier: 'T1', endsBy }] }), NOW).quiet[0].line;
+  const base = 'quiet, ran clean (checked 11:29 PM): its log is old';
+  assert.equal(line(at(11, 23, 45)), `${base}; the quiet ends by 11:45 PM`, 'later today: the time');
+  assert.equal(line(at(14, 15)), `${base}; the quiet ends by Sat 3:00 PM`, 'within the week: the day');
+  assert.equal(line(at(18, 9)), `${base}; the quiet ends by 11-18 9:00 AM`, 'the 7-day cap, past six days: the date');
+  assert.equal(line(at(11, 23)), `${base}; the quiet ends at the next check`, 'past: the server\'s next pass ends it');
+  assert.equal(line(NOW), `${base}; the quiet ends at the next check`, 'now is not ahead');
+  for (const absent of [undefined, null, '1794380000000', NaN, Infinity]) assert.equal(line(absent), base, `a server from before the ceiling (${absent})`);
+});
+
 // ---- loop 2: its open loops, its closed ones, and its cards for Needs you ----
 
 import { healCards, tapDone, HEAL_ACTIONS } from '../src/lib/orbit/loops.js';

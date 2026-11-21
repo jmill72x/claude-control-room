@@ -52,6 +52,16 @@ const failedNames = r => {
   return n.length ? `; failed: ${n.join(', ')}` : '';
 };
 
+// When a quiet mark ends at the latest (the server's `endsBy`, the quiet ceiling: board
+// 08469021 and 0b0dcf81): the log's write plus min(max(24 h, 4x its allowance), 7 days).
+// It can end sooner (the log is written again, or a re-check fails); at `endsBy` the job
+// goes red again, which the server's next pass does, so a moment already past says so.
+// A server from before the ceiling sends none, and the line is as it was.
+const quietEnds = (endsBy, now) => {
+  if (!Number.isFinite(endsBy)) return '';
+  return endsBy > now ? `; the quiet ends by ${when(endsBy, now)}` : '; the quiet ends at the next check';
+};
+
 // Whether a loop is open: the phone shows the panel above the fold only then.
 export const hasOpen = loops => list(loops?.open).length > 0;
 
@@ -71,7 +81,7 @@ export function loopsView(loops, now) {
     key: `quiet-${q.name}`,
     name: q.name,
     tier: q.tier,
-    line: `quiet, ran clean${Number.isFinite(q.checkedAt) ? ` (checked ${when(q.checkedAt, now)})` : ''}: its log is old`
+    line: `quiet, ran clean${Number.isFinite(q.checkedAt) ? ` (checked ${when(q.checkedAt, now)})` : ''}: its log is old${quietEnds(q.endsBy, now)}`
   }));
   const held = list(loops.held).map((h, i) => ({ key: `held-${h.name}-${i}`, name: h.name, line: h.why ? `held: ${h.why}` : 'held' }));
   const recent = list(loops.recent).map((r, i) => ({

@@ -13,22 +13,25 @@
 //   window are held and counted, the latest kept. The count goes out with the key's next
 //   notice after the window, or, if none comes, when the window ends, carried by the
 //   latest held notice. Either push begins a new window.
-// - **ntfy, one budget across every key** (createAckNtfyBudget). Its words are generic
-//   ("details in #pepper"), so grouping keys loses nothing. At most one push an hour,
-//   gathered the same way (first at once, the rest counted into the next or the hour's
-//   end), and at most ACK_NTFY_DAY_MAX a day. The day's last allowed push carries one more
-//   line, ACK_NTFY_LAST_LINE; after it, ack notices go to #pepper only until the day
-//   ends. **A day is the server's local calendar day** (the mini's time zone; it ends at
+// - **ntfy, one budget across every key** (createAckNtfyBudget). It says only a fixed
+//   title in fixed words (lib/ntfy-note.mjs: "Alert acknowledged: details are in the
+//   Control Room."), with no count, so grouping keys loses nothing. At most one push an
+//   hour, gathered the same way (first at once, the rest held into the next or the
+//   hour's end), and at most ACK_NTFY_DAY_MAX a day. The day's last allowed push is titled
+//   ACK_NTFY_LAST_TITLE in place of its own; after it, ack notices go to #pepper only
+//   until the day ends. **A day is the server's local calendar day** (the mini's time zone; it ends at
 //   local midnight, so a daylight-saving day is 23 or 25 hours). Notices that come while
 //   the day's ntfy budget is spent are not held for the next day: #pepper has them.
 //
 // createAckNotices runs both for each notice. The service log keeps a line per ack either
 // way (routes.mjs, ackLogLine). Checked by test/ack-notice-limit.test.mjs.
 
+import { NTFY } from './ntfy-note.mjs';
+
 export const ACK_NOTICE_WINDOW_MS = 10 * 60e3;
 export const ACK_NTFY_WINDOW_MS = 60 * 60e3;
 export const ACK_NTFY_DAY_MAX = 12;
-export const ACK_NTFY_LAST_LINE = 'Ack notices are Discord-only until tomorrow.';
+export const ACK_NTFY_LAST_TITLE = NTFY.ackPaused;
 
 const minutes = ms => `${Math.round(ms / 60e3)} minutes`;
 // On the key's next notice after a window that held some back.
@@ -37,11 +40,8 @@ export const carriedSuffix = (n, windowMs = ACK_NOTICE_WINDOW_MS) =>
 // On the latest held notice, sent when the window ends.
 export const flushSuffix = (n, windowMs = ACK_NOTICE_WINDOW_MS) =>
   ` (the latest of ${n} for this alert held back in the last ${minutes(windowMs)})`;
-// The same two for ntfy's window, which spans every alert.
-export const ntfyCarriedSuffix = (n, windowMs = ACK_NTFY_WINDOW_MS) =>
-  ` (and ${n} more in the last ${minutes(windowMs)})`;
-export const ntfyFlushSuffix = (n, windowMs = ACK_NTFY_WINDOW_MS) =>
-  ` (the latest of ${n} in the last ${minutes(windowMs)})`;
+// ntfy's pushes carry no count: a count is text of the alert's own, and ntfy gets none
+// (board 704e981b). #pepper has the counts.
 
 // The server's local calendar day of a moment, as a comparable string.
 export const localDay = ms => {
@@ -111,9 +111,10 @@ export function createAckNoticeLimiter({
   };
 }
 
-// ntfy's budget, one for every key. `send({ message, priority })` pushes one line to
-// ntfy (the notice's `ntfyMessage` and `priority`); `dayOf(ms)` names the day a moment
-// falls in (the server's local day); the rest as above.
+// ntfy's budget, one for every key. `send({ ntfyTitle, priority })` pushes one to ntfy
+// (the notice's `ntfyTitle` and `priority`; notify.mjs turns the title into fixed words,
+// and the notice's message never goes); `dayOf(ms)` names the day a moment falls in
+// (the server's local day); the rest as above.
 export function createAckNtfyBudget({
   send,
   windowMs = ACK_NTFY_WINDOW_MS,
@@ -134,16 +135,15 @@ export function createAckNtfyBudget({
   };
 
   // One push, if the day allows it; it opens the next window. The day's last allowed
-  // push says so on a line of its own.
-  const push = async (notice, suffix) => {
+  // push is titled ACK_NTFY_LAST_TITLE in place of its own.
+  const push = async notice => {
     const now = clock();
     if (spent(now)) { window = null; return false; }
     pushed++;
     const w = { start: now, held: 0, latest: null };
     window = w;
     setTimer(() => flush(w), windowMs);
-    const words = (notice.ntfyMessage ?? notice.message) + suffix;
-    await send({ message: pushed === dayMax ? `${words}\n${ACK_NTFY_LAST_LINE}` : words, priority: notice.priority });
+    await send({ ntfyTitle: pushed === dayMax ? ACK_NTFY_LAST_TITLE : notice.ntfyTitle, priority: notice.priority });
     return true;
   };
 
@@ -151,7 +151,7 @@ export function createAckNtfyBudget({
   // whose window held nothing (the next notice finds the window over and goes out).
   const flush = async w => {
     if (window !== w || w.held === 0) return;
-    try { await push(w.latest, ntfyFlushSuffix(w.held, windowMs)); } catch (err) { onError(err); }
+    try { await push(w.latest); } catch (err) { onError(err); }
   };
 
   return {
@@ -166,8 +166,7 @@ export function createAckNtfyBudget({
         window.latest = notice;
         return { sent: false, held: window.held, spent: false };
       }
-      const carried = window?.held ?? 0;
-      await push(notice, carried > 0 ? ntfyCarriedSuffix(carried, windowMs) : '');
+      await push(notice);
       return { sent: true, held: 0, spent: false };
     },
     // For the tests: the timer's job now, what is held, and the day's count.

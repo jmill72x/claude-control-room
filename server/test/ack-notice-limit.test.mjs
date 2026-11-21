@@ -8,14 +8,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   createAckNoticeLimiter, createAckNtfyBudget, createAckNotices, localDay, ACK_NOTICE_WINDOW_MS, ACK_NTFY_WINDOW_MS,
-  ACK_NTFY_DAY_MAX, ACK_NTFY_LAST_LINE, carriedSuffix, flushSuffix, ntfyCarriedSuffix, ntfyFlushSuffix
+  ACK_NTFY_DAY_MAX, ACK_NTFY_LAST_TITLE, carriedSuffix, flushSuffix
 } from '../lib/ack-notice-limit.mjs';
 
 const MIN = 60e3;
 const T0 = 1794380000000;
 const A = 'cron:launchd:com.example.friday';
 const B = 'service:launchd:Tunnel';
-const notice = (message, extra = {}) => ({ message, ntfyMessage: 'generic', priority: 'low', ...extra });
+const notice = (message, extra = {}) => ({ message, ntfyTitle: 'generic', priority: 'low', ...extra });
 
 const harness = () => {
   const h = { now: T0, sent: [], timers: [], errors: [] };
@@ -57,7 +57,7 @@ test('250 renewals of one alert in a minute push once at once and once more at t
   assert.equal(h.sent.length, 2);
   const last = h.sent[1];
   assert.equal(last.message, 'n249' + flushSuffix(249), 'the latest held notice, with the count of every held one');
-  assert.equal(last.ntfyMessage, 'generic', '#pepper\'s count is on #pepper\'s words only: ntfy has its own budget');
+  assert.equal(last.ntfyTitle, 'generic', '#pepper\'s count is on #pepper\'s words only: ntfy has its own budget');
   assert.equal(last.priority, 'low');
   assert.equal(h.limiter.held(A), 0);
 });
@@ -176,14 +176,13 @@ const both = (start = at(12, 0)) => {
   };
   return h;
 };
-const ack = (words = 'generic') => notice('details', { ntfyMessage: words });
+// `words` stands in for the notice's ntfy title, so each push can be told apart.
+const ack = (words = 'generic') => notice('details', { ntfyTitle: words });
 
 test('the budget\'s numbers and words', () => {
   assert.equal(ACK_NTFY_WINDOW_MS, HOUR);
   assert.equal(ACK_NTFY_DAY_MAX, 12);
-  assert.equal(ACK_NTFY_LAST_LINE, 'Ack notices are Discord-only until tomorrow.');
-  assert.equal(ntfyCarriedSuffix(3), ' (and 3 more in the last 60 minutes)');
-  assert.equal(ntfyFlushSuffix(2), ' (the latest of 2 in the last 60 minutes)');
+  assert.equal(ACK_NTFY_LAST_TITLE, 'Ack notices paused until tomorrow');
 });
 
 test('a day is the server\'s local calendar day: it ends at local midnight', () => {
@@ -198,28 +197,28 @@ test('two alerts\' first acks: #pepper gets both at once, ntfy one, and the othe
   h.now += MIN;
   assert.deepEqual((await h.notices.notice(B, ack('acked B'))).ntfy, { sent: false, held: 1, spent: false });
   assert.equal(h.pepper.length, 2, 'per key on #pepper');
-  assert.deepEqual(h.ntfy, [{ message: 'acked', priority: 'low' }], 'one ntfy push for both keys');
+  assert.deepEqual(h.ntfy, [{ ntfyTitle: 'acked', priority: 'low' }], 'one ntfy push for both keys');
   await h.tick(at(12, 0) + HOUR - 1);
   assert.equal(h.ntfy.length, 1, 'nothing before the hour is up');
   await h.tick(at(12, 0) + HOUR);
-  assert.deepEqual(h.ntfy[1], { message: 'acked B' + ntfyFlushSuffix(1), priority: 'low' });
-  assert.ok(h.ntfy.every(n => !n.message.includes('details')), 'ntfy only ever gets the generic words');
+  assert.deepEqual(h.ntfy[1], { ntfyTitle: 'acked B', priority: 'low' }, 'no count: ntfy gets no text of its own (board 704e981b)');
+  assert.ok(h.ntfy.every(n => !Object.hasOwn(n, 'message')), 'ntfy never gets the notice\'s message');
 });
 
-test('a notice after the hour, before its timer, carries the count; the stale timer pushes nothing', async () => {
+test('a notice after the hour, before its timer, goes out; the stale timer pushes nothing', async () => {
   const h = both();
   await h.notices.notice(A, ack('first'));
   h.now += 10 * MIN;
   await h.notices.notice(B, ack('held'));
   h.now = at(12, 1, 5);
   assert.equal((await h.notices.notice(A, ack('next'))).ntfy.sent, true);
-  assert.deepEqual(h.ntfy.map(n => n.message), ['first', 'next' + ntfyCarriedSuffix(1)]);
+  assert.deepEqual(h.ntfy.map(n => n.ntfyTitle), ['first', 'next']);
   for (const t of h.timers.filter(t => t.at <= h.now)) await t.fn();
   assert.equal(h.ntfy.length, 2, 'a stale timer never pushes the new window early');
   assert.equal(h.notices.ntfy.held(), 0);
 });
 
-test('two alerts renewing every minute all day: ntfy gets 12, the 12th says Discord-only, then nothing until local midnight', async () => {
+test('two alerts renewing every minute all day: ntfy gets 12, the 12th titled paused until tomorrow, then nothing until local midnight', async () => {
   const h = both();
   const day = at(12, 0);
   for (let m = 0; m < 24 * 60; m++) {
@@ -230,9 +229,8 @@ test('two alerts renewing every minute all day: ntfy gets 12, the 12th says Disc
   await h.tick(at(12, 23, 59, 59));
   assert.equal(h.ntfy.length, ACK_NTFY_DAY_MAX, `12 a day, not ${h.ntfy.length}`);
   assert.equal(h.notices.ntfy.pushedToday(), 12);
-  assert.ok(h.ntfy.slice(0, 11).every(n => !n.message.includes(ACK_NTFY_LAST_LINE)), 'only the last says so');
-  // 10:00's push opened the window before that minute's two renewals: 60 minutes of two.
-  assert.equal(h.ntfy[11].message, 'renewed' + ntfyFlushSuffix(120) + '\n' + ACK_NTFY_LAST_LINE, 'the 12th carries the hour\'s count and the last line');
+  assert.ok(h.ntfy.slice(0, 11).every(n => n.ntfyTitle === 'renewed'), 'only the last says so');
+  assert.deepEqual(h.ntfy[11], { ntfyTitle: ACK_NTFY_LAST_TITLE, priority: 'low' }, 'the 12th is titled paused, in place of its own');
   assert.equal(h.notices.ntfy.held(), 0, 'notices after the cap are not held for tomorrow');
   // #pepper kept going, per key, about every 10 minutes each.
   assert.ok(h.pepper.length >= 2 * 6 * 24 - 2, `#pepper is not capped by ntfy's budget (${h.pepper.length})`);
@@ -240,7 +238,7 @@ test('two alerts renewing every minute all day: ntfy gets 12, the 12th says Disc
   await h.tick(at(13, 0));
   assert.equal(h.ntfy.length, 12, 'nothing held over midnight');
   assert.equal((await h.notices.notice(A, ack('new day'))).ntfy.sent, true);
-  assert.deepEqual(h.ntfy[12], { message: 'new day', priority: 'low' });
+  assert.deepEqual(h.ntfy[12], { ntfyTitle: 'new day', priority: 'low' });
   assert.equal(h.notices.ntfy.pushedToday(), 1);
 });
 
@@ -267,7 +265,7 @@ test('a held count that crosses local midnight is the new day\'s first push', as
   h.now = at(12, 23, 45);
   await h.notices.notice(B, ack('later'));
   await h.tick(at(13, 0, 30));
-  assert.deepEqual(h.ntfy.map(n => n.message), ['late', 'later' + ntfyFlushSuffix(1)]);
+  assert.deepEqual(h.ntfy.map(n => n.ntfyTitle), ['late', 'later']);
   assert.equal(h.notices.ntfy.pushedToday(), 1, 'counted on the day it went out');
 });
 
@@ -283,7 +281,7 @@ test('a failed ntfy push at the hour\'s end goes to onError; a failure on one ch
   h.failPepper = true;
   h.now = at(12, 3);
   await assert.rejects(h.notices.notice('cron:launchd:com.example.other', ack('pepper down')), /discord down/);
-  assert.equal(h.ntfy.at(-1).message, 'pepper down', 'ntfy went out although #pepper failed');
+  assert.equal(h.ntfy.at(-1).ntfyTitle, 'pepper down', 'ntfy went out although #pepper failed');
   // ntfy down on a direct push: #pepper still gets its notice.
   h.failPepper = false;
   h.failNtfy = true;
@@ -301,7 +299,7 @@ test('notices after the day\'s last push are #pepper\'s only: never held, so not
     await h.notices.ntfy.notice(ack(`hour ${i}`));
   }
   assert.equal(h.ntfy.length, 12);
-  assert.ok(h.ntfy[11].message.endsWith('\n' + ACK_NTFY_LAST_LINE));
+  assert.equal(h.ntfy[11].ntfyTitle, ACK_NTFY_LAST_TITLE);
   // Late in the day, inside the 11:00 window's hour no more: still spent.
   await h.tick(at(12, 23, 50));
   assert.deepEqual(await h.notices.ntfy.notice(ack('after the cap')), { sent: false, held: 0, spent: true });
@@ -312,7 +310,7 @@ test('notices after the day\'s last push are #pepper\'s only: never held, so not
   await budget.notice(ack('one'));
   await h2.tick(at(12, 23, 30));
   await budget.notice(ack('two'));
-  assert.ok(h2.ntfy[1].message.endsWith('\n' + ACK_NTFY_LAST_LINE), 'with dayMax 2, the second is the last');
+  assert.equal(h2.ntfy[1].ntfyTitle, ACK_NTFY_LAST_TITLE, 'with dayMax 2, the second is the last');
   await h2.tick(at(12, 23, 40));
   assert.deepEqual(await budget.notice(ack('inside the last push\'s hour')), { sent: false, held: 0, spent: true });
   assert.equal(budget.held(), 0);

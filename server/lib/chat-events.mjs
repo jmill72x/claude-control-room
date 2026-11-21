@@ -2,8 +2,8 @@
 // of server.mjs on 2026-11-11 so the path is tested: test/chat-events.test.mjs).
 //
 // Every event is one log line, `chat: <words>`. The kinds in ALERTED_KINDS also push:
-// #pepper gets the same words, ntfy only NTFY_WORDS, since ntfy shows on a lock
-// screen (Ultron's L10). A verdict from the page (Deny or Allow) is one of them, and
+// #pepper gets the same words, ntfy only CHAT_NTFY_TITLE in fixed words, since ntfy
+// shows on a lock screen (Ultron's L10) and carries no alert's own text (board 704e981b). A verdict from the page (Deny or Allow) is one of them, and
 // its words name the device that tapped and the tool (Ultron's 11-10 condition 4,
 // board e8d3ef26).
 //
@@ -18,9 +18,11 @@
 
 import { createAlertLimiter } from './chat-alert-limit.mjs';
 import { isHiddenCodePoint } from './hidden-chars.mjs';
+import { NTFY } from './ntfy-note.mjs';
 
 export const LINE_MAX = 600;
-export const NTFY_WORDS = 'A chat security event on the Control Room: details in #pepper';
+// ntfy's title (lib/ntfy-note.mjs): "Chat security event: details are in the Control Room."
+export const CHAT_NTFY_TITLE = NTFY.chat;
 
 // The one-line set from lib/hidden-chars.mjs (no `card`): controls, separators and the
 // invisible and direction characters. Tab becomes a space before the check. The cap is
@@ -141,7 +143,7 @@ export function chatEventLine(event) {
 }
 
 // What server.mjs hands every chat module as `onEvent`. `send(message)` pushes one
-// alert (sendAlert with NTFY_WORDS for ntfy); a refused channel and a takeover push
+// alert (sendAlert with CHAT_NTFY_TITLE for ntfy); a refused channel and a takeover push
 // at most once per kind per 10 minutes (lib/chat-alert-limit.mjs). Never throws: a
 // failed push is logged.
 export function createChatEventHandler({ send, log = console.log, logError = console.error }) {

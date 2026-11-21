@@ -27,8 +27,8 @@ import { alertPayload, ALERT_PAYLOAD_MAX } from '../lib/chat-push.mjs';
 import { createLocalAlerts, checkLocalAlert } from '../lib/local-alerts.mjs';
 import { chatEventLine, ALERTED_KINDS } from '../lib/chat-events.mjs';
 import { LIMITED_KINDS } from '../lib/chat-alert-limit.mjs';
-import { RECOVER_NTFY_LINE } from '../lib/recover-command.mjs';
-import { entryAlert, sendAlert } from '../notify.mjs';
+import { entryAlert, sendAlert, publish } from '../notify.mjs';
+import { ntfyNote } from '../lib/ntfy-note.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOST = 'jos.example.test';
@@ -770,13 +770,11 @@ test('alerts: the lead\'s session down has its own message with the line; other 
     { kind: 'service', key: 'service:launchd:Review', text: 'Review is not running' }
   ]);
   const lead = out.find(e => e.keys.includes('service:session:Jarvis'));
-  assert.deepEqual(lead, { keys: ['service:session:Jarvis'], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyMessage: `${LEAD_DOWN_WORDS} ${RECOVER_NTFY_LINE}` });
+  assert.deepEqual(lead, { keys: ['service:session:Jarvis'], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyTitle: 'Jarvis down' });
   assert.ok(lead.message.includes(RECOVER_COMMAND));
-  // ntfy: the ways back, no command (Ultron's L1: anyone who knows the topic can publish).
-  assert.ok(!lead.ntfyMessage.includes(RECOVER_COMMAND));
-  assert.ok(!/jarvis-recover|~\/|cd |&&/.test(lead.ntfyMessage), lead.ntfyMessage);
-  assert.match(lead.ntfyMessage, /Restart Jarvis in the Control Room \(Face ID\)/);
-  assert.match(lead.ntfyMessage, /run sheet/);
+  // ntfy: its title alone, in fixed words: no command and no way back to follow (Ultron's
+  // L1, then board 704e981b: anyone who knows the topic can publish).
+  assert.equal(ntfyNote(lead.ntfyTitle), 'Jarvis down: details are in the Control Room.');
   const rest = out.find(e => e !== lead);
   assert.deepEqual(rest.keys, ['service:launchd:Tunnel', 'service:launchd:Review']);
   assert.equal(rest.message, '2 services are down — open the dashboard for detail');
@@ -784,22 +782,20 @@ test('alerts: the lead\'s session down has its own message with the line; other 
   assert.equal(out.length, 2);
 });
 
-test('L1: the notifier\'s alert sends an entry\'s own ntfy words to ntfy and the full message to #pepper; the lead-down command never reaches ntfy', async () => {
+test('L1: the notifier\'s alert sends an entry\'s ntfy title in fixed words to ntfy and the full message to #pepper; the lead-down command never reaches ntfy', async () => {
   const sent = [];
-  const fake = args => sendAlert({ ...args, ntfy: async m => { sent.push(['ntfy', m.message, m.topic]); return { sent: true }; }, discord: async m => { sent.push(['discord', m.message, m.feed]); return { sent: true }; } });
+  // The real publish, with only its fetch faked: what ntfy would show.
+  const ntfy = args => publish({ ...args, fetchImpl: async (url, o) => { sent.push(['ntfy', o.body, url]); return { ok: true, status: 200 }; } });
+  const fake = args => sendAlert({ ...args, ntfy, discord: async m => { sent.push(['discord', m.message, m.feed]); return { sent: true }; } });
   const send = entryAlert({ topic: 't', send: fake });
   const [lead] = pushableFrom([{ kind: 'service', key: 'service:session:Jarvis', text: 'Jarvis is not running' }]);
   await send(lead);
-  assert.deepEqual(sent, [['ntfy', `${LEAD_DOWN_WORDS} ${RECOVER_NTFY_LINE}`, 't'], ['discord', `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, 'pepper']]);
-  assert.ok(!sent[0][1].includes('jarvis-recover'));
+  assert.deepEqual(sent, [['ntfy', 'Jarvis down: details are in the Control Room.', 'https://ntfy.sh/t'], ['discord', `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, 'pepper']]);
   assert.ok(sent[1][1].includes(RECOVER_COMMAND));
-  // An entry with no ntfy words of its own sends its message to both; its feed is kept.
+  // An entry with no ntfy title sends the fallback title to ntfy, never its message; its feed is kept.
   sent.length = 0;
   await send({ keys: ['k'], title: 'Control Room', message: 'Claude session at 100%', feed: 'jarvis' });
-  assert.deepEqual(sent, [['ntfy', 'Claude session at 100%', 't'], ['discord', 'Claude session at 100%', 'jarvis']]);
-  sent.length = 0;
-  await send({ keys: ['k'], title: 'Control Room', message: 'm', ntfyMessage: '' });
-  assert.deepEqual(sent.map(x => x[1]), ['m', 'm'], 'empty ntfy words fall back to the message');
+  assert.deepEqual(sent, [['ntfy', 'Control Room alert: details are in the Control Room.', 'https://ntfy.sh/t'], ['discord', 'Claude session at 100%', 'jarvis']]);
 });
 
 test('a local alert\'s push: a "jarvis-down" one ends with the line, kept whole however long the body; another kind has none', async () => {

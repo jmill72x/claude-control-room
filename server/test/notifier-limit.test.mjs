@@ -45,7 +45,7 @@ test('the session limit warns at 80% and again at 95%, once each per window; the
   await run(79);
   assert.equal(h.sent.length, 0, 'under the first step');
   await run(80);
-  assert.deepEqual(h.sent, [{ keys: [`limit-step:Current session:80:${W1}`], title: 'Control Room', message: 'Claude session at 80%, resets 5:30 pm', devices: true }]);
+  assert.deepEqual(h.sent, [{ keys: [`limit-step:Current session:80:${W1}`], title: 'Control Room', message: 'Claude session at 80%, resets 5:30 pm', ntfyTitle: 'Claude usage limit', devices: true }]);
   await run(87);
   assert.equal(h.sent.length, 1, 'past the alert bar\'s 85%: its line is not pushed, and the step is already told');
   await run(94);

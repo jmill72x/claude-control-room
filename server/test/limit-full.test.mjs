@@ -154,7 +154,7 @@ test('pushableFrom: the full line is an entry for the devices and for #jarvis; e
   const [full] = pushableFrom(limitWarnings([session(100)], NOW));
   assert.deepEqual(full, {
     keys: [`limit-step:Current session:100:${SESSION_RESET}`, `limit-step:Current session:80:${SESSION_RESET}`, `limit-step:Current session:95:${SESSION_RESET}`],
-    title: 'Control Room', message: 'Jarvis is at the session limit until 5:30 pm', devices: true, feed: 'jarvis'
+    title: 'Control Room', message: 'Jarvis is at the session limit until 5:30 pm', ntfyTitle: 'Jarvis at a usage limit', devices: true, feed: 'jarvis'
   });
   assert.equal(Object.hasOwn(pushableFrom(limitWarnings([session(96)], NOW))[0], 'feed'), false);
   assert.equal(Object.hasOwn(pushableFrom([{ kind: KIND, key: 'limit-step:x:80:-', text: 'Claude session at 80%', feed: 'ultron' }])[0], 'feed'), false, 'no other feed is carried');

@@ -9,12 +9,13 @@ import { join } from 'node:path';
 import {
   activeAcks, matchingAck, applyAcks, checkAckRequest, makeAck, addAck, removeAck, decoratePayload, sameSince, ambiguousNames,
   ACK_MAX, ACK_CAP_MS, ACK_AFTER_NEXT_MS, ACK_NO_NEXT_MS, ACK_UNKNOWN_SINCE_CAP_MS, SINCE_TOLERANCE_MS, PAGE_BY, LOCAL_BY, ackLogLine,
-  unackLogLine, ackNotice, noticeTime, renewalsOf, NTFY_ACK_WORDS, NTFY_RENEW_WORDS, VIA_WORDS
+  unackLogLine, ackNotice, noticeTime, renewalsOf, ACK_NTFY_TITLE, RENEW_NTFY_TITLE, VIA_WORDS
 } from '../lib/acks.mjs';
 import { createAckStore } from '../acks.mjs';
 import { createCache } from '../cache.mjs';
 import { createHandler, ACK_WRITES_PER_MINUTE } from '../routes.mjs';
-import { createAckNoticeLimiter, createAckNotices, ntfyFlushSuffix } from '../lib/ack-notice-limit.mjs';
+import { createAckNoticeLimiter, createAckNotices } from '../lib/ack-notice-limit.mjs';
+import { ntfyNote } from '../lib/ntfy-note.mjs';
 import { runNotifier } from '../collectors/notifier.mjs';
 
 const HOUR = 3600e3, DAY = 24 * HOUR;
@@ -604,15 +605,16 @@ test('the count is read defensively: an entry without one is 0, a malformed one 
   assert.equal(addAck([ack()], ack({ at: NOW + 1 }), NOW + 1)[0].renewals, 1, 'an old entry with no count renews to 1');
 });
 
-test('a new ack makes one notice: who, the kind, how long it has failed and until when; ntfy generic and low', () => {
+test('a new ack makes one notice: who, the kind, how long it has failed and until when; ntfy a fixed title, low', () => {
   const n = ackNotice({ ...ack(), renewals: 0 }, NOW);
-  assert.deepEqual(Object.keys(n).sort(), ['message', 'ntfyMessage', 'priority']);
+  assert.deepEqual(Object.keys(n).sort(), ['message', 'ntfyTitle', 'priority']);
   assert.equal(n.priority, 'low');
-  assert.equal(n.ntfyMessage, NTFY_ACK_WORDS);
+  assert.equal(n.ntfyTitle, ACK_NTFY_TITLE);
+  assert.equal(ntfyNote(n.ntfyTitle), 'Alert acknowledged: details are in the Control Room.');
   assert.equal(n.message,
     `jeff acknowledged a failed job (failing since ${noticeTime(SINCE)}, 11 days ago): it is off the alerts until ${noticeTime(NEXT + ACK_AFTER_NEXT_MS)}. Which job, and any note, are on the dashboard.`);
   assert.doesNotMatch(n.message, /renew/);
-  for (const text of [n.message, n.ntfyMessage]) {
+  for (const text of [n.message, ntfyNote(n.ntfyTitle)]) {
     assert.ok(!text.includes('com.example'), 'never the label: a cron is counted, never quoted');
     assert.ok(!text.includes('friday'));
     assert.ok(!text.includes('mini restarted before login'), 'never the note');
@@ -678,7 +680,8 @@ test('the store: a re-ack of the same failure after an un-ack counts on; after t
 test('a renewal makes one notice that says renewed and how many times, in #pepper and on ntfy', () => {
   const once = ackNotice({ ...ack(), by: 'local', renewals: 1 }, NOW);
   assert.match(once.message, /^local renewed the acknowledgement of a failed job \(failing since .*, 11 days ago\), renewed 1 time for this failure: it is off the alerts until /);
-  assert.equal(once.ntfyMessage, NTFY_RENEW_WORDS);
+  assert.equal(once.ntfyTitle, RENEW_NTFY_TITLE);
+  assert.equal(ntfyNote(once.ntfyTitle), 'Acknowledgement renewed: details are in the Control Room.');
   assert.equal(once.priority, 'low');
   assert.match(ackNotice({ ...ack(), renewals: 4 }, NOW).message, /, renewed 4 times for this failure:/);
   assert.match(ackLogLine({ ...ack(), renewals: 4 }), /^ack: cron by jeff until \S+ \(renewal 4\) \(cron:launchd:com\.example\.friday\)$/);
@@ -719,7 +722,7 @@ test('over the route: a new ack sends one notice, each renewal one more that say
   await settle();
   assert.equal(d.notices.length, 1);
   assert.match(d.notices[0].message, /^jeff acknowledged a failed job \(failing since /);
-  assert.equal(d.notices[0].ntfyMessage, NTFY_ACK_WORDS);
+  assert.equal(d.notices[0].ntfyTitle, ACK_NTFY_TITLE);
   assert.equal(d.notices[0].priority, 'low');
   assert.equal(JSON.parse(first.body)[0].renewals, 0);
 
@@ -729,7 +732,7 @@ test('over the route: a new ack sends one notice, each renewal one more that say
   assert.equal(d.notices.length, 2);
   assert.match(d.notices[1].message, /^jarvis renewed the acknowledgement of a failed job .*, renewed 1 time for this failure: it is off the alerts until /);
   assert.ok(d.notices[1].message.includes(noticeTime(JSON.parse(renew.body)[0].until)), 'until when, as stored');
-  assert.equal(d.notices[1].ntfyMessage, NTFY_RENEW_WORDS);
+  assert.equal(d.notices[1].ntfyTitle, RENEW_NTFY_TITLE);
   assert.equal(JSON.parse(renew.body)[0].renewals, 1);
   assert.match(d.logged.at(-1), /^ack: cron by jarvis until \S+ \(renewal 1\) \(cron:launchd:com\.example\.friday\)$/);
 
@@ -877,10 +880,10 @@ test('over the route and the limiter: a renewal loop on one alert pushes the fir
   assert.equal(sent.length, 2);
   assert.match(sent[1].message, /renewed 89 times for this failure: .* \(the latest of 89 for this alert held back in the last 10 minutes\)$/);
   assert.ok(!sent[1].message.includes(KEY), 'the key is used to group, never sent');
-  assert.equal(sent[1].ntfyMessage, NTFY_RENEW_WORDS, '#pepper\'s limit adds its count to #pepper\'s words only');
+  assert.equal(sent[1].ntfyTitle, RENEW_NTFY_TITLE, '#pepper\'s limit adds its count to #pepper\'s words only');
 });
 
-test('over the route and both limits: two alerts acked, #pepper names each, ntfy pushes once and counts the other at the hour\'s end', async () => {
+test('over the route and both limits: two alerts acked, #pepper names each, ntfy pushes once and the other at the hour\'s end', async () => {
   const d = deps();
   const pepper = [], ntfy = [], timers = [];
   let now = NOW;
@@ -900,9 +903,9 @@ test('over the route and both limits: two alerts acked, #pepper names each, ntfy
   assert.equal(pepper.length, 2);
   assert.match(pepper[0], /^jarvis acknowledged a failed job/);
   assert.match(pepper[1], /^jarvis acknowledged a down service/);
-  assert.deepEqual(ntfy, [{ message: NTFY_ACK_WORDS, priority: 'low' }]);
+  assert.deepEqual(ntfy, [{ ntfyTitle: ACK_NTFY_TITLE, priority: 'low' }]);
   now = NOW + 3600e3;
   for (const t of timers.filter(t => t.at <= now).sort((a, b) => a.at - b.at)) await t.fn();
-  assert.deepEqual(ntfy[1], { message: NTFY_ACK_WORDS + ntfyFlushSuffix(1), priority: 'low' });
-  assert.ok(ntfy.every(n => !n.message.includes('launchd') && !n.message.includes('jarvis')), 'ntfy never names the alert or who');
+  assert.deepEqual(ntfy[1], { ntfyTitle: ACK_NTFY_TITLE, priority: 'low' });
+  assert.ok(ntfy.every(n => !ntfyNote(n.ntfyTitle).includes('launchd') && !ntfyNote(n.ntfyTitle).includes('jarvis')), 'ntfy never names the alert or who');
 });

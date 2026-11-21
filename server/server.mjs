@@ -31,7 +31,8 @@ import { collectAccountCredits } from './collectors/account-credits.mjs';
 import { runNotifier, entrySender } from './collectors/notifier.mjs';
 import { createSentStore } from './lib/sent-store.mjs';
 import { getTopic, sendAlert, entryAlert, sendAckPepper, sendAckNtfy } from './notify.mjs';
-import { createChatEventHandler, NTFY_WORDS, oneLine } from './lib/chat-events.mjs';
+import { createChatEventHandler, CHAT_NTFY_TITLE, oneLine } from './lib/chat-events.mjs';
+import { NTFY } from './lib/ntfy-note.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
 import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
@@ -176,7 +177,7 @@ const missed = createMissedRunLoops({
   missedRuns: healSettings.missedRuns ? () => runMissedRuns(healSettings.missedRuns) : null,
   addAck: (ack, now) => ackStore.add(ack, now),
   jobNames: roster.jobs,
-  notify: async (message, { priority = 'default' } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, priority }),
+  notify: async (message, { priority = 'default', ntfyTitle = null } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyTitle, priority }),
   onAck: stored => {
     console.log(ackLogLine(stored));
     ackNotices.notice(stored.key, ackNotice(stored, Date.now(), { via: 'heal-card' }));
@@ -198,7 +199,7 @@ const restartLoop = createRestartLoop({
   firstPass: () => registry.whenFirstPass(),
   failingNow: () => Object.entries(cache.snapshot()).filter(([, v]) => v.error).map(([k]) => k),
   startedAt: STARTED_AT,
-  notify: async (message, { priority = 'default' } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, priority })
+  notify: async (message, { priority = 'default', ntfyTitle = null } = {}) => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyTitle, priority })
 });
 if (restartLoop.catalogProblem()) console.error(`heal: loop 3's catalog entry was refused (${restartLoop.catalogProblem()}); no restart cards`);
 await heal.load();
@@ -329,8 +330,8 @@ registry.register('notifier', async () => {
     writeSent: sentStore.write,
     acks: await ackStore.read(now),
     // A limit's full line names #jarvis as its feed (lib/limit-warnings.mjs); every
-    // other alert goes to #pepper. An entry's own ntfy words go to ntfy (notify.mjs,
-    // entryAlert: the lead-down one carries no command there).
+    // other alert goes to #pepper. ntfy gets only the entry's ntfy title, in fixed words
+    // (notify.mjs, entryAlert; lib/ntfy-note.mjs): never a command, a link or a label.
     send: entrySender({ alert: entryAlert({ topic }), devices: limitPush }),
     events: events && ((alerts, info) => events.fromAlerts(alerts, { ...info, jobNames: roster.jobs, serviceNames, excludeKeys: eventsSettings.excludeKeys })),
     // A heal hold skips a key the events ledger has (Ultron's L4, 11-13).
@@ -382,7 +383,9 @@ const onLocalAlert = value => localAlerts.post(value);
 const ingestSettings = readIngestConfig(config);
 for (const problem of ingestSettings.problems) console.error(`config: ${problem}`);
 const ingestTcpNotice = createLegacyNotice({
-  alert: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message }),
+  // ntfy gets only its title (lib/ntfy-note.mjs): the alert's words say how to move a
+  // hook or change config, and an ntfy push never says to do anything (board 704e981b).
+  alert: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyTitle: NTFY.ingestLegacy }),
   onError: err => console.error('ingest: alert failed', err?.message ?? err)
 });
 const ackNotices = createAckNotices({
@@ -395,7 +398,7 @@ const api = createHandler({
   // Each ack and renewal (lib/acks.mjs, ackNotice; notify.mjs, sendAckPepper and
   // sendAckNtfy): #pepper gets the details, limited per alert key (the first at once,
   // later ones for the key in 10 minutes counted and sent with the next or at the
-  // window's end); ntfy gets generic words at low priority, at most one an hour across
+  // window's end); ntfy gets a fixed title in fixed words at low priority, at most one an hour across
   // every key and 12 a local day (lib/ack-notice-limit.mjs). Guarded by a source test
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
   onAckNotice: (notice, key) => ackNotices.notice(key, notice),
@@ -442,14 +445,14 @@ await mkdir(stateDir, { recursive: true, mode: 0o700 });
 await chmod(stateDir, 0o700);
 // Tried at once and then every 10 s, four tries in all (startIngestSocket); not
 // awaited, so a slow socket never holds the dashboard's start. Off after the last
-// try: one alert to #pepper (fixed words; ntfy generic), and while it stays off with
+// try: one alert to #pepper (fixed words; ntfy its fixed title), and while it stays off with
 // the TCP route closed, the page's approvals are Deny-only (`ingestOk`, below). Once
 // on, a close, an error or a removed or replaced socket file turns it off the same way,
 // with its own alert words (INGEST_LOST_ALERT), once per run.
 const ingestSocket = startIngestSocket({
   path: ingestSocketPath,
   handler: createIngestHandler({ cache, needsYou, onBlock, onExact, onMoved, onRoutine, onLocalAlert }),
-  onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyMessage: 'The Control Room ingest socket is off: details in #pepper' })
+  onOff: async (_, words) => sendAlert({ topic: await getTopic(), title: 'Control Room', message: words, ntfyTitle: NTFY.ingestOff })
 });
 ingestSocket.done.then(s => {
   if (s.on) console.log(`ingest: socket at ${ingestSocketPath}; the TCP port ${ingestSettings.tcp === 'legacy' ? 'still takes needs-you posts from this machine (ingest.tcp "legacy")' : 'takes no ingest posts'}`);
@@ -475,11 +478,11 @@ if (chatSettings.on && socketsReady) {
   await mkdir(chatDir, { recursive: true, mode: 0o700 });
   await chmod(chatDir, 0o700);
   // Each chat event is one log line, and the alerted kinds push too: #pepper the words,
-  // ntfy generic ones (it shows on a lock screen, L10). The words, the one-line guard
+  // ntfy a fixed title in fixed words (it shows on a lock screen, L10; lib/ntfy-note.mjs). The words, the one-line guard
   // and the alerted kinds are in lib/chat-events.mjs; a refused channel or a takeover
   // pushes at most once per kind per 10 minutes (lib/chat-alert-limit.mjs).
   const chatEvents = createChatEventHandler({
-    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyMessage: NTFY_WORDS })
+    send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyTitle: CHAT_NTFY_TITLE })
   });
   const chatStore = createChatStore({ dir: chatDir });
   const loaded = await chatStore.load();

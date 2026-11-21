@@ -1,5 +1,12 @@
-import { RECOVER_LINE, RECOVER_NTFY_LINE } from './recover-command.mjs';
+import { RECOVER_LINE } from './recover-command.mjs';
 import { KIND as LIMIT_STEP, ruleFor, keyParts, resetLabels, NO_RESET_KEEP_MS } from './limit-warnings.mjs';
+import { NTFY } from './ntfy-note.mjs';
+
+// Each entry's ntfy title (lib/ntfy-note.mjs): ntfy gets that title in fixed words and
+// nothing of the message, whatever the kind (board 704e981b). The rules below decide
+// what #pepper gets.
+const DISCLOSED_NTFY = { limit: NTFY.limit, projection: NTFY.limit, credits: NTFY.credits, board: NTFY.board };
+const COUNTED_NTFY = { cron: NTFY.jobs, service: NTFY.services, 'needs-you': NTFY.waiting, other: NTFY.other };
 
 // What may leave this machine, and what may not.
 //
@@ -36,7 +43,7 @@ export function pushableFrom(alerts) {
     // A limit with warning steps of its own (lib/limit-warnings.mjs) is told by
     // those, not by the alert bar's threshold: one limit, one line of messages.
     if (a.kind === 'limit' && a.key.startsWith('limit:') && ruleFor(a.key.slice('limit:'.length))) continue;
-    out.push({ keys: [a.key], title: 'Control Room', message: a.text });
+    out.push({ keys: [a.key], title: 'Control Room', message: a.text, ntfyTitle: DISCLOSED_NTFY[a.kind] });
   }
 
   // A limit warning: its words are the usage panel's own numbers, so they go out as
@@ -45,17 +52,18 @@ export function pushableFrom(alerts) {
   // (`feed: 'jarvis'`) is posted to #jarvis in place of #pepper (notify.mjs).
   for (const a of keyed.filter(a => a.kind === LIMIT_STEP)) {
     const covers = (Array.isArray(a.covers) ? a.covers : []).filter(k => typeof k === 'string' && k);
-    out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, devices: true, ...(a.feed === 'jarvis' ? { feed: 'jarvis' } : {}) });
+    out.push({ keys: [a.key, ...covers], title: 'Control Room', message: a.text, ntfyTitle: a.feed === 'jarvis' ? NTFY.limitFull : NTFY.limit, devices: true, ...(a.feed === 'jarvis' ? { feed: 'jarvis' } : {}) });
   }
 
   // The lead's session down for five minutes (lib/alerts.mjs: kind `service`, key
   // `service:session:<name>`): a message of its own in fixed words, with the line that
   // brings him back (lib/recover-command.mjs; board 98a30b15), not one of the counted
   // services. Its name is config's, so it is not quoted, as for every service. ntfy gets
-  // `ntfyMessage` (notify.mjs, sendAlert), the ways back with no command in it: anyone
-  // who knows the topic can publish to it (Ultron's L1, 11-20). #pepper gets the command.
+  // only "Jarvis down: details are in the Control Room." (no command and no way back to
+  // follow: anyone who knows the topic can publish to it, Ultron's L1 of 11-20 and board
+  // 704e981b). #pepper, the page and the paired devices get the command.
   for (const a of keyed.filter(isLeadDown)) {
-    out.push({ keys: [a.key], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyMessage: `${LEAD_DOWN_WORDS} ${RECOVER_NTFY_LINE}` });
+    out.push({ keys: [a.key], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyTitle: NTFY.leadDown });
   }
 
   const groups = new Map();
@@ -66,7 +74,7 @@ export function pushableFrom(alerts) {
   }
   for (const [group, keys] of groups) {
     const words = group === 'other' ? anyOther(keys.length) : COUNT_WORDS[group](keys.length);
-    out.push({ keys, title: 'Control Room', message: `${words} — open the dashboard for detail` });
+    out.push({ keys, title: 'Control Room', message: `${words} — open the dashboard for detail`, ntfyTitle: COUNTED_NTFY[group] });
   }
   return out;
 }

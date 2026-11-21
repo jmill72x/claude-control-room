@@ -4142,7 +4142,7 @@ is the reference.
 - **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build),
   with no agent runs going.
 
-## 30. The quiet ceiling: a quiet mark ends when the log is too old (board 08469021, P2, Ultron's M1; staged 2026-11-21 on `jos/quiet-ceiling`)
+## 30. The quiet ceiling: a quiet mark ends when the log is too old (board 08469021, P2, Ultron's M1; merged as main bfebfa5, live per Jarvis's 2026-11-21 brief)
 
 **Why:** loop 1's quiet mark proved only that the job exits 0, and it never ended: a job
 that exits 0 but has stopped doing its work (a mount script that no longer mounts, say)
@@ -4165,7 +4165,7 @@ loops", "The quiet ceiling", is the reference.
   quiet mark the ceiling ends counts for the hour's comeback rule, after a restart too. The
   check runs before the ack (an ack holds back a push, never a mark) and closes a loop
   still checking too. `/api/loops` quiet entries carry `endsBy`;
-  the Loops panel doesn't show it (a follow-up, with a web build).
+  the Loops panel shows it from §31 (board 0b0dcf81).
 - **Ultron's review (11-21): GO with four lows, all fixed on the branch.** L1, a ceiling
   close of a quiet loop now sets the quiet's end, so another instance within the hour is a
   comeback (and after a restart, a last ceiling line of a healed instance says when it
@@ -4184,3 +4184,70 @@ loops", "The quiet ceiling", is the reference.
   config change), with no agent runs going. The quiet marks are in memory, so the restart
   re-checks any quiet job from scratch, and one already past its ceiling then goes red and
   pushes once.
+
+## 31. ntfy says only a fixed title, and the Loops panel says when a quiet ends (boards 704e981b and 0b0dcf81, P3; staged 2026-11-21 on `jos/ntfy-endsby`)
+
+**Why (704e981b):** Jarvis's own ntfy alerts carry no command or link since jarvis af1852e,
+and Jeff was told the rule: an ntfy alert that tells you to run something or tap a link is
+forged (anyone who knows the topic can publish to it). That holds only if the Control Room's
+ntfy pushes agree. README, "Push notifications", is the reference now.
+
+- **What each ntfy path could send before (main bfebfa5).** One function posted to ntfy
+  (`publish` in `server/notify.mjs`), with only `Title: Control Room` and `Priority`
+  headers, never Click, Actions or Attach, so no button or tap target. Its body was the
+  caller's text, and `sendAlert` sent `ntfyMessage ?? message`:
+  - the notifier's alerts (`lib/push-alerts.mjs`): counted kinds (`1 job failed — open the
+    dashboard for detail`, services, waits, other), fixed words with a count; `limit`,
+    `projection` and `credits` as written, with a label from the `/usage` reading, config
+    or the credits feed (a label from outside the code: it could in principle have held a
+    URL); `board` and the limit steps, fixed words with numbers and a clock time; the
+    lead-down alert's `RECOVER_NTFY_LINE`, which told Jeff to **paste the run sheet's line
+    in a terminal on the mini** (no command, but an instruction to run one);
+  - the old-TCP-ingest alert (`LEGACY_ALERT`), sent whole: it told Jeff to **move a hook,
+    or set `ingest.tcp` to "off" in config**, and named a README section;
+  - loop 2's and loop 3's pushes (card and page), fixed words with a count, telling him a
+    card "waits for your tap" on the page;
+  - the ingest-socket-off alert and the chat events, already fixed generic words;
+  - ack notices, fixed words plus a count suffix, but `ack-notice-limit.mjs` fell back to
+    the notice's `message` (which holds `by`, the caller's own word) for a notice without
+    ntfy words.
+- **Now:** `publish` takes no text at all. Its body is `ntfyNote(ntfyTitle)` from the new
+  `server/lib/ntfy-note.mjs`: one of 19 fixed titles, then `: details are in the Control
+  Room.` (`Control Room alert` for a title not on the list), with the same two headers.
+  Every caller passes a title in place of words (`ntfyTitle` on the notifier's entries,
+  the heal loops' `notify` options, the ack notices and the four server.mjs alerts);
+  `ntfyMessage`, `RECOVER_NTFY_LINE`, `NTFY_WORDS`, `NTFY_ACK_WORDS`/`NTFY_RENEW_WORDS`
+  and ntfy's count suffixes are gone, and the ack budget's 12th push is titled `Ack
+  notices paused until tomorrow`. #pepper, the page, the service log and the devices' Web
+  Push are unchanged, so the full text is where it was. Web Push and the local-alert push
+  are not ntfy and were left alone.
+- **Choices to defend:** no numbers on ntfy, not even a percent or a count (fixed words are
+  provable, and the Jarvis side did the same; the phone still gets limit warnings with
+  numbers through Web Push); titles never start with a verb (`Server restart waiting`, not
+  `Restart waiting`, which reads as an order); one `Title: Control Room` header for every
+  push so Jeff's lock screen looks as before; the list lives in one module, swept by a test
+  for letters only, no order words, no link or path characters, and under 200 bytes.
+- **Why (0b0dcf81):** the quiet row in the Loops panel now ends `; the quiet ends by Sat
+  3:00 PM` from `/api/loops`' `endsBy` (`web/src/lib/orbit/loops.js`); a moment already
+  past reads `the quiet ends at the next check` (the server's next pass ends it), and a
+  server without `endsBy` leaves the line as it was, so the build is safe on either server.
+- **Ultron's review (11-21): GO with one low, fixed on the branch.** L1: the "only notify.mjs
+  posts to ntfy" test read only server.mjs, lib/ and collectors/ for the literal `ntfy.sh/`;
+  it now reads every code file under server/ but test/ at any depth (routes.mjs, acks.mjs,
+  cache.mjs, history.mjs, todos.mjs and restore-todos.mjs included) for `/ntfy\.sh/i`,
+  whole-line comments left out, and the sendAlert sweep reads a call split over lines.
+  6 mutants for it (a URL in routes.mjs in capitals, in restore-todos.mjs, in a nested lib
+  folder, in acks.mjs, and a split call with and without a title), all as expected.
+- **Checked (2026-11-21, after L1):** server 1,775 tests (1 new file, `test/ntfy-note.test.mjs`, and 3
+  new tests elsewhere; 11 files' expectations moved from words to titles) in local time and
+  `TZ=Asia/Tokyo`; web 379 in both. 39 mutants over the ntfy change (publish's body,
+  headers and Title, sendAlert, entryAlert, sendAckNtfy, the note, a title with a verb or a
+  path, the frozen list, every caller's title, the ack budget, the server.mjs wiring and a
+  second poster) and 4 over the quiet line, all caught. oxlint on the changed files shows
+  only the 3 warnings main has. The page was built to a scratch folder only (`vite build
+  --outDir` in the scratchpad), and the live `web/dist` did not move. **Not verified:** a
+  real ntfy push on a phone (no topic is known to be set), and the Loops row in a browser
+  (the line goes through the existing row span unchanged).
+- **Go-live (Jeff, after C&P):** a Control Room restart for the ntfy part (server code), with
+  no agent runs going, and `cd web && npm run build` for the Loops line (a live deploy of
+  the page, safe on the running server, which already sends `endsBy`).

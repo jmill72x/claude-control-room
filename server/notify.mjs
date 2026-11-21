@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { stampLines } from './lib/log-stamp.mjs';
+import { ntfyNote, NTFY_HEADER_TITLE } from './lib/ntfy-note.mjs';
 
 const exec = promisify(execFile);
 
@@ -28,15 +29,19 @@ export async function getTopic({ run } = {}) {
 // 'low' (no sound or vibration) for an ack's notice (lib/acks.mjs).
 const NTFY_PRIORITIES = new Set(['min', 'low', 'default', 'high', 'urgent']);
 
-export async function publish({ topic, title, message, priority = 'default', fetchImpl = fetch }) {
+// The only code that posts to ntfy. It takes no text: the body is lib/ntfy-note.mjs's
+// fixed words for `ntfyTitle` (one of its known titles, else the fallback), and the
+// headers are a fixed Title and the priority, never Click, Actions, Attach or any other,
+// so no push can carry a command, a path, a link or a button (board 704e981b).
+export async function publish({ topic, ntfyTitle = null, priority = 'default', fetchImpl = fetch }) {
   if (!topic) return { sent: false, reason: 'no topic configured' };
   try {
     // Encoded: an unencoded topic containing `/` or whitespace rewrites the
     // request target entirely.
     const res = await fetchImpl(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: 'POST',
-      headers: { Title: title, Priority: NTFY_PRIORITIES.has(priority) ? priority : 'default' },
-      body: message
+      headers: { Title: NTFY_HEADER_TITLE, Priority: NTFY_PRIORITIES.has(priority) ? priority : 'default' },
+      body: ntfyNote(ntfyTitle)
     });
     return { sent: res.ok, reason: res.ok ? null : `HTTP ${res.status}` };
   } catch {
@@ -115,9 +120,11 @@ export function runPoster(file, args, { input }) {
 // channel that is down make every five-minute run post it again on the one
 // that works. Each channel's own result is attached for callers; runNotifier
 // reads only `sent`.
-// `ntfyMessage`, when given, is what ntfy gets in place of `message`: ntfy shows on a
-// lock screen, so the chat's alerts send it generic words and keep the details for
-// #pepper (approvals, Ultron L10).
+// ntfy never gets `message`: it gets `ntfyTitle` (lib/ntfy-note.mjs, NTFY), one of the
+// known titles, as fixed words, and the details stay in #pepper, the page and the log.
+// Anyone who knows the topic can publish to it, so a push that told Jeff to run
+// something or tap a link would look like a forged one (board 704e981b). A missing or
+// unknown title sends the fallback title.
 // `priority` is ntfy's (a heal's page is 'high'); #pepper has no such thing.
 // A #pepper copy the poster refused or couldn't post (it exited 2 or 3) is logged with
 // that reason, never the message (Ultron's 11-12 low): exit 2 is what the poster does
@@ -127,8 +134,8 @@ export function runPoster(file, args, { input }) {
 // normal state elsewhere.
 // `feed` is the Discord feed (FEEDS): #pepper unless the alert names #jarvis.
 const POSTER_EXIT_WORDS = Object.freeze({ 2: 'refused: secret-shaped text, or no webhook stored', 3: 'Discord or the network failed' });
-export async function sendAlert({ topic, title, message, ntfyMessage = null, priority = 'default', feed = 'pepper', ntfy = publish, discord = publishDiscord, logError = console.error }) {
-  const viaNtfy = await ntfy({ topic, title, message: ntfyMessage ?? message, priority });
+export async function sendAlert({ topic, title, message, ntfyTitle = null, priority = 'default', feed = 'pepper', ntfy = publish, discord = publishDiscord, logError = console.error }) {
+  const viaNtfy = await ntfy({ topic, ntfyTitle, priority });
   const viaDiscord = await discord({ title, message, feed: feedOf(feed) });
   // A sent post has no reason, so only a failed one matches.
   const exit = /^discord-post exited (\d+)$/.exec(String(viaDiscord?.reason ?? ''));
@@ -137,24 +144,24 @@ export async function sendAlert({ topic, title, message, ntfyMessage = null, pri
 }
 
 // The notifier's alert for one entry of lib/push-alerts.mjs's pushableFrom: its title,
-// its message, its ntfy words when it has its own (`ntfyMessage`: the lead-down entry's
-// carry no command, Ultron's L1) and its feed (#jarvis for a limit's full line).
+// its message, its ntfy title (`ntfyTitle`, one of lib/ntfy-note.mjs's) and its feed
+// (#jarvis for a limit's full line).
 export const entryAlert = ({ topic, send = sendAlert }) => entry =>
-  send({ topic, title: entry.title, message: entry.message, ntfyMessage: typeof entry.ntfyMessage === 'string' && entry.ntfyMessage !== '' ? entry.ntfyMessage : null, feed: entry.feed });
+  send({ topic, title: entry.title, message: entry.message, ntfyTitle: typeof entry.ntfyTitle === 'string' ? entry.ntfyTitle : null, feed: entry.feed });
 
-// An ack's notice (lib/acks.mjs, ackNotice: `{ message, ntfyMessage, priority }`) goes
+// An ack's notice (lib/acks.mjs, ackNotice: `{ message, ntfyTitle, priority }`) goes
 // out in two halves, each through its own limit (lib/ack-notice-limit.mjs): the details
-// to #pepper, titled like an alert, and the generic words to ntfy. A post that fails is
-// logged with its reason, which never holds the message or the topic. ntfy with no topic
-// is a normal state (getTopic), so that one is not logged.
+// to #pepper, titled like an alert, and the fixed words for its ntfy title to ntfy. A
+// post that fails is logged with its reason, which never holds the message or the topic.
+// ntfy with no topic is a normal state (getTopic), so that one is not logged.
 export async function sendAckPepper(notice, { discord = publishDiscord, logError = console.error } = {}) {
   const result = await discord({ title: 'Control Room', message: notice.message });
   if (!result.sent) logError(`ack: the #pepper notice was not sent (${result.reason ?? 'unknown'})`);
   return result;
 }
 
-export async function sendAckNtfy({ message, priority }, { topic = getTopic, ntfy = publish, logError = console.error } = {}) {
-  const result = await ntfy({ topic: await topic(), title: 'Control Room', message, priority });
+export async function sendAckNtfy({ ntfyTitle, priority }, { topic = getTopic, ntfy = publish, logError = console.error } = {}) {
+  const result = await ntfy({ topic: await topic(), ntfyTitle, priority });
   if (!result.sent && result.reason !== 'no topic configured') logError(`ack: the ntfy notice was not sent (${result.reason ?? 'unknown'})`);
   return result;
 }

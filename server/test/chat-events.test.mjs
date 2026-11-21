@@ -11,7 +11,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { oneLine, chatEventLine, createChatEventHandler, ALERTED_KINDS, LINE_MAX, NTFY_WORDS } from '../lib/chat-events.mjs';
+import { oneLine, chatEventLine, createChatEventHandler, ALERTED_KINDS, LINE_MAX, CHAT_NTFY_TITLE } from '../lib/chat-events.mjs';
+import { ntfyNote } from '../lib/ntfy-note.mjs';
 import { createApprovals, shownHash } from '../lib/approvals.mjs';
 import { createChatStore } from '../lib/chat-store.mjs';
 import { createDeviceStore, COOKIE_NAME, PAIR_COOKIE_NAME } from '../lib/chat-devices.mjs';
@@ -125,9 +126,9 @@ test('a failed push is logged and never thrown; the log line is written first', 
   assert.deepEqual(c.logs.at(-1), 'chat: chat event undefined');
 });
 
-test('ntfy gets generic words only (it shows on a lock screen, L10)', () => {
-  assert.doesNotMatch(NTFY_WORDS, /phone|device|allow|deny/i);
-  assert.match(NTFY_WORDS, /#pepper/);
+test('ntfy gets a fixed title only (it shows on a lock screen, L10; board 704e981b)', () => {
+  assert.equal(ntfyNote(CHAT_NTFY_TITLE), 'Chat security event: details are in the Control Room.');
+  assert.doesNotMatch(ntfyNote(CHAT_NTFY_TITLE), /phone|device|allow|deny/i);
 });
 
 // ---- end to end: the real routes, a hostile device name and a hostile tool name ----

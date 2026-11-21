@@ -134,7 +134,7 @@ test('a stale automatic-credits read makes credits unobservable, so a grant key 
 
 test("the board's size alert goes out as it is written: it carries only a percent", () => {
   const out = pushableFrom([{ text: 'The board is at 78% of its save limit', kind: 'board', key: 'board:size' }]);
-  assert.deepEqual(out, [{ keys: ['board:size'], title: 'Control Room', message: 'The board is at 78% of its save limit' }]);
+  assert.deepEqual(out, [{ keys: ['board:size'], title: 'Control Room', message: 'The board is at 78% of its save limit', ntfyTitle: 'Board nearly full' }]);
 });
 
 test('the board alert is forgotten only while the board can be read', () => {
@@ -154,6 +154,19 @@ test('a down service pushes a count, never its name', () => {
   assert.ok(!JSON.stringify(one).includes('Secret tunnel is'), 'the name stays on the machine');
   const two = pushableFrom([service('service:a', 'A is not running'), service('service:b', 'B is not running')]);
   assert.equal(two[0].message, '2 services are down — open the dashboard for detail');
+});
+
+test('ntfy gets each entry\'s title only (lib/ntfy-note.mjs, board 704e981b): one per kind, never its text', () => {
+  const out = pushableFrom([
+    cron('cron:a', 'a failed'), service('service:t', 'T is not running'), { kind: 'needs-you', key: 'needs-you:s', text: 'x' },
+    { kind: 'mystery', key: 'mystery:1', text: 'x' }, { kind: 'credits', key: 'credits:g', text: 'https://example.com credits' },
+    { kind: 'projection', key: 'projection:w', text: 'w projected' }, { kind: 'limit', key: 'limit:Monthly spend', text: 'Monthly spend at 88%' }
+  ]);
+  const titles = Object.fromEntries(out.map(o => [o.keys[0], o.ntfyTitle]));
+  assert.deepEqual(titles, {
+    'cron:a': 'Job failure', 'service:t': 'Service down', 'needs-you:s': 'Waiting on you', 'mystery:1': 'Needs attention',
+    'credits:g': 'Claude credits', 'projection:w': 'Claude usage limit', 'limit:Monthly spend': 'Claude usage limit'
+  });
 });
 
 test('each counted kind is its own message, carrying only its own keys', () => {
@@ -176,7 +189,7 @@ const warning = (step, covers = [], label = 'Current session') => ({ kind: 'limi
 
 test('a limit warning goes out as written, marked for the devices, with the keys of the steps it has passed', () => {
   assert.deepEqual(pushableFrom([warning(95, [stepKey(80)])]), [
-    { keys: [stepKey(95), stepKey(80)], title: 'Control Room', message: 'Claude session at 96%, resets 5:30 pm', devices: true }
+    { keys: [stepKey(95), stepKey(80)], title: 'Control Room', message: 'Claude session at 96%, resets 5:30 pm', ntfyTitle: 'Claude usage limit', devices: true }
   ]);
   assert.deepEqual(pushableFrom([warning(80)])[0].keys, [stepKey(80)]);
   assert.deepEqual(pushableFrom([{ ...warning(80), covers: undefined }])[0].keys, [stepKey(80)], 'no covers is none');
