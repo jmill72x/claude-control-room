@@ -16,6 +16,14 @@
 //      Anything else escalates: the alert stays as it was, red, and pushes.
 //   4. While quiet, the same check repeats at every interval or due time. A failed
 //      re-check lifts the quiet (`relapsed`), and that instance is never healed again.
+//   5. The quiet ceiling (board 08469021, Ultron's M1): a clean exit is all a quiet mark
+//      proves, so it ends once the log is older than 4 times job-status's allowance for
+//      it (`maxAgeHours`), and than 24 hours, or older than 7 days whatever the allowance
+//      (`quietCeilingMs`, lib/heal.mjs). The loop closes as escalated (`log-ceiling`), the
+//      alert goes red and pushes as any failure does, and that instance is never quiet
+//      again: a loop is not opened for a log already past it, after a restart too. One
+//      ledger line says so, while the ledger keeps it (30 days, 2,000 lines). The quiet's
+//      end counts for the hour's comeback rule, as any quiet's end does.
 //   An instance that stays failing on the same run but no longer for its log's age
 //   alone is no clear-up: it closes as escalated (or relapsed, if quiet), not cleared
 //   (Ultron's L2, 11-13).
@@ -39,7 +47,7 @@ import { parseLaunchctlPrint } from './health.mjs';
 import { cronOrder } from './parse-launchd.mjs';
 import {
   CATALOG, loadCatalog, toolsFor, judgeReadings, parseRunInterval, capStop, buildLoopsView, STATUS_WHY,
-  INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS
+  INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS, pastQuietCeiling, quietCeilingMs
 } from './heal.mjs';
 
 const DAY = 24 * 3600e3;
@@ -154,22 +162,34 @@ export function createHealRunner({
   // forgets those over a day old, as it does any), and a target whose last mark-quiet line
   // is a heal may still have been quiet when the server stopped: when that quiet ended
   // isn't on file, so it counts as ended now, for another instance (the same one checked
-  // again is no comeback). A line stamped ahead of this clock is read like any other: a
-  // closed instance stays closed ("can't tell" never acts).
+  // again is no comeback). A last line that ended a healed instance at the quiet ceiling
+  // says when that quiet ended: its own time (Ultron's L1, 11-21). A line stamped ahead of
+  // this clock is read like any other: a closed instance stays closed ("can't tell" never
+  // acts).
   function rebuild(at) {
     if (!entry) return;
     const labelOf = new Map();
     for (const [label, t] of settings?.targets ?? []) if (typeof t?.id === 'string') labelOf.set(t.id, label);
     const last = new Map();
+    const healed = [];
     for (const l of ledger.lines()) {
       if (l.action !== entry.id) continue;
       last.set(l.target, l);
+      if (l.outcome === 'healed') healed.push(l);
       const label = labelOf.get(l.target);
       if (label === undefined) continue;
       if (l.outcome === 'escalated' || l.outcome === 'relapsed') closed.set(label, { since: Number.isFinite(l.since) ? l.since : null, at: l.at, outcome: l.outcome });
     }
-    for (const [target, l] of last) if (l.outcome === 'healed') ended.set(target, { at, since: Number.isFinite(l.since) ? l.since : null });
+    for (const [target, l] of last) {
+      const since = Number.isFinite(l.since) ? l.since : null;
+      if (l.outcome === 'healed') ended.set(target, { at, since });
+      else if (l.why === 'log-ceiling' && healed.some(h => h.target === target && sameSince(h.since, since))) ended.set(target, { at: l.at, since });
+    }
   }
+
+  // Whether the ledger already says this instance went past the quiet ceiling.
+  const ceilingLine = (target, since) => ledger.lines().some(l =>
+    l.action === entry.id && l.target === target && l.why === 'log-ceiling' && sameSince(l.since, since));
 
   const targetOf = c => {
     const t = settings?.targets?.get?.(c.label) ?? null;
@@ -241,13 +261,30 @@ export function createHealRunner({
           held.push({ target: target.id, why: `${entry.id} is off in config.json` });
           continue;
         }
+        let loop = loops.get(c.label);
+        // The quiet ceiling, before the ack: an ack keeps the push back, never a mark.
+        if (loop) {
+          loop.maxAgeHours = c.maxAgeHours;
+          if (pastQuietCeiling(loop.since, loop.maxAgeHours, at)) {
+            // A quiet one ended: another instance within the hour is a comeback (L1, 11-21).
+            if (loop.state === 'quiet') ended.set(loop.target, { at, since: loop.since });
+            await close(loop, 'escalated', 'log-ceiling', at);
+            continue;
+          }
+        }
         if (acked(c)) continue;
         const rec = closed.get(c.label);
         if (rec && sameSince(rec.since, c.lastRunAt)) continue;
 
-        let loop = loops.get(c.label);
         if (!loop) {
-          loop = { label: c.label, target: target.id, since: c.lastRunAt, detectedAt: at, state: 'checking', a: null, dueAt: null, checkedAt: null };
+          loop = { label: c.label, target: target.id, since: c.lastRunAt, maxAgeHours: c.maxAgeHours, detectedAt: at, state: 'checking', a: null, dueAt: null, checkedAt: null };
+          // A log already past the ceiling: no loop, and one line for the instance while
+          // the ledger keeps it (30 days, 2,000 lines; the closed record lasts only a day),
+          // so the Loops panel says why without a line a day (Ultron's L2, 11-21).
+          if (pastQuietCeiling(loop.since, loop.maxAgeHours, at)) {
+            if (!ceilingLine(target.id, loop.since)) await close(loop, 'escalated', 'log-ceiling', at);
+            continue;
+          }
           const end = ended.get(target.id);
           const stop = capStop(ledger.lines(), target.id, at, end && !sameSince(end.since, c.lastRunAt) ? end.at : null, c.lastRunAt);
           if (stop) { await close(loop, 'escalated', stop, at); continue; }
@@ -313,7 +350,7 @@ export function createHealRunner({
       const open = [], quiet = [];
       if (s === 'on') {
         for (const loop of loops.values()) {
-          if (loop.state === 'quiet') quiet.push({ target: loop.target, since: loop.since, checkedAt: loop.checkedAt, tier: entry.tier });
+          if (loop.state === 'quiet') quiet.push({ target: loop.target, since: loop.since, checkedAt: loop.checkedAt, tier: entry.tier, endsBy: loop.since + quietCeilingMs(loop.maxAgeHours) });
           else open.push({ target: loop.target, class: entry.class, action: entry.id, tier: entry.tier, step: 'diagnosing', detectedAt: loop.detectedAt, nextCheckAt: loop.dueAt, holdUntil: loop.detectedAt + entry.settleMs });
         }
       }

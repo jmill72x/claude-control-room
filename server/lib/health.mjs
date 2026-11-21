@@ -188,8 +188,12 @@ export function overlayCrons(crons, answer, now) {
     const last = state === 'failed' ? failedWord(entry) : state === 'never' ? 'Not yet run' : 'OK';
     const exit = state === 'failed' && Number.isInteger(entry.lastExit) && entry.lastExit !== 0 ? entry.lastExit : null;
     const out = { ...c, ok: state !== 'failed', state, last, exit, lastRunAt: v.lastRunAt };
-    // For the heal runner (lib/heal-runner.mjs), which may find it only quiet.
-    if (state === 'failed' && staleLogOnly(entry)) out.staleLog = true;
+    // For the heal runner (lib/heal-runner.mjs), which may find it only quiet, and for
+    // how long (its quiet ceiling is 4 times this allowance: lib/heal.mjs).
+    if (state === 'failed' && staleLogOnly(entry)) {
+      out.staleLog = true;
+      out.maxAgeHours = entry.maxAgeHours;
+    }
     return out;
   }).sort(cronOrder);
 }

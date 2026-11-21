@@ -4115,7 +4115,7 @@ ends a permission wait", the hook entry and the apply script) are the reference.
   would open a wait on `PermissionRequest` a few seconds early and get 400s for
   `PostToolUseFailure` and `SubagentStop` (posts lost, no harm). Restart first.
 
-## 29. The idle wake-up's weekly gate is the percent now, under 90% (Jeff's decision 2026-11-21; staged on `jos/flat-week`)
+## 29. The idle wake-up's weekly gate is the percent now, under 90% (Jeff's decision 2026-11-21; merged as main e897791)
 
 **Jeff, 2026-11-21:** "Yes just freaking do it but can the weekly at 90". The day-ahead
 gate held the wake-up at 72% weekly that day, and he had seen runs not going three days
@@ -4141,3 +4141,46 @@ is the reference.
   verified:** the live service (it needs the restart below).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build),
   with no agent runs going.
+
+## 30. The quiet ceiling: a quiet mark ends when the log is too old (board 08469021, P2, Ultron's M1; staged 2026-11-21 on `jos/quiet-ceiling`)
+
+**Why:** loop 1's quiet mark proved only that the job exits 0, and it never ended: a job
+that exits 0 but has stopped doing its work (a mount script that no longer mounts, say)
+would read quiet for ever. Now a quiet mark ends once the log is older than
+min(max(24 h, 4 times job-status's `max_age_hours`), 7 days). README, "Self-healing
+loops", "The quiet ceiling", is the reference.
+
+- **The rule, and why this one:** `max_age_hours` is already job-status's own allowance on
+  the log's age, counted from its last write (`expected_max_age_hours`, jarvis/status.py),
+  so the ceiling is a multiple of it on the same clock, strictly older as job-status's
+  `age > allowed`. Counting from the log's write rather than from the mark means a restart
+  (the marks live in memory) can't start the clock again. The overlay now passes
+  `maxAgeHours` on a `staleLog` crons entry; the runner reads it each pass. Ceilings today:
+  a 3-minute job 24 h (the floor), daily 104 h, weekly and monthly 7 days (the cap; 4
+  times would be 32 and 128 days).
+- **What happens at the ceiling:** the loop closes as `escalated`, reason `log-ceiling`
+  (no launchd read); the alert goes red, pushes ("1 job failed") and wakes the lead, as
+  any job failure does. A log already past it opens no loop and gets one ledger line, not
+  one a day (one per instance only while the ledger keeps it: 30 days, 2,000 lines). A
+  quiet mark the ceiling ends counts for the hour's comeback rule, after a restart too. The
+  check runs before the ack (an ack holds back a push, never a mark) and closes a loop
+  still checking too. `/api/loops` quiet entries carry `endsBy`;
+  the Loops panel doesn't show it (a follow-up, with a web build).
+- **Ultron's review (11-21): GO with four lows, all fixed on the branch.** L1, a ceiling
+  close of a quiet loop now sets the quiet's end, so another instance within the hour is a
+  comeback (and after a restart, a last ceiling line of a healed instance says when it
+  ended); L2, "one line per instance" is worded as lasting while the ledger keeps it; L3,
+  the 7-day cap (Jarvis's and Ultron's pick), which also ends the Infinity a huge allowance
+  gave; L4, the end-to-end test's row words now follow its clock.
+- **Checked (2026-11-21, after the lows):** server 1,766 tests (8 new, 3 extended) in local
+  time and `TZ=Asia/Tokyo`, web 378 (before the lows; no web code changed). 23 mutants
+  over the ceiling code (rule, factor, floor, cap, strict bound, unknown log time, NaN
+  allowance, both runner checks, the one-line guard and its instance match, outcome,
+  per-pass allowance, ack order, `endsBy`, the overlay field, and L1's end in memory, its
+  quiet-only condition and its restart rebuild), all caught. One end-to-end test runs the notifier: no push while quiet, one push and one
+  event at the ceiling, none after. **Not verified:** the live service (needs the restart
+  below), and a real job reaching the ceiling.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build, no
+  config change), with no agent runs going. The quiet marks are in memory, so the restart
+  re-checks any quiet job from scratch, and one already past its ceiling then goes red and
+  pushes once.

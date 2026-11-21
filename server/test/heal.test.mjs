@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   TIERS, VERB_FLOORS, floorOf, CATALOG, loadCatalog, toolsFor, readHealConfig, parseRunInterval, judgeReadings,
   keptLines, capStop, weeklyCounts, distinctHeals, buildLoopsView, LEDGER_KEEP_MS, LEDGER_MAX, PER_TARGET_DAY, PER_DAY, COMEBACK_MS,
-  SETTLE_MAX_MS, WHY_WORDS
+  SETTLE_MAX_MS, WHY_WORDS, quietCeilingMs, pastQuietCeiling, QUIET_CEILING_FACTOR, QUIET_CEILING_FLOOR_MS, QUIET_CEILING_CAP_MS
 } from '../lib/heal.mjs';
 import { parseJobStatus, overlayCrons, buildJobs, readHealthConfig, staleLogOnly, QUIET_REASON } from '../lib/health.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
@@ -230,6 +230,37 @@ test('the view names targets from config, words every outcome, and carries no la
   assert.deepEqual(v.recent.map(r => [r.words, r.why]), [['quiet, ran clean', null], ['left as it was', WHY_WORDS.flat]]);
   assert.ok(!JSON.stringify(v).includes('com.example'), 'no label reaches the page');
   assert.ok(!JSON.stringify(v).includes('runs'), 'no reading reaches the page');
+  assert.equal('endsBy' in v.quiet[0], false, 'no ceiling given, none shown');
+  const withEnd = buildLoopsView({ status: 'on', settings, now: NOW, quiet: [{ target: 'nas-mount', since: NOW - 10 * H, checkedAt: NOW - MIN, tier: 'T1', endsBy: NOW + 14 * H }] });
+  assert.equal(withEnd.quiet[0].endsBy, NOW + 14 * H);
+});
+
+// ---- the quiet ceiling (board 08469021) ----
+
+test("the quiet ceiling: 4 times job-status's allowance, never under 24 hours or over 7 days, on the log's own clock", () => {
+  assert.deepEqual([QUIET_CEILING_FACTOR, QUIET_CEILING_FLOOR_MS, QUIET_CEILING_CAP_MS], [4, DAY, 7 * DAY]);
+  // job-status's allowances (jarvis/status.py): 3 intervals, daily 26 h, weekly 192 h, monthly 768 h.
+  assert.equal(quietCeilingMs(0.15), DAY, 'a 3-minute job: 0.6 h, so the floor');
+  assert.equal(quietCeilingMs(6), DAY, 'exactly 24 h either way');
+  assert.equal(quietCeilingMs(6.5), 26 * H);
+  assert.equal(quietCeilingMs(26), 104 * H, 'daily');
+  assert.equal(quietCeilingMs(42), 168 * H, 'exactly 7 days either way');
+  assert.equal(quietCeilingMs(42.5), 7 * DAY, 'just over: the cap (L3)');
+  assert.equal(quietCeilingMs(192), 7 * DAY, 'weekly: 768 h, capped');
+  assert.equal(quietCeilingMs(768), 7 * DAY, 'monthly: 3,072 h, capped');
+  assert.equal(quietCeilingMs(1e302), 7 * DAY, 'a product that overflows to Infinity: the cap, so the mark still ends');
+  assert.equal(pastQuietCeiling(NOW - 7 * DAY, 1e302, NOW), false);
+  assert.equal(pastQuietCeiling(NOW - 7 * DAY - 1, 1e302, NOW), true);
+  assert.equal(pastQuietCeiling(NOW - 7 * DAY - 1, 768, NOW), true);
+  for (const bad of [null, undefined, NaN, 0, -5, '26', Infinity]) assert.equal(quietCeilingMs(bad), DAY, `${String(bad)}: the floor`);
+  // Strictly older than the ceiling, as job-status's own `age > allowed`.
+  assert.equal(pastQuietCeiling(NOW - DAY, 0.15, NOW), false);
+  assert.equal(pastQuietCeiling(NOW - DAY - 1, 0.15, NOW), true);
+  assert.equal(pastQuietCeiling(NOW - 104 * H, 26, NOW), false);
+  assert.equal(pastQuietCeiling(NOW - 104 * H - 1, 26, NOW), true);
+  assert.equal(pastQuietCeiling(NaN, 26, NOW), true, 'a log time not known is past it');
+  assert.equal(pastQuietCeiling(null, 26, NOW), true);
+  assert.ok(WHY_WORDS['log-ceiling'].includes('4 times'));
 });
 
 // ---- job-status's stale-log-only verdict (lib/health.mjs) ----
@@ -268,8 +299,11 @@ test('the crons overlay flags a stale-log-only failure for the heal runner, and 
   const out = overlayCrons([cron('com.example.a'), cron('com.example.b'), cron('com.example.c')], answer, NOW);
   const by = Object.fromEntries(out.map(c => [c.label, c]));
   assert.equal(by['com.example.a'].staleLog, true);
+  assert.equal(by['com.example.a'].maxAgeHours, 0.15, "job-status's allowance, for the quiet ceiling");
   assert.equal(by['com.example.a'].state, 'failed');
   assert.equal(by['com.example.b'].staleLog, undefined);
+  assert.equal(by['com.example.b'].maxAgeHours, undefined);
+  assert.equal(by['com.example.c'].maxAgeHours, undefined);
   assert.equal(by['com.example.c'].staleLog, undefined);
 });
 

@@ -303,6 +303,12 @@ built.
   clean HH:MM, its log is old") and sends `heal-done`. If the counter didn't move, or a
   fire was missed, the loop hands over to class 1 or 3. If launchd can't be read, the loop
   escalates and the alert stays red.
+- **The quiet ceiling (added 2026-11-21, board 08469021, Ultron's M1):** a quiet mark
+  proves only a clean exit, so it ends once the log is older than the larger of 24 hours
+  and 4 times job-status's `max_age_hours` for the job, never later than 7 days (the same
+  log-age clock job-status judges by). The loop closes as escalated (`log-ceiling`), the alert goes red and pushes,
+  and that instance is never quiet again, across a restart too. README, "Self-healing
+  loops", has the details.
 - **Done means:**
   - the 11-11 NAS mount case (an old log, the counter rising, exit 0) shows grey within two
     readings, with no push and no Jarvis wake;

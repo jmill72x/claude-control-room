@@ -88,6 +88,28 @@ export const SETTLE_MAX_MS = 10 * MIN;
 // calendar job this long after its next due time: the job's own run may take a while.
 export const INTERVAL_MARGIN_MS = 60e3;
 export const CALENDAR_GRACE_MS = 2 * MIN;
+// The quiet ceiling (board 08469021, Ultron's M1): a quiet mark proves only that the job
+// exits 0, so it may not outlast the job's log by too much. job-status's `max_age_hours`
+// is how old the log may be before it is stale (three intervals, 26 h for a daily job,
+// 192 h weekly, 768 h monthly, or a calendar's longest gap plus 24 h: jarvis/status.py),
+// measured from the log's last write. The ceiling is on that same clock: once the log is
+// older than 4 times that allowance, and older than 24 hours, the quiet ends (and none
+// starts). It never lasts more than 7 days, though (Ultron's L3, 11-21): 4 times a weekly
+// or monthly allowance would be 32 or 128 days of a mark that proves only an exit code.
+// It counts from the log's write, not from the mark, so a restart (the marks live in
+// memory) can't start it again.
+export const QUIET_CEILING_FACTOR = 4;
+export const QUIET_CEILING_FLOOR_MS = DAY;
+export const QUIET_CEILING_CAP_MS = 7 * DAY;
+// The ceiling for a job whose log may be `maxAgeHours` old: min(max(24 h, 4 x allowance),
+// 7 d). An allowance that isn't a number gives the floor (as does one of 6 h or less):
+// ending a quiet early is the safe side. One so large the product overflows to Infinity
+// gives the cap.
+export const quietCeilingMs = maxAgeHours => Math.min(QUIET_CEILING_CAP_MS,
+  Math.max(QUIET_CEILING_FLOOR_MS, Number.isFinite(maxAgeHours) ? QUIET_CEILING_FACTOR * maxAgeHours * HOUR : 0));
+// Strictly older, as job-status's own `age > allowed`. A log time that isn't known is
+// past it.
+export const pastQuietCeiling = (since, maxAgeHours, at) => !Number.isFinite(since) || at - since > quietCeilingMs(maxAgeHours);
 // Rate limits (design §4.6).
 export const PER_TARGET_DAY = 3;
 export const PER_DAY = 20;
@@ -383,6 +405,7 @@ export const WHY_WORDS = Object.freeze({
   'came-back': 'it came back within an hour of a heal',
   ledger: "the heal ledger couldn't be written",
   'log-written': 'its log was written again',
+  'log-ceiling': 'its log is older than a quiet mark may last (4 times its allowed age, at least a day and at most 7 days)',
   // Loop 2.
   restart: 'the mini was off or waiting for login',
   gap: 'the mini was asleep or paused',
@@ -542,7 +565,7 @@ export function buildLoopsView({ status, why = null, open = [], quiet = [], held
       step: o.step, detectedAt: o.detectedAt, nextCheckAt: o.nextCheckAt, holdUntil: o.holdUntil,
       ...(o.waiting === true ? { waiting: true } : {}), ...(Number.isFinite(o.checkBy) ? { checkBy: o.checkBy } : {})
     })),
-    quiet: quiet.map(q => ({ name: name(q.target), since: q.since, checkedAt: q.checkedAt, tier: q.tier })),
+    quiet: quiet.map(q => ({ name: name(q.target), since: q.since, checkedAt: q.checkedAt, tier: q.tier, ...(Number.isFinite(q.endsBy) ? { endsBy: q.endsBy } : {}) })),
     held: held.map(h => ({ name: name(h.target), why: h.why })),
     recent,
     weeks: weeklyCounts(lines, now),

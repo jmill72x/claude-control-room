@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer, get, request } from 'node:http';
 import { createHealRunner, isStaleLogCandidate, QUIET_WORDS } from '../lib/heal-runner.mjs';
 import { createHealLedger } from '../lib/heal-ledger.mjs';
-import { readHealConfig, CATALOG, SETTLE_MAX_MS, INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS, PER_TARGET_DAY, judgeReadings, killFileThere } from '../lib/heal.mjs';
+import { readHealConfig, CATALOG, SETTLE_MAX_MS, INTERVAL_MARGIN_MS, CALENDAR_GRACE_MS, PER_TARGET_DAY, judgeReadings, killFileThere, WHY_WORDS } from '../lib/heal.mjs';
 import { createHealth } from '../collectors/health.mjs';
 import { readHealthConfig } from '../lib/health.mjs';
 import { buildCron } from '../lib/parse-launchd.mjs';
@@ -63,10 +63,11 @@ const settingsOf = (extra = {}) => readHealConfig({
   heal: { enabled: true, targets: { 'nas-mount': { label: L, actions: ['mark-quiet'] } }, ...extra }
 });
 
-const staleCron = (extra = {}) => ({
+const staleCronOf = (extra = {}) => ({
   name: 'nas-mount', label: L, schedule: 'Every 3 minutes', nextRunAt: null, dueAt: [], ok: false, state: 'failed',
-  last: 'Overdue · log 10 h old', exit: null, lastRunAt: SINCE, staleLog: true, ...extra
+  last: 'Overdue · log 10 h old', exit: null, lastRunAt: SINCE, staleLog: true, maxAgeHours: 0.15, ...extra
 });
+const staleCron = staleCronOf;
 const okCron = label => ({ name: label.split('.').pop(), label, schedule: 'Daily', nextRunAt: NOW + H, dueAt: [], ok: true, state: 'ok', last: 'OK', lastRunAt: NOW - H });
 
 async function setup({ script = { [L]: [printed({ runs: 147 }), printed({ runs: 149 })] }, settings = settingsOf(), killed = () => false, ledgerPath = null, onCall } = {}) {
@@ -469,11 +470,12 @@ test('L1: after a restart, an instance that escalated or relapsed is not tried a
     // The other action's instance is not closed for this loop.
     await env.runner.pass([staleCron({ lastRunAt: SINCE + 7 * H })]);
     assert.deepEqual(env.launchctlPrint.calls, [L], `${outcome}: another instance is tried`);
-    // A day after that line, the record has gone.
+    // A day after that line, the record has gone. (The log is 32 h old by then: a daily
+    // job's allowance, 26 h, keeps it under the quiet ceiling, 104 h.)
     const env2 = await setup({ ledgerPath: path });
     t.after(env2.done);
     at(env2, NOW - 2 * H + 24 * H + MIN);
-    await env2.runner.pass([staleCron()]);
+    await env2.runner.pass([staleCron({ maxAgeHours: 26 })]);
     assert.deepEqual(env2.launchctlPrint.calls, [L], `${outcome}: tried again a day on`);
   }
   // A line stamped ahead of this clock (a clock that went back) still closes its instance.
@@ -734,6 +736,207 @@ test('end to end: with no second reading by then, the hold ends after 10 minutes
   out = await env.runner.pass([staleCron()]);
   assert.equal(cronOf(out).holdUntil, undefined);
   assert.equal(env.runner.view().open.length, 1, 'still checking, but no longer holding');
+});
+
+// ---- the quiet ceiling (board 08469021, Ultron's M1) ----
+
+// Quiet at NOW + 4 min (two readings, the counter rising), its log SINCE (10 h old).
+async function quietEnv(t, runs = [147, 149, 151, 153, 155], extra = {}) {
+  const env = await setup({ script: { [L]: runs.map(r => printed({ runs: r })) }, ...extra });
+  t.after(env.done);
+  await env.runner.pass([staleCron()]);
+  at(env, NOW + 4 * MIN);
+  assert.equal(cronOf(await env.runner.pass([staleCron()])).state, 'quiet');
+  return env;
+}
+
+test('the quiet ceiling: a quiet mark ends once the log is a day old (a 3-minute job), as escalated, red, unheld, never quiet again', async t => {
+  const env = await quietEnv(t);
+  assert.equal(env.runner.view().quiet[0].endsBy, SINCE + 24 * H, 'the page can say when');
+  // Exactly at the ceiling: still quiet (the re-check reads, and the counter rose).
+  at(env, SINCE + 24 * H);
+  let out = await env.runner.pass([staleCron()]);
+  assert.equal(cronOf(out).state, 'quiet');
+  const reads = env.launchctlPrint.calls.length;
+  // One millisecond past it: lifted, without a reading.
+  at(env, SINCE + 24 * H + 1);
+  out = await env.runner.pass([staleCron()]);
+  assert.deepEqual([cronOf(out).ok, cronOf(out).state, cronOf(out).last, cronOf(out).holdUntil], [false, 'failed', 'Overdue · log 10 h old', undefined]);
+  assert.equal(env.launchctlPrint.calls.length, reads, 'no launchd read to end a quiet');
+  assert.equal(env.runner.quietOf(L, SINCE), null, 'the Jobs list reads it failed again');
+  assert.deepEqual(env.ledger.lines().map(l => [l.outcome, l.why]), [['healed', 'clean'], ['escalated', 'log-ceiling']]);
+  const v = env.runner.view();
+  assert.deepEqual([v.quiet.length, v.open.length, v.recent[0].outcome, v.recent[0].why], [0, 0, 'escalated', WHY_WORDS['log-ceiling']]);
+  assert.ok(env.logs.some(l => l.includes('escalated for nas-mount (log-ceiling)')));
+  // The same instance later: no loop, no read, no second line.
+  at(env, SINCE + 30 * H);
+  out = await env.runner.pass([staleCron()]);
+  assert.equal(cronOf(out).state, 'failed');
+  assert.equal(env.launchctlPrint.calls.length, reads);
+  assert.equal(env.ledger.lines().length, 2);
+  // Another instance (the log was written, then went stale again) starts afresh.
+  at(env, SINCE + 31 * H);
+  await env.runner.pass([staleCron({ lastRunAt: SINCE + 30.5 * H })]);
+  assert.equal(env.launchctlPrint.calls.length, reads + 1, 'a new instance is read');
+});
+
+test("the quiet ceiling scales with job-status's allowance: a daily job (26 h) stays quiet to 104 h", async t => {
+  const daily = { maxAgeHours: 26 };
+  const env = await setup({ script: { [L]: [147, 149, 151, 153].map(r => printed({ runs: r })) } });
+  t.after(env.done);
+  await env.runner.pass([staleCron(daily)]);
+  at(env, NOW + 4 * MIN);
+  await env.runner.pass([staleCron(daily)]);
+  assert.equal(env.runner.view().quiet[0].endsBy, SINCE + 104 * H);
+  at(env, SINCE + 104 * H);
+  assert.equal(cronOf(await env.runner.pass([staleCron(daily)])).state, 'quiet', 'past 24 h, not past 4 x 26 h');
+  at(env, SINCE + 104 * H + 1);
+  assert.equal(cronOf(await env.runner.pass([staleCron(daily)])).state, 'failed');
+  assert.deepEqual(env.ledger.lines().map(l => l.why), ['clean', 'log-ceiling']);
+  // The allowance read each pass: a job whose allowance shrank (its plist changed) ends sooner.
+  const env2 = await setup({ script: { [L]: [147, 149, 151].map(r => printed({ runs: r })) } });
+  t.after(env2.done);
+  await env2.runner.pass([staleCron(daily)]);
+  at(env2, NOW + 4 * MIN);
+  await env2.runner.pass([staleCron(daily)]);
+  at(env2, SINCE + 25 * H);
+  assert.equal(cronOf(await env2.runner.pass([staleCron({ maxAgeHours: 0.15 })])).state, 'failed');
+});
+
+test('the quiet ceiling: a log already past it opens no loop, reads nothing, and says so once, across a day and a restart', async t => {
+  const old = { lastRunAt: NOW - 25 * H };
+  const dir = await mkdtemp(join(tmpdir(), 'heal-ceil-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const ledgerPath = join(dir, 'heals.json');
+  const env = await setup({ ledgerPath });
+  t.after(env.done);
+  let out = await env.runner.pass([staleCron(old)]);
+  assert.deepEqual([cronOf(out).state, cronOf(out).holdUntil], ['failed', undefined], 'red, and no hold: it pushes now');
+  assert.deepEqual(env.launchctlPrint.calls, []);
+  assert.deepEqual(env.ledger.lines().map(l => [l.outcome, l.why, l.since]), [['escalated', 'log-ceiling', NOW - 25 * H]]);
+  assert.equal(env.runner.view().open.length, 0);
+  // A day and more on, the one-attempt record has gone, but the ledger line holds.
+  at(env, NOW + 25 * H);
+  await env.runner.pass([staleCron(old)]);
+  assert.deepEqual(env.launchctlPrint.calls, []);
+  assert.equal(env.ledger.lines().length, 1, 'no second line for the instance');
+  // A restart: the quiet marks live in memory, the ceiling on the log's own clock.
+  const env2 = await setup({ ledgerPath });
+  t.after(env2.done);
+  at(env2, NOW + 26 * H);
+  await env2.runner.pass([staleCron(old)]);
+  assert.deepEqual(env2.launchctlPrint.calls, []);
+  assert.equal(env2.ledger.lines().length, 1);
+  // Another instance of the same job, past it as well, gets a line of its own.
+  at(env2, NOW + 27 * H);
+  await env2.runner.pass([staleCron({ lastRunAt: NOW + H })]);
+  assert.deepEqual(env2.ledger.lines().map(l => [l.why, l.since]), [['log-ceiling', NOW - 25 * H], ['log-ceiling', NOW + H]]);
+  assert.deepEqual(env2.launchctlPrint.calls, []);
+});
+
+test('the quiet ceiling: a restart does not start the clock again; the same instance re-checked past it is left red', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'heal-ceil-r-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const ledgerPath = join(dir, 'heals.json');
+  await quietEnv(t, undefined, { ledgerPath });
+  const env2 = await setup({ ledgerPath, script: { [L]: [printed({ runs: 200 }), printed({ runs: 202 })] } });
+  t.after(env2.done);
+  at(env2, SINCE + 24 * H + MIN);
+  const out = await env2.runner.pass([staleCron()]);
+  assert.equal(cronOf(out).state, 'failed');
+  assert.deepEqual(env2.launchctlPrint.calls, []);
+  assert.deepEqual(env2.ledger.lines().map(l => [l.outcome, l.why]), [['healed', 'clean'], ['escalated', 'log-ceiling']]);
+});
+
+test('the quiet ceiling ends a quiet mark under an ack too (the ack keeps back the push, not the mark), and a checking loop', async t => {
+  const env = await quietEnv(t);
+  at(env, SINCE + 24 * H + 1);
+  const out = await env.runner.pass([staleCron()], { acked: () => true });
+  assert.equal(cronOf(out).state, 'failed');
+  assert.deepEqual(env.ledger.lines().map(l => l.why), ['clean', 'log-ceiling']);
+  // A loop still checking (its second reading not yet due) that crosses it.
+  const env2 = await setup({ script: { [L]: [printed({ runs: 147, interval: 3600 })] } });
+  t.after(env2.done);
+  at(env2, SINCE + 24 * H - MIN);
+  await env2.runner.pass([staleCron()]);
+  assert.equal(env2.runner.view().open.length, 1);
+  at(env2, SINCE + 24 * H + 1);
+  await env2.runner.pass([staleCron()]);
+  assert.deepEqual([env2.runner.view().open.length, env2.ledger.lines().map(l => [l.outcome, l.why])], [0, [['escalated', 'log-ceiling']]]);
+  // It was never quiet, so another instance within the hour is no comeback: it is read.
+  at(env2, SINCE + 24 * H + 10 * MIN);
+  await env2.runner.pass([staleCron({ lastRunAt: SINCE + 24 * H + 5 * MIN })]);
+  assert.equal(env2.launchctlPrint.calls.length, 2);
+});
+
+test('end to end: the quiet ceiling pushes an alert and wakes the lead, once', async t => {
+  const env = await setup({ script: { [L]: [147, 149, 151, 153].map(r => printed({ runs: r })) } });
+  t.after(env.done);
+  // The row as the overlay would give it at this clock: its words follow the log's age (L4).
+  const staleCron = () => staleCronOf({ last: `Overdue · log ${Math.round((env.clock.t - SINCE) / H)} h old` });
+  const sentStore = {};
+  const pushes = [], events = [];
+  const notify = snapshotCrons => runNotifier({
+    snapshot: { crons: { status: 'ok', data: snapshotCrons }, ingestCrons: { status: 'ok', data: [] } }, config: {}, now: env.clock.t,
+    readSent: async () => sentStore, writeSent: async next => { Object.keys(sentStore).forEach(k => delete sentStore[k]); Object.assign(sentStore, next); },
+    send: async e => { pushes.push(e); return { sent: true }; },
+    events: async alerts => { events.push(...alerts.map(a => a.key)); return {}; }
+  });
+  await notify(await env.runner.pass([staleCron()]));
+  at(env, NOW + 4 * MIN);
+  await notify(await env.runner.pass([staleCron()]));
+  at(env, NOW + 8 * MIN);
+  await notify(await env.runner.pass([staleCron()]));
+  assert.deepEqual([pushes, events], [[], []], 'quiet: no push, no wake');
+  at(env, SINCE + 24 * H + MIN);
+  const lifted = await env.runner.pass([staleCron()]);
+  assert.equal(cronOf(lifted).last, 'Overdue · log 24 h old');
+  await notify(lifted);
+  assert.equal(pushes.length, 1, 'the quiet ended: pushed');
+  assert.equal(pushes[0].message, '1 job failed — open the dashboard for detail');
+  assert.deepEqual(events, ['cron:launchd:' + L]);
+  at(env, SINCE + 24 * H + 2 * MIN);
+  await notify(await env.runner.pass([staleCron()]));
+  assert.equal(pushes.length, 1, 'once');
+});
+
+test('L1 (11-21): a quiet mark ended by the ceiling counts for the comeback rule, in memory and after a restart', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'heal-ceil-cb-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const ledgerPath = join(dir, 'heals.json');
+  const env = await quietEnv(t, [147, 149, 151, 153, 155], { ledgerPath });
+  const end = SINCE + 24 * H + 1;
+  at(env, end);
+  await env.runner.pass([staleCron()]);
+  const reads = env.launchctlPrint.calls.length;
+  // Another instance (the log written 10 minutes after the quiet ended) within the hour.
+  const next = { lastRunAt: end + 10 * MIN };
+  at(env, end + 30 * MIN);
+  const out = await env.runner.pass([staleCron(next)]);
+  assert.equal(cronOf(out).state, 'failed');
+  assert.equal(env.launchctlPrint.calls.length, reads, 'a comeback is not read');
+  assert.deepEqual(env.ledger.lines().map(l => l.why), ['clean', 'log-ceiling', 'came-back']);
+  // After a restart, the ledger's ceiling line says when the quiet ended.
+  const lines = env.ledger.lines().slice(0, 2);
+  await writeFile(join(dir, 'restart.json'), JSON.stringify(lines));
+  const env2 = await setup({ ledgerPath: join(dir, 'restart.json') });
+  t.after(env2.done);
+  at(env2, end + 30 * MIN);
+  await env2.runner.pass([staleCron(next)]);
+  assert.deepEqual(env2.launchctlPrint.calls, [], 'still a comeback after a restart');
+  assert.deepEqual(env2.ledger.lines().map(l => l.why), ['clean', 'log-ceiling', 'came-back']);
+  // An hour on, that instance is closed (its came-back line), but a later one is read.
+  at(env2, end + 2 * H);
+  await env2.runner.pass([staleCron({ lastRunAt: end + 90 * MIN })]);
+  assert.deepEqual(env2.launchctlPrint.calls, [L]);
+  // A ceiling line with no heal of its instance before it (a log already past it at first
+  // sight) ended no quiet: no comeback hold.
+  await writeFile(join(dir, 'never-quiet.json'), JSON.stringify([{ ...lines[1], at: end }]));
+  const env3 = await setup({ ledgerPath: join(dir, 'never-quiet.json') });
+  t.after(env3.done);
+  at(env3, end + 30 * MIN);
+  await env3.runner.pass([staleCron(next)]);
+  assert.deepEqual(env3.launchctlPrint.calls, [L]);
 });
 
 // ---- guards on the wiring ----

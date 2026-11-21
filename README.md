@@ -2579,6 +2579,32 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   (`relapsed`) and the alert goes red and pushes. A loop whose job is still failing on the
   same run, but no longer for its log's age alone, closes as `escalated` (or `relapsed`,
   if quiet) with the reason `not-stale-log`, never as `cleared` (Ultron's L2).
+- **The quiet ceiling (board 08469021, Ultron's M1).** A quiet mark proves only that the job
+  exits 0, so it may not last for ever. job-status's `max_age_hours` is how old a job's log
+  may be before it is stale, counted from the log's last write (three intervals, 26 h for a
+  daily job, 192 h weekly, 768 h monthly, or a calendar's longest gap plus 24 h:
+  `expected_max_age_hours` in `jarvis/status.py`); the overlay passes it on a `staleLog`
+  entry as `maxAgeHours`. The ceiling is on that same clock: **a quiet mark ends once the
+  log is older than min(max(24 hours, 4 times `max_age_hours`), 7 days)** (strictly older,
+  as job-status's own `age > allowed`; `quietCeilingMs` and `pastQuietCeiling` in
+  `lib/heal.mjs`). So a 3-minute job (0.15 h) stays quiet until its log is a day old, a
+  daily job until 104 h, and a weekly or monthly one until 7 days: the cap (Ultron's L3)
+  keeps 4 times their allowance (32 and 128 days) from leaving a mark that proves only an
+  exit code standing for weeks, and an allowance so large the product overflows gets the
+  cap too. An allowance that isn't a number gives 24 h. The loop then closes as `escalated`
+  with the reason `log-ceiling` (no launchd read), the alert goes red and pushes ("1 job
+  failed", like any job failure) and wakes the lead, and that instance is never quiet
+  again: a log already past the ceiling opens no loop, and one ledger line says why (not
+  one a day; one per instance only while the ledger keeps it, 30 days and 2,000 lines,
+  Ultron's L2). Because the ceiling counts from the log's write and not from the mark, a
+  restart (the marks live in memory) can't start it again. A quiet mark the ceiling ends
+  counts as a quiet's end for the comeback rule below (another instance within the hour is
+  left red; after a restart the ceiling line's time says when it ended: Ultron's L1). It is
+  checked before the ack, since an ack holds back a push, never a mark; a loop still
+  checking that crosses it closes the same way. The allowance is read again each pass, so
+  a plist change applies at once. The
+  page's quiet entries carry `endsBy`, when the ceiling ends that mark (the Loops panel
+  doesn't show it yet).
 - **"Can't tell" never acts.** No counter, a last terminating signal (reason `signal`), a
   last exit that isn't 0, a
   counter that went back (launchd loaded the job again), no schedule to check against, or a
@@ -2610,7 +2636,7 @@ T2 loops run, and loop 3's checkout reader), the first pass in
 - **The ledger.** `server/data/heals.json` (gitignored with `data/`), 0600, a temp file
   renamed into place, the last 30 days. One line per closed loop: class, action, tier,
   config's target id, the instance, outcome (`healed`, `escalated`, `relapsed`,
-  `cleared`), a reason key and the two counter readings. A ledger that exists but can't be
+  `cleared`), a reason key (`log-ceiling` for the quiet ceiling) and the two counter readings. A ledger that exists but can't be
   read keeps heals off for the run and is never written over.
 - **The kill switch.** While `~/.local/state/jarvis-os/heal-off` exists (read with
   `lstat`, so a dangling link counts, and any error but "no such file" counts as there:
