@@ -19,7 +19,7 @@ Three tabs, switched with `1`, `2` and `3`:
 |---|---|
 | Usage | Plan and renewal, credits (grants with what's left and when they expire, usage credits), the three limit bars with resets, pace and a sparkline, this week by surface, project and model, drivers, recent sessions |
 | Projects | Every project with its last activity (no running state since 2026-10-30, when the server stopped polling `claude agents`), then every cron with its schedule, next run and last result, failing first |
-| To-dos | The board grouped by stage or tag, sorted by priority and then by the nearer due date. A due date shows on its row as the web page words it (`Overdue Thu 11-20` in red, `Due today` or within two days in amber, later ones dim). Select an item to change its priority, move its stage, edit it, set, change or clear its due date, delete it with a confirmation, or hand it to Claude with **Work on it**. Done items are counted and hidden until you ask for them |
+| To-dos | The board grouped by stage or tag, sorted by priority and then by the nearer due date. A due date shows on its row as the web page words it (`Overdue Thu 11-20` in red, `Due today` or within two days in amber, later ones dim). **Add an idea** takes a tag, an optional due date and the idea's text. Select an item to change its priority, move its stage, edit it, set, change or clear its due date, delete it with a confirmation, or hand it to Claude with **Work on it**. Done items are counted and hidden until you ask for them |
 
 Alerts from the dashboard show at the top of every tab. A line under the tabs
 says how old the reading is.
@@ -122,7 +122,16 @@ shape and a real calendar day, so `2026-02-30` or `11/25` is refused in the pane
 with the typed text left in the field to fix, and nothing is sent. Spaces around
 it are dropped. An empty field, or **Clear due** (which needs no typing, so it
 works on mobile), removes the date. Setting it is not offered on mobile, which
-draws no text field. New ideas are added without a date; set one afterwards.
+draws no text field.
+
+**Add an idea** has a **Due** field above the idea's, optional and checked the
+same way (the same `readDue`). Empty adds the idea with no date. A bad date adds
+nothing and sends nothing: the pane says "Not added: a due date is written
+YYYY-MM-DD…", and both fields keep what was typed. Enter on the idea adds it;
+Enter on the due field adds it too when an idea is typed, and otherwise only
+checks the date. After an add both fields empty, so the next idea starts with no
+date; a write that is not taken (a 409, a refusal, no answer) puts both back to
+try again. Mobile draws no add box, as before.
 `server/test/mod-due.test.mjs` holds the mod's date check to the server's and its
 row wording to the web page's.
 
@@ -139,7 +148,7 @@ row wording to the web page's.
 
 ```bash
 cd mod
-claude plugin test        # 68 tests
+claude plugin test        # 75 tests
 claude plugin validate .
 ```
 

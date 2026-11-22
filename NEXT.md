@@ -4306,7 +4306,7 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   with no agent runs going, and `cd web && npm run build` for the strip (a live deploy of
   the page, safe on the running server: `next24` needs nothing new from it).
 
-## 33. The mod sends If-Match and shows due dates (board 2510c36e, P3; staged 2026-11-21 on `jos/mod-ifmatch`)
+## 33. The mod sends If-Match and shows due dates (board 2510c36e, P3; merged as main 1c2eb7c, 2026-11-21)
 
 - **If-Match.** `saveTodos()` in `mod/hooks/register.js` reads the board with its `ETag`
   (`getBoard`, the header lower-cased by `$.http.fetch`) and sends it back as `If-Match`
@@ -4331,8 +4331,8 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   copying the server's and the page's date code into `model.js` rather than importing it
   (the mod loads from its own folder), held to both by `server/test/mod-due.test.mjs`;
   trimming spaces around a typed date (the server stores exactly what it is sent, so the
-  trim happens before the check, never after); no due date on Add an idea (the add box is
-  one input that submits on Enter; set the date after adding).
+  trim happens before the check, never after); no due date on Add an idea at first (the add
+  box was one input that submits on Enter), now added by §34.
 - **Checked (2026-11-21):** the mod's own tests, `claude plugin test` in `mod/` (68, 13
   new), in local time and `TZ=Asia/Tokyo`; it runs the test files against a stub server
   inside the binary, with no session, no network and nothing written to the tree, so it
@@ -4354,3 +4354,41 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   module when a file in it changes, so the merge into the main checkout is the go-live:
   open sessions switch over at once, and others when they start. The old mod and the new
   one are safe side by side (the old one just sends no `If-Match`).
+
+## 34. Add an idea takes an optional due date in the same step (board 72f317ea, P3; staged 2026-11-21 on `jos/mod-add-due`, off main 1c2eb7c)
+
+- **What changed.** The mod's Add an idea box (`mod/hooks/view.js`) has a **Due** input
+  between Tag and Idea (`new-due`, placeholder "YYYY-MM-DD, optional"). `act.add` in
+  `mod/hooks/register.js` reads it with `readDue` (the same function, and so the same
+  `isDueDate`, as Set due) before anything is sent: empty means no date, a real date goes
+  on the new item (`makeTodo` in `model.js` now takes `due` and sets the key only for a
+  real date), and anything else adds nothing, sends nothing, and says "Not added: a due
+  date is written YYYY-MM-DD, such as 2026-11-25, or left empty for no date (got …)"
+  (`readDue(value, ADD_DUE_WORDS)` changes only the words). Both fields keep what was typed
+  (`st.newText`, `st.newDue`, fed by each field's `onInput`). Enter on the idea adds; Enter
+  on the due field adds when an idea is typed and otherwise only checks the date, clearing
+  only its own "Not added" message. After an add both fields empty; a write that is not
+  taken (a 409, a refusal, no answer; `saveTodos` now resolves true only on success) puts
+  both back. Mobile, which draws no text field, still shows only the hint: no add box, no
+  due field.
+- **Choices to defend:** the due field sits above the idea's, because Enter on the idea is
+  the add, so the date has to be in first; it empties after each add, unlike Tag, because a
+  date belongs to one item and a carried-over date would land on the next idea unseen; the
+  due field redraws on each keystroke (ten characters at most) so the drawn value follows
+  the typing and emptying it after an add is a change the field sees, while the idea field
+  only stores its text (no redraw per keystroke, as before); putting the typing back after
+  a failed write is new for adds (before, the text was lost), and the 409 message already
+  says to make the change again.
+- **Checked (2026-11-21):** `claude plugin test` in the worktree's `mod/` (75, 7 new, 1
+  extended) in local time and `TZ=Asia/Tokyo`; `claude plugin validate mod` passes (the
+  marketplace install-line note is advice only and was there before). Server 1,782 (1 new
+  in `mod-due.test.mjs`: Add's reading takes exactly what Set due's does, every month 00-13
+  and day 00-32 of 2028 against the server's `isDueDate`, and the exact wording) in both
+  timezones. 29 mutants, all caught (the one first survivor, no redraw on the due field,
+  is now covered by a check that the field is drawn as typed). oxlint shows only main's
+  `best` warning. Stubs only; nothing ran against :8322 and the live mod folder was not
+  touched. **Not verified:** the pane in a real Claude Code session (whether Tab between
+  the two fields and the empty-after-add redraw behave there as in the test kit).
+- **Go-live (Jeff, after C&P):** the merge into the main checkout is the go-live (an
+  interactive session reloads the mod's hooks when a file in `mod/` changes); no Control
+  Room restart and no web build. It builds on §33, which is already on main (1c2eb7c).

@@ -132,6 +132,11 @@ test('a new to-do is an idea, trimmed, with no tag rather than an empty one', ()
   expect(makeTodo({ text: '  Buy hub ', tag: 'Infra' }, 'n1')).toEqual({ id: 'n1', text: 'Buy hub', lane: 'idea', tag: 'Infra' })
   expect(makeTodo({ text: 'Loose', tag: '' }, 'n2')).toEqual({ id: 'n2', text: 'Loose', lane: 'idea' })
   expect(makeTodo({ text: '   ', tag: 'Infra' }, 'n3')).toBeNull()
+  // A due date only when it is a real one; none, empty or bad means no key.
+  expect(makeTodo({ text: 'Dated', tag: '', due: '2026-11-25' }, 'n4')).toEqual({ id: 'n4', text: 'Dated', lane: 'idea', due: '2026-11-25' })
+  expect(makeTodo({ text: 'Dated', tag: 'Infra', due: '2026-11-25' }, 'n5')).toEqual({ id: 'n5', text: 'Dated', lane: 'idea', tag: 'Infra', due: '2026-11-25' })
+  expect('due' in makeTodo({ text: 'Undated', tag: '', due: '' }, 'n6')!).toBe(false)
+  expect('due' in makeTodo({ text: 'Bad', tag: '', due: '2026-02-30' }, 'n7')!).toBe(false)
 })
 
 // The summary is the command's output row, which every surface draws as

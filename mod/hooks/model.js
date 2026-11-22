@@ -235,13 +235,16 @@ export const isDueDate = v => {
   return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d
 }
 
-// What a typed due date means: '' clears it, a real date sets it, anything
-// else is refused with the reason, before any request goes out.
-export function readDue(value) {
+// What a typed due date means: '' clears it (or, on a new idea, means none),
+// a real date sets it, anything else is refused with the reason, before any
+// request goes out. `words` changes only the message, never the check.
+export const ADD_DUE_WORDS = { refused: 'Not added', empty: 'for no date' }
+export function readDue(value, words = {}) {
+  const { refused = 'Not saved', empty = 'to clear it' } = words
   const typed = String(value ?? '').trim()
   if (typed === '') return { due: '' }
   if (isDueDate(typed)) return { due: typed }
-  return { error: `Not saved: a due date is written YYYY-MM-DD, such as 2026-11-25, or left empty to clear it (got ${JSON.stringify(clip(typed, 24))})` }
+  return { error: `${refused}: a due date is written YYYY-MM-DD, such as 2026-11-25, or left empty ${empty} (got ${JSON.stringify(clip(typed, 24))})` }
 }
 
 // As the page writes it: a date only when one is set; clearing drops the key.
@@ -335,11 +338,14 @@ export function advanceStage(todo) {
 
 export const nextLaneTitle = todo => LANE[LANE[todo.lane]?.next ?? 'idea'].title
 
-export function makeTodo({ text, tag }, id) {
+// A new idea; `due` is set only when it is a real date (the caller reads the
+// typed text with readDue first), so no date means no key, as the page writes it.
+export function makeTodo({ text, tag, due }, id) {
   const body = typeof text === 'string' ? text.trim() : ''
   if (!body) return null
   const label = typeof tag === 'string' ? tag.trim() : ''
-  return label ? { id, text: body, lane: 'idea', tag: label } : { id, text: body, lane: 'idea' }
+  const todo = label ? { id, text: body, lane: 'idea', tag: label } : { id, text: body, lane: 'idea' }
+  return isDueDate(due) ? { ...todo, due } : todo
 }
 
 // `null` when the item is gone (changed elsewhere), so the caller writes nothing.

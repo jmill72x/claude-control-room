@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { isDueDate as serverIsDueDate } from '../todos.mjs';
 import { dueChip as pageDueChip } from '../../web/src/lib/due.js';
-import { isDueDate, readDue, withDue, dueChip, localToday } from '../../mod/hooks/model.js';
+import { isDueDate, readDue, withDue, dueChip, localToday, ADD_DUE_WORDS } from '../../mod/hooks/model.js';
 
 const iso = ms => new Date(ms).toISOString().slice(0, 10);
 const DAY = 86400000;
@@ -46,6 +46,24 @@ test('a typed date is trimmed, an empty one clears, anything else is refused wit
   assert.ok(bad.error.includes('"2026-02-30"'));
   // A long paste is cut in the message, not echoed whole.
   assert.ok(readDue('x'.repeat(500)).error.length < 160);
+});
+
+test('Add an idea reads its date with the same check as Set due, worded for a new idea', () => {
+  for (const v of ['', '  ', ' 2026-11-25 ', '2026-11-25', '2026-02-30', '2028-02-29', '2026-13-01', '11/25', 'tomorrow', undefined]) {
+    const set = readDue(v);
+    const add = readDue(v, ADD_DUE_WORDS);
+    assert.equal(add.due, set.due, JSON.stringify(v));
+    assert.equal(Boolean(add.error), Boolean(set.error), JSON.stringify(v));
+  }
+  // Every date the server takes, and only those, over a leap year.
+  for (let m = 0; m <= 13; m++) {
+    for (let d = 0; d <= 32; d++) {
+      const v = `2028-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      assert.equal(readDue(v, ADD_DUE_WORDS).due === v, serverIsDueDate(v), v);
+    }
+  }
+  const bad = readDue('2026-02-30', ADD_DUE_WORDS).error;
+  assert.match(bad, /^Not added: a due date is written YYYY-MM-DD, such as 2026-11-25, or left empty for no date \(got "2026-02-30"\)$/);
 });
 
 test('withDue sets a date and clearing drops the key, as the page writes it', () => {

@@ -5,7 +5,7 @@
 // reads /api/dashboard and /api/todos and writes /api/todos, exactly as the
 // web page does, so the two can never disagree about what is true.
 
-import { summaryText, cyclePriority, advanceStage, makeTodo, updateItem, removeItem, workPrompt, readDue, withDue } from './model.js'
+import { summaryText, cyclePriority, advanceStage, makeTodo, updateItem, removeItem, workPrompt, readDue, withDue, ADD_DUE_WORDS } from './model.js'
 import { paneTree, NO_TAG } from './view.js'
 
 const PANE = 'control-room'
@@ -37,6 +37,10 @@ const st = {
   editingDue: null,
   dueDraft: null,
   newTag: NO_TAG,
+  // What the Add an idea fields hold, kept as typed so a refused add (a bad
+  // date, a failed write) leaves both to fix rather than empty.
+  newText: '',
+  newDue: '',
   showDone: false,
   payload: null,
   fetchedAt: null,
@@ -127,6 +131,7 @@ async function refresh($) {
 // board-write do, so a write that lands between this read and this write is
 // never overwritten: the server answers 409, and the pane re-reads and says so.
 // A server that sent no ETag gets `*` (no check), as the page sends.
+// Resolves true only when the server took the write.
 async function saveTodos($, change) {
   st.saving = true
   st.todosError = null
@@ -167,6 +172,7 @@ async function saveTodos($, change) {
     }
     const written = JSON.parse(res.text)
     st.todos = Array.isArray(written) ? written : next
+    return true
   } catch (err) {
     st.todosError = `Not saved: ${messageOf(err)}`
   } finally {
@@ -314,10 +320,39 @@ export function register(on, opts) {
       },
       setNewTag: value => { st.newTag = value; redraw() },
       toggleDone: () => { st.showDone = !st.showDone; redraw() },
+      // The due field is optional and checked with Set due's readDue (the
+      // server's isDueDate). A bad date sends nothing and keeps both fields.
+      typeNew: value => { st.newText = String(value ?? '') },
+      typeNewDue: value => { st.newDue = String(value ?? ''); redraw() },
       add: value => {
-        const todo = makeTodo({ text: value, tag: st.newTag === NO_TAG ? '' : st.newTag }, newId())
-        if (!todo) return undefined
-        return saveTodos($, list => [...list, todo])
+        const text = String(value ?? '')
+        st.newText = text
+        const read = readDue(st.newDue, ADD_DUE_WORDS)
+        if (!text.trim()) return undefined
+        if (read.error) { st.todosError = read.error; redraw(); return undefined }
+        const todo = makeTodo({ text, tag: st.newTag === NO_TAG ? '' : st.newTag, due: read.due }, newId())
+        const typed = { text, due: st.newDue }
+        st.newText = ''
+        st.newDue = ''
+        return saveTodos($, list => [...list, todo]).then(ok => {
+          // Not taken (a 409, a refusal, no answer): put the typing back to retry.
+          if (ok) return
+          st.newText = typed.text
+          st.newDue = typed.due
+          redraw()
+        })
+      },
+      // Enter in the due field adds when an idea is typed; otherwise it only
+      // checks the date, so a bad one is flagged before the idea is written.
+      submitNewDue: value => {
+        st.newDue = String(value ?? '')
+        if (st.newText.trim()) return act.add(st.newText)
+        const read = readDue(st.newDue, ADD_DUE_WORDS)
+        // Clears only its own refusal, never another write's message.
+        if (read.error) st.todosError = read.error
+        else if (st.todosError?.startsWith(`${ADD_DUE_WORDS.refused}:`)) st.todosError = null
+        redraw()
+        return undefined
       }
     }
     return paneTree(el, st, act, { now, columns: e.props.bodyColumns, surface: e.surface, url: baseUrl() })

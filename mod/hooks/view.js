@@ -279,7 +279,15 @@ export function paneTree(el, st, act, ctx) {
         options: [...tags.map(t => ({ value: t, label: t })), { value: NO_TAG, label: 'No tag' }],
         onSelect: v => act.setNewTag(v)
       }))
-      out.push(el.Input({ key: 'new-todo', label: 'Idea', placeholder: 'type and press Enter', value: '', submitLabel: 'add', onSubmit: v => act.add(v) }))
+      // Before the idea, so the date is in when Enter on the idea adds it.
+      out.push(el.Input({
+        key: 'new-due', label: 'Due', placeholder: 'YYYY-MM-DD, optional', value: st.newDue ?? '',
+        submitLabel: 'add', onInput: v => act.typeNewDue(v), onSubmit: v => act.submitNewDue(v)
+      }))
+      out.push(el.Input({
+        key: 'new-todo', label: 'Idea', placeholder: 'type and press Enter', value: st.newText ?? '',
+        submitLabel: 'add', onInput: v => act.typeNew(v), onSubmit: v => act.add(v)
+      }))
     } else {
       out.push(keyed('add-hint', [dim('Add to-dos from the terminal, the desktop app, or the web dashboard.')]))
     }

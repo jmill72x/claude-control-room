@@ -261,6 +261,99 @@ test('adding a to-do files it as an idea under the chosen tag', async ($, on) =>
   const added = r.seen.puts[0].find((t: any) => t.text === 'Buy the M3 hub')
   expect(added).toMatchObject({ lane: 'idea', tag: 'Infra' })
   expect(typeof added.id).toBe('string')
+  // An empty due field means no date: no key, as the page writes it.
+  expect('due' in added).toBe(false)
+})
+
+test('a new idea takes its due date in the same step, checked as Set due checks it', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.input({ key: 'new-due', text: ' 2026-11-25 ', kind: 'change' })
+  // Drawn as typed, so emptying it after the add is a change the field sees.
+  expect((await ui.find({ key: 'new-due' }))?.props.value).toBe(' 2026-11-25 ')
+  await ui.input({ key: 'new-todo', text: 'Buy the M3 hub' })
+  expect(r.seen.puts.length).toBe(1)
+  expect(r.seen.headers[0]).toMatchObject({ 'If-Match': '"rev-1"' })
+  expect(r.seen.puts[0].find((t: any) => t.text === 'Buy the M3 hub')).toMatchObject({ lane: 'idea', due: '2026-11-25' })
+  // Both fields empty again, so the next idea does not inherit the date.
+  expect((await ui.find({ key: 'new-due' }))?.props.value).toBe('')
+  expect((await ui.find({ key: 'new-todo' }))?.props.value).toBe('')
+  await ui.input({ key: 'new-todo', text: 'Second idea' })
+  expect('due' in r.seen.puts[1].find((t: any) => t.text === 'Second idea')).toBe(false)
+})
+
+test('a bad date on a new idea sends nothing and keeps both fields to fix', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  for (const bad of ['2026-02-30', '2026-13-01', '2026-11-5', '11/25/2026', '2026-11-25T09:00', 'tomorrow', '2026-02-29']) {
+    await ui.input({ key: 'new-due', text: bad, kind: 'change' })
+    await ui.input({ key: 'new-todo', text: 'Book the dentist' })
+    expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/^Not added: a due date is written YYYY-MM-DD, such as 2026-11-25, or left empty for no date/)
+    expect((await ui.find({ key: 'new-due' }))?.props.value).toBe(bad)
+    expect((await ui.find({ key: 'new-todo' }))?.props.value).toBe('Book the dentist')
+  }
+  expect(r.seen.puts.length).toBe(0)
+  expect(r.seen.headers.length).toBe(0)
+  await ui.input({ key: 'new-due', text: '2028-02-29', kind: 'change' })
+  await ui.input({ key: 'new-todo', text: 'Book the dentist' })
+  expect(r.seen.puts[0].find((t: any) => t.text === 'Book the dentist').due).toBe('2028-02-29')
+  expect(await ui.find({ key: 'todos-error' })).toBeUndefined()
+})
+
+test('Enter in the due field adds a typed idea, and with no idea only checks the date', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.input({ key: 'new-due', text: 'tomorrow' })
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/^Not added: a due date is written YYYY-MM-DD/)
+  await ui.input({ key: 'new-due', text: '2026-12-01' })
+  expect(await ui.find({ key: 'todos-error' })).toBeUndefined()
+  expect(r.seen.headers.length).toBe(0)
+  await ui.input({ key: 'new-todo', text: 'Call the vet', kind: 'change' })
+  await ui.input({ key: 'new-due', text: '2026-12-01' })
+  expect(r.seen.puts[0].find((t: any) => t.text === 'Call the vet')).toMatchObject({ lane: 'idea', due: '2026-12-01' })
+})
+
+test('a good date in the due field clears only its own refusal, not another write\'s message', async ($, on) => {
+  setup(on, { server: { putStatus: 400 } })
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  await ui.press({ key: 'prio-t1' })
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/^Not saved: HTTP 400/)
+  await ui.input({ key: 'new-due', text: '2026-12-01' })
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/^Not saved: HTTP 400/)
+})
+
+test('an empty idea adds nothing, whatever the due field holds', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.input({ key: 'new-due', text: 'tomorrow', kind: 'change' })
+  await ui.input({ key: 'new-todo', text: '   ' })
+  expect(r.seen.headers.length).toBe(0)
+  expect(await ui.find({ key: 'todos-error' })).toBeUndefined()
+})
+
+test('a new idea the server does not take keeps its text and date to try again', async ($, on) => {
+  setup(on, { server: { putStatus: 400 } })
+  const ui = await openTodos($)
+  await ui.input({ key: 'new-due', text: '2026-11-25', kind: 'change' })
+  await ui.input({ key: 'new-todo', text: 'Buy the M3 hub' })
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/^Not saved: HTTP 400/)
+  expect((await ui.find({ key: 'new-due' }))?.props.value).toBe('2026-11-25')
+  expect((await ui.find({ key: 'new-todo' }))?.props.value).toBe('Buy the M3 hub')
+})
+
+test('a new idea refused with a 409 keeps its typing, and the other write stands', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  const elsewhere = TODOS.filter(t => t.id !== 't5')
+  r.seen.beforePut = () => r.seen.setList(elsewhere)
+  await ui.input({ key: 'new-due', text: '2026-11-25', kind: 'change' })
+  await ui.input({ key: 'new-todo', text: 'Buy the M3 hub' })
+  expect(r.seen.puts.length).toBe(0)
+  expect(r.seen.list()).toEqual(elsewhere)
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/Not saved: the board changed elsewhere/)
+  expect((await ui.find({ key: 'new-todo' }))?.props.value).toBe('Buy the M3 hub')
+  expect((await ui.find({ key: 'new-due' }))?.props.value).toBe('2026-11-25')
 })
 
 test('work on it hands the to-do to Claude as the user\'s own request', async ($, on) => {
@@ -291,6 +384,9 @@ test('on mobile the to-dos still move, prioritise and hand off, with no typing n
   expect(r.seen.puts.length).toBe(1)
   expect(await ui.find({ key: 'edit-t1' })).toBeUndefined()
   expect((await ui.find({ key: 'add-hint' }))?.text).toMatch(/Add to-dos from/)
+  // No text fields on mobile: no add box, so no due field either.
+  expect(await ui.find({ key: 'new-todo' })).toBeUndefined()
+  expect(await ui.find({ key: 'new-due' })).toBeUndefined()
 })
 
 test('a save starts from the server\'s current list, so an edit made on the web page survives', async ($, on) => {
