@@ -79,6 +79,7 @@ import { verdictOriginProblem } from './approvals.mjs';
 import { oneLine } from './chat-events.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { RECOVER_COMMAND, RECOVER_LINE } from './recover-command.mjs';
+import { NO_AUTOUPDATE } from './claude-env.mjs';
 
 // The one line, as the run sheet and every Jarvis-down alert give it (lib/recover-command.mjs).
 export { RECOVER_COMMAND, RECOVER_LINE };
@@ -100,6 +101,7 @@ export const KILL_FILE = 'recover-off';
 export const ROUTES = Object.freeze({ status: '/api/recover/status', challenge: '/api/recover/challenge', run: '/api/recover' });
 // The variables the script gets from this server's own environment, besides HOME and
 // PATH (set here) and LANG (kept, or en_US.UTF-8). xcrun_nocache is the watch job's.
+// DISABLE_AUTOUPDATER=1 (lib/claude-env.mjs) goes to the claude the script starts.
 export const RECOVER_ENV_KEYS = Object.freeze(['USER', 'LOGNAME', 'SHELL', 'TMPDIR']);
 export const NO_ANSWER_LINE = 'No answer from jarvis-recover after 45 minutes; see ~/Library/Logs/jarvis-recover.log';
 // A run the ledger still has as `starting` when this server starts: the server stopped
@@ -142,7 +144,8 @@ export function recoverEnv(home, base = process.env) {
     HOME: home,
     PATH: `${home}/.local/bin:${home}/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     LANG: typeof base?.LANG === 'string' && base.LANG ? base.LANG : 'en_US.UTF-8',
-    xcrun_nocache: '1'
+    xcrun_nocache: '1',
+    ...NO_AUTOUPDATE
   };
   for (const k of RECOVER_ENV_KEYS) if (typeof base?.[k] === 'string' && base[k] !== '') env[k] = base[k];
   return env;

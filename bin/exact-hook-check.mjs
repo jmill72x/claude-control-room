@@ -25,7 +25,9 @@
 // The hook in the scratch settings is README's exact-command entry word for word, with
 // only the socket path changed to the scratch one (setup checks that); the same file
 // turns off the two channel plugins by name, in case user settings load after all
-// (Ultron's L4, 11-13; step 10 checks `/status` and `/hooks` too). The channel never
+// (Ultron's L4, 11-13; step 10 checks `/status` and `/hooks` too), and its `env` turns
+// Claude Code's self-update off (DISABLE_AUTOUPDATER=1, board a24a6aee): the owner's
+// switch is in the user settings, which this session skips. The channel never
 // answers a prompt: every one is answered in the terminal. It writes what it saw to
 // <dir>/results.txt (for a person) and <dir>/events.jsonl (raw). Each Bash request is
 // paired with the one hook report inside the server's window (up to 1 s before it or 2 s
@@ -39,6 +41,7 @@ import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readFile
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkExactReport, createExactCommands, foldWhitespace, EXACT_WINDOW_BEFORE_MS, EXACT_WINDOW_AFTER_MS } from '../server/lib/exact-commands.mjs';
+import { NO_AUTOUPDATE } from '../server/lib/claude-env.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -70,7 +73,7 @@ export function setup({ base = '/tmp', readme = readFileSync(join(REPO, 'README.
   if (Buffer.byteLength(socketPath) > 100) throw new Error(`the socket path is too long for macOS: ${socketPath}`);
   mkdirSync(join(dir, 'work'));
   writeFileSync(join(dir, 'work', 'notes.txt'), 'scratch notes for the exact-command test\n');
-  writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PermissionRequest: scratchHookEntry(readme, socketPath) }, enabledPlugins: SCRATCH_PLUGINS_OFF }, null, 2) + '\n');
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PermissionRequest: scratchHookEntry(readme, socketPath) }, enabledPlugins: SCRATCH_PLUGINS_OFF, env: { ...NO_AUTOUPDATE } }, null, 2) + '\n');
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { [CHANNEL_NAME]: { command: node, args: [fileURLToPath(import.meta.url), 'channel', dir] } } }, null, 2) + '\n');
   writeFileSync(join(dir, 'results.txt'), '');
   return { dir, socketPath };

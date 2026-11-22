@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { planTierLabel } from '../lib/plan-tier.mjs';
+import { claudeEnv } from '../lib/claude-env.mjs';
 
 const exec = promisify(execFile);
 
 // Daily since 2026-10-30 (hourly before). See the note where server.mjs registers it.
 export const PLAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-export const runPlanCli = async () => {
-  const { stdout } = await exec('claude', ['auth', 'status', '--json'], { timeout: 30000, maxBuffer: 1024 * 1024 });
+// With updates off (lib/claude-env.mjs), like every claude this server starts.
+export const runPlanCli = async ({ exec: run = exec, env = process.env } = {}) => {
+  const { stdout } = await run('claude', ['auth', 'status', '--json'], { timeout: 30000, maxBuffer: 1024 * 1024, env: claudeEnv(env) });
   return stdout;
 };
 

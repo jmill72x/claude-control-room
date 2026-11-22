@@ -168,10 +168,10 @@ test('the program is fixed: /bin/bash, the release worktree\'s jarvis-recover, f
   assert.equal(PURPOSE, 'recover:jarvis');
 });
 
-test('the environment is built, never this server\'s: HOME, the restart job\'s PATH, LANG and four kept names; no XPC_SERVICE_NAME, TMUX or anything else', () => {
+test('the environment is built, never this server\'s: HOME, the restart job\'s PATH, LANG and four kept names, updates off; no XPC_SERVICE_NAME, TMUX or anything else', () => {
   const env = recoverEnv(HOME, { USER: 'someone', LOGNAME: 'someone', SHELL: '/bin/zsh', TMPDIR: '/tmp/x/', LANG: 'en_GB.UTF-8', XPC_SERVICE_NAME: 'com.example.control-room', TMUX: 'x', TMUX_PANE: '%1', NODE_OPTIONS: '--inspect', SECRET_TOKEN: 's', PATH: '/evil' });
   assert.deepEqual(env, {
-    HOME, PATH: `${HOME}/.local/bin:${HOME}/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`, LANG: 'en_GB.UTF-8', xcrun_nocache: '1',
+    HOME, PATH: `${HOME}/.local/bin:${HOME}/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`, LANG: 'en_GB.UTF-8', xcrun_nocache: '1', DISABLE_AUTOUPDATER: '1',
     USER: 'someone', LOGNAME: 'someone', SHELL: '/bin/zsh', TMPDIR: '/tmp/x/'
   });
   assert.equal(recoverEnv(HOME, {}).LANG, 'en_US.UTF-8');

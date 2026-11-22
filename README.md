@@ -652,6 +652,15 @@ kept Jarvis's Discord connector down. The second keeps the poll out of any loose
 default mode. The third stops the poll saving a transcript every five minutes: 2,022
 of them in the week to 2026-10-20.
 
+Every `claude` the server starts runs with `DISABLE_AUTOUPDATER=1` in its environment
+(`server/lib/claude-env.mjs`, since 2026-11-21): the `/usage` poll, `claude auth status`,
+and Restart Jarvis's recovery script, whose environment is built from scratch. Claude
+Code's self-update is turned off in the user settings' `env`, but a process the server
+starts can't count on that, and a `--setting-sources project` session (the console test,
+`bin/exact-hook-check.mjs`) never reads it, so that kit's scratch settings carry the
+same `env`. `server/test/no-autoupdate.test.mjs` pins each one, and fails when a new
+file starts `claude` without the module.
+
 ### What the ingest endpoints require
 
 Since 2026-11-12 they are served on a Unix socket of their own,

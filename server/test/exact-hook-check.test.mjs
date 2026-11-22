@@ -28,7 +28,8 @@ test('setup: README\'s hook word for word but the socket, a stand-in channel in 
     const { dir, socketPath } = setup({ base: b, readme, node: '/opt/node' });
     assert.equal(socketPath, join(dir, 'ingest.sock'));
     const settings = JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8'));
-    assert.deepEqual(Object.keys(settings), ['hooks', 'enabledPlugins'], 'the hook and the plugins off: nothing else of a settings file');
+    assert.deepEqual(Object.keys(settings), ['hooks', 'enabledPlugins', 'env'], 'the hook, the plugins off and updates off: nothing else of a settings file');
+    assert.deepEqual(settings.env, { DISABLE_AUTOUPDATER: '1' }, 'no self-update: the user settings that turn it off are skipped');
     // The two real channels off by name (Ultron's L4, 11-13).
     assert.deepEqual(settings.enabledPlugins, { 'discord@claude-plugins-official': false, 'jarvis-channel@jarvis-local': false });
     assert.deepEqual(Object.keys(settings.hooks), ['PermissionRequest']);

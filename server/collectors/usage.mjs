@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseUsage } from '../lib/parse-usage.mjs';
+import { claudeEnv } from '../lib/claude-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,9 +16,10 @@ const execFileAsync = promisify(execFile);
 // only, which this is) keeps each poll from saving a transcript of its own: in
 // the week to 2026-10-20 they came to 2,022 files under ~/.claude/projects, each
 // one walked by the sessions collector. None of the three flags changes what
-// /usage prints.
-export const runUsageCli = async ({ exec = execFileAsync } = {}) => {
-  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual', '--no-session-persistence'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+// /usage prints. DISABLE_AUTOUPDATER=1 (lib/claude-env.mjs) keeps the poll from
+// updating Claude Code on its own.
+export const runUsageCli = async ({ exec = execFileAsync, env = process.env } = {}) => {
+  const { stdout } = await exec('claude', ['-p', '/usage', '--strict-mcp-config', '--permission-mode', 'manual', '--no-session-persistence'], { timeout: 120000, maxBuffer: 4 * 1024 * 1024, env: claudeEnv(env) });
   return stdout;
 };
 

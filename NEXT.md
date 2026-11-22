@@ -1369,7 +1369,9 @@ on the one before; the server always goes before the channel (Ultron H2).
     harness steps, which used the TCP port and the old `default` mode name). Jeff, at the
     mini's console or over Screen Sharing (not SSH: the sign-in is in the login keychain),
     never in Jarvis's session. It installs nothing, reads none of the user's settings
-    (`--setting-sources project`, and the scratch folder has none), loads only the stand-in
+    (`--setting-sources project`, and the scratch folder has none; so the scratch settings
+    and the `DISABLE_AUTOUPDATER=1` before each `claude` keep it from updating itself, §35),
+    loads only the stand-in
     channel (`--strict-mcp-config`), and its hook posts to a scratch socket, never the
     live one; its settings file also turns the Discord and jarvis-channel plugins off. Ask
     only for harmless commands that need permission (read-only ones such as `cat` and
@@ -1380,7 +1382,7 @@ on the one before; the server always goes before the channel (Ultron H2).
     ```sh
     cd ~/Projects/claude-control-room
     S=$(node bin/exact-hook-check.mjs setup) && cd "$S/work" && claude --version
-    claude --debug-file "$S/debug-manual.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode manual --dangerously-load-development-channels server:exactcheck
+    DISABLE_AUTOUPDATER=1 claude --debug-file "$S/debug-manual.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode manual --dangerously-load-development-channels server:exactcheck
     ```
     Accept the folder-trust and development-channel prompts. If Claude Code says the
     channel is "blocked by org policy", that comes from the managed channel list (the
@@ -1399,7 +1401,7 @@ on the one before; the server always goes before the channel (Ultron H2).
     Then `/exit`, and the auto-mode fallback, in the same folder (the same three checks
     before its first prompt):
     ```sh
-    claude --debug-file "$S/debug-auto.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode auto --dangerously-load-development-channels server:exactcheck
+    DISABLE_AUTOUPDATER=1 claude --debug-file "$S/debug-auto.txt" --setting-sources project --settings "$S/settings.json" --mcp-config "$S/mcp.json" --strict-mcp-config --permission-mode auto --dangerously-load-development-channels server:exactcheck
     ```
     g. `Run this exact Bash command as one tool call: curl -s https://example.com -o notes.txt`
     If auto mode just runs or refuses it without a dialog, try
@@ -4183,7 +4185,7 @@ loops", "The quiet ceiling", is the reference.
   re-checks any quiet job from scratch, and one already past its ceiling then goes red and
   pushes once.
 
-## 31. ntfy says only a fixed title, and the Loops panel says when a quiet ends (boards 704e981b and 0b0dcf81, P3; staged 2026-11-21 on `jos/ntfy-endsby`)
+## 31. ntfy says only a fixed title, and the Loops panel says when a quiet ends (boards 704e981b and 0b0dcf81, P3; merged as main fd42973, 2026-11-21)
 
 **Why (704e981b):** Jarvis's own ntfy alerts carry no command or link since jarvis af1852e,
 and Jeff was told the rule: an ntfy alert that tells you to run something or tap a link is
@@ -4250,7 +4252,7 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   no agent runs going, and `cd web && npm run build` for the Loops line (a live deploy of
   the page, safe on the running server, which already sends `endsBy`).
 
-## 32. Two small bugs: device names cut inside an emoji, and Next 24 hours labels on top of each other (boards 45dbfbac and 095d42ee, P3; staged 2026-11-21 on `jos/small-bugs`)
+## 32. Two small bugs: device names cut inside an emoji, and Next 24 hours labels on top of each other (boards 45dbfbac and 095d42ee, P3; merged as main 35232b4, 2026-11-21)
 
 - **45dbfbac, the device name.** `cleanName` in `server/lib/chat-devices.mjs` (pairing,
   and Shortcut key names through `cleanKeyName`) cut at 40 UTF-16 units with `slice`, so a
@@ -4355,7 +4357,7 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   open sessions switch over at once, and others when they start. The old mod and the new
   one are safe side by side (the old one just sends no `If-Match`).
 
-## 34. Add an idea takes an optional due date in the same step (board 72f317ea, P3; staged 2026-11-21 on `jos/mod-add-due`, off main 1c2eb7c)
+## 34. Add an idea takes an optional due date in the same step (board 72f317ea, P3; merged as main 3029556, 2026-11-21)
 
 - **What changed.** The mod's Add an idea box (`mod/hooks/view.js`) has a **Due** input
   between Tag and Idea (`new-due`, placeholder "YYYY-MM-DD, optional"). `act.add` in
@@ -4392,3 +4394,41 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
 - **Go-live (Jeff, after C&P):** the merge into the main checkout is the go-live (an
   interactive session reloads the mod's hooks when a file in `mod/` changes); no Control
   Room restart and no web build. It builds on §33, which is already on main (1c2eb7c).
+
+## 35. No self-update from any claude the Control Room starts (board a24a6aee, P3; staged 2026-11-21 on `jos/no-autoupdate`, off main 3029556)
+
+Jeff, 2026-11-21: "Turn off auto code updates too." Jarvis set
+`"env": {"DISABLE_AUTOUPDATER": "1"}` in the user settings, but a session started with
+`--setting-sources project` skips them, and a process the server starts shouldn't depend
+on them. Every launch site in the repo now passes the variable itself, through
+`server/lib/claude-env.mjs` (`NO_AUTOUPDATE`, `claudeEnv`):
+
+- `server/collectors/usage.mjs`, the five-minute `claude -p /usage` poll (exec `env`);
+- `server/collectors/plan.mjs`, the daily `claude auth status --json` (exec `env`;
+  `runPlanCli` now takes `exec` and `env` for the test, as `runUsageCli` does);
+- `server/lib/jarvis-recover.mjs`, Restart Jarvis: `recoverEnv` adds it to the script's
+  built environment, for the lead's claude that jarvis-start starts;
+- `bin/exact-hook-check.mjs`, the console test (step 10 above, the only
+  `--setting-sources project` in the repo, and Jeff runs it by hand): its scratch
+  `settings.json` gets `env`, and both `claude` lines above start with
+  `DISABLE_AUTOUPDATER=1`.
+
+`server/test/no-autoupdate.test.mjs` pins all four and scans `server/`, `bin/` and `mod/`
+for a call whose first argument is `claude` (or a path ending `/claude`), failing when
+that file doesn't import the module; the scan must still find the two collectors.
+Five mutants (each site's variable removed, and a new file that spawns claude), all
+caught. The server suite passes (1788).
+
+- **Not launch sites:** the self-healing kicks (`launchctl kickstart`) and the server's
+  own restart run launchd jobs, not claude; jarvis-start (the jarvis repo) starts the
+  lead with `--setting-sources user`, so the user settings reach him anyway.
+- **Not verified:** that a `--settings` file's `env` is applied when `--setting-sources
+  project` is given (hence the prefix on the console lines too), and that
+  `claude auth status` would ever update itself (it gets the variable regardless).
+- **Go-live (Jeff, after C&P):** the poll, the plan check and Restart Jarvis pass the
+  variable only from a server running the new code, so they take effect at the next
+  Control Room restart (Vision's LaunchAgent). No restart just for this: all three
+  read the user settings today (the two collectors pass no `--setting-sources`, and
+  jarvis-start passes `--setting-sources user`), so Jeff's switch
+  already reaches them; this makes it not depend on that. The console kit and the docs
+  need nothing.
