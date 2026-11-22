@@ -12,7 +12,7 @@ import {
   createChatStore, newMessageId, sniffType, isMessageId, publicMessage,
   PERMISSION_TTL_MS, PREVIEW_TTL_MS, EDIT_WINDOW_MS, UNANSWERED_MAX, ATTACHMENT_TTL_MS
 } from '../lib/chat-store.mjs';
-import { createDeviceStore, readCookie, cookieHeader, newCode, COOKIE_NAME, PAIR_COOKIE_NAME, DEVICES_MAX } from '../lib/chat-devices.mjs';
+import { createDeviceStore, readCookie, cookieHeader, newCode, cleanName, COOKIE_NAME, PAIR_COOKIE_NAME, DEVICES_MAX } from '../lib/chat-devices.mjs';
 import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS, SESSION_HEADER } from '../lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig, chatState, dispositionFor, SLOW_AFTER_MS } from '../lib/chat-routes.mjs';
 import { secretShapes } from '../lib/secret-shape.mjs';
@@ -268,6 +268,56 @@ test('secret shapes are named, never quoted', () => {
 });
 
 // ---- devices and pairing ----
+
+test('a device name is cut at 40 UTF-16 units between whole characters, never inside an emoji, a flag or an accent', async () => {
+  const x = n => 'x'.repeat(n);
+  const SMILE = '\u{1F600}', FAMILY = '\u{1F468}‍\u{1F469}‍\u{1F467}', FLAG = '\u{1F1FA}\u{1F1F8}', E_ACUTE = 'é';
+  const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  assert.equal(cleanName(x(39) + SMILE), x(39), 'the emoji that does not fit goes whole (a plain cut left half of it)');
+  assert.equal(cleanName(x(38) + SMILE), x(38) + SMILE, 'one that fits exactly is kept');
+  assert.equal(cleanName(x(38) + FAMILY), x(38), 'a joined emoji goes whole');
+  assert.equal(cleanName(x(38) + FLAG), x(38), 'a flag is never cut to its first letter');
+  assert.equal(cleanName(x(39) + E_ACUTE), x(39), 'a letter goes with its accent');
+  assert.equal(cleanName(x(39) + ' ' + SMILE), x(39), 'a space left at the end by the cut is trimmed');
+  assert.equal(cleanName(x(50)), x(40), 'the limit is unchanged');
+  assert.equal(cleanName('Pad ' + SMILE), 'Pad ' + SMILE);
+  // A first character longer than the limit on its own is cut between code points.
+  const long = '\u{1F468}' + '‍\u{1F468}'.repeat(15);
+  assert.ok(long.length > 40);
+  const cut = cleanName(long);
+  assert.ok(cut.length > 0 && cut.length <= 40 && long.startsWith(cut) && !LONE.test(cut), cut);
+  assert.equal(cleanName('a' + '́'.repeat(60)), 'a' + '́'.repeat(39));
+  // Any mix: a prefix of whole characters, at most 40 units, no half pair.
+  const parts = ['a', ' ', SMILE, FAMILY, FLAG, E_ACUTE, 'é', '中'];
+  const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const graphemes = s => [...seg.segment(s)].map(g => g.segment);
+  let seed = 7;
+  for (let i = 0; i < 300; i++) {
+    let s = 'p';
+    while (s.length < 60) { seed = (seed * 1103515245 + 12345) % 2147483648; s += parts[seed % parts.length]; }
+    const out = cleanName(s);
+    const want = graphemes(s.replace(/\s+/g, ' '));
+    const got = graphemes(out);
+    assert.ok(out.length <= 40 && out.length >= 32 && !LONE.test(out), JSON.stringify(out));
+    assert.deepEqual(got, want.slice(0, got.length), JSON.stringify(out));
+  }
+  // The hidden-character cleaning is as before.
+  assert.equal(cleanName('phone‮\u0007'), 'phone');
+  assert.equal(cleanName('a⁦b\u0085c'), 'a b c');
+  assert.equal(cleanName('  My\tphone\n '), 'My phone');
+  assert.equal(cleanName(7), '');
+  // And pairing keeps the cut name.
+  const dir = await mkdtemp(join(tmpdir(), 'chat-'));
+  try {
+    const devices = createDeviceStore({ path: join(dir, 'devices.json'), now: () => 1794380000000, onEvent: () => {} });
+    await devices.load();
+    const r = await devices.start(x(39) + SMILE);
+    assert.equal(r.ok, true);
+    assert.equal(r.name, x(39));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('pairing: a code and a pairing cookie, three wrong tries, approval, the cookie collected once; at most 4 devices; revoke', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chat-'));

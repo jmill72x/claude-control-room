@@ -4251,3 +4251,59 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
 - **Go-live (Jeff, after C&P):** a Control Room restart for the ntfy part (server code), with
   no agent runs going, and `cd web && npm run build` for the Loops line (a live deploy of
   the page, safe on the running server, which already sends `endsBy`).
+
+## 32. Two small bugs: device names cut inside an emoji, and Next 24 hours labels on top of each other (boards 45dbfbac and 095d42ee, P3; staged 2026-11-21 on `jos/small-bugs`)
+
+- **45dbfbac, the device name.** `cleanName` in `server/lib/chat-devices.mjs` (pairing,
+  and Shortcut key names through `cleanKeyName`) cut at 40 UTF-16 units with `slice`, so a
+  name could end in half a surrogate pair, a flag's first letter or a letter without its
+  combining accent. It now cuts with the new `cutWhole(s, max)`: whole grapheme clusters
+  (`Intl.Segmenter`, granularity `grapheme`) while they fit in 40 units, then trims a space
+  the cut left at the end. A first character longer than 40 units on its own (a long
+  joined emoji, a pile of accents) is cut between code points, which never splits a pair,
+  so such a name still pairs instead of being refused as empty. The limit and the
+  hidden-character cleaning (C0 and C1 controls, U+202A-202E, U+2066-2069 made spaces,
+  whitespace runs made one space) are unchanged. Not touched: `chat-store.mjs`'s own
+  `slice(0, 40)` on a message's `device`, which only ever sees a cleaned name (40 units at
+  most, or a key name of 22 plus a mark) and so never cuts.
+- **095d42ee, the Next 24 hours strip.** Labels alternated above and below the line by
+  index, so any three events within about 4.8 hours (two labels' 132 px width plus a gap,
+  at the strip's 700 px minimum) drew on top of each other: three jobs at one time, or
+  a night's five jobs within two hours. `next24`
+  (`web/src/lib/orbit/overview.js`) now places each label in the nearest free lane, its
+  own side first (sides still alternate, so a spread-out day looks as before), checking
+  its box as drawn (centred, or lined up inward near either end) against every label
+  already in that lane, with an 8 px gap, at 700 px; a wider strip only spreads them
+  further. It returns `lanes` (`{top, bottom}`), and the page grows the strip by 54 px per
+  lane past the first on either side (`--o-up`, `--o-down`, `--o-lane`), moving the line,
+  ticks, dots and the now-dot down by the lanes above. Every name is now clamped to two
+  lines (only You items were), with the full name as the label's `title`, so a label is
+  never taller than a lane (48 px at most, measured). Also fixed: a dot or label at
+  either end was clipped by the scroll box by up to 9 px (the box now has 9 px side
+  padding inside the panel).
+- **Choices to defend:** stacking rather than merging events at one time into one label
+  (the brief asked for stack or offset, and each job keeps its own dot colour and time);
+  checking at 700 px rather than measuring the live width (pure, testable, and safe at
+  every width; a wide desktop may stack where it had room); a fixed lane height (no text
+  measuring) with names clamped to two lines to make it hold; nearest lane before side, so
+  the strip stays as short as it can.
+- **Checked (2026-11-21):** server 1,776 tests (1 new) and web 381 (2 new) in local time and
+  `TZ=Asia/Tokyo`. Mutants: 5 over `cutWhole`/`cleanName` (a plain slice, no trim, no
+  code-point fallback, an off-by-one, code points only) and 8 over the lanes (the old
+  alternation, no gap, alignment ignored, one side always first, side before lane, lane
+  count off by one, half-width boxes), all caught. In a browser (headless Chromium on a
+  read-only scratch server, a saved copy of the live payload with invented jobs, limits
+  and You items), five scenarios (the 11-14 kind of close pair, five things at one minute,
+  eleven things with a cluster of five in two hours and two at each end, overlong names,
+  none) at 360, 390, 430, 540, 820, 1180 and 1440 px in light and dark: no two labels'
+  boxes intersect, none crosses the line, the dots or the ticks, none leaves the strip or
+  is clipped at either end, no sideways page scroll, no page errors. Main's build failed
+  the same check (overlaps in three scenarios at every width, and labels and dots clipped
+  at the left end). oxlint on the changed files shows only the warning main has (the
+  control characters in `cleanName`'s pattern). Built to a scratch folder only; the live
+  `web/dist` did not move. **Not verified:** on Jeff's iPhone or iPad, and pairing a
+  device with an emoji name end to end (the store and the route call the same function the
+  unit test covers).
+- **Go-live (Jeff, after C&P):** a Control Room restart for the device names (server code),
+  with no agent runs going, and `cd web && npm run build` for the strip (a live deploy of
+  the page, safe on the running server: `next24` needs nothing new from it).

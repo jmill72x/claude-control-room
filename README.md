@@ -482,7 +482,10 @@ to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   `StartInterval`) has no fixed next run, so it never appears. Names come from config's
   `jobs` block. An item that waits on you shows as "You: <title>" (a filled dot, in the
   accent) when its `due` date at its ask's `time` falls within the 24 hours, in the
-  viewer's local time.
+  viewer's local time. Each label is a time and at most two lines of name. Labels that
+  would overlap stack in lanes above and below the line (lane 0 nearest it; sides
+  alternate when there is room), checked at the strip's narrowest, 700 px, so none
+  overlap at any width; the strip grows taller by a lane for each one past the first.
 - **Burn (behind Usage's fold since the home merge):** the tokens of the last 60 minutes, and the last 24 clock hours as bars stacked
   by model family (Opus, Fable, Sonnet, Haiku and Other), with each family's share.
 - **This week, hour by hour (behind Usage's fold since the home merge):** today and the six days before it, by local clock hour.
@@ -1319,7 +1322,9 @@ three pieces, each with its own router:
   Without the setting, only hellos after a bye are checked, and they all fail.
 - **The page's routes** (`server/lib/chat-routes.mjs`), over TCP behind the Host check:
   pairing (`POST /api/pair/start {name}` from the device, which gets a 6-letter code and a
-  10-minute pairing cookie; `POST /api/pair/approve {code}` from a device already paired,
+  10-minute pairing cookie; the name is made one line, control and direction characters
+  turned to spaces, and cut to 40 UTF-16 units between whole characters as a reader sees
+  them, so a cut never leaves half an emoji, half a flag or a letter without its accent; `POST /api/pair/approve {code}` from a device already paired,
   or `bin/chat-pair <CODE>` on the machine over the admin socket
   `~/.local/state/jarvis-os/admin.sock`; then `GET /api/pair/status` hands the device its
   cookie, once; a device that is paired already hears `{state: "paired", device, already:

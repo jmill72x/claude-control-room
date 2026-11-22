@@ -25,7 +25,29 @@ export function newCode() {
   const bytes = randomBytes(6);
   return [...bytes].map(b => CODE_LETTERS[b % CODE_LETTERS.length]).join('');
 }
-export const cleanName = v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, NAME_MAX) : '');
+// A device's name: one line with the control and direction characters made spaces,
+// then cut to NAME_MAX UTF-16 units between whole characters as a reader sees them
+// (grapheme clusters, Intl.Segmenter), so a cut never leaves half an emoji, a flag's
+// first letter or a letter without its accent. A first character longer than the
+// limit on its own (a long emoji sequence, a pile of accents) is cut between code
+// points instead, which still never splits a surrogate pair.
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+export function cutWhole(s, max) {
+  if (s.length <= max) return s;
+  let end = 0;
+  for (const { index, segment } of GRAPHEMES.segment(s)) {
+    if (index + segment.length > max) break;
+    end = index + segment.length;
+  }
+  if (end > 0) return s.slice(0, end);
+  let out = '';
+  for (const cp of s) {
+    if (out.length + cp.length > max) break;
+    out += cp;
+  }
+  return out;
+}
+export const cleanName = v => (typeof v === 'string' ? cutWhole(v.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim(), NAME_MAX).trimEnd() : '');
 
 // The cookie header's value, and how to read ours back out of a Cookie header.
 export const cookieHeader = (name, value, maxAge) => `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RINGS, circumference, ringLabel, ringView, resetNote, sessionCountdown, next24, aheadNote, basisNote,
+  RINGS, circumference, ringLabel, ringView, resetNote, sessionCountdown, next24, TIMELINE_PX, LABEL_PX, LABEL_GAP_PX, aheadNote, basisNote,
   burnBars, burnShares, shareLabel, shadeLevel, heatRows, SHADES
 } from '../src/lib/orbit/overview.js';
 
@@ -85,6 +85,73 @@ test('next 24 hours: the next run of each calendar job within the day, and the l
     limits: [], jobs: {}, now: NOW
   });
   assert.deepEqual(edges.events.map(e => e.align), ['start', 'end']);
+});
+
+// Each label's box at the timeline's narrowest, as the CSS draws it.
+const box = e => {
+  const x = (parseFloat(e.left) / 100) * TIMELINE_PX;
+  const l = e.align === 'start' ? x - 9 : e.align === 'end' ? x - LABEL_PX + 9 : x - LABEL_PX / 2;
+  return [l, l + LABEL_PX];
+};
+const overlaps = events => {
+  const bad = [];
+  for (let i = 0; i < events.length; i++) {
+    for (let j = i + 1; j < events.length; j++) {
+      const [a, b] = [events[i], events[j]];
+      if (a.row !== b.row || a.lane !== b.lane) continue;
+      const [al, ar] = box(a), [bl, br] = box(b);
+      if (al < br + LABEL_GAP_PX && bl < ar + LABEL_GAP_PX) bad.push(`${a.name} / ${b.name}`);
+    }
+  }
+  return bad;
+};
+const job = (name, t) => ({ label: `com.example.${name}`, name, nextRunAt: t });
+
+test('next 24 hours: labels close together stack in lanes instead of drawing on top of each other', () => {
+  // The 11-14 case: a 4:30 PM item, a 5:34 PM reset and a job between them.
+  const close = next24({
+    crons: [job('nightly', at(21, 16, 50))], jobs: {}, now: NOW,
+    limits: [{ label: 'Current session', resetsAt: iso(at(21, 17, 34)) }],
+    extra: [{ t: at(21, 16, 30), name: 'You: Post the teaser', kind: 'you' }]
+  });
+  assert.deepEqual(close.events.map(e => [e.at, e.row, e.lane]), [['4:30 PM', 'top', 0], ['4:50 PM', 'bottom', 0], ['5:34 PM', 'top', 1]]);
+  assert.deepEqual(close.lanes, { top: 2, bottom: 1 });
+  assert.deepEqual(overlaps(close.events), []);
+  // Equal times: each gets its own lane.
+  const same = next24({ crons: ['a', 'b', 'c'].map(n => job(n, at(21, 3))), limits: [], jobs: {}, now: NOW });
+  assert.deepEqual(same.events.map(e => [e.row, e.lane]), [['top', 0], ['bottom', 0], ['top', 1]]);
+  assert.deepEqual(overlaps(same.events), []);
+  // Many at once: lanes out on both sides.
+  const many = next24({ crons: [3, 4, 4, 4, 4, 5, 5, 5].map((h, i) => job(`j${i}`, at(21, h, (i * 10) % 60))), limits: [], jobs: {}, now: NOW });
+  assert.equal(many.events.length, 8);
+  assert.deepEqual(overlaps(many.events), []);
+  assert.deepEqual(many.lanes, { top: 4, bottom: 4 });
+  // A label lined up inward at either end is checked as drawn.
+  const edge = next24({ crons: [job('soon', at(20, 21, 40)), job('soon2', at(20, 23, 45)), job('late', at(21, 21, 20)), job('late2', at(21, 19, 0))], limits: [], jobs: {}, now: NOW });
+  assert.deepEqual(edge.events.map(e => e.align), ['start', 'center', 'center', 'end']);
+  assert.deepEqual(overlaps(edge.events), []);
+  // The nearest lane wins over the side: a lane 0 free on the other side beats a new lane.
+  const near = next24({ crons: [job('a', at(21, 1)), job('b', at(21, 4)), job('c', at(21, 5, 30)), job('d', at(21, 8))], limits: [], jobs: {}, now: NOW });
+  assert.deepEqual(near.events.map(e => [e.row, e.lane]), [['top', 0], ['bottom', 0], ['top', 1], ['top', 0]]);
+  assert.deepEqual(overlaps(near.events), []);
+  // Far apart, nothing changes: one lane a side, alternating.
+  const far = next24({ crons: [job('a', at(21, 1)), job('b', at(21, 7)), job('c', at(21, 13)), job('d', at(21, 19))], limits: [], jobs: {}, now: NOW });
+  assert.deepEqual(far.events.map(e => [e.row, e.lane]), [['top', 0], ['bottom', 0], ['top', 0], ['bottom', 0]]);
+  assert.deepEqual(far.lanes, { top: 1, bottom: 1 });
+  assert.deepEqual(next24({ crons: [], limits: [], jobs: {}, now: NOW }).lanes, { top: 0, bottom: 0 });
+});
+
+test('next 24 hours: no two labels in a lane overlap, whatever the times', () => {
+  let seed = 11;
+  const rand = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let run = 0; run < 400; run++) {
+    const n = 1 + rand(12);
+    const crons = Array.from({ length: n }, (_, i) => job(`j${i}`, NOW + 60e3 + rand(24 * 60 - 1) * 60e3 * (rand(3) === 0 ? 0.05 : 1)));
+    const { events, lanes } = next24({ crons, limits: [], jobs: {}, now: NOW });
+    assert.deepEqual(overlaps(events), [], `run ${run}`);
+    for (const e of events) assert.ok(e.lane < lanes[e.row], `run ${run}`);
+    assert.ok(lanes.top + lanes.bottom <= n && lanes.top >= lanes.bottom - 1, `run ${run}`);
+  }
 });
 
 test('two weekly limits resetting in the same minute are one event', () => {

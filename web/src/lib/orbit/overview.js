@@ -94,9 +94,39 @@ const resetName = label => (label === 'Current session' ? 'Session resets' : lab
 // config's `jobs` block, else the job's own short name; owner colours the dot.
 // `extra` holds events worked out elsewhere: Jeff's own items (waiting.js,
 // youEvents), each { t, name, owner, kind }.
-// Labels alternate above and below the line so neighbours don't collide, and
-// a label near either end lines up inward so the box doesn't clip it.
+// A label near either end lines up inward so the box doesn't clip it. Labels sit
+// in lanes above and below the line, lane 0 nearest it: each event takes the
+// nearest lane, on its side first (sides alternate, so far-apart events read as
+// they always did), where its label clears every label already there by
+// LABEL_GAP_PX. The check is made at the timeline's narrowest (TIMELINE_PX, its
+// CSS min-width, where a phone scrolls it sideways), and any wider timeline only
+// spreads the labels further apart, so no two labels overlap at any width.
+// `lanes` says how many lanes each side needed, for the timeline's height.
 export const EDGE_PCT = 9;
+export const TIMELINE_PX = 700;
+export const LABEL_PX = 132; // .o-event's width
+export const LABEL_GAP_PX = 8;
+const DOT_INSET_PX = 9; // .o-event-start/-end line the label up this far past the dot
+function labelSpan(pct, align) {
+  const x = (pct / 100) * TIMELINE_PX;
+  const left = align === 'start' ? x - DOT_INSET_PX : align === 'end' ? x - LABEL_PX + DOT_INSET_PX : x - LABEL_PX / 2;
+  return [left, left + LABEL_PX];
+}
+function placeLabels(spans) {
+  const lanes = { top: [], bottom: [] }; // per side, per lane: the spans placed there
+  const clear = (lane, [l, r]) => (lane ?? []).every(([a, b]) => r + LABEL_GAP_PX <= a || b + LABEL_GAP_PX <= l);
+  const placed = spans.map((s, i) => {
+    const sides = i % 2 === 0 ? ['top', 'bottom'] : ['bottom', 'top'];
+    for (let lane = 0; ; lane++) {
+      for (const row of sides) {
+        if (!clear(lanes[row][lane], s)) continue;
+        (lanes[row][lane] ??= []).push(s);
+        return { row, lane };
+      }
+    }
+  });
+  return { placed, lanes: { top: lanes.top.length, bottom: lanes.bottom.length } };
+}
 export function next24({ crons, limits, jobs, now, extra = [] }) {
   const end = now + DAY;
   const within = t => Number.isFinite(t) && t > now && t <= end;
@@ -125,16 +155,10 @@ export function next24({ crons, limits, jobs, now, extra = [] }) {
   }
   for (const e of Array.isArray(extra) ? extra : []) if (within(e?.t)) events.push(e);
   events.sort((a, b) => a.t - b.t);
-  const placed = events.map((e, i) => {
-    const pct = ((e.t - now) / DAY) * 100;
-    return {
-      ...e,
-      at: clock(e.t),
-      left: `${pct.toFixed(2)}%`,
-      row: i % 2 === 0 ? 'top' : 'bottom',
-      align: pct < EDGE_PCT ? 'start' : pct > 100 - EDGE_PCT ? 'end' : 'center'
-    };
-  });
+  const pcts = events.map(e => ((e.t - now) / DAY) * 100);
+  const aligns = pcts.map(pct => (pct < EDGE_PCT ? 'start' : pct > 100 - EDGE_PCT ? 'end' : 'center'));
+  const { placed: rows, lanes } = placeLabels(pcts.map((pct, i) => labelSpan(pct, aligns[i])));
+  const placed = events.map((e, i) => ({ ...e, at: clock(e.t), left: `${pcts[i].toFixed(2)}%`, align: aligns[i], ...rows[i] }));
   const ticks = [];
   const d = new Date(now);
   d.setMinutes(0, 0, 0);
@@ -143,7 +167,7 @@ export function next24({ crons, limits, jobs, now, extra = [] }) {
     if (d.getHours() % 6 !== 0) continue;
     ticks.push({ label: clock(d.getTime(), { short: true }), left: `${(((d.getTime() - now) / DAY) * 100).toFixed(2)}%` });
   }
-  return { events: placed, ticks };
+  return { events: placed, ticks, lanes };
 }
 
 // ---- Burn ----

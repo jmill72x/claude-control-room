@@ -111,7 +111,7 @@ function Schedule({ payload, now, roster, items }) {
   const crons = envelopeOf(payload?.crons);
   const usage = envelopeOf(payload?.usage);
   const routines = routinesView({ crons: crons.data, jobs: payload?.config?.data?.jobs ?? {}, now });
-  const { events, ticks } = next24({
+  const { events, ticks, lanes } = next24({
     crons: crons.data, limits: usage.data?.limits, jobs: payload?.config?.data?.jobs ?? {}, now, extra: youEvents(items, now)
   });
   const [loopsOpen, setLoopsOpen] = useFold(FOLD_KEYS.loops);
@@ -122,7 +122,7 @@ function Schedule({ payload, now, roster, items }) {
         <span className="o-sub">{scheduleSub({ routines, events, cronsUnavailable: crons.status === 'unavailable' })}</span>
       </div>
       <RoutinesList crons={crons} view={routines} />
-      <NextDay events={events} ticks={ticks} roster={roster} />
+      <NextDay events={events} ticks={ticks} lanes={lanes} roster={roster} />
       <LoopsFold payload={payload} now={now} line={loopsLine(payload?.loops, now)} open={loopsOpen} onToggle={setLoopsOpen} />
     </section>
   );
@@ -130,7 +130,10 @@ function Schedule({ payload, now, roster, items }) {
 
 // Next 24 hours, under the routines: the timeline, as its own panel drew it.
 // (The routines above already say when the scheduled jobs can't be read.)
-function NextDay({ events, ticks, roster }) {
+// Labels that would overlap stack in lanes (next24's `lane`): the timeline grows
+// by a lane for each one past the first on either side (--o-up, --o-down), and
+// the line, its ticks and dots move down by the lanes above.
+function NextDay({ events, ticks, lanes, roster }) {
   const yours = events.filter(e => e.kind === 'you').length;
   const colorOf = e => {
     if (e.kind === 'reset' || e.kind === 'you') return '#C2410C';
@@ -147,14 +150,14 @@ function NextDay({ events, ticks, roster }) {
       </div>
       {events.length === 0 ? <Note>Nothing is scheduled in the next 24 hours.</Note> : (
         <div className="o-scroll-x">
-          <div className="o-timeline" role="list" aria-label="The next 24 hours, from now">
+          <div className="o-timeline" role="list" aria-label="The next 24 hours, from now" style={{ '--o-up': Math.max(0, (lanes?.top ?? 1) - 1), '--o-down': Math.max(0, (lanes?.bottom ?? 1) - 1) }}>
             <div className="o-timeline-line" aria-hidden="true" />
             {ticks.map(t => <span key={t.label + t.left} className="o-mono o-tick" style={{ left: t.left }} aria-hidden="true">{t.label}</span>)}
             <span className="o-now" aria-hidden="true"><span /></span>
             {events.map(e => (
               <div key={`${e.t}-${e.name}`} role="listitem">
                 <span className={`o-event-dot${e.kind === 'you' ? ' o-event-dot-you' : ''}`} aria-hidden="true" style={{ left: e.left, borderColor: colorOf(e) }} />
-                <span className={`o-event o-event-${e.row} o-event-${e.align}${e.kind === 'you' ? ' o-event-you' : ''}`} style={{ left: e.left }}>
+                <span className={`o-event o-event-${e.row} o-event-${e.align}${e.kind === 'you' ? ' o-event-you' : ''}`} style={{ left: e.left, '--o-lane': e.lane ?? 0 }} title={e.name}>
                   <span className="o-mono o-event-time">{e.at}</span>
                   <span className="o-event-name">{e.name}</span>
                 </span>
