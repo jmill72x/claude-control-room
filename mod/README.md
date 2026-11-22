@@ -19,7 +19,7 @@ Three tabs, switched with `1`, `2` and `3`:
 |---|---|
 | Usage | Plan and renewal, credits (grants with what's left and when they expire, usage credits), the three limit bars with resets, pace and a sparkline, this week by surface, project and model, drivers, recent sessions |
 | Projects | Every project with its last activity (no running state since 2026-10-30, when the server stopped polling `claude agents`), then every cron with its schedule, next run and last result, failing first |
-| To-dos | The board grouped by stage or tag, sorted by priority. Select an item to change its priority, move its stage, edit it, delete it with a confirmation, or hand it to Claude with **Work on it**. Done items are counted and hidden until you ask for them |
+| To-dos | The board grouped by stage or tag, sorted by priority and then by the nearer due date. A due date shows on its row as the web page words it (`Overdue Thu 11-20` in red, `Due today` or within two days in amber, later ones dim). Select an item to change its priority, move its stage, edit it, set, change or clear its due date, delete it with a confirmation, or hand it to Claude with **Work on it**. Done items are counted and hidden until you ask for them |
 
 Alerts from the dashboard show at the top of every tab. A line under the tabs
 says how old the reading is.
@@ -109,6 +109,23 @@ the result. An edit made on the web page a moment earlier therefore survives. If
 the item is gone by then, nothing is written and the pane says so. A refused
 write shows the server's error and the list the server actually holds.
 
+The write carries the read's revision: the `ETag` of the GET goes back as
+`If-Match`, as the web page and Jarvis's `board-write` send it. If another write
+lands between the two, the server answers 409 and keeps the other write; the pane
+writes nothing, re-reads the board, and says "Not saved: the board changed
+elsewhere. Reloaded the current board; make the change again." (or, when that
+re-read fails too, "Press r to reload"). It never retries by itself. A server
+that sends no `ETag` gets `If-Match: *`, which writes as before.
+
+A due date is typed as `YYYY-MM-DD` and checked the way the server checks it: the
+shape and a real calendar day, so `2026-02-30` or `11/25` is refused in the pane,
+with the typed text left in the field to fix, and nothing is sent. Spaces around
+it are dropped. An empty field, or **Clear due** (which needs no typing, so it
+works on mobile), removes the date. Setting it is not offered on mobile, which
+draws no text field. New ideas are added without a date; set one afterwards.
+`server/test/mod-due.test.mjs` holds the mod's date check to the server's and its
+row wording to the web page's.
+
 ## Files
 
 | File | What it holds |
@@ -122,7 +139,7 @@ write shows the server's error and the list the server actually holds.
 
 ```bash
 cd mod
-claude plugin test        # 53 tests
+claude plugin test        # 68 tests
 claude plugin validate .
 ```
 

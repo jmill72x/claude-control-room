@@ -8,7 +8,7 @@
 import {
   heat, paceNote, formatTokens, formatUntil, formatAgo, formatDate, daysUntil, money, bar, sparkline,
   envelopeOf, staleNote, cronState, cronList, cronSummary, projectList, creditsView,
-  groupTodos, tagChoices, nextLaneTitle, clip, PRIORITIES, alertLabel
+  groupTodos, tagChoices, nextLaneTitle, clip, PRIORITIES, alertLabel, dueChip, localToday
 } from './model.js'
 
 export const NO_TAG = '__none__'
@@ -21,6 +21,8 @@ export const TABS = [
 const colored = c => (c ? { color: c } : {})
 
 const CHIP_COLOR = { P0: 'error', P1: undefined, P2: 'subtle', P3: 'inactive' }
+// Overdue is loud, the next two days quiet amber, the rest dim, as on the page.
+const DUE_LOOK = { overdue: { color: 'error' }, soon: { color: 'warning' }, later: { dimColor: true }, done: { dimColor: true } }
 const CRON_MARK = { failed: '✕', ok: '✓', never: '·', unknown: '?' }
 const CRON_WORD = { ok: 'OK', never: 'Not yet run', unknown: 'Unknown' }
 
@@ -232,6 +234,7 @@ export function paneTree(el, st, act, ctx) {
       return out
     }
 
+    const today = localToday(now)
     groupTodos(todos, st.groupBy).forEach((g, gi) => {
       const items = st.showDone ? g.items : g.items.filter(t => t.lane !== 'done')
       const hidden = g.items.length - items.length
@@ -241,17 +244,26 @@ export function paneTree(el, st, act, ctx) {
         const done = t.lane === 'done'
         const chip = PRIORITIES.includes(t.priority) ? t.priority : '—'
         const tagText = st.groupBy === 'stage' && t.tag ? clip(String(t.tag).toUpperCase(), 16) : ''
-        // chip (2) + gap + label [+ gap + tag] must fit, or the row wraps mid-word.
-        const budget = Math.max(8, width - 3 - (tagText ? tagText.length + 1 : 0))
+        const due = dueChip(t.due, t.lane, today)
+        // chip (2) + gap + label [+ gap + due] [+ gap + tag] must fit, or the row wraps mid-word.
+        const budget = Math.max(8, width - 3 - (tagText ? tagText.length + 1 : 0) - (due ? due.label.length + 1 : 0))
         const label = clip(`${done ? '✓ ' : t.lane === 'doing' ? '› ' : ''}${String(t.text ?? '')}`, budget)
         const children = [row([
           text(chip.padEnd(2), { bold: chip === 'P0' || chip === 'P1', ...(chip === '—' ? { dimColor: true } : colored(CHIP_COLOR[chip])) }),
           Button({ key: `todo-${t.id}`, label, plain: true, dimColor: done, onPress: () => act.select(t.id) }),
+          ...(due ? [Box({ key: `due-chip-${t.id}`, children: [text(due.label, DUE_LOOK[due.state])] })] : []),
           ...(tagText ? [dim(tagText)] : [])
         ])]
         if (st.selected === t.id) children.push(actions(t))
         if (canType && st.editing === t.id) {
           children.push(el.Input({ key: `edit-input-${t.id}`, label: 'Edit', value: t.text, submitLabel: 'save', autoFocus: true, onSubmit: v => act.saveEdit(t.id, v) }))
+        }
+        if (canType && st.editingDue === t.id) {
+          // A refused date stays in the field to be fixed, not replaced by the old one.
+          children.push(el.Input({
+            key: `due-input-${t.id}`, label: 'Due', placeholder: 'YYYY-MM-DD, empty clears',
+            value: st.dueDraft ?? t.due ?? '', submitLabel: 'save', autoFocus: true, onSubmit: v => act.saveDue(t.id, v)
+          }))
         }
         out.push(Box({ key: `item-${t.id}`, flexDirection: 'column', children }))
       }
@@ -282,6 +294,9 @@ export function paneTree(el, st, act, ctx) {
       Button({ key: `stage-${t.id}`, label: `→ ${nextLaneTitle(t)}`, onPress: () => act.advance(t.id) }),
       Button({ key: `work-${t.id}`, label: 'Work on it', onPress: () => act.workOn(t.id) }),
       ...(canType ? [Button({ key: `edit-${t.id}`, label: 'Edit', onPress: () => act.edit(t.id) })] : []),
+      ...(canType ? [Button({ key: `due-${t.id}`, label: t.due ? 'Change due' : 'Set due', onPress: () => act.editDue(t.id) })] : []),
+      // Needs no typing, so mobile can clear a date too.
+      ...(t.due ? [Button({ key: `clear-due-${t.id}`, label: 'Clear due', onPress: () => act.clearDue(t.id) })] : []),
       ...(st.confirmDelete === t.id
         ? [
             Button({ key: `confirm-delete-${t.id}`, label: 'Confirm delete', onPress: () => act.remove(t.id) }),

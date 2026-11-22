@@ -229,10 +229,8 @@ bug were built the same day, committed and pushed, and live after the restart (t
    the tab comes back into view, and every minute while visible. A PUT with no `If-Match`
    still writes (curl, Jarvis, the mod); one from a browser gets 428, which stops tabs
    loaded before the change. README, "Two writers, one board". Tests:
-   `server/test/board-revision.test.mjs`. Left open: the mod still PUTs without
-   `If-Match` (it re-reads just before writing, so its window is milliseconds); making it
-   send the ETag from that GET is a few lines in `saveTodos()` plus a `claude plugin test`
-   run.
+   `server/test/board-revision.test.mjs`. The mod sends `If-Match` too since
+   `jos/mod-ifmatch` (§33, staged 2026-11-21).
 2. **Done (2026-10-19): the board is second below 1024px**, after Usage and ahead of
    Projects. A board-first version went live that afternoon; Jeff saw it on his iPhone and
    wanted "usage first ... the to dos as 2 instead of 3", so Projects now carries the CSS
@@ -4307,3 +4305,52 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
 - **Go-live (Jeff, after C&P):** a Control Room restart for the device names (server code),
   with no agent runs going, and `cd web && npm run build` for the strip (a live deploy of
   the page, safe on the running server: `next24` needs nothing new from it).
+
+## 33. The mod sends If-Match and shows due dates (board 2510c36e, P3; staged 2026-11-21 on `jos/mod-ifmatch`)
+
+- **If-Match.** `saveTodos()` in `mod/hooks/register.js` reads the board with its `ETag`
+  (`getBoard`, the header lower-cased by `$.http.fetch`) and sends it back as `If-Match`
+  on the PUT, as the page and Jarvis's `board-write` do; a server that sent no `ETag` gets
+  `If-Match: *` (the page's fallback). On a 409 nothing is written and nothing is retried:
+  the pane re-reads the board, shows it, and says "Not saved: the board changed elsewhere.
+  Reloaded the current board; make the change again."; if that re-read fails too, it keeps
+  the list it had read and says "Press r to reload". The 428 a browser gets cannot reach
+  the mod, which now always sends `If-Match`, so it has no branch.
+- **Due dates (from 32f950c4).** `model.js` gains `isDueDate` (the server's function from
+  `todos.mjs`, line for line), `readDue` (trims; empty clears; anything else is refused with
+  the reason), `withDue` (the page's: clearing drops the key), `localToday` and `dueChip`
+  (the page's `web/src/lib/due.js` wording and states). The row shows the chip (overdue
+  red, today to two days amber, later and done dim) and its width comes out of the label's
+  budget. A selected item has **Set due** / **Change due** (an input, not on mobile) and
+  **Clear due** (no typing, so on mobile too). A refused date leaves the typed text in the
+  field and sends nothing; the same date as now writes nothing. Lists sort by priority,
+  then the nearer due date, undated last (the page's order). `/control-room summary` adds
+  the chip to each listed item, overdue in bold.
+- **Choices to defend:** re-reading on a 409 instead of only saying "reload" (the page does
+  the same, and the message still says the change was not saved and to make it again);
+  copying the server's and the page's date code into `model.js` rather than importing it
+  (the mod loads from its own folder), held to both by `server/test/mod-due.test.mjs`;
+  trimming spaces around a typed date (the server stores exactly what it is sent, so the
+  trim happens before the check, never after); no due date on Add an idea (the add box is
+  one input that submits on Enter; set the date after adding).
+- **Checked (2026-11-21):** the mod's own tests, `claude plugin test` in `mod/` (68, 13
+  new), in local time and `TZ=Asia/Tokyo`; it runs the test files against a stub server
+  inside the binary, with no session, no network and nothing written to the tree, so it
+  was safe to run. `claude plugin validate mod` passes (its directory-listing notes on a
+  missing LICENSE and icon are about publishing and were there before). Server 1,781
+  tests (5 new, `mod-due.test.mjs`: every month 00-13 and day 00-32 over three years and
+  odd strings against the server's `isDueDate`; every day for two years either side
+  against the page's `dueChip`) in both timezones, web 381. 40 mutants: 38 caught; the two
+  survivors are the month and day checks in `isDueDate`, each enough beside the year
+  check, kept because the server's copy has both. oxlint on the changed files shows only
+  main's warning (`best` in `groupTodos`). Nothing ran against :8322. **Not verified:** the
+  pane in a real Claude Code session (no install, no reload of the live mod), and a real
+  409 from the real server (the stub copies the route's rule; the route's own 409 is
+  covered by `server/test/board-revision.test.mjs`).
+- **Go-live (Jeff, after C&P):** no Control Room restart and no web build. The mod runs
+  from the main checkout's `mod/` folder (through `CLAUDE_CODE_PLUGIN_DIRS` or
+  `--plugin-dir`; which of them is set on the mini I did not check, as `settings.json` is
+  off-limits to read). An interactive session watches that folder and reloads the hooks
+  module when a file in it changes, so the merge into the main checkout is the go-live:
+  open sessions switch over at once, and others when they start. The old mod and the new
+  one are safe side by side (the old one just sends no `If-Match`).

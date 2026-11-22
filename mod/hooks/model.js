@@ -218,7 +218,74 @@ export function creditsView(payload) {
   return { source: null, reason: account.error ?? 'no credits source has reported' }
 }
 
-const byPriority = (a, b) => rank(a.priority) - rank(b.priority)
+// --- Due dates ---
+// An item's optional `due` is a plain local date, YYYY-MM-DD, with no time of
+// day. The test is the server's own (isDueDate in server/todos.mjs): the shape,
+// and a real calendar day, so 2026-02-30 and 2026-13-01 are refused. The chip
+// is the web page's (web/src/lib/due.js), on calendar-day numbers rather than
+// local Date objects, so a timezone or DST change cannot move a date by a day.
+// The month and day checks overlap (either one beside the year is enough);
+// both stay, so this reads line for line as the server's copy does.
+const DUE = /^(\d{4})-(\d{2})-(\d{2})$/
+export const isDueDate = v => {
+  const m = typeof v === 'string' && DUE.exec(v)
+  if (!m) return false
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const date = new Date(Date.UTC(y, mo - 1, d))
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d
+}
+
+// What a typed due date means: '' clears it, a real date sets it, anything
+// else is refused with the reason, before any request goes out.
+export function readDue(value) {
+  const typed = String(value ?? '').trim()
+  if (typed === '') return { due: '' }
+  if (isDueDate(typed)) return { due: typed }
+  return { error: `Not saved: a due date is written YYYY-MM-DD, such as 2026-11-25, or left empty to clear it (got ${JSON.stringify(clip(typed, 24))})` }
+}
+
+// As the page writes it: a date only when one is set; clearing drops the key.
+export function withDue(todo, due) {
+  const { due: _old, ...rest } = todo
+  return due ? { ...rest, due } : rest
+}
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const dayNumber = s => {
+  const m = typeof s === 'string' && DUE.exec(s)
+  if (!m) return null
+  return Math.round(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / DAY)
+}
+
+// Today on this machine's clock, as YYYY-MM-DD.
+export const localToday = now => {
+  const d = new Date(now)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// The chip's words and state, or null for none:
+//   overdue: passed and not done; soon: today or within 2 days;
+//   later: further out; done: the item is done, the date shown plainly.
+export function dueChip(due, lane, today) {
+  const d = dayNumber(due)
+  const t = dayNumber(today)
+  if (d === null || t === null) return null
+  const diff = d - t
+  const weekday = WEEKDAYS[((d % 7) + 7 + 4) % 7] // 1970-01-01 was a Thursday
+  const date = due.slice(0, 4) === today.slice(0, 4) ? due.slice(5) : due
+  const state = lane === 'done' ? 'done' : diff < 0 ? 'overdue' : diff <= 2 ? 'soon' : 'later'
+  let label
+  if (state === 'done') label = `Due ${weekday} ${date}`
+  else if (diff < 0) label = `Overdue ${weekday} ${date}`
+  else if (diff === 0) label = 'Due today'
+  else if (diff === 1) label = 'Due tomorrow'
+  else label = `Due ${weekday} ${date}`
+  return { label, state }
+}
+
+// Priority first, then the nearer due date, as the page sorts (no date last).
+const dueKey = t => (isDueDate(t.due) ? t.due : '9999-99-99')
+const byPriority = (a, b) => rank(a.priority) - rank(b.priority) || dueKey(a).localeCompare(dueKey(b))
 
 // Stage: the three lanes. Tag: one group per tag, case-folded, ranked by its
 // best OPEN priority, done items sinking within it. Both as the web page.
@@ -360,12 +427,16 @@ function cronsBullet(payload, now) {
     staleMark(env, now)
 }
 
-function todoBlock(todos) {
+function todoBlock(todos, now) {
   if (!Array.isArray(todos)) return '**To-dos** unavailable'
   const count = lane => todos.filter(t => t.lane === lane).length
   const lines = [`**To-dos** ${plural(count('idea'), 'idea')} · ${count('doing')} doing · ${count('done')} done`]
+  const today = localToday(now)
   // Read on phones, so one short line per item, not a paragraph.
-  const item = t => `${md(clip(String(t.text ?? ''), 72))}${t.tag ? ` · ${md(t.tag)}` : ''}`
+  const item = t => {
+    const chip = dueChip(t.due, t.lane, today)
+    return `${md(clip(String(t.text ?? ''), 72))}${t.tag ? ` · ${md(t.tag)}` : ''}${chip ? ` · ${chip.state === 'overdue' ? `**${chip.label}**` : chip.label}` : ''}`
+  }
   todos.filter(t => t.lane !== 'done' && rank(t.priority) <= 1).sort(byPriority).slice(0, 5)
     .forEach(t => lines.push(`- **${t.priority}** ${item(t)}`))
   todos.filter(t => t.lane === 'doing' && rank(t.priority) > 1).slice(0, 3)
@@ -395,6 +466,6 @@ export function summaryText({ payload, todos, now, url, error = null, fetchedAt 
   if (alerts.length) blocks.push(alerts.map(a => `- **${md(a)}**`).join('\n'))
   if (limits.table) blocks.push(limits.table)
   blocks.push([limits.bullet, creditsBullet(payload, now), planBullet(payload, now), projectsBullet(payload, now), cronsBullet(payload, now)].filter(Boolean).join('\n'))
-  blocks.push(todoBlock(todos))
+  blocks.push(todoBlock(todos, now))
   return blocks.join('\n\n')
 }

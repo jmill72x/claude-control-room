@@ -357,3 +357,160 @@ test('a long to-do is clipped so its chip and tag still fit the pane', async ($,
   expect(2 + 1 + label.length + 1 + 'FANTASY FOOTBALL'.length).toBeLessThan(41)
   expect(label.endsWith('…')).toBe(true)
 })
+
+// --- The board's revision (If-Match) ---
+
+test('a save hands back the revision its read carried, as If-Match', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  await ui.press({ key: 'prio-t1' })
+  expect(r.seen.headers[0]).toMatchObject({ 'Content-Type': 'application/json', 'If-Match': '"rev-1"' })
+  // The next save reads again and carries the revision that write made.
+  await ui.press({ key: 'prio-t1' })
+  expect(r.seen.headers[1]).toMatchObject({ 'If-Match': '"rev-2"' })
+  expect(r.seen.puts.length).toBe(2)
+})
+
+test('a write that lands between the read and the write is never overwritten: 409, the current board, and a reload message', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  const elsewhere = TODOS.map(t => (t.id === 't3' ? { ...t, text: 'Retire the NAS (edited on the web)' } : t))
+  r.seen.beforePut = () => r.seen.setList(elsewhere)
+  await ui.press({ key: 'prio-t1' })
+  expect(r.seen.refused.length).toBe(1)
+  expect(r.seen.puts.length).toBe(0)
+  // The server's board is the other writer's, untouched, and the pane shows it.
+  expect(r.seen.list()).toEqual(elsewhere)
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/Not saved: the board changed elsewhere\. Reloaded the current board; make the change again\./)
+  expect((await ui.find({ key: 'todo-t3' }))?.props.label).toMatch(/edited on the web/)
+  expect((await ui.find({ key: 'item-t1' }))?.text).toMatch(/P1/)
+  // No second try behind the person's back.
+  expect(r.seen.headers.length).toBe(1)
+})
+
+test('after a 409 a reload that fails keeps the read list and says to reload', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  r.seen.beforePut = () => { r.seen.setList(TODOS.filter(t => t.id !== 't5')); r.seen.getsFail = true }
+  await ui.press({ key: 'prio-t1' })
+  expect(r.seen.puts.length).toBe(0)
+  expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/Not saved: the board changed elsewhere\. Press r to reload, then make the change again\./)
+  expect((await ui.find({ key: 'item-t1' }))?.text).toMatch(/P1/)
+})
+
+test('a server that sends no ETag still takes the write (If-Match: *)', async ($, on) => {
+  const r = setup(on, { server: { noEtag: true } })
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  await ui.press({ key: 'prio-t1' })
+  expect(r.seen.headers[0]).toMatchObject({ 'If-Match': '*' })
+  expect(r.seen.puts.length).toBe(1)
+})
+
+// --- Due dates ---
+
+// Fixture dates are counted from the test clock's own local day, so the
+// chips read the same in any timezone the kit runs in.
+const today = (() => {
+  const d = new Date(NOW)
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())
+})()
+const dayOf = (offset: number) => new Date(today + offset * 86_400_000).toISOString().slice(0, 10)
+const DATED = [
+  { id: 'd1', text: 'Renew the domain', lane: 'idea', priority: 'P2', due: dayOf(-1) },
+  { id: 'd2', text: 'Call the plumber', lane: 'doing', priority: 'P1', due: dayOf(0) },
+  { id: 'd3', text: 'Book the trip', lane: 'idea', priority: 'P2', due: dayOf(9) },
+  { id: 'd4', text: 'No date here', lane: 'idea', priority: 'P2' }
+]
+
+test('due dates show on the row: overdue in red, soon in amber, later dim', async ($, on) => {
+  setup(on, { server: { todos: DATED } })
+  const ui = await openTodos($)
+  const overdue = await ui.find({ key: 'due-chip-d1' })
+  expect(overdue?.text).toMatch(/^Overdue \w{3} /)
+  expect((await ui.find({ type: 'Text', text: overdue?.text }))?.props.color).toBe('error')
+  expect((await ui.find({ key: 'due-chip-d2' }))?.text).toBe('Due today')
+  expect((await ui.find({ type: 'Text', text: 'Due today' }))?.props.color).toBe('warning')
+  const later = await ui.find({ key: 'due-chip-d3' })
+  expect(later?.text).toMatch(/^Due \w{3} /)
+  expect((await ui.find({ type: 'Text', text: later?.text }))?.props.dimColor).toBe(true)
+  expect(await ui.find({ key: 'due-chip-d4' })).toBeUndefined()
+})
+
+test('setting a due date writes it as typed', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  expect((await ui.find({ key: 'due-t1' }))?.props.label).toBe('Set due')
+  await ui.press({ key: 'due-t1' })
+  await ui.input({ key: 'due-input-t1', text: ' 2026-11-25 ' })
+  expect(r.seen.puts[0].find((t: any) => t.id === 't1').due).toBe('2026-11-25')
+  expect(r.seen.headers[0]).toMatchObject({ 'If-Match': '"rev-1"' })
+  expect(await ui.find({ key: 'due-input-t1' })).toBeUndefined()
+})
+
+test('a date the server would refuse is refused in the pane, before any request, and stays to be fixed', async ($, on) => {
+  const r = setup(on)
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-t1' })
+  await ui.press({ key: 'due-t1' })
+  for (const bad of ['2026-02-30', '2026-13-01', '2026-11-5', '11/25/2026', '2026-11-25T09:00', 'tomorrow', '2026-02-29']) {
+    await ui.input({ key: 'due-input-t1', text: bad })
+    expect((await ui.find({ key: 'todos-error' }))?.text).toMatch(/Not saved: a due date is written YYYY-MM-DD/)
+    expect((await ui.find({ key: 'due-input-t1' }))?.props.value).toBe(bad)
+  }
+  expect(r.seen.puts.length).toBe(0)
+  expect(r.seen.headers.length).toBe(0)
+  // A leap day that exists is taken.
+  await ui.input({ key: 'due-input-t1', text: '2028-02-29' })
+  expect(r.seen.puts[0].find((t: any) => t.id === 't1').due).toBe('2028-02-29')
+})
+
+test('an empty date clears it, and the key goes rather than staying empty', async ($, on) => {
+  const r = setup(on, { server: { todos: DATED } })
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-d3' })
+  expect((await ui.find({ key: 'due-d3' }))?.props.label).toBe('Change due')
+  await ui.press({ key: 'due-d3' })
+  expect((await ui.find({ key: 'due-input-d3' }))?.props.value).toBe(dayOf(9))
+  await ui.input({ key: 'due-input-d3', text: '' })
+  const d3 = r.seen.puts[0].find((t: any) => t.id === 'd3')
+  expect('due' in d3).toBe(false)
+})
+
+test('submitting the date an item already has writes nothing', async ($, on) => {
+  const r = setup(on, { server: { todos: DATED } })
+  const ui = await openTodos($)
+  await ui.press({ key: 'todo-d3' })
+  await ui.press({ key: 'due-d3' })
+  await ui.input({ key: 'due-input-d3', text: dayOf(9) })
+  expect(r.seen.headers.length).toBe(0)
+  expect(await ui.find({ key: 'due-input-d3' })).toBeUndefined()
+})
+
+test('on mobile a due date shows and can be cleared, with no typing', async ($, on) => {
+  const r = setup(on, { server: { todos: DATED } })
+  const ui = await openTodos($, 'mobile')
+  expect((await ui.find({ key: 'due-chip-d2' }))?.text).toBe('Due today')
+  await ui.press({ key: 'todo-d2' })
+  expect(await ui.find({ key: 'due-d2' })).toBeUndefined()
+  await ui.press({ key: 'clear-due-d2' })
+  expect('due' in r.seen.puts[0].find((t: any) => t.id === 'd2')).toBe(false)
+  expect(r.seen.puts[0].find((t: any) => t.id === 'd1').due).toBe(dayOf(-1))
+})
+
+test('a due chip takes its room from the label, so the row still fits', async ($, on) => {
+  const long = { id: 'long', text: 'L'.repeat(150), lane: 'idea', tag: 'Fantasy football', priority: 'P1', due: dayOf(-3) }
+  setup(on, { server: { todos: [long] } })
+  await start($, false)
+  await run($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 56 } })
+  await ui.press({ key: 'tab-todos' })
+  const label = String((await ui.find({ key: 'todo-long' }))?.props.label ?? '')
+  const chip = String((await ui.find({ key: 'due-chip-long' }))?.text ?? '')
+  expect(chip).toMatch(/^Overdue /)
+  expect(2 + 1 + label.length + 1 + chip.length + 1 + 'FANTASY FOOTBALL'.length).toBeLessThan(57)
+})

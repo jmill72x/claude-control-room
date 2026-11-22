@@ -83,20 +83,31 @@ export const TODOS = [
 
 export const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
-const reply = (body: unknown, status = 200) =>
-  ({ status, ok: status >= 200 && status < 300, headers: { 'content-type': 'application/json' }, text: JSON.stringify(body) })
+const reply = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  ({ status, ok: status >= 200 && status < 300, headers: { 'content-type': 'application/json', ...headers }, text: JSON.stringify(body) })
 
 type On = (event: string, hook: (...args: any[]) => unknown) => unknown
 
 // Stands in for the Control Room server: answers $.http.fetch by path and
 // method, and records every write so a test can read what the mod sent.
-export function stubServer(on: On, opts: { dashboard?: unknown, todos?: unknown[], dashboardDeny?: string, putStatus?: number } = {}) {
+// The board has a revision as the real route does (server/routes.mjs): a GET
+// and a taken PUT send it as an ETag, and a PUT whose If-Match names another
+// revision gets 409 and changes nothing. `*` or no If-Match writes regardless.
+export function stubServer(on: On, opts: { dashboard?: unknown, todos?: unknown[], dashboardDeny?: string, putStatus?: number, noEtag?: boolean } = {}) {
   // `down` takes the server away mid-test: every request is then refused.
   let list = clone(opts.todos ?? TODOS)
+  let revision = 1
+  const etag = (): Record<string, string> => (opts.noEtag ? {} : { etag: `"rev-${revision}"` })
   const seen = {
-    dashboard: 0, todosGet: 0, puts: [] as any[], headers: [] as any[], down: false,
+    dashboard: 0, todosGet: 0, puts: [] as any[], headers: [] as any[], refused: [] as any[], down: false,
+    // Board GETs answer 503 while set.
+    getsFail: false,
+    // Runs once, as the next PUT arrives: a write elsewhere landing between
+    // the mod's read and its write.
+    beforePut: null as null | (() => void),
     // Stands for an edit made somewhere else, such as the web page.
-    setList: (next: unknown[]) => { list = clone(next) }
+    setList: (next: unknown[]) => { list = clone(next); revision++ },
+    list: () => clone(list)
   }
   on('http.fetch', (_$: unknown, e: any) => {
     const url = new URL(e.url)
@@ -109,15 +120,26 @@ export function stubServer(on: On, opts: { dashboard?: unknown, todos?: unknown[
     }
     if (url.pathname === '/api/todos' && method === 'GET') {
       seen.todosGet++
-      return { value: reply(list) }
+      if (seen.getsFail) return { value: reply({ error: 'unavailable' }, 503) }
+      return { value: reply(list, 200, etag()) }
     }
     if (url.pathname === '/api/todos' && method === 'PUT') {
+      const hook = seen.beforePut
+      seen.beforePut = null
+      hook?.()
       const body = JSON.parse(e.init.body)
+      const ifMatch = e.init.headers?.['If-Match']
+      if (!opts.noEtag && typeof ifMatch === 'string' && ifMatch !== '*' && ifMatch !== `"rev-${revision}"`) {
+        seen.refused.push(body)
+        seen.headers.push(e.init.headers)
+        return { value: reply({ error: 'the board changed since this copy was read', revision: `rev-${revision}` }, 409, etag()) }
+      }
       seen.puts.push(body)
       seen.headers.push(e.init.headers)
       if (opts.putStatus && opts.putStatus !== 200) return { value: reply({ error: 'unknown priority: P9' }, opts.putStatus) }
       list = body
-      return { value: reply(body) }
+      revision++
+      return { value: reply(body, 200, etag()) }
     }
     return { value: reply({ error: 'not found' }, 404) }
   })

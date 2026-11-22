@@ -223,3 +223,27 @@ test('a long to-do is clipped in the summary, which is read on phones', () => {
   expect(line.length).toBeLessThan(110)
   expect(line).toContain('…')
 })
+
+test('the summary carries each listed to-do\'s due date, overdue in bold', () => {
+  const d = new Date(NOW)
+  const day = (n: number) => new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) + n * DAY).toISOString().slice(0, 10)
+  const todos = [
+    { id: 'a', text: 'Late one', lane: 'idea', priority: 'P0', due: day(-2) },
+    { id: 'b', text: 'Today one', lane: 'doing', priority: 'P1', due: day(0) },
+    { id: 'c', text: 'Undated', lane: 'idea', priority: 'P1' }
+  ]
+  const text = summaryText({ payload: PAYLOAD, todos, now: NOW, url: 'u' })
+  expect(text).toMatch(/- \*\*P0\*\* Late one · \*\*Overdue \w{3} \d\d-\d\d\*\*\n/)
+  expect(text).toContain('- **P1** Today one · Due today')
+  expect(text).toMatch(/- \*\*P1\*\* Undated$/m)
+})
+
+test('within a priority, the nearer due date comes first and undated items last, as on the page', () => {
+  const todos = [
+    { id: 'x', text: 'x', lane: 'idea', priority: 'P2' },
+    { id: 'y', text: 'y', lane: 'idea', priority: 'P2', due: '2026-12-01' },
+    { id: 'z', text: 'z', lane: 'idea', priority: 'P2', due: '2026-11-01' },
+    { id: 'w', text: 'w', lane: 'idea', priority: 'P1', due: '2027-01-01' }
+  ]
+  expect(groupTodos(todos, 'stage')[0].items.map(t => t.id)).toEqual(['w', 'z', 'y', 'x'])
+})

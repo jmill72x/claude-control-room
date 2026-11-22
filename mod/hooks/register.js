@@ -5,7 +5,7 @@
 // reads /api/dashboard and /api/todos and writes /api/todos, exactly as the
 // web page does, so the two can never disagree about what is true.
 
-import { summaryText, cyclePriority, advanceStage, makeTodo, updateItem, removeItem, workPrompt } from './model.js'
+import { summaryText, cyclePriority, advanceStage, makeTodo, updateItem, removeItem, workPrompt, readDue, withDue } from './model.js'
 import { paneTree, NO_TAG } from './view.js'
 
 const PANE = 'control-room'
@@ -18,6 +18,10 @@ const FETCH_TIMEOUT_MS = 5_000
 // Requests that timed out but never settled. Past this many, polling waits
 // for one to come back rather than piling more onto a dead socket.
 const MAX_UNSETTLED = 4
+// What a 409 says: someone else's write landed between this pane's read and
+// its write, so nothing was written over it.
+const STALE_MESSAGE = 'Not saved: the board changed elsewhere. Reloaded the current board; make the change again.'
+const STALE_UNREAD = 'Not saved: the board changed elsewhere. Press r to reload, then make the change again.'
 
 let options = {}
 let paneOpen = false
@@ -30,6 +34,8 @@ const st = {
   selected: null,
   confirmDelete: null,
   editing: null,
+  editingDue: null,
+  dueDraft: null,
   newTag: NO_TAG,
   showDone: false,
   payload: null,
@@ -73,6 +79,16 @@ async function getJson($, path) {
   return JSON.parse(res.text)
 }
 
+// The board with its revision: the server sends it as an ETag (header names
+// come lower-cased), and the PUT hands it back as If-Match.
+async function getBoard($) {
+  const res = await timed($, $.http.fetch(baseUrl() + '/api/todos'))
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const list = JSON.parse(res.text)
+  if (!Array.isArray(list)) throw new Error('the server sent no list')
+  return { list, etag: res.headers?.etag || null }
+}
+
 // Reads both endpoints. A failure never replaces the last good reading: the
 // figures stay, and the error says why they are old.
 async function refresh($) {
@@ -107,13 +123,16 @@ async function refresh($) {
 // Read-modify-write against the server's current list, so an edit made on
 // the web page a moment ago is not overwritten by this pane's older copy.
 // `change` returns null when its item is gone, and then nothing is written.
+// The PUT carries the read's revision as If-Match, as the page and Jarvis's
+// board-write do, so a write that lands between this read and this write is
+// never overwritten: the server answers 409, and the pane re-reads and says so.
+// A server that sent no ETag gets `*` (no check), as the page sends.
 async function saveTodos($, change) {
   st.saving = true
   st.todosError = null
   $.ui.invalidate('ui.render')
   try {
-    const current = await getJson($, '/api/todos')
-    if (!Array.isArray(current)) throw new Error('the server sent no list')
+    const { list: current, etag } = await getBoard($)
     const next = change(current)
     if (next === null) {
       st.todos = current
@@ -122,9 +141,22 @@ async function saveTodos($, change) {
     }
     const res = await timed($, $.http.fetch(baseUrl() + '/api/todos', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'If-Match': etag ?? '*' },
       body: JSON.stringify(next)
     }))
+    // Never retried: the change was made from a list that is no longer the
+    // board, so the person sees the new board and decides again. (The 428 a
+    // browser gets for a PUT with no If-Match cannot reach this: it always sends one.)
+    if (res.status === 409) {
+      try {
+        st.todos = (await getBoard($)).list
+        st.todosError = STALE_MESSAGE
+      } catch {
+        st.todos = current
+        st.todosError = STALE_UNREAD
+      }
+      return
+    }
     if (!res.ok) {
       let detail = ''
       try { detail = JSON.parse(res.text)?.error ?? '' } catch { detail = '' }
@@ -231,6 +263,8 @@ export function register(on, opts) {
         st.selected = st.selected === id ? null : id
         st.confirmDelete = null
         st.editing = null
+        st.editingDue = null
+        st.dueDraft = null
         redraw()
       },
       cyclePriority: id => saveTodos($, list => updateItem(list, id, cyclePriority)),
@@ -255,6 +289,28 @@ export function register(on, opts) {
         const body = String(value ?? '').trim()
         if (!body) { redraw(); return undefined }
         return saveTodos($, list => updateItem(list, id, t => ({ ...t, text: body })))
+      },
+      editDue: id => { st.editingDue = id; st.dueDraft = null; redraw() },
+      // Checked here, the way the server checks it, so a bad date never
+      // reaches the server; the field stays open with what was typed.
+      saveDue: (id, value) => {
+        const read = readDue(value)
+        if (read.error) {
+          st.todosError = read.error
+          st.dueDraft = String(value ?? '')
+          redraw()
+          return undefined
+        }
+        st.editingDue = null
+        st.dueDraft = null
+        const shown = (st.todos ?? []).find(t => t.id === id)
+        if (shown && (shown.due ?? '') === read.due) { st.todosError = null; redraw(); return undefined }
+        return saveTodos($, list => updateItem(list, id, t => withDue(t, read.due)))
+      },
+      clearDue: id => {
+        st.editingDue = null
+        st.dueDraft = null
+        return saveTodos($, list => updateItem(list, id, t => withDue(t, '')))
       },
       setNewTag: value => { st.newTag = value; redraw() },
       toggleDone: () => { st.showDone = !st.showDone; redraw() },

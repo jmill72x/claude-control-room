@@ -56,7 +56,7 @@ the week's heat map) or the mod (`mod/README.md`).
 | Usage drivers | Mod | `/usage`'s contributing-factors block | Real, but **local-machine-only and approximate** — unlike the account-wide limit percentages, see below |
 | Projects | Mod | Cowork session metadata + transcript logs + git branch | Real; no running/idle state since 2026-10-30 (the `claude agents --json` poll was dropped, see [How often the server starts `claude`](#how-often-the-server-starts-claude)) |
 | Scheduled jobs | Page (the Jobs chip, Today's routines, Next 24 hours), mod (the cron list) | `~/Library/LaunchAgents/*.plist` + `launchctl list`, plus `/api/ingest/crons` for anything that reports in from elsewhere | Real |
-| The board (ideas, doing, done) | Page (the Board tab), mod (To-dos) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a tag and an optional `P0`–`P3` priority, and is sorted by priority within its lane, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done), and a per-viewer sort by due date puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
+| The board (ideas, doing, done) | Page (the Board tab), mod (To-dos) | `server/todos.json`, read and written through the server | Real, but local state, not derived from any external source. Each item carries a stage, a tag and an optional `P0`–`P3` priority, and is sorted by priority within its lane, unset last. An item can carry an optional due date, shown as a chip on its card (red once it has passed, unless the item is done) and on the mod's row, where it is set, changed or cleared too, and a per-viewer sort by due date puts dated items first, soonest first (see "The board's items" below). Tags are printed uppercase, so the server unifies tags that differ only by case on every write (majority casing wins) rather than letting `Pi` and `pi` fork invisibly |
 
 **Chat (claude.ai) is not a temporary gap — it has no local source and never will.**
 Conversations there are server-side; the client never computes or exposes
@@ -3284,9 +3284,11 @@ Now the board has a revision: a hash of `server/todos.json` as it sits on disk.
 - `PUT /api/todos` with `If-Match: "<revision>"` lands only if the board is still at that
   revision; otherwise it is refused with **409** `{error, revision}` and nothing is
   written. A successful PUT answers with the new `ETag`.
-- **A PUT with no `If-Match` still writes**, unconditionally: that is how curl, Jarvis's
-  GET → modify → PUT block and the Claude Code mod write, and none of them needs to
-  change. The exception is a PUT from a browser (it carries an `Origin` header) with no
+- **A PUT with no `If-Match` still writes**, unconditionally, so a plain curl GET →
+  modify → PUT needs no change. Jarvis's `board-write` and the Claude Code mod send the
+  `ETag` of their GET back as `If-Match` (the mod since `jos/mod-ifmatch`): on a 409 the
+  mod writes nothing, shows the board it re-reads and says "Not saved: the board changed
+  elsewhere", and it never retries on its own. The exception is a PUT from a browser (it carries an `Origin` header) with no
   `If-Match`: that can only be a page loaded before this check existed, so it gets
   **428** and writes nothing; the old page then re-reads the board on its own.
 - The page sends `If-Match` on every save and sends saves one at a time. On a 409 it
