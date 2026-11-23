@@ -711,8 +711,13 @@ rotate after a leak, and the hook would still send it to the TCP port. The socke
 nothing to leak and takes the ingest off the port Serve shares.
 
 **The TCP port** refuses every ingest post with a 403 (`the ingest takes posts on its
-Unix socket only`), before reading the body and with `Connection: close`, logged once per
-route, except one route in a transition. While config's `ingest.tcp` is `"legacy"` (the
+Unix socket only`), before reading the body and with `Connection: close`. A route and
+reason's first refusal is logged at once; later ones are counted, at most one line an hour
+per route and reason, written at the hour's end when any were held (`ingest: refused 3 more
+posts to /api/ingest/crons on the TCP port since the last such line (4 since the start)`;
+`lib/refusal-counts.mjs`). The lines name the route and a fixed reason, never a body,
+header value or address; past 20 routes and reasons, the rest share one "other" line.
+`/api/health` is unchanged. All this holds except for one route in a transition. While config's `ingest.tcp` is `"legacy"` (the
 default, so a restart doesn't cut off hooks still posting to the port), `POST
 /api/ingest/needs-you` is still taken on the port from this machine, behind the loopback
 guard. Each post to that route is reported, taken or refused: an `ingest:` line on the

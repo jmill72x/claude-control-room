@@ -11,6 +11,7 @@ import {
 import { checkNeedsYou, needsYouLogLine, BLOCK_EVENTS } from './lib/needs-you.mjs';
 import { checkExactReport } from './lib/exact-commands.mjs';
 import { checkLocalAlert, proxyHeaderOf, LOCAL_ALERT_ROUTE, LOCAL_ALERT_BODY_MAX } from './lib/local-alerts.mjs';
+import { createRefusalCounts } from './lib/refusal-counts.mjs';
 
 // 256 KB is far more than any real feed and small enough that a hostile or
 // buggy client cannot buffer the process to death. Before this, a 20 MB body
@@ -336,7 +337,7 @@ export function createIngestHandler(deps) {
 // and `loops` in /api/dashboard. Without it, both say the loops are not set up.
 // `localAlerts` is lib/local-alerts.mjs's store: its `view(now)` joins the raised alerts
 // (the strip, Needs you and acks); posts reach it on the ingest socket only.
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, localAlerts = NO_LOCAL_ALERTS, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now() }) {
+export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, localAlerts = NO_LOCAL_ALERTS, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now(), setTimer = undefined }) {
   const emptyLoops = (status, why) => ({ status, why, open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
   // A view that throws must not take /api/dashboard down with it (Ultron's L5, 11-13): the
   // panel says the view failed, and the log says so once until it works again.
@@ -368,16 +369,13 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
   const raisedFrom = (payload, now) => [...localAlerts.view(now), ...buildAlerts(payload, config, now)];
   const rawAlerts = now => raisedFrom(panels(now), now);
   // An ingest post on this port is refused before its body is read, and answered with
-  // Connection: close (like a 413), so the unread body is never drained. Each route and
-  // reason is logged once, the first 20, so a flood doesn't fill the log; the line
-  // names a header, never its value.
-  const refusedSeen = new Set();
-  const refuse = (path, why, line, words) => {
-    const key = `${path} ${why}`;
-    if (!refusedSeen.has(key) && refusedSeen.size < 20) {
-      refusedSeen.add(key);
-      log(line);
-    }
+  // Connection: close (like a 413), so the unread body is never drained. A route and
+  // reason's first refusal is logged at once; later ones are counted, at most one line
+  // an hour per route and reason (lib/refusal-counts.mjs), so a flood doesn't fill the
+  // log and a repeat isn't silent. A line names a header, never its value.
+  const countRefusal = createRefusalCounts({ log, clock, ...(setTimer ? { setTimer } : {}) });
+  const refuse = (path, reason, line, words) => {
+    countRefusal(path, reason, line);
     const refused = new HttpError(403, words);
     refused.close = true;
     throw refused;
@@ -388,7 +386,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
   const guardLocal = (req, path) => {
     const why = localCaller(req);
     if (!why) return;
-    refuse(path, why, `ingest: refused a post to ${path} that did not come from this machine (${why})`, 'the ingest takes posts from this machine only');
+    refuse(path, `that did not come from this machine (${why})`, `ingest: refused a post to ${path} that did not come from this machine (${why})`, 'the ingest takes posts from this machine only');
   };
   const SOCKET_ONLY = 'the ingest takes posts on its Unix socket only (README, "What the ingest endpoints require")';
 
@@ -567,7 +565,7 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
           guardLocal(req, path);
           if (await ingest(req, res, path)) return;
         }
-        refuse(path, 'socket only', `ingest: refused a post to ${path} on the TCP port (the ingest takes posts on its Unix socket only)`, SOCKET_ONLY);
+        refuse(path, 'on the TCP port', `ingest: refused a post to ${path} on the TCP port (the ingest takes posts on its Unix socket only)`, SOCKET_ONLY);
       }
 
       return json(res, 404, { error: 'not found' });

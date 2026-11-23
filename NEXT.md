@@ -4433,7 +4433,7 @@ caught. The server suite passes (1788).
   already reaches them; this makes it not depend on that. The console kit and the docs
   need nothing.
 
-## 36. Ultron's lows on §28: a stopped run's ask, a run with no meta file, the hook script's races (boards 2c49fcfa and 8b2c33a9, P3; staged 2026-11-22 on `jos/warn-wait-lows`, off main 58bdd43)
+## 36. Ultron's lows on §28: a stopped run's ask, a run with no meta file, the hook script's races (boards 2c49fcfa and 8b2c33a9, P3; merged as main 39fd448, seen 2026-11-22)
 
 - **2c49fcfa L1, a stopped subagent's ask.** Does TaskStop fire `SubagentStop`? Read from
   the 2.1.330 binary (minified, not seen live): no, in the usual case. TaskStop aborts the
@@ -4495,3 +4495,27 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart for the server side (no web build),
   with no agent runs going. The script and README need nothing; the matching only matters
   once §28's hook script has been applied.
+
+## 37. The TCP port's ingest refusals are counted, per route and reason (board 1ba66c95, P3, Ultron's 11-11 L5; staged 2026-11-22 on `jos/refusal-counts`, off main 39fd448)
+
+- **Before:** `refuse()` in `routes.mjs` logged the first refusal of each route and reason
+  (the first 20 keys), then nothing, so a hook posting to the wrong place, or a tailnet
+  device trying again and again, went unseen.
+- **Now:** `lib/refusal-counts.mjs` keeps a count per route and reason. The first refusal
+  still logs its old line at once. Later ones are held, at most one line an hour per key,
+  written at the hour's end when any were held: `ingest: refused N more posts to <route>
+  <reason> since the last such line (M since the start)`. It works like the legacy notice
+  (`createLegacyNotice`): one unref'd timer per key, and a stale timer does nothing. Past 20
+  keys the rest share one "other" line that names no route. The reason is fixed words (the
+  proxy reason names a header, never its value), so no body, token, header value or
+  address reaches a line. **Choice:** the log only. `/api/health` stays `{ ok: true }`,
+  because it is reachable on the tailnet and the brief allowed either. `refused.totals()`
+  is there for a health field if one is ever wanted.
+- **Checked (2026-11-22):** server suite 1,800 of 1,800. New tests in
+  `test/refusal-counts.test.mjs` cover one key refused several times, two keys (and one
+  route with two reasons), a stale timer, the cap, and the TCP handler end to end with a
+  token, login, address and host in the post, none of which reaches a line. Four mutants
+  (no count reset, no stale-timer guard, no cap, the old log-once behavior) were all
+  caught. **Not verified:** a real hour passing in the running service.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
+  no agent runs going.
