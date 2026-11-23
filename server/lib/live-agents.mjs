@@ -8,8 +8,12 @@
 // or a run started as `claude -p --agent <slug>` for an agent on the roster. It is
 // live while its latest assistant line has not ended it (lib/parse-transcript.mjs,
 // endsRun) and some line was written within LIVE_WINDOW_MS. A run stopped from
-// outside (its session closed, a task stopped) writes no last line, so the window
-// is what drops it; until then the page marks it quiet.
+// outside (its session closed, a task stopped) writes no final answer, so the window
+// is what drops it; until then the page marks it quiet. A stopped task may write an
+// interruption mark (seen 2026-11-14 and 11-18), but whether every mark ends a subagent
+// is unchecked and the restart warning's safe side is one run too many, so the panel
+// doesn't count it as an end; the needs-you asks do (endedThreads, below), since an
+// ask made before the mark is over either way.
 //
 // What the page gets is read-only and says no more than the Latest runs panel does:
 // the agent's type, the brief's one-line description (never the prompt), when the
@@ -28,6 +32,7 @@
 import { createHash } from 'node:crypto';
 import { familyOf } from './hourly.mjs';
 import { taskLine } from './agent-work.mjs';
+import { agentKey, NEEDS_YOU_TTL_MS } from './needs-you.mjs';
 
 // A tool call can run 10 minutes (Bash's longest timeout) without a line written,
 // so the window is longer than that.
@@ -44,6 +49,13 @@ function label(value) {
   if (line === null) return null;
   const chars = [...line];
   return chars.length <= LABEL_MAX ? line : `${chars.slice(0, LABEL_MAX - 1).join('').trimEnd()}…`;
+}
+
+// A run's latest time: its newest request, or a later line (a tool's result).
+function lastOf(records, t) {
+  let last = -Infinity;
+  for (const r of records) last = Math.max(last, r.ts);
+  return Number.isFinite(t?.lastLineTs) ? Math.max(last, t.lastLineTs) : last;
 }
 
 const idOf = file => (typeof file === 'string' ? createHash('sha256').update(file).digest('hex').slice(0, 16) : null);
@@ -66,6 +78,9 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
   };
 
   const live = [];
+  // Live subagent runs with no .meta.json: not shown (no type or brief to show), but
+  // counted in `unplaced` below, since nothing says whose they are (Ultron's L1 on §28).
+  let bare = 0;
   for (const t of Array.isArray(transcripts) ? transcripts : []) {
     if (!t || t.ended) continue;
     const records = Array.isArray(t.records) ? t.records.filter(r => Number.isFinite(r?.ts) && Number.isFinite(r?.tokens)) : [];
@@ -73,7 +88,10 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
 
     let row;
     if (t.subagent) {
-      if (!t.meta) continue;
+      if (!t.meta) {
+        if (now - lastOf(records, t) <= LIVE_WINDOW_MS) bare += 1;
+        continue;
+      }
       const agent = rosterAgent(t.meta.agentType);
       const stoppable = agent !== null && agent !== lead && t.meta.requestShape === 'background' && isLeadName(sessionNames?.get?.(t.sessionId));
       row = { agent: agent?.key ?? null, type: label(t.meta.agentType), direct: false, task: taskLine(t.meta.description), session: sessionOf(t.sessionId), stoppable };
@@ -83,14 +101,13 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
       row = { agent: agent.key, type: agent.key, direct: true, task: null, session: null, stoppable: false };
     }
 
-    let start = Infinity, last = -Infinity, tokens = 0, latest = null;
+    let start = Infinity, tokens = 0, latest = null;
     for (const r of records) {
       start = Math.min(start, r.ts);
-      last = Math.max(last, r.ts);
       tokens += r.tokens;
       if (latest === null || r.ts > latest.ts) latest = r;
     }
-    if (Number.isFinite(t.lastLineTs)) last = Math.max(last, t.lastLineTs);
+    const last = lastOf(records, t);
     if (now - last > LIVE_WINDOW_MS) continue;
     live.push({ id: idOf(t.filePath), ...row, start, last, tokens, model: familyOf(latest.model) });
   }
@@ -101,7 +118,28 @@ export function buildLiveAgents({ transcripts, sessionNames, roster, now = Date.
   // its first name line (or with that line unread) puts his runs here, not under his name.
   // Restart Jarvis can't tell those from another terminal's, so any counts as "not known"
   // (lib/jarvis-recover.mjs, runsAtRisk; board 54b191ec, Ultron's M1). Over all live
-  // runs, not only the MAX_LIVE sent.
-  const unplaced = live.filter(r => !r.direct && r.session === null).length;
+  // runs, not only the MAX_LIVE sent, and with the live runs that have no meta file (in
+  // any session: unshown, so no confirm can name them).
+  const unplaced = live.filter(r => !r.direct && r.session === null).length + bare;
   return { windowMs: LIVE_WINDOW_MS, more: Math.max(0, live.length - MAX_LIVE), runs: live.slice(0, MAX_LIVE), unplaced };
+}
+
+// The subagent threads that have stopped, for the needs-you asks (lib/needs-you.mjs,
+// endThreads; board 2c49fcfa, Ultron's L1 on §28): Map<session id, Map<agentKey of the
+// agent id, when it stopped>>. A subagent's transcript is <session>/subagents/
+// agent-<agent id>.jsonl, the id its hooks send as `agent_id`; it stopped at its final
+// answer or at an interruption mark (lib/parse-transcript.mjs, stoppedAt). A stop older
+// than an ask's lapse can end no ask, so it is left out.
+const AGENT_FILE = /(?:^|\/)agent-([^/]+)\.jsonl$/;
+export function endedThreads(transcripts, now = Date.now()) {
+  const out = new Map();
+  for (const t of Array.isArray(transcripts) ? transcripts : []) {
+    if (!t?.subagent || typeof t.sessionId !== 'string' || !Number.isFinite(t.stoppedAt)) continue;
+    if (now - t.stoppedAt >= NEEDS_YOU_TTL_MS) continue;
+    const id = typeof t.filePath === 'string' ? AGENT_FILE.exec(t.filePath)?.[1] : null;
+    if (!id) continue;
+    if (!out.has(t.sessionId)) out.set(t.sessionId, new Map());
+    out.get(t.sessionId).set(agentKey(id), t.stoppedAt);
+  }
+  return out;
 }

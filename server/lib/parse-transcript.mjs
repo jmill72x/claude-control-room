@@ -61,6 +61,17 @@ export function endsRun(message) {
   return FINAL_STOPS.has(message?.stop_reason);
 }
 
+// Whether a user line is Claude Code's interruption mark ("[Request interrupted by user]",
+// or "... for tool use"): what a run's transcript gets when it is stopped from outside
+// (TaskStop, Esc), as a text block the harness writes, never a tool's result. Seen as a
+// stopped subagent's last line on 2026-11-14 and 11-18 (board 2c49fcfa).
+const INTERRUPTED = '[Request interrupted by user';
+export function isInterruption(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content.startsWith(INTERRUPTED);
+  return Array.isArray(content) && content.some(c => c?.type === 'text' && typeof c.text === 'string' && c.text.startsWith(INTERRUPTED));
+}
+
 // One transcript's parser, fed a line at a time, so that no transcript has to be
 // held whole. A long session's file outgrows what one string can hold: Node stops
 // at about 512 MiB, and Jarvis's transcript was 145 MB after 31 hours on
@@ -81,6 +92,12 @@ export function createTranscriptParser(surface) {
   // the latest time on any line (a request being sent, a tool's result), and whether
   // the latest assistant line ended the run (see endsRun).
   let lastLineTs = null, ended = false;
+  // When the thread last stopped, for the needs-you asks (lib/needs-you.mjs, endThreads):
+  // the time of an assistant line that ended the run or of an interruption mark, and
+  // null again once an assistant line goes on. `ended` ignores the mark, so the live
+  // agents panel and Restart Jarvis's warning still keep a stopped run until its window
+  // lapses (counting one too many is their safe side).
+  let stoppedAt = null;
 
   return {
     line(line) {
@@ -93,7 +110,12 @@ export function createTranscriptParser(surface) {
 
       const lineTs = Date.parse(d.timestamp ?? '');
       if (Number.isFinite(lineTs) && (lastLineTs === null || lineTs > lastLineTs)) lastLineTs = lineTs;
-      if (d.type === 'assistant' && d.message && typeof d.message === 'object') ended = endsRun(d.message);
+      if (d.type === 'assistant' && d.message && typeof d.message === 'object') {
+        ended = endsRun(d.message);
+        stoppedAt = ended && Number.isFinite(lineTs) ? lineTs : null;
+      } else if (d.type === 'user' && Number.isFinite(lineTs) && isInterruption(d.message)) {
+        stoppedAt = lineTs;
+      }
 
       if (d.sessionId && !sessionId) sessionId = d.sessionId;
       if (d.type === 'ai-title' && d.aiTitle) { title = d.aiTitle; return; }
@@ -140,7 +162,7 @@ export function createTranscriptParser(surface) {
         if (tokens <= 0 && cacheRead <= 0) continue;
         records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
       }
-      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended };
+      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended, stoppedAt };
     }
   };
 }

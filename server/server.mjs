@@ -69,7 +69,7 @@ import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
 import { buildAgentWork } from './lib/agent-work.mjs';
-import { buildLiveAgents } from './lib/live-agents.mjs';
+import { buildLiveAgents, endedThreads } from './lib/live-agents.mjs';
 import { createStepUp, deviceEvent } from './lib/stepup.mjs';
 import { createAgentStop } from './lib/agent-stop.mjs';
 import { createRecover, readRecoverConfig, leadHealth, KILL_FILE as RECOVER_KILL_FILE } from './lib/jarvis-recover.mjs';
@@ -275,6 +275,10 @@ registry.register('sessions', async () => {
     const name = rosterName(t.agentName) ?? rosterName(t.agentSetting);
     if (name) sessionAgents.set(t.sessionId, name);
   }
+  // A stopped subagent sends no SubagentStop, so its asks would hold a permission wait
+  // open (board 2c49fcfa): its transcript says it stopped (lib/needs-you.mjs, endThreads).
+  const stopped = needsYou.endThreads(endedThreads(transcripts, now), now);
+  if (stopped.dropped > 0) console.log(`needs-you: ${stopped.dropped} ask${stopped.dropped === 1 ? '' : 's'} of stopped subagents dropped, ${stopped.ended} wait${stopped.ended === 1 ? '' : 's'} ended, ${stopped.open} open`);
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).

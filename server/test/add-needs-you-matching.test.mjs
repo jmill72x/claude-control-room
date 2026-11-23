@@ -169,3 +169,122 @@ test('the script\'s new entries are README\'s, and its default target is the rea
     assert.ok(c.startsWith("/usr/bin/jq -c '{hook_event_name,session_id,notification_type,agent_id,tool_name,duration_ms,at:(now*1000|floor)}' | /usr/bin/curl -q -s -m "), event);
   }
 });
+
+// Ultron's L2 on §28: the two race windows, driven by loading the script as a module in
+// /usr/bin/python3 -I and making the "other session" act at the exact step: a symlink
+// swapped in after the lstat check, and a save landing after the backup, just before
+// the rename (a new text, or the same text in a new file).
+const HARNESS = String.raw`
+import contextlib, importlib.util, io, json, os, sys
+script, path, scenario = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location('nym', script)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+real_lstat, real_backup = os.lstat, mod.write_backup
+def swap_link(p, *a, **k):
+    info = real_lstat(p, *a, **k)
+    if p == path and scenario == 'dir':
+        os.lstat = real_lstat
+        os.rename(path, path + '.moved')
+        os.mkdir(path)
+    if p == path and scenario in ('link', 'file'):
+        os.lstat = real_lstat
+        decoy = path + '.decoy'
+        with open(path, encoding='utf-8') as f, open(decoy, 'w', encoding='utf-8') as g:
+            g.write(f.read())
+        os.unlink(path)
+        if scenario == 'link':
+            os.symlink(decoy, path)
+        else:
+            os.rename(decoy, path)
+    return info
+os.lstat = swap_link
+def late_save(p, text):
+    b = real_backup(p, text)
+    if scenario == 'edit':
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(text.replace('"opus"', '"sonnet"'))
+    elif scenario == 'sneaky':
+        # Same length, same inode, and the old modification time put back.
+        before = os.stat(p)
+        with open(p, 'r+', encoding='utf-8') as f:
+            f.write(text.replace('"opus"', '"opux"', 1))
+        os.utime(p, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif scenario == 'same':
+        with open(p + '.new', 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(p + '.new', p)
+    return b
+mod.write_backup = late_save
+err = io.StringIO()
+with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+    code = mod.main(['--settings', path, '--apply'])
+print(json.dumps({'code': code, 'err': err.getvalue()}))
+`;
+const race = (s, scenario) => {
+  const r = spawnSync(PY, ['-I', '-c', HARNESS, SCRIPT, s.settings, scenario], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+};
+const leftovers = async s => (await readdir(s.dir)).filter(n => n.startsWith('.settings.'));
+
+test('the race windows (Ultron\'s L2): a symlink swapped in after the check is not read through; a save after the backup is not overwritten', async t => {
+  if (skip(t)) return;
+  // The harness itself, with nobody else acting: it applies.
+  const calm = await setup();
+  assert.equal(race(calm, 'none').code, 0);
+  assert.ok((await readFile(calm.settings, 'utf8')).includes('agent_id,tool_name,duration_ms'));
+
+  const link = await setup();
+  const r1 = race(link, 'link');
+  assert.equal(r1.code, 1);
+  assert.match(r1.err, /^refused: .*could not be opened as a regular file.*nothing changed/);
+  assert.ok((await readFile(`${link.settings}.decoy`, 'utf8')).includes('notification_type,at:(now'), 'the file behind the link is untouched');
+  assert.deepEqual(await backups(link), []);
+  // Another regular file swapped in after the check: not the one checked.
+  const swapped = await setup();
+  const r0 = race(swapped, 'file');
+  assert.equal(r0.code, 1);
+  assert.match(r0.err, /^refused: .*was replaced while this ran: nothing changed/);
+  assert.ok(!(await readFile(swapped.settings, 'utf8')).includes('agent_id,tool_name'));
+  assert.deepEqual(await backups(swapped), []);
+  // A folder swapped in: a refusal, not a crash.
+  const folder = await setup();
+  const rd = race(folder, 'dir');
+  assert.equal(rd.code, 1);
+  assert.match(rd.err, /^refused: .*is not a regular file: nothing changed/);
+
+  const edit = await setup();
+  const r2 = race(edit, 'edit');
+  assert.equal(r2.code, 1);
+  assert.match(r2.err, /^refused: .*changed while this ran: nothing changed, run it again \(the backup .*settings\.json\.bak-\d{8}-\d{6} was made first and is left\)\n$/);
+  const kept = await readFile(edit.settings, 'utf8');
+  assert.ok(kept.includes('"sonnet"') && !kept.includes('agent_id,tool_name'), 'the other save stands');
+  assert.deepEqual(await leftovers(edit), [], 'no temp file left');
+
+  // A save that keeps the inode, the size and the modification time: the text tells.
+  const sneaky = await setup();
+  const rs = race(sneaky, 'sneaky');
+  assert.equal(rs.code, 1);
+  assert.match(rs.err, /changed while this ran/);
+  assert.ok((await readFile(sneaky.settings, 'utf8')).includes('"opux"'));
+
+  const same = await setup();
+  const before = await readFile(same.settings, 'utf8');
+  const ino = (await stat(same.settings)).ino;
+  const r3 = race(same, 'same');
+  assert.equal(r3.code, 1, 'a new file with the same text is still not the one read');
+  assert.match(r3.err, /changed while this ran/);
+  assert.equal(await readFile(same.settings, 'utf8'), before);
+  assert.notEqual((await stat(same.settings)).ino, ino, 'the other file stands, not ours');
+  assert.deepEqual(await leftovers(same), []);
+});
+
+test('README spells out the undo: the cp of the backup the run named', async () => {
+  const text = await readme();
+  const at = text.indexOf('`deploy/add-needs-you-matching.py` makes the change');
+  assert.ok(at > 0);
+  const near = text.slice(at, at + 3000);
+  assert.match(near, /cp -p ~\/\.claude\/settings\.json\.bak-YYYYMMDD-HHMMSS ~\/\.claude\/settings\.json/);
+  assert.match(await readFile(SCRIPT, 'utf8'), /cp -p ~\/\.claude\/settings\.json\.bak-YYYYMMDD-HHMMSS ~\/\.claude\/settings\.json/);
+});

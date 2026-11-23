@@ -35,7 +35,14 @@ When it writes: a backup beside the file first (settings.json.bak-YYYYMMDD-HHMMS
 never overwriting one), then a temporary file in the same folder, flushed and renamed over
 the original with the original's mode, then the file is read back and checked. The file is
 written as two-space JSON, the layout Claude Code itself writes; when the old layout was
-another, the run says so. To undo: copy the backup back over settings.json.
+another, the run says so. Every read opens the file without following a symlink
+(O_NOFOLLOW), and just before the rename the file must still be the one read (same inode,
+size, modification time and text), else nothing is renamed over it and the run says so
+(Ultron's L2 on NEXT.md section 28; the window left is the rename itself). To undo, copy
+the backup the run named back over the file, in a terminal, with no session saving
+settings meanwhile:
+
+    cp -p ~/.claude/settings.json.bak-YYYYMMDD-HHMMSS ~/.claude/settings.json
 
 What it prints is the change to the "hooks" object only: never the rest of the file, which
 can hold tokens (an "env" block).
@@ -183,6 +190,35 @@ def hooks_diff(before, after, path):
         fromfile='%s: hooks' % path, tofile='%s: hooks (with matching)' % path)
 
 
+def identity(info):
+    """What says the file is still the one read: its device, inode, size and mtime."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def read_nofollow(path):
+    """(text, stat) of the file, opened without following a symlink: a symlink swapped in
+    after the lstat check is refused, not read through."""
+    try:
+        # O_NONBLOCK: a FIFO swapped in is not waited on (a regular file reads the same).
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as err:
+        raise Refusal('%s could not be opened as a regular file (%s): nothing changed' % (path, err.strerror))
+    # Checked on the descriptor before it becomes a file object (a folder can't).
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        raise Refusal('%s is not a regular file: nothing changed' % path)
+    with os.fdopen(fd, 'r', encoding='utf-8') as f:
+        return f.read(), info
+
+
+def still_same(path, text, info):
+    """A Refusal unless the file is still the one read: same identity and text."""
+    now_text, now_info = read_nofollow(path)
+    if identity(now_info) != identity(info) or now_text != text:
+        raise Refusal('%s changed while this ran: nothing changed, run it again' % path)
+
+
 def write_backup(path, text):
     stamp = time.strftime('%Y%m%d-%H%M%S')
     backup = '%s.bak-%s' % (path, stamp)
@@ -195,7 +231,10 @@ def write_backup(path, text):
     return backup
 
 
-def write_atomic(path, text, mode):
+def write_atomic(path, text, mode, expect=None):
+    """Write `text` to a temp file beside `path` and rename it over. With `expect`
+    (the text and stat read), the file is checked just before the rename and left alone
+    when it changed meanwhile (a Refusal)."""
     folder = os.path.dirname(path) or '.'
     fd, tmp = tempfile.mkstemp(prefix='.settings.', suffix='.tmp', dir=folder)
     try:
@@ -204,6 +243,8 @@ def write_atomic(path, text, mode):
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, mode)
+        if expect is not None:
+            still_same(path, *expect)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -228,10 +269,10 @@ def main(argv):
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         print('refused: %s is a symlink or not a regular file: nothing changed' % settings_path, file=sys.stderr)
         return 1
-    with open(settings_path, encoding='utf-8') as f:
-        text = f.read()
-
     try:
+        text, read_info = read_nofollow(settings_path)
+        if (read_info.st_dev, read_info.st_ino) != (info.st_dev, info.st_ino):
+            raise Refusal('%s was replaced while this ran: nothing changed, run it again' % settings_path)
         after, before = plan(text)
     except Refusal as why:
         print('refused: %s' % why, file=sys.stderr)
@@ -246,15 +287,23 @@ def main(argv):
         print('dry run: 5 filters would change and 3 entries be appended; nothing written (run again with --apply)', file=sys.stderr)
         return 0
 
-    # Read again just before writing: a session may have saved settings meanwhile.
-    with open(settings_path, encoding='utf-8') as f:
-        if f.read() != text:
-            print('refused: %s changed while this ran: nothing changed, run it again' % settings_path, file=sys.stderr)
-            return 1
+    # Read again just before writing: a session may have saved settings meanwhile. And
+    # again just before the rename (write_atomic's `expect`), after the backup.
+    try:
+        still_same(settings_path, text, read_info)
+    except Refusal as why:
+        print('refused: %s' % why, file=sys.stderr)
+        return 1
     backup = write_backup(settings_path, text)
-    write_atomic(settings_path, after_text, stat.S_IMODE(info.st_mode))
-    with open(settings_path, encoding='utf-8') as f:
-        written = f.read()
+    try:
+        write_atomic(settings_path, after_text, stat.S_IMODE(info.st_mode), expect=(text, read_info))
+    except Refusal as why:
+        print('refused: %s (the backup %s was made first and is left)' % (why, backup), file=sys.stderr)
+        return 1
+    try:
+        written, _ = read_nofollow(settings_path)
+    except Refusal:
+        written = None
     if written != after_text:
         write_atomic(settings_path, text, stat.S_IMODE(info.st_mode))
         print('failed: the file read back differs from what was written; the old settings are put back (backup %s)' % backup, file=sys.stderr)

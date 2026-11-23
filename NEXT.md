@@ -4102,10 +4102,10 @@ ends a permission wait", the hook entry and the apply script) are the reference.
   Notification follows (if one doesn't, that wait clears as before), that `duration_ms`
   excludes the prompt time as the schema says (Ultron's L3), and the script on the real
   settings file.
-- **Follow-up (P3, Ultron's L1 and L3):** an ask left over (say, a classifier-approved
-  call whose `PermissionRequest` fired and whose answer didn't match) can hold a later
-  wait open past its own answer until the 10-second rule or `Stop` clears it, which could
-  push a false "waiting" at 5 minutes; and `duration_ms` is read on the schema's word.
+- **Follow-up (P3, Ultron's L1 and L3):** L1 (a stopped run's ask holding waits open) is
+  fixed in §36; L3 (`duration_ms` read on the schema's word) is a live check for Jeff,
+  written in §36. A leftover ask from a classifier-approved call whose answer didn't match
+  can still hold a wait until the 10-second rule or `Stop`.
 - **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build),
   with no agent runs going. Then, in a terminal, the hook script: a dry run, read its diff,
   then `--apply`:
@@ -4432,3 +4432,66 @@ caught. The server suite passes (1788).
   jarvis-start passes `--setting-sources user`), so Jeff's switch
   already reaches them; this makes it not depend on that. The console kit and the docs
   need nothing.
+
+## 36. Ultron's lows on §28: a stopped run's ask, a run with no meta file, the hook script's races (boards 2c49fcfa and 8b2c33a9, P3; staged 2026-11-22 on `jos/warn-wait-lows`, off main 58bdd43)
+
+- **2c49fcfa L1, a stopped subagent's ask.** Does TaskStop fire `SubagentStop`? Read from
+  the 2.1.330 binary (minified, not seen live): no, in the usual case. TaskStop aborts the
+  task's controller; the query loop then returns (`aborted_streaming`/`aborted_tools`)
+  without its stop hooks, and runAgent's teardown step "SubagentStop on interrupted query"
+  runs only when the query threw, which it skips once the loop has returned. So the ask
+  stayed for 30 minutes: the stopped run's own wait, and any later lead wait in that
+  session (its answer left the dead ask), could push a false "waiting" at 5 minutes.
+  - **Fix:** the transcript parser keeps `stoppedAt`, the time of a final answer or of
+    Claude Code's interruption mark (`[Request interrupted by user`, a text block of a user
+    line; a stopped subagent's last line on 11-14 and 11-18), reset by any later assistant
+    line (a resumed run). `endedThreads` (live-agents.mjs) maps session to the hash of the
+    agent id in `agent-<id>.jsonl` (the hooks' `agent_id`; Claude Code names the file from
+    it) and the stop time, for stops in the last 30 minutes. Each sessions pass hands it to
+    the store's `endThreads`: a subagent's asks made at or before its stop go, and a
+    permission wait whose asks all went that way ends, as when its last ask is answered.
+    The log says `needs-you: 1 ask of stopped subagents dropped, 1 wait ended, 0 open`.
+  - **Choices to defend:** the mark ends asks but not the live panel's run (`ended` is
+    unchanged): whether every mark ends a subagent is unchecked, and Restart Jarvis's
+    warning is safer counting one run too many; an ask made before a mark is over either
+    way. The quiet window (15 min) is not used: a run waiting on a prompt is quiet too.
+    The sweep runs only on the minute's pass, so a stop clears within about a minute.
+  - **Limits:** a stopped run that writes no mark keeps its ask until the 30-minute lapse,
+    as before. A wait whose own prompt sent no `PermissionRequest`, sharing a session with
+    a stopped subagent's ask, ends with that ask (the same accepted case as an answered
+    last ask).
+- **2c49fcfa L3, `duration_ms`:** not checked here (needs Jeff, live); the exact check is
+  the board follow-up below. If it fails (`duration_ms` includes the prompt), an asked
+  call looks started before its ask and never answers it, so the wait holds until the
+  10-second rule, `Stop` or the lapse.
+  - **The check (Jeff, a terminal, no agent runs needed):**
+    `cd ~/Projects && printf '%s' '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/usr/bin/jq -c \"{tool_name,duration_ms}\" >> /tmp/l3-duration.jsonl"}]}]}}' > /tmp/l3-settings.json && DISABLE_AUTOUPDATER=1 claude --settings /tmp/l3-settings.json --permission-mode default`
+    then ask it to run `touch /tmp/l3-probe` with Bash, wait 20 seconds on the prompt,
+    allow it, quit, and `cat /tmp/l3-duration.jsonl`. A `duration_ms` far under 20000
+    means it leaves out the prompt (L3 closed); about 20000 or more means it doesn't. If
+    no prompt shows, a rule allowed the command: ask for one that prompts.
+    Remove the three /tmp files after. (The settings text and the hook command were
+    tried in a scratch folder on a sample post; `claude` itself was not started.)
+- **8b2c33a9 L1:** a live subagent run with no `.meta.json` was skipped before the
+  `unplaced` count. It is counted now (in any session, live by the same 15-minute window,
+  never shown), so Restart Jarvis asks for `unseen`.
+- **8b2c33a9 L2:** `deploy/add-needs-you-matching.py` opens the file with `O_NOFOLLOW`
+  (and `O_NONBLOCK`, so a FIFO isn't waited on), checks the type on the descriptor (a
+  folder swapped in was a traceback, found by the new test), refuses when the file read
+  isn't the inode lstat checked, and, just before the rename, re-reads it and refuses when
+  its device, inode, size, mtime or text changed (the backup, already made, is named and
+  left). What's left is the rename itself.
+- **8b2c33a9 L4:** README and the script's header spell out the undo:
+  `cp -p ~/.claude/settings.json.bak-YYYYMMDD-HHMMSS ~/.claude/settings.json`, the stamp
+  being the one `--apply` printed.
+- **Checked (2026-11-22):** server 1,795 tests in local time and `TZ=Asia/Tokyo` (umask
+  022), web 381. 27 mutants over the parser, live-agents, needs-you, the server's wiring
+  and the script, all caught; a no-op baseline survived. The races are driven by loading
+  the script as a module in `/usr/bin/python3 -I` and acting at the exact step (symlink,
+  another file, a folder, a later save, a same-size save with its mtime put back, the same
+  text in a new file). oxlint clean on the changed files. **Not verified:** a real TaskStop
+  writing the mark (only the two old transcripts), the hooks' `agent_id` equal to the file
+  name's id on a live post (the binary builds the path from it), and L3.
+- **Go-live (Jeff, after C&P):** a Control Room restart for the server side (no web build),
+  with no agent runs going. The script and README need nothing; the matching only matters
+  once §28's hook script has been applied.

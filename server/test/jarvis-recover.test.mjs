@@ -921,6 +921,11 @@ test('runsAtRisk through the real panel (Ultron\'s M1): an old session named as 
   const risk = runsAtRisk(named, ROSTER);
   assert.equal(risk.known, true);
   assert.deepEqual(risk.runs.map(r => r.name), ['Vision']);
+  // A live run of the lead's named session with no .meta.json can't be listed: not known
+  // (Ultron's L1 on §28).
+  const bare = { ...run, sessionId: 's-new', meta: null, filePath: '/invented/p/s-new/subagents/agent-b.jsonl' };
+  const withBare = { status: 'ok', data: { liveAgents: buildLiveAgents({ transcripts: [yesterday, run, bare], sessionNames: new Map([['s-old', 'Jarvis'], ['s-new', 'Jarvis']]), roster: ROSTER, now: NOW }), unreadablePaths: [], unavailableRoots: [] } };
+  assert.deepEqual(runsAtRisk(withBare, ROSTER), { known: false, runs: risk.runs });
 });
 
 test('the restart sheet: an unplaced run or a partial read asks for UNSEEN, whatever health says', async () => {

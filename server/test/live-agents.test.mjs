@@ -127,3 +127,15 @@ test('unplaced: live subagent runs in no named session, counted over all live ru
   assert.equal(big.unplaced, MAX_LIVE + 3);
   assert.equal(build([]).unplaced, 0);
 });
+
+test('unplaced counts a live subagent run with no meta file, in any session, but never shows it; a quiet or ended one is not counted (Ultron\'s L1 on §28)', () => {
+  const bare = sub(null, [rec(MIN, 10)]);
+  const bareOther = sub(null, [rec(MIN, 10)], { sessionId: 's-other', filePath: '/home/someone/p/s-other/subagents/agent-e.jsonl' });
+  const quiet = sub(null, [rec(LIVE_WINDOW_MS + MIN, 10)], { filePath: '/home/someone/p/s-lead/subagents/agent-f.jsonl' });
+  const lateLine = sub(null, [rec(LIVE_WINDOW_MS + MIN, 10)], { filePath: '/home/someone/p/s-lead/subagents/agent-g.jsonl', lastLineTs: NOW - MIN });
+  const done = sub(null, [rec(MIN, 10)], { ended: true, filePath: '/home/someone/p/s-lead/subagents/agent-h.jsonl' });
+  const out = build([bare, bareOther, quiet, lateLine, done]);
+  assert.deepEqual(out.runs, [], 'nothing to show without a meta file');
+  assert.equal(out.unplaced, 3, 'the two live ones and the one whose later line keeps it live');
+  assert.equal(build([quiet, done]).unplaced, 0);
+});

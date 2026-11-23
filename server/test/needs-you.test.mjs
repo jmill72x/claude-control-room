@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 import {
   checkNeedsYou, recordNeedsYou, activeWaits, needsYouView, needsYouAlerts, waitKey, createNeedsYouStore, needsYouLogLine,
   isStaleEvent, noteSeen, NEEDS_YOU_SEEN_MAX, NEEDS_YOU_MAX, NEEDS_YOU_TTL_MS, NEEDS_YOU_ALERT_MS,
-  noteAsks, agentKey, ASKS_MAX, ASK_MOVED_ON_MS
+  noteAsks, agentKey, ASKS_MAX, ASK_MOVED_ON_MS, dropEndedAsks
 } from '../lib/needs-you.mjs';
+import { endedThreads } from '../lib/live-agents.mjs';
+import { parseTranscript } from '../lib/parse-transcript.mjs';
 import { buildAlerts } from '../lib/alerts.mjs';
 import { pushableFrom, observableSources } from '../lib/push-alerts.mjs';
 import { runNotifier } from '../collectors/notifier.mjs';
@@ -639,4 +641,113 @@ test('the TCP handler\'s needs-you route hands each event to onMoved as the inge
   const res = await call(h, 'POST', '/api/ingest/needs-you', { hook_event_name: 'Stop', session_id: SID, at: 1794380000000 });
   assert.equal(res.statusCode, 200, res.body);
   assert.deepEqual(moved, [{ event: 'Stop', sessionId: SID, kind: null, at: 1794380000000 }]);
+});
+
+// Board 2c49fcfa (Ultron's L1 on §28): TaskStop aborts a subagent and no SubagentStop
+// comes, so its ask would hold the session's permission waits open for 30 minutes.
+const ended = (stops, sid = SID) => new Map([[sid, new Map(stops.map(([id, at]) => [agentKey(id), at]))]]);
+test('dropEndedAsks: a stopped subagent\'s asks made at or before its stop go; later asks, other threads, other sessions and the lead\'s stay', () => {
+  let asks = new Map();
+  for (const v of [ask({ agent_id: AGENT, at: NOW }), ask({ agent_id: AGENT, at: NOW + 5000 }), ask({ agent_id: AGENT, at: NOW + 20e3 }), ask({ agent_id: 'b-other', at: NOW }), ask({ at: NOW })]) {
+    asks = noteAsks(asks, v, NOW + 100).asks;
+  }
+  asks = noteAsks(asks, ask({ session_id: 's-two', agent_id: AGENT, at: NOW }), NOW + 100).asks;
+  const out = dropEndedAsks(asks, ended([[AGENT, NOW + 5000]]), NOW + 30e3);
+  assert.equal(out.dropped, 2, 'the two asks at or before the stop');
+  assert.deepEqual(out.asks.get(SID).map(a => [a.agent, a.at]), [[agentKey(AGENT), NOW + 20e3], [agentKey('b-other'), NOW], [null, NOW]]);
+  assert.equal(out.asks.get('s-two').length, 1, 'the same agent id in another session is another thread');
+  assert.deepEqual(out.emptied, []);
+  // Every ask of a session gone that way: the session is named; a lapsed ask alone names none.
+  const only = noteAsks(new Map(), ask({ agent_id: AGENT, at: NOW }), NOW).asks;
+  assert.deepEqual(dropEndedAsks(only, ended([[AGENT, NOW + 1]]), NOW + 2), { asks: new Map(), dropped: 1, emptied: [SID] });
+  assert.deepEqual(dropEndedAsks(only, new Map(), NOW + NEEDS_YOU_TTL_MS), { asks: new Map(), dropped: 0, emptied: [] });
+  assert.deepEqual(dropEndedAsks(only, null, NOW + 2).asks.get(SID).length, 1, 'no map: nothing ended');
+  assert.equal(dropEndedAsks(null, ended([[AGENT, NOW]]), NOW).asks.size, 0);
+});
+
+test('endThreads: a stopped subagent\'s prompt no longer holds its own wait or a later lead wait open (board 2c49fcfa)', () => {
+  // The subagent asks, the prompt shows, Jarvis stops the task: no hook says so.
+  let s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.equal(s.record(checkNeedsYou({ hook_event_name: 'Stop', session_id: SID, at: NOW + 20e3 }).value, NOW + 20e3).open, 1, 'the lead\'s turn leaves it');
+  // The next sessions pass reads the subagent's interruption mark.
+  assert.deepEqual(s.endThreads(ended([[AGENT, NOW + 15e3]]), NOW + 60e3), { dropped: 1, ended: 1, open: 0 });
+  assert.equal(needsYouAlerts(s.view(NOW + 6 * MIN), NOW + 6 * MIN).length, 0, 'no push at five minutes');
+  // A later lead wait: its own answer ends it, the stopped subagent's ask no longer holds it.
+  s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(prompt(), NOW + 6000);
+  s.endThreads(new Map(), NOW + 60e3);
+  assert.equal(s.size(NOW + 60e3), 1, 'not known stopped yet: as before');
+  s.endThreads(ended([[AGENT, NOW + 90e3]]), NOW + 120e3);
+  s.record(ask({ at: NOW + 3 * MIN }), NOW + 3 * MIN);
+  s.record(prompt(NOW + 3 * MIN + 6000), NOW + 3 * MIN + 6000);
+  assert.equal(s.size(NOW + 3 * MIN + 6000), 1);
+  assert.equal(s.record(post({ at: NOW + 4 * MIN, duration_ms: 100 }), NOW + 4 * MIN).open, 0, 'the lead\'s answer ends it');
+  // A wait that is the lead's stays while a stopped subagent's ask goes beside it.
+  s = createNeedsYouStore();
+  s.record(ask(), NOW);
+  s.record(ask({ agent_id: AGENT }), NOW + 10);
+  s.record(prompt(), NOW + 6000);
+  assert.deepEqual(s.endThreads(ended([[AGENT, NOW + 20e3]]), NOW + 60e3), { dropped: 1, ended: 0, open: 1 });
+  assert.equal(s.record(post({ at: NOW + 70e3, duration_ms: 100 }), NOW + 70e3).open, 0);
+  // A stop before the ask (a resumed thread asking again) leaves it; an idle wait is never touched.
+  s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT, at: NOW + 30e3 }), NOW + 30e3);
+  s.record(prompt(NOW + 36e3), NOW + 36e3);
+  assert.deepEqual(s.endThreads(ended([[AGENT, NOW + 20e3]]), NOW + 60e3), { dropped: 0, ended: 0, open: 1 });
+  s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(checkNeedsYou({ hook_event_name: 'Notification', session_id: SID, notification_type: 'idle_prompt', at: NOW + 6000 }).value, NOW + 6000);
+  assert.deepEqual(s.endThreads(ended([[AGENT, NOW + 20e3]]), NOW + 60e3), { dropped: 1, ended: 0, open: 1 });
+  // Another session's stopped thread says nothing of this one.
+  s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT }), NOW);
+  s.record(prompt(), NOW + 6000);
+  assert.deepEqual(s.endThreads(ended([[AGENT, NOW + 20e3]], 's-two'), NOW + 60e3), { dropped: 0, ended: 0, open: 1 });
+});
+
+test('endedThreads: a subagent transcript\'s final answer or interruption mark, keyed by its session and the hash of the id in its file name', () => {
+  const line = (type, ts, message) => JSON.stringify({ type, sessionId: SID, timestamp: new Date(ts).toISOString(), message });
+  const usage = { input_tokens: 5, output_tokens: 5 };
+  const file = id => `/home/someone/.claude/projects/-p/${SID}/subagents/agent-${id}.jsonl`;
+  const asTranscript = (lines, id, subagent = true) => ({ ...parseTranscript(lines.join('\n'), 'Code'), filePath: file(id), subagent, meta: null });
+  // Stopped by TaskStop: a tool call, then Claude Code's mark (as seen 2026-11-14 and 11-18).
+  const stopped = asTranscript([
+    line('assistant', NOW - 3 * MIN, { id: 'm1', usage, stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Bash' }] }),
+    line('user', NOW - 2 * MIN, { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] })
+  ], AGENT);
+  assert.equal(stopped.stoppedAt, NOW - 2 * MIN);
+  assert.equal(stopped.ended, false, 'the live panel still keeps it until its window lapses');
+  const done = asTranscript([line('assistant', NOW - MIN, { id: 'm1', usage, stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] })], 'b-done');
+  const going = asTranscript([
+    line('user', NOW - 9 * MIN, { role: 'user', content: '[Request interrupted by user]' }),
+    line('assistant', NOW - MIN, { id: 'm2', usage, stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Read' }] })
+  ], 'c-resumed');
+  // A tool's result that holds the words is not the mark.
+  const quoted = asTranscript([
+    line('assistant', NOW - 3 * MIN, { id: 'm1', usage, stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Read' }] }),
+    line('user', NOW - 2 * MIN, { role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: '[Request interrupted by user]' }] }] })
+  ], 'd-quoted');
+  assert.equal(going.stoppedAt, null, 'resumed: an assistant line went on');
+  assert.equal(parseTranscript(line('user', NOW - MIN, { role: 'user', content: '[Request interrupted by user]' }), 'Code').stoppedAt, NOW - MIN, 'the mark as a plain string');
+  assert.equal(quoted.stoppedAt, null);
+  const lead = asTranscript([line('user', NOW - MIN, { role: 'user', content: '[Request interrupted by user]' })], 'x', false);
+  const old = { ...stopped, stoppedAt: NOW - NEEDS_YOU_TTL_MS, filePath: file('e-old') };
+  const out = endedThreads([stopped, done, going, quoted, lead, old, null, { ...stopped, filePath: '/elsewhere/notes.jsonl' }], NOW);
+  assert.deepEqual([...out.keys()], [SID]);
+  assert.deepEqual([...out.get(SID)], [[agentKey(AGENT), NOW - 2 * MIN], [agentKey('b-done'), NOW - MIN]]);
+  // The store drops the ask of the thread the file names, as a hook's agent_id names it.
+  const s = createNeedsYouStore();
+  s.record(ask({ agent_id: AGENT, at: NOW - 4 * MIN }), NOW - 4 * MIN);
+  s.record(prompt(NOW - 4 * MIN + 6000), NOW - 4 * MIN + 6000);
+  assert.equal(s.endThreads(out, NOW).open, 0);
+});
+
+test('the server hands each sessions pass\'s stopped threads to the store (board 2c49fcfa)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
+  const pass = src.slice(src.indexOf("registry.register('sessions'"), src.indexOf("registry.register('board'"));
+  assert.match(pass, /needsYou\.endThreads\(endedThreads\(transcripts, now\), now\)/);
 });

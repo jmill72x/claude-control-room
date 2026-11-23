@@ -33,8 +33,13 @@
 //                      end the session's own thread's asks made before them.
 //   SubagentStop       ends that subagent's asks made before it.
 //   SessionEnd         ends everything.
+//   (a stopped thread) the sessions pass, each minute, ends a subagent's asks made
+//                      before its transcript's final answer or interruption mark
+//                      (endThreads): TaskStop aborts the run, and in 2.1.330 an aborted
+//                      run's query returns without its stop hooks and runAgent then skips
+//                      SubagentStop, so no hook says it ended (board 2c49fcfa).
 //
-// A permission wait ends when the session's last ask is answered. A session with no ask
+// A permission wait ends when the session's last ask is answered or ended. A session with no ask
 // known (the hook entries from before this change, which send no tool, or a restart
 // between the ask and its Notification) is cleared as before, by any of the clearing
 // events. An idle or question wait belongs to the session's own thread, so a
@@ -170,6 +175,31 @@ export function noteAsks(asks, value, now) {
   return { asks: next, before: mine.length, after: left.length };
 }
 
+// The asks after the stopped threads are known: `ended` is live-agents.mjs's
+// endedThreads, Map<session id, Map<agent key, stop time>>. An ask of a subagent made at
+// or before that thread's stop is over (a resumed thread's new asks come after it), and
+// lapsed asks go as in noteAsks. Answers { asks, dropped, emptied }: how many asks of
+// stopped threads went, and the sessions left with no ask after losing one that way.
+export function dropEndedAsks(asks, ended, now) {
+  const next = new Map();
+  let dropped = 0;
+  const emptied = [];
+  for (const [sid, list] of asks instanceof Map ? asks : []) {
+    const threads = ended instanceof Map ? ended.get(sid) : undefined;
+    let mine = 0;
+    const kept = (Array.isArray(list) ? list : []).filter(a => {
+      if (!isObject(a) || !(now - a.receivedAt < NEEDS_YOU_TTL_MS)) return false;
+      const stop = a.agent !== null && threads instanceof Map ? threads.get(a.agent) : undefined;
+      if (Number.isFinite(stop) && a.at <= stop) { mine += 1; return false; }
+      return true;
+    });
+    dropped += mine;
+    if (kept.length > 0) next.set(sid, kept);
+    else if (mine > 0) emptied.push(sid);
+  }
+  return { asks: next, dropped, emptied };
+}
+
 // Whether a clearing event ends the session's wait `w` (not counting an answered last
 // ask, which recordNeedsYou checks first). `ask` is noteAsks' answer for the event.
 function endsWait(w, value, ask) {
@@ -277,6 +307,18 @@ export function createNeedsYouStore({ whoFor = () => null } = {}) {
       list = recordNeedsYou(list, value, now, ask, stale);
       // Stale and still ending a wait (its tool use answered the last ask): not ignored.
       return { open: list.length, stale: stale && list.length === had };
+    },
+    // The stopped subagent threads, from each sessions pass (live-agents.mjs,
+    // endedThreads): their asks go, and a permission wait whose asks were all theirs
+    // goes with them, as when its last ask is answered. Answers { dropped, ended, open }:
+    // asks dropped, waits ended, waits open.
+    endThreads: (ended, now = Date.now()) => {
+      const out = dropEndedAsks(asks, ended, now);
+      asks = out.asks;
+      const active = activeWaits(list, now);
+      const gone = new Set(out.emptied);
+      list = active.filter(w => !(w.kind === 'permission' && gone.has(w.sessionId)));
+      return { dropped: out.dropped, ended: active.length - list.length, open: list.length };
     },
     view: (now = Date.now()) => needsYouView(list, whoFor, now),
     size: (now = Date.now()) => activeWaits(list, now).length

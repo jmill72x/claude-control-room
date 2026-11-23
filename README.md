@@ -460,7 +460,12 @@ to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   minutes. It sends no path, session id or prompt text; `id` is a hash of the transcript's
   path. Top-level sessions (the lead's own, `/usage` polls, other terminals) are not
   listed; `unplaced` counts the live subagent runs in no named session, over all live
-  runs (Restart Jarvis's run warning reads it). A run that ends shows for up to about 90 s more (the minute's collector pass
+  runs, plus any live subagent run with no meta file (not listed, in whatever session),
+  and Restart Jarvis's run warning reads it. A stopped run may write an interruption mark
+  (`[Request interrupted by user`); the panel still keeps it until its 15 minutes lapse
+  (whether every mark ends a subagent is unchecked, and the warning's safe side is one run
+  too many), and only the waits read it ("A session waiting on
+  you"). A run that ends shows for up to about 90 s more (the minute's collector pass
   plus the page's 30 s poll).
   **Stop (slice 2, option B with Face ID; built 2026-11-13, not live):** a row the server
   marks `stoppable` (a background subagent of a roster agent, in the session named as
@@ -1026,7 +1031,12 @@ call started (`at` less `duration_ms`) no earlier than the ask; a call of the sa
 that started 10 s or more after an ask ends it too (a denied prompt writes no
 PostToolUse, so the thread's next call says it moved on). `Stop` and `UserPromptSubmit`
 end the session's own thread's asks made before them, `SubagentStop` that subagent's, and
-`SessionEnd` all. A permission wait ends with the session's last ask. With no ask known
+`SessionEnd` all. A subagent stopped from outside (TaskStop, as Jarvis's Stop button
+does) sends no `SubagentStop` in 2.1.330: the aborted run skips its stop hooks. So each
+minute the sessions pass also ends a subagent's asks made before its transcript's final
+answer or its interruption mark (`[Request interrupted by user`), matched by the agent id
+in the transcript's file name; a run stopped without the mark keeps its ask until the
+30 minutes lapse. A permission wait ends with the session's last ask, answered or ended. With no ask known
 (the entries from before 2026-11-21, which send no tool, or a restart between the ask and
 its Notification, which Claude Code sends a few seconds after the prompt shows), any of
 the clearing events ends it, as before. An idle or question wait is the session's own,
@@ -1066,6 +1076,13 @@ hand with only the second item would drop the first, so on a machine that has th
 by default, printing only the change to `hooks`; `--apply` writes, after a backup): it
 swaps the filter in the five needs-you commands, appends the three new entries, and
 refuses unless the Bash entry is there, synchronous, and unchanged in its place after.
+It reads the file without following a symlink, and leaves it alone when it changed between
+the read and the rename (a session saved settings meanwhile: run it again). `--apply`
+prints the backup's name (`settings.json.bak-` and the time); to undo, copy that backup
+back, in a terminal, with that name for the stamp:
+
+    cp -p ~/.claude/settings.json.bak-YYYYMMDD-HHMMSS ~/.claude/settings.json
+
 Tested on fixture copies (`server/test/add-needs-you-matching.test.mjs`), never on the
 real file:
 
@@ -1184,9 +1201,10 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   when that pass missed something (board 54b191ec): a file it could not read
   (`unreadablePaths`, a transcript or a `.meta.json`) or a root it could not list
   (`unavailableRoots`), either of which can leave a run out or put it in no session, and
-  when any live subagent run is in no named session (the panel's `unplaced`): the lead's
-  current session before its first name line is read puts his runs there, so they would
-  drop out of his list, and the server can't tell them from another terminal's. With any run
+  when any live subagent run is in no named session or has no `.meta.json` (the panel's
+  `unplaced`): the lead's current session before its first name line is read puts his runs
+  there, so they would drop out of his list, and the server can't tell them from another
+  terminal's; a run with no meta file can't be listed at all. With any run
   listed, or `known` false, the sheet says so first ("2 agent runs are going (Vision,
   Ultron). Restarting stops them.", a quiet run marked as on the pane), Cancel becomes the
   filled, focused button, and the restart is an outline "Restart anyway". Opening the sheet
