@@ -11,11 +11,11 @@
 //
 // - A first attempt written more than STALE_SEND_MS ago is not stored. The answer
 //   is 409 `{stale: true, composedAt}`, and the page turns the bubble into
-//   "Written 12:10, not sent" with Send now and Discard.
+//   "Written 12:10 PM, not sent" with Send now and Discard.
 // - A send the owner tapped (Retry or Send now: `confirmed: true`) goes through
 //   whatever its age.
 // - A message stored more than STALE_SEND_MS after it was written keeps
-//   `meta.composedAt`, the page shows "written 12:10" under it, and the lead's
+//   `meta.composedAt`, the page shows "written 12:10 PM" under it, and the lead's
 //   inbound line starts with a note saying when it was written and when it arrived.
 //
 // A page built before this change sends no `composedAt`; its clientId
@@ -62,11 +62,27 @@ export const lateMeta = (composedAt, at) =>
 
 const pad2 = n => String(n).padStart(2, '0');
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-// HH:MM in the server's local time, with the day in front when it isn't `ref`'s.
+
+// The server's zone at `at`, short: EST or EDT in US Eastern (the one a given moment
+// was in, so each side of a clock change gets its own), GMT+9 or GMT+5:30 where
+// English has no short name, UTC under TZ=UTC. Made per call, so it always follows
+// the zone the hours below come from.
+export function zoneOf(at) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date(at));
+  return parts.find(p => p.type === 'timeZoneName')?.value ?? 'local time';
+}
+
+// "12:10 PM EST" in the server's local time, with the day in front ("Nov 19 12:10 PM
+// EST") when it isn't `ref`'s. Ultron's L3 (board b547ea09, 2026-11-24): the note used
+// to say "15:10" with no zone, beside the channel's UTC `ts`, so the two could be read
+// as one clock. The zone makes it unambiguous for the lead, and the 12-hour clock is
+// the page's own (web lib/orbit/page.js clock: "written 12:10 PM" under the bubble), so
+// a time the lead quotes from the note matches what the owner sees.
 export function when(at, ref = at) {
   const d = new Date(at);
   const r = new Date(ref);
-  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const h = d.getHours() % 12 === 0 ? 12 : d.getHours() % 12;
+  const hm = `${h}:${pad2(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'} ${zoneOf(at)}`;
   const sameDay = d.getFullYear() === r.getFullYear() && d.getMonth() === r.getMonth() && d.getDate() === r.getDate();
   return sameDay ? hm : `${MONTHS[d.getMonth()]} ${d.getDate()} ${hm}`;
 }
@@ -80,7 +96,11 @@ export function lateBy(ms) {
 }
 
 // The line in front of a late message on the lead's inbound stream (the stored
-// text stays as typed). Server-made words; the owner's own text follows it.
+// text stays as typed). Server-made words; the owner's own text follows it:
+// "[Written 12:10 PM EST, delivered 3:38 PM EST: 3 h 28 min late. …]". Both times carry
+// their zone, so a message written before a clock change and delivered after it reads
+// right ("1:50 AM EDT, delivered 1:20 AM EST: 30 min late"). About 100 to 130
+// characters; the restart catch-up counts it as part of the text (lib/chat-catchup.mjs).
 export const lateNote = (composedAt, at) =>
   `[Written ${when(composedAt, at)}, delivered ${when(at)}: ${lateBy(at - composedAt)} late. Read it as of when it was written.]`;
 

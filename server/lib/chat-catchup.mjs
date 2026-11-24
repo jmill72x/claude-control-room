@@ -6,7 +6,7 @@
 // total passed 8 KB, even on the first message. So one large non-ASCII message (2,049
 // emoji are past 8 KB) came back as an empty list and the lead got no catch-up at all,
 // and an overflow dropped the newest messages, the ones most likely still open. The
-// late note (lib/chat-late.mjs leadText, about 100 characters) wasn't counted either.
+// late note (lib/chat-late.mjs leadText, 100 to 130 characters) wasn't counted either.
 //
 // Now:
 // - Only what the channel will list counts: messages it has been handed (seq at or

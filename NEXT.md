@@ -3730,7 +3730,7 @@ go-live.
   `stale` and not stored; the bubble asks "Send now" with the time it was written; a tap
   sends it, marked late in its meta, on the page ("written 12:10 PM") and on the lead's
   inbound line (a leading `[Written 12:10, delivered 15:38: … late …]` note plus a
-  `composedAt` field). The clientId dedup runs first, unchanged, so a retry of a stored
+  `composedAt` field; the note's times carry their zone since §43). The clientId dedup runs first, unchanged, so a retry of a stored
   message still answers 200 `duplicate`. A page from before this change is covered too:
   without `composedAt` the server reads the time in the clientId. Considered and not
   taken: a page-side timeout or age check alone (a suspended page's timers don't run, and
@@ -4717,8 +4717,8 @@ caught. The server suite passes (1788).
   `readMessages` now starts its deadline (5 s) at the request, settles once on any
   error, and reads until the three message lines come. A mutant whose stream drops the
   late messages fails at the deadline instead of hanging. L3 (the time zone in the
-  note) and L4 (the catch-up's cap counts the stored text) are left for the board as
-  their own items. Server suite after: 1,813 of 1,813, local and `TZ=Asia/Tokyo`;
+  note) and L4 (the catch-up's cap counts the stored text) went to the board as their
+  own items: L4 is §42, L3 is §43. Server suite after: 1,813 of 1,813, local and `TZ=Asia/Tokyo`;
   `chat-late.test.mjs` five runs in a row clean.
 - **Not here:** Ultron's M2 (a rule in Jarvis's style about late notes) is Jarvis's.
 
@@ -4801,3 +4801,51 @@ caught. The server suite passes (1788).
   `TZ=Asia/Tokyo`. **L2** (the channel reads `omitted` and says it in the tag) is for
   the next channel release, on the board; not needed for this fix, since the note is in
   the text.
+
+## 43. The late note's times say their zone (Ultron's L3 on §41, board b547ea09, P3; staged 2026-11-24 on `jos/late-note-zone`, off main 3b0304e)
+
+- **The gap.** `when()` in `server/lib/chat-late.mjs` wrote the note's times as the
+  server's local `HH:MM` with no zone (`[Written 15:10, delivered 18:38: …]`), right
+  beside the channel's UTC `ts` on the same tag or catch-up line, so the lead could read
+  them as one clock. Across a clock change it read wrong outright: written at 1:50 AM
+  EDT and delivered at 1:20 AM EST on 2026-11-01 came out "Written 01:50, delivered
+  01:20: 30 min late".
+- **The pick: the server's local time on the page's 12-hour clock, each time with its
+  own short zone.** `[Written 12:10 PM EST, delivered 3:38 PM EST: 3 h 28 min late. Read
+  it as of when it was written.]`; a different day still goes in front (`Nov 19 10:30
+  PM EST`). Why: the zone makes it unambiguous beside the UTC `ts`; ET is Jeff's clock
+  and the service's (the Mac mini runs in America/New_York, and the LaunchAgent sets no
+  TZ), so Jarvis can quote it to him as is; and the page's own line under the bubble is
+  "written 12:10 PM" (web `lib/orbit/page.js` `clock`, the device's zone), so the note
+  and the page now say the same time the same way. Each time takes the zone it was in
+  (`Intl` short name at that moment), so the note reads right across DST. Not taken:
+  UTC ISO times (they match `ts` but Jarvis would convert every one for Jeff, and the
+  page shows local), or both (longer, for no gain once the zone is there). Where English
+  has no short name the offset is the name (`GMT+9`, `GMT+5:30`), and `UTC` under
+  TZ=UTC. The 409 `stale` answer's wording uses the same `when()` and gains the zone
+  too; the page doesn't show that string (it draws its own line). The page is
+  unchanged: its times are all the viewer's local clock with no zone, like every other
+  time on it. Jarvis's style keys on "[Written …, delivered …", which still matches.
+- **Length.** The note grows from about 90 to about 100 characters in ET; the longest
+  (a day in front, `GMT+13:45` twice, 47 h 59 min) is 117, pinned at 130 or less.
+  `fitCatchUp` counts the lead's text with the note, so the room needs no change; a new
+  case pins that at the boundary.
+- **Checked (2026-11-24):** 4 new tests. Three in `test/chat-late.test.mjs` run the
+  module in a child with its own TZ, so the literals hold in any run: in
+  America/New_York the 11-20 pair (`12:10 PM EST … 3:38 PM EST`), July (`EDT`), a day
+  in front, midnight and noon; the fall-back and spring-forward pairs (`1:50 AM EDT,
+  delivered 1:20 AM EST: 30 min late` and `1:50 AM EST, delivered 3:10 AM EDT: 20 min
+  late`); Asia/Tokyo (its own day, not UTC's), UTC, and the longest note. One in
+  `test/chat-catchup.test.mjs`: a late message sized to the room's last character with
+  the zoned note goes whole, one more character is cut with the note kept whole at the
+  start, both within the channel's 8,000. Changed: the tests' clock helper (now the
+  locale's own formatter, a second way to the same words), the 409 wording check (a
+  substring, since `GMT+9` broke the regex) and the catch-up's note pattern. Mutants,
+  each caught in local time and in Tokyo: no zone, the zone of `ref` (the delivered
+  time's) on both, the zone of now, a 24-hour clock, midnight as 0, noon as AM, long
+  zone names, the day compared in UTC. Server suite 1,828 of 1,828 and web 381 of 381,
+  both in local time and `TZ=Asia/Tokyo`; oxlint clean on the changed files. **Not
+  verified:** the running service (no restart) and a live late message through the
+  channel.
+- **Go-live (Jeff, after C&P):** a Control Room restart only; no web build (no page
+  change) and no channel change.

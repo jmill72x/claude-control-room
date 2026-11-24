@@ -1483,8 +1483,11 @@ three pieces, each with its own router:
   line without the text, and the bubble reads "Written 12:10 PM, not sent: it reached the
   server only now" with Send now and Discard (any failed bubble older than 5 minutes asks
   Send now the same way). A message stored late keeps `meta.composedAt`, shows "written
-  12:10 PM" under it, and every copy the lead reads starts with `[Written 12:10, delivered
-  15:38: 3 h 28 min late. Read it as of when it was written.]`: the inbound stream's line
+  12:10 PM" under it, and every copy the lead reads starts with `[Written 12:10 PM EST,
+  delivered 3:38 PM EST: 3 h 28 min late. Read it as of when it was written.]` (the
+  server's local time on the page's 12-hour clock, each time with its own zone, so it
+  can't be read as the channel's UTC `ts` and reads right across a clock change; GMT+9
+  style where a zone has no short name): the inbound stream's line
   (which also carries `composedAt`), the restart catch-up (`/v1/unanswered`) and the
   history call (`/v1/history`), all from one function, `leadText` (the stored text, and
   the page's copy, stay as typed). A page built before this sends no

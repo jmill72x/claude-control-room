@@ -101,7 +101,7 @@ test('a late big emoji message keeps its late note, and the channel cut never re
     const got = await catchUp();
     assert.equal(got.messages.length, 1);
     assert.equal(got.messages[0].text, historyMessage(env.store.get(r.json.id)).text, 'whole, late note first');
-    assert.match(got.messages[0].text, /^\[Written \d\d:\d\d, delivered \d\d:\d\d: 3 h 28 min late\./);
+    assert.match(got.messages[0].text, /^\[Written [^,\]]+ [AP]M [A-Z][A-Za-z0-9+:-]*, delivered \d{1,2}:\d\d [AP]M [A-Z][A-Za-z0-9+:-]*: 3 h 28 min late\./);
     assert.ok(fitsChannel(got.messages));
   });
 });
@@ -243,6 +243,25 @@ test('a single grapheme bigger than the room cuts to nothing but the note: the f
   assert.equal(got.messages[0].text, `${leftOutNote(1)}\n\n${cutNote(0, 8001)}`);
   assert.match(cutNote(0, 8001), /the first 0 of 8001 characters\. Read the whole message with fetch_history before acting on it\.\]$/);
   assert.ok(fitsChannel(got.messages));
+});
+
+test('board b547ea09: the late note, its zones included, counts toward the room: a late message that just fits goes whole, one character more and it is cut with the note kept', () => {
+  const at = Date.UTC(2026, 10, 20, 20, 38, 49);
+  const stored = text => msg(text, { at, meta: { composedAt: at - 3 * HOUR - 28 * MIN } });
+  const note = historyMessage(stored('')).text; // a files-only late message: the note alone
+  assert.match(note, /^\[Written \S.* [AP]M \S+, delivered \d{1,2}:\d\d [AP]M \S+: 3 h 28 min late\./);
+  const room = CATCHUP_CHARS - HEADER_RESERVE;
+  const probe = stored('');
+  const fill = room - lineFrame(probe) - channelCost(`${note}\n\nz`) + 1;
+  const exact = historyMessage({ ...probe, text: 'z'.repeat(fill) });
+  assert.equal(lineFrame(exact) + channelCost(exact.text), room, 'the note and the text take the room to the last character');
+  assert.deepEqual(fitCatchUp([exact]), { messages: [exact], omitted: 0 }, 'whole');
+  assert.ok(fitsChannel([exact]));
+  const over = historyMessage({ ...probe, text: 'z'.repeat(fill + 1) });
+  const got = fitCatchUp([over]).messages[0].text;
+  assert.ok(got.startsWith(`${note}\n\nzzz`), got.slice(0, 160));
+  assert.match(got, new RegExp(` … \\[Cut to fit the catch-up: the first \\d+ of ${Array.from(over.text).length} characters\\.`));
+  assert.ok(fitsChannel([{ ...over, text: got }]));
 });
 
 // Ultron's L3: the copies of the channel's catch-up format above must match the

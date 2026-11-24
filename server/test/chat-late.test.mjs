@@ -10,6 +10,7 @@ import { request, createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { toInbound, historyMessage, createSocketRouter, SESSION_HEADER } from '../lib/chat-socket.mjs';
 import * as late from '../lib/chat-late.mjs';
 import { STALE_SEND_MS, composedAtOf, staleSend, lateMeta, lateNote, lateBy, when, badTime, lateComposedAt } from '../lib/chat-late.mjs';
@@ -18,8 +19,9 @@ const leadText = m => late.leadText(m);
 
 const MIN = 60e3, HOUR = 3600e3;
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]);
-const pad2 = n => String(n).padStart(2, '0');
-const hm = t => { const d = new Date(t); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+// The note's clock, made a second way (the locale's own formatter): 12:10 PM EST, in
+// whatever zone this run is in. The zone-pinned literals are in the test further down.
+const hm = t => new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).replace(/\s+/g, ' ');
 // The page's clientId (web lib/orbit/chat.js newClientId): the Send tap's ms in base 36.
 const pageId = (t, tail) => `p_${t.toString(36)}_${tail}`;
 
@@ -42,7 +44,7 @@ test('the 11-20 re-send: two sends made 8 s apart, landing 3.5 h later 8 ms apar
       assert.equal(r.status, 409, r.text);
       assert.equal(r.json.stale, true);
       assert.equal(r.json.composedAt, body.composedAt);
-      assert.match(r.json.error, new RegExp(`written at ${hm(body.composedAt)}`));
+      assert.ok(r.json.error.includes(` ${hm(body.composedAt)} and reached`), r.json.error);
       assert.ok(!r.text.includes(body.text), 'the text is never echoed');
     }
     assert.equal(env.store.size, 0, 'neither was stored, so nothing reached the lead');
@@ -293,4 +295,62 @@ test('M1: leadText is the one place the lead\'s copy of the owner\'s words is ma
     assert.equal(toInbound(x).text, leadText(x));
     assert.equal(historyMessage(x).text, leadText(x));
   }
+});
+
+// ---- Ultron's L3 (board b547ea09, 2026-11-24): the note's times carry their zone. It used
+// to say "15:10", the server's local time with no zone, beside the channel's UTC `ts`.
+// Each case runs the module in a child with its own TZ, so these literals hold whatever
+// zone the suite runs in (the service runs in US Eastern).
+const LATE_MODULE = new URL('../lib/chat-late.mjs', import.meta.url).href;
+function notesIn(tz, cases) {
+  const script = `const { lateNote, when } = await import(${JSON.stringify(LATE_MODULE)});
+    const cases = JSON.parse(process.argv[1]);
+    process.stdout.write(JSON.stringify(cases.map(([w, a]) => a === undefined ? when(w) : lateNote(w, a))));`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, JSON.stringify(cases)], { env: { ...process.env, TZ: tz }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+const TAIL = 'Read it as of when it was written.]';
+
+test('L3: the 11-20 pair in US Eastern reads "12:10 PM EST, delivered 3:38 PM EST", the page\'s clock with the zone', () => {
+  const written = Date.UTC(2026, 10, 20, 17, 10, 52);  // 12:10 PM EST
+  const at = Date.UTC(2026, 10, 20, 20, 38, 49);       // 3:38 PM EST, the channel's ts 20:38:49Z
+  const summer = Date.UTC(2026, 6, 4, 13, 5);          // 9:05 AM EDT
+  const [pair, july, overnight, midnight, noon] = notesIn('America/New_York', [
+    [written, at], [summer - 2 * HOUR, summer],
+    [Date.UTC(2026, 10, 20, 3, 30), Date.UTC(2026, 10, 20, 13, 0)], // 10:30 PM the night before, 8:00 AM
+    [Date.UTC(2026, 10, 20, 5, 0)], [Date.UTC(2026, 10, 20, 17, 0)]
+  ]);
+  assert.equal(pair, `[Written 12:10 PM EST, delivered 3:38 PM EST: 3 h 28 min late. ${TAIL}`);
+  assert.equal(july, `[Written 7:05 AM EDT, delivered 9:05 AM EDT: 2 h late. ${TAIL}`);
+  assert.equal(overnight, `[Written Nov 19 10:30 PM EST, delivered 8:00 AM EST: 9 h 30 min late. ${TAIL}`);
+  assert.equal(midnight, '12:00 AM EST');
+  assert.equal(noon, '12:00 PM EST');
+  // What Jarvis's style keys on ("[Written …, delivered …") is unchanged.
+  assert.match(pair, /^\[Written [^,\]]+, delivered /);
+});
+
+test('L3: across a clock change each time keeps its own zone, so the note never reads backwards or long', () => {
+  // Fall back, 2026-11-01: 2:00 AM EDT became 1:00 AM EST at 06:00Z. Without zones this
+  // read "Written 01:50, delivered 01:20: 30 min late".
+  const [fall, spring] = notesIn('America/New_York', [
+    [Date.UTC(2026, 10, 1, 5, 50), Date.UTC(2026, 10, 1, 6, 20)],
+    // Spring forward, 2026-03-08: 2:00 AM EST became 3:00 AM EDT at 07:00Z ("01:50 to 03:10" read as 80 min).
+    [Date.UTC(2026, 2, 8, 6, 50), Date.UTC(2026, 2, 8, 7, 10)]
+  ]);
+  assert.equal(fall, `[Written 1:50 AM EDT, delivered 1:20 AM EST: 30 min late. ${TAIL}`);
+  assert.equal(spring, `[Written 1:50 AM EST, delivered 3:10 AM EDT: 20 min late. ${TAIL}`);
+});
+
+test('L3: in a zone with no short English name the offset is the name; under UTC it says UTC', () => {
+  const written = Date.UTC(2026, 10, 20, 17, 10, 52), at = Date.UTC(2026, 10, 20, 20, 38, 49);
+  assert.deepEqual(notesIn('Asia/Tokyo', [[written, at], [Date.UTC(2026, 10, 20, 14, 0), Date.UTC(2026, 10, 20, 16, 0)]]), [
+    `[Written 2:10 AM GMT+9, delivered 5:38 AM GMT+9: 3 h 28 min late. ${TAIL}`,
+    `[Written Nov 20 11:00 PM GMT+9, delivered 1:00 AM GMT+9: 2 h late. ${TAIL}` // Tokyo's day, not UTC's
+  ]);
+  assert.deepEqual(notesIn('UTC', [[written, at]]), [`[Written 5:10 PM UTC, delivered 8:38 PM UTC: 3 h 28 min late. ${TAIL}`]);
+  // The longest it gets: a day in front, a two-part offset on both sides, 47 h 59 min.
+  const [longest] = notesIn('Pacific/Chatham', [[at - 47 * HOUR - 59 * MIN, at]]);
+  assert.match(longest, /^\[Written [A-Z][a-z]{2} \d{1,2} \d{1,2}:\d\d [AP]M GMT\+13:45, delivered \d{1,2}:\d\d [AP]M GMT\+13:45: 47 h 59 min late\./);
+  assert.ok(longest.length <= 130, `${longest.length}: within what lib/chat-catchup.mjs's comment allows`);
 });
