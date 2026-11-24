@@ -3359,8 +3359,7 @@ is the reference for where the link shows and when.
   "pathological input parses in linear time" (`web/test/orbit-markdown.test.js:244`) is
   timing-flaky: it failed once in seven runs on 11-19 ("open strong: 31.2 ms vs 0.6 ms at a
   tenth of the size"; a GC or scheduling pause), then passed six times. A ratio of two
-  single timings is the trap; a median of several runs, or a cap on work rather than on
-  milliseconds, would hold. Asked for as a board item.
+  single timings is the trap. Fixed in §44 (board a30c458a).
 
 ## 20. Jarvis-down alerts without Discord: a local script's alert to the paired devices (board 5f892918, P0; merged as main 0efa83f, seen 2026-11-20; live only after a restart and a web build)
 
@@ -4849,3 +4848,38 @@ caught. The server suite passes (1788).
   channel.
 - **Go-live (Jeff, after C&P):** a Control Room restart only; no web build (no page
   change) and no channel change.
+
+## 44. The markdown "linear time" test can't be failed by a busy machine (board a30c458a, P3 Bug; staged 2026-11-24 on `jos/flaky-md-timing`, off main 464e57a)
+
+- **Why it flaked.** `web/test/orbit-markdown.test.js` "pathological input parses in
+  linear time" divided one cold parse of 60k characters by one parse of 6k and failed
+  past 40 times (11-19: "open strong: 31.2 ms vs 0.6 ms"). One sample each, while
+  `node --test` runs the other test files beside it, so a single GC or scheduling pause
+  on the big parse was enough. Under 20 `yes` burners on the 10-core mini the old test
+  failed on its first run, twice out of two tries.
+- **The fix (test only, `markdown.js` unchanged).** For each shape, one parse of the big
+  input is weighed against ten parses of the same shape built at a tenth of the size,
+  per character (a linear parser scores about 1, a quadratic one about 10), with the
+  fastest of several samples on each side (load only adds time). Each sample repeats
+  its parses to about 5 ms so the timer's grain doesn't matter, the two kinds
+  alternate, and a shape passes once its best samples are under 4 times (the old 40
+  times at a tenth), after at least 3 samples; a noisy shape samples again, up to 30,
+  within 5 s. The 1-second cap on one 60k parse stays, now on the best sample. A
+  passing run takes about 0.9 s idle (the old one about 0.25 s).
+- **It also proves more than before.** The old small input was the big one cut at 6k,
+  so `[[[a]]]` came out as openers only and seven 20k-40k shapes were weighed against
+  6k. A quadratic bracket matcher passed the old test and fails the new one. What
+  neither can see: a quadratic term still smaller than the linear work at 60k (list
+  items added with `unshift` passes both). `MD_MAX_INPUT` (64,000) keeps such a term
+  that small, so no hostile message gets slow from it.
+- **Checked (2026-11-24):** the test file 20 runs in a row with 10, 20 and 40 `yes`
+  burners running (20 of 20 each; at 40 a few shapes needed up to 12 samples, which is
+  why the cap is 30), burners stopped after each set; the old test under 20 burners as
+  the control (failed on run 1). Mutants of `markdown.js` in a scratch copy: link
+  target end by a forward scan from each `(` (caught, "link opens ... 10.2 times per
+  character") and bracket pairs by a forward depth scan from each `[` (caught,
+  "brackets ... 9.8 times"), both under the 1-second cap, so the ratio is what catches
+  them; the old test catches the first and misses the second. `unshift` survives both,
+  as above. Web suite 381 of 381 in local time and `TZ=Asia/Tokyo`; oxlint clean on the
+  test file. The server suite wasn't run (no server file changed).
+- **Go-live:** none (test only).

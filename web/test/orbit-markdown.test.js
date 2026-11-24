@@ -218,9 +218,50 @@ test('every link in any parse has a checked href', () => {
 });
 
 // Pathological input: each case is built to make a backtracking or quadratic parser
-// crawl. 60k characters must parse well inside a second; the same shape at a tenth
-// of the size must not be much more than a tenth of the time.
+// crawl. 60k characters must parse well inside a second, and ten times the input must
+// take about ten times the time, not a hundred.
+//
+// Measured so a busy machine can't fail it (board a30c458a: on 11-19 a single 60k
+// parse took 31 ms where the bound was 40 times one 0.6 ms parse of 6k, while
+// `node --test` ran the other files beside it). Load and GC only ever add time, so
+// the fastest of several samples is the parser's own cost. One parse of the big input
+// is weighed against ten parses of the same shape built at a tenth of the size, per
+// character: a linear parser scores about 1 and a quadratic one about 10. GROWTH_MAX
+// is 4, the old bound of 40 times at a tenth of the size. (The old test cut its small
+// input from the big one at 6k, so "[[[a]]]" came out as openers only and a 20k shape
+// was weighed against 6k: a quadratic bracket matcher passed it.) Each sample repeats
+// its parses until it lasts a few milliseconds, so the timer's grain can't skew a
+// shape that parses in microseconds, and the two kinds of sample alternate, so a
+// burst of load lands on both. A shape passes once its best samples are within the
+// bound, after SAMPLES_MIN; a noisy shape samples again, up to SAMPLES_MAX, but a
+// quadratic parser is slow on every sample, so it still fails. (With 40 `yes`
+// burners on the 10-core mini, a few shapes needed 12 samples.) What it can't see: a
+// quadratic term still smaller than the linear work at 60k. MD_MAX_INPUT caps the
+// input, so such a term can't grow past that.
 const timed = fn => { const t0 = performance.now(); fn(); return performance.now() - t0; };
+const GROWTH_MAX = 4;
+const SAMPLES_MIN = 3;
+const SAMPLES_MAX = 30;
+const SAMPLE_MS = 5;
+const SHAPE_BUDGET_MS = 5000; // a parser this slow has failed; stop sampling it
+function growth(big, small) {
+  const perChar = (10 * small.length) / big.length; // about 1
+  const parseBig = () => parseMarkdown(big);
+  const parseSmalls = () => { for (let k = 0; k < 10; k++) parseMarkdown(small); };
+  const warm = timed(parseSmalls) + timed(parseBig);
+  const reps = Math.max(1, Math.ceil(SAMPLE_MS / Math.max(timed(parseSmalls), 0.001)));
+  let bestBig = Infinity, bestSmalls = Infinity, spent = warm, samples = 0;
+  while (samples < SAMPLES_MAX && spent < SHAPE_BUDGET_MS) {
+    const s = timed(() => { for (let r = 0; r < reps; r++) parseSmalls(); });
+    const b = timed(() => { for (let r = 0; r < reps; r++) parseBig(); });
+    bestSmalls = Math.min(bestSmalls, s);
+    bestBig = Math.min(bestBig, b);
+    spent += s + b;
+    samples++;
+    if (samples >= SAMPLES_MIN && bestBig * perChar < bestSmalls * GROWTH_MAX) break;
+  }
+  return { ratio: (bestBig * perChar) / bestSmalls, msBig: bestBig / reps, msSmalls: bestSmalls / reps, smallLength: small.length, samples };
+}
 const SHAPES = {
   stars: n => '*a '.repeat(n),
   'open strong': n => '**a '.repeat(n),
@@ -244,12 +285,10 @@ const SHAPES = {
 test('pathological input parses in linear time', () => {
   for (const [name, make] of Object.entries(SHAPES)) {
     const big = make(20000).slice(0, 60000);
-    const small = big.slice(0, 6000);
-    parseMarkdown(small); // warm up
-    const tBig = timed(() => parseMarkdown(big));
-    const tSmall = Math.max(timed(() => parseMarkdown(small)), 0.5);
-    assert.ok(tBig < 1000, `${name}: ${tBig.toFixed(0)} ms for ${big.length} characters`);
-    assert.ok(tBig < tSmall * 40, `${name}: ${tBig.toFixed(1)} ms vs ${tSmall.toFixed(1)} ms at a tenth of the size`);
+    const small = make(2000).slice(0, 6000);
+    const { ratio, msBig, msSmalls, smallLength, samples } = growth(big, small);
+    assert.ok(msBig < 1000, `${name}: ${msBig.toFixed(0)} ms for ${big.length} characters`);
+    assert.ok(ratio < GROWTH_MAX, `${name}: ${msBig.toFixed(2)} ms for ${big.length} characters vs ${msSmalls.toFixed(2)} ms for ten times ${smallLength} (${ratio.toFixed(1)} times per character, best of ${samples} samples)`);
   }
 });
 
