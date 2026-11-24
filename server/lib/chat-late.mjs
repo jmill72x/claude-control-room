@@ -89,3 +89,17 @@ export function lateComposedAt(m) {
   const c = m?.meta?.composedAt;
   return Number.isSafeInteger(c) && Number.isSafeInteger(m?.at) && m.at - c > STALE_SEND_MS ? c : null;
 }
+
+// The owner's chat text as the lead reads it, wherever it reads it: the inbound
+// stream (chat-socket toInbound), the restart catch-up (/v1/unanswered) and the
+// history call (/v1/history). A late one starts with the note; everything else, the
+// lead's own words included, is the stored text unchanged. Ultron's M1 (board
+// cd4d7dc3): only the stream had the note, so a message caught up after a restart
+// read as new. The page gets the stored text and draws its own "written" line.
+export function leadText(m) {
+  if (m?.from !== 'jeff' || m?.kind !== 'chat') return m?.text;
+  const composedAt = lateComposedAt(m);
+  if (composedAt === null) return m.text;
+  const note = lateNote(composedAt, m.at);
+  return m.text ? `${note}\n\n${m.text}` : note;
+}

@@ -6,8 +6,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeChatEnv } from './helpers/chat-env.mjs';
-import { toInbound } from '../lib/chat-socket.mjs';
+import { request, createServer } from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { toInbound, historyMessage, createSocketRouter, SESSION_HEADER } from '../lib/chat-socket.mjs';
+import * as late from '../lib/chat-late.mjs';
 import { STALE_SEND_MS, composedAtOf, staleSend, lateMeta, lateNote, lateBy, when, badTime, lateComposedAt } from '../lib/chat-late.mjs';
+// Read through the namespace so the file loads, and fails by test, before leadText exists.
+const leadText = m => late.leadText(m);
 
 const MIN = 60e3, HOUR = 3600e3;
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]);
@@ -167,4 +174,122 @@ test('chat-late helpers: the time comes from composedAt, else the page clientId;
   assert.equal(filesOnly.text, lateNote(now - HOUR, now));
   const lead = toInbound({ seq: 2, id: 'm_y', at: now, from: 'jarvis', kind: 'chat', text: 'hi', meta: { composedAt: now - HOUR } });
   assert.equal(lead, null, 'the lead\'s own messages never go down the inbound stream');
+});
+
+// ---- Ultron's M1 (board cd4d7dc3, 2026-11-20 review): every way the lead reads the owner's
+// message says when it was written: the inbound stream, the restart catch-up
+// (/v1/unanswered) and the history call (/v1/history). Before, only the stream did, so a
+// message caught up after a restart read as new.
+
+const viaSocket = (sockPath, method, path, payload, token) => new Promise((resolve, reject) => {
+  const body = payload === undefined ? '' : JSON.stringify(payload);
+  const req = request({ socketPath: sockPath, method, path, agent: false, headers: { host: 'localhost', 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...(token ? { [SESSION_HEADER]: token } : {}) } }, res => {
+    let text = '';
+    res.on('data', c => { text += c; });
+    res.on('end', () => resolve({ status: res.statusCode, text }));
+  });
+  req.on('error', reject);
+  req.end(body);
+});
+
+// The inbound stream never ends by itself: read it until `want` message lines have
+// come, or until the deadline (counted from the request, not the answer), then hang
+// up. Settles once, on an error too; at the deadline it gives what it has, so the
+// comparison below names what was missing (Ultron's L2).
+const readMessages = (sockPath, path, token, { want, deadlineMs = 5000 }) => new Promise((resolve, reject) => {
+  const messages = [];
+  let settled = false, buf = '';
+  const settle = (fn, v) => { if (settled) return; settled = true; clearTimeout(timer); req.destroy(); fn(v); };
+  const timer = setTimeout(() => settle(resolve, messages), deadlineMs);
+  const req = request({ socketPath: sockPath, method: 'GET', path, agent: false, headers: { host: 'localhost', [SESSION_HEADER]: token } }, res => {
+    if (res.statusCode !== 200) return settle(reject, new Error(`inbound answered ${res.statusCode}`));
+    res.on('data', c => {
+      buf += c;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        let l;
+        try { l = JSON.parse(line); } catch (err) { return settle(reject, err); }
+        if (l.type === 'message') messages.push(l);
+        if (messages.length >= want) return settle(resolve, messages);
+      }
+    });
+    res.on('end', () => settle(resolve, messages));
+    res.on('error', err => settle(reject, err));
+  });
+  req.on('error', err => settle(reject, err));
+  req.end();
+});
+
+test('M1: the late note is the same on the inbound stream, the restart catch-up and the history call; on time and the page\'s copy stay as typed', async () => {
+  const env = await makeChatEnv();
+  const sockDir = await mkdtemp(join(tmpdir().length <= 60 ? tmpdir() : '/tmp', 'late-'));
+  const sockPath = join(sockDir, 'c.sock');
+  const router = createSocketRouter({ store: env.store, now: env.now, log: () => {}, pingMs: 60e3 });
+  const server = createServer((req, res) => router.handler(req, res));
+  await new Promise(r => server.listen(sockPath, r));
+  try {
+    const ipad = await env.pair('ipad');
+    const T0 = env.clock.t;
+    // One written at T0 and sent with a tap 3 h 28 min later; one on time; one of files only, late.
+    env.clock.t = T0 + 3 * HOUR + 28 * MIN;
+    const late = await send(env, ipad.cookie, { clientId: pageId(T0, 'ac9dil'), text: 'pasted terminal check', composedAt: T0, confirmed: true });
+    assert.equal(late.status, 200, late.text);
+    const onTime = await send(env, ipad.cookie, { clientId: 'on-time', text: 'and this one is new', composedAt: env.clock.t });
+    assert.equal(onTime.status, 200, onTime.text);
+    const up = await env.call({ method: 'POST', path: '/api/chat/attachments?name=shot.jpg', headers: { cookie: ipad.cookie, 'content-type': 'image/jpeg' }, body: JPEG });
+    const filesOnly = await send(env, ipad.cookie, { clientId: pageId(T0 + 1000, 'bbbbbb'), text: '', composedAt: T0 + 1000, confirmed: true, attachmentIds: [up.json.id] });
+    assert.equal(filesOnly.status, 200, filesOnly.text);
+    const at = env.store.get(late.json.id).at;
+    const note = `[Written ${hm(T0)}, delivered ${hm(at)}: 3 h 28 min late. Read it as of when it was written.]`;
+    const want = new Map([[late.json.id, `${note}\n\npasted terminal check`], [onTime.json.id, 'and this one is new'], [filesOnly.json.id, lateNote(T0 + 1000, env.store.get(filesOnly.json.id).at)]]);
+
+    const token = JSON.parse((await viaSocket(sockPath, 'POST', '/v1/hello', { pid: 1 })).text).token;
+    const lines = await readMessages(sockPath, '/v1/inbound?after=0', token, { want: 3 });
+    const unanswered = JSON.parse((await viaSocket(sockPath, 'GET', '/v1/unanswered', undefined, token)).text).messages;
+    const history = JSON.parse((await viaSocket(sockPath, 'GET', '/v1/history?limit=10', undefined, token)).text).messages;
+    const before = JSON.parse((await viaSocket(sockPath, 'GET', `/v1/history?before=${filesOnly.json.id}&limit=10`, undefined, token)).text).messages;
+    // All paths compared at once, so a failure names every path that went wrong.
+    const texts = list => list.map(m => [m.id, m.text]);
+    const all = [late.json.id, onTime.json.id, filesOnly.json.id].map(id => [id, want.get(id)]);
+    assert.deepEqual(
+      { stream: texts(lines), unanswered: texts(unanswered), history: texts(history), historyBefore: texts(before) },
+      { stream: all, unanswered: all, history: all, historyBefore: all.slice(0, 2) }
+    );
+    // The page reads its own copy: the text as typed, with meta.composedAt for its "written" line.
+    const page = await env.call({ path: '/api/chat/messages', headers: { cookie: ipad.cookie } });
+    const pageLate = page.json.messages.find(m => m.id === late.json.id);
+    assert.equal(pageLate.text, 'pasted terminal check');
+    assert.deepEqual(pageLate.meta, { composedAt: T0 });
+    assert.equal(env.store.get(late.json.id).text, 'pasted terminal check', 'the store keeps the text as typed');
+  } finally {
+    await new Promise(r => server.close(r));
+    await rm(sockDir, { recursive: true, force: true });
+    await env.close();
+  }
+});
+
+test('M1: leadText is the one place the lead\'s copy of the owner\'s words is made', () => {
+  const now = Date.UTC(2026, 10, 20, 20, 38, 49);
+  const m = { seq: 1, id: 'm_x', at: now, from: 'jeff', kind: 'chat', text: 'hi', meta: { composedAt: now - HOUR }, attachments: [] };
+  assert.equal(leadText(m), `${lateNote(now - HOUR, now)}\n\nhi`);
+  assert.equal(leadText({ ...m, text: '' }), lateNote(now - HOUR, now));
+  assert.equal(leadText({ ...m, meta: null }), 'hi');
+  assert.equal(leadText({ ...m, meta: { composedAt: now - MIN } }), 'hi', 'inside the window: no note');
+  // Only the owner's chat: the lead's own words and anything else are never rewritten.
+  assert.equal(leadText({ ...m, from: 'jarvis' }), 'hi');
+  assert.equal(leadText({ ...m, kind: 'event', from: 'system' }), 'hi');
+  // The owner's, late, but not chat (Ultron's L1): the kind alone keeps the text as stored,
+  // so a check on `from` alone fails here. A verdict's history line is one such.
+  for (const kind of ['verdict', 'notice', 'stop']) {
+    const x = { ...m, kind };
+    assert.equal(leadText(x), 'hi', kind);
+    assert.equal(historyMessage(x).text, 'hi', `${kind} in history`);
+  }
+  for (const x of [m, { ...m, text: '' }, { ...m, meta: null }]) {
+    assert.equal(toInbound(x).text, leadText(x));
+    assert.equal(historyMessage(x).text, leadText(x));
+  }
 });

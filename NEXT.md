@@ -3773,6 +3773,8 @@ go-live.
   and `late: '1'` to the tag's meta, and one line in the instructions ("a tag with late="1"
   was written at `written`, long before it arrived: read it as of then"). Then the server's
   text note could go. Until then the note does the job.
+- **Ultron's M1 (2026-11-20 review), fixed in §41:** the note was on the inbound stream
+  only; the restart catch-up and the history call showed late messages without it.
 
 ## 24. Restart Jarvis warns before it stops agent runs (board d8f27c49, P1; on main as b8c148d, live per Jarvis's 2026-11-21 brief)
 
@@ -4673,3 +4675,49 @@ caught. The server suite passes (1788).
   files' tests 212 of 212.
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going; it can share §39's restart.
+
+## 41. The late note on every path the lead reads (Ultron's M1 on §23, board cd4d7dc3, parent 89248590, P2; staged 2026-11-24 on `jos/late-note-everywhere`, off main 7b10b02)
+
+- **The gap.** §23's `[Written …, delivered …]` note was added in `toInbound` only, so
+  the inbound stream had it but the restart catch-up (`GET /v1/unanswered`, which the
+  channel lists after a restart with `catch_up="1"`) and the history call (`GET
+  /v1/history`, the lead's `fetch_history`) handed the stored text bare. A message
+  caught up after a restart read as new, the very mistake §23 fixed. Both calls go
+  through the channel's `m.text`, so the note in the text reaches the lead with no
+  channel change.
+- **The fix.** `leadText(m)` in `server/lib/chat-late.mjs` is the one place the lead's
+  copy of the owner's chat text is made: a late owner's chat message gets the note in
+  front (alone when the message is files only); anything else, the lead's own words
+  included, is the stored text unchanged. `toInbound` uses it; `historyMessage` (in
+  `lib/chat-socket.mjs`) uses it, and now serves `/v1/unanswered` too (it served only
+  `/v1/history`). For the catch-up that changes nothing else: it lists only the owner's
+  chat messages, never a routine's. The page's routes still use `publicMessage`, so the
+  page gets the text as typed and draws its own "written" line. The catch-up's 8 KB cap
+  still counts the stored text, not the note (about 100 bytes a late message).
+- **Checked (2026-11-24):** two new tests in `test/chat-late.test.mjs`. One stores a late
+  message (Send now, 3 h 28 min), an on-time one and a late files-only one through the
+  page route, then reads them over a unix socket through the real router: the inbound
+  stream, `/v1/unanswered`, `/v1/history` and `/v1/history?before=`, comparing every
+  path's texts at once, and the page's own list keeps the typed text. The other pins
+  `leadText` and that `toInbound` and `historyMessage` both give its text. Against
+  main's code both fail (history and catch-up bare); with the change both pass. Mutants,
+  each caught: the catch-up back on `publicMessage`, `historyMessage` without
+  `leadText` (fails the catch-up, history and history-before), `toInbound` on `m.text`.
+  Server suite 1,813 of 1,813, local and `TZ=Asia/Tokyo`; web 381 of 381 (no web
+  change). **Not verified:** the running service (no restart) and the live channel's
+  rendering of the catch-up list.
+- **Go-live (Jeff, after Ultron and C&P):** a Control Room restart only; no web build
+  (no page change) and no channel change.
+- **Ultron's review (2026-11-24): GO, four lows; L1 and L2 fixed here (tests only).**
+  L1: `leadText`'s no-note cases changed `from` with `kind`, so a check on `from` alone
+  passed; the unit test now keeps `from: 'jeff'` and a late `meta.composedAt` with
+  `kind` verdict, notice and stop and expects the text unchanged, in `leadText` and in
+  `historyMessage` (a from-only mutant fails on `verdict`). L2: the stream reader
+  ignored errors and started its timer only after an answer, with a fixed 150 ms read;
+  `readMessages` now starts its deadline (5 s) at the request, settles once on any
+  error, and reads until the three message lines come. A mutant whose stream drops the
+  late messages fails at the deadline instead of hanging. L3 (the time zone in the
+  note) and L4 (the catch-up's cap counts the stored text) are left for the board as
+  their own items. Server suite after: 1,813 of 1,813, local and `TZ=Asia/Tokyo`;
+  `chat-late.test.mjs` five runs in a row clean.
+- **Not here:** Ultron's M2 (a rule in Jarvis's style about late notes) is Jarvis's.

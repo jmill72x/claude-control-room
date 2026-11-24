@@ -1478,9 +1478,11 @@ three pieces, each with its own router:
   line without the text, and the bubble reads "Written 12:10 PM, not sent: it reached the
   server only now" with Send now and Discard (any failed bubble older than 5 minutes asks
   Send now the same way). A message stored late keeps `meta.composedAt`, shows "written
-  12:10 PM" under it, and its line on the lead's inbound stream carries `composedAt` and
-  starts with `[Written 12:10, delivered 15:38: 3 h 28 min late. Read it as of when it was
-  written.]` (the stored text stays as typed). A page built before this sends no
+  12:10 PM" under it, and every copy the lead reads starts with `[Written 12:10, delivered
+  15:38: 3 h 28 min late. Read it as of when it was written.]`: the inbound stream's line
+  (which also carries `composedAt`), the restart catch-up (`/v1/unanswered`) and the
+  history call (`/v1/history`), all from one function, `leadText` (the stored text, and
+  the page's copy, stay as typed). A page built before this sends no
   `composedAt`; the time in its `clientId` (`p_<ms in base 36>_…`) is used instead. The
   device's clock is trusted: one ahead of the server's counts as now, and one more than 5
   minutes slow would need a tap on every send. Why: on 2026-11-20 two iPad messages written

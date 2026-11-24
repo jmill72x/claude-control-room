@@ -52,7 +52,7 @@ import { json, readBody, HttpError } from '../routes.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, MAX_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { isRoutineMessage } from './routine-chat.mjs';
-import { lateComposedAt, lateNote } from './chat-late.mjs';
+import { lateComposedAt, leadText } from './chat-late.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -99,11 +99,16 @@ export const MAX_FILES = 4;
 const REPLY_BODY_MAX = 4 * ATTACHMENT_MAX_BYTES * 1.4 + 64 * 1024;
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-// What the history call hands the lead of one message. A routine's message (the
-// brief, the digest: lib/routine-chat.mjs) is stored as the lead's so the page pushes
-// and reads it, but the lead's session never wrote it: here it is `system`'s, so the
-// channel shows it as data from outside, never as the lead's own earlier words.
-export const historyMessage = m => (isRoutineMessage(m) ? { ...publicMessage(m), from: 'system' } : publicMessage(m));
+// What the history call and the restart catch-up hand the lead of one message. A
+// routine's message (the brief, the digest: lib/routine-chat.mjs) is stored as the
+// lead's so the page pushes and reads it, but the lead's session never wrote it: here
+// it is `system`'s, so the channel shows it as data from outside, never as the lead's
+// own earlier words. The owner's text is leadText's, the late note included, the same
+// as on the inbound stream (Ultron's M1, board cd4d7dc3).
+export const historyMessage = m => {
+  const out = { ...publicMessage(m), text: leadText(m) };
+  return isRoutineMessage(m) ? { ...out, from: 'system' } : out;
+};
 
 // What goes down the inbound stream: the owner's chat messages, verdicts and events
 // (lib/events.mjs). An event goes only when `eventOk(m)` says so at that moment: the
@@ -127,12 +132,12 @@ export function toInbound(m, { eventOk = () => false, stopOk = () => false } = {
     return { type: 'stop', seq: m.seq, id: m.id, at: m.at, row: st.row, agent: st.agent, start: st.start };
   }
   // A message that reached the server long after it was written (lib/chat-late.mjs)
-  // starts with a note saying so, and carries `composedAt`: the channel's tag shows
-  // only the arrival time (`ts`), and an old message read as new misleads the lead.
+  // starts with a note saying so (leadText, the same text the catch-up and history
+  // calls give), and carries `composedAt`: the channel's tag shows only the arrival
+  // time (`ts`), and an old message read as new misleads the lead.
   if (m.from === 'jeff' && m.kind === 'chat') {
     const composedAt = lateComposedAt(m);
-    const text = composedAt === null ? m.text : (m.text ? `${lateNote(composedAt, m.at)}\n\n${m.text}` : lateNote(composedAt, m.at));
-    return { type: 'message', seq: m.seq, id: m.id, at: m.at, ...(composedAt === null ? {} : { composedAt }), text, replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
+    return { type: 'message', seq: m.seq, id: m.id, at: m.at, ...(composedAt === null ? {} : { composedAt }), text: leadText(m), replyTo: m.replyTo ?? null, device: m.device ?? null, attachments: (m.attachments ?? []).map(a => ({ id: a.id, name: a.name, type: a.type, bytes: a.bytes })) };
   }
   // A verdict only from the owner's side and naming its request (L8): the store makes
   // them from a device's tap alone, and anything else in the store is never one.
@@ -485,7 +490,7 @@ export function createSocketRouter({
         return json(res, 200, { deliveredSeq: await store.ack(upTo), epoch: store.epoch });
       }
       if (req.method === 'GET' && path === '/v1/unanswered') {
-        return json(res, 200, { messages: store.unanswered().map(publicMessage) });
+        return json(res, 200, { messages: store.unanswered().map(historyMessage) });
       }
       if (req.method === 'POST' && path === '/v1/reply') {
         const body = await readBody(req, REPLY_BODY_MAX);
