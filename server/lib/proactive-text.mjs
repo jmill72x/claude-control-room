@@ -204,13 +204,29 @@ export const IDLE = Object.freeze({
 // one: with no weekly limit read there is none; Ultron's L1, 11-19; said rounded, so up
 // to the step itself),
 // and `unanswered`, the wake-ups made since a run was last seen. No id, no word from
-// the board.
+// the board. Two more when the back-off started again since the last wake-up (board
+// e10a01ed), each kept only when it passes and left out otherwise (the wake-up still
+// goes): `ownerAt`, the time of the owner's last chat message since then, and `moved`,
+// how many repos' branches moved since then (1 or more).
 export function checkIdle(f) {
   if (!isObject(f) || !whole(f.workable, 1, 100000)) return null;
   for (const k of ['p0', 'p1', 'doing']) if (!whole(f[k], 0, f.workable)) return null;
   if (!whole(f.session, 0, IDLE.sessionPct - 1) || !whole(f.unanswered, 0, 100000)) return null;
   if (!whole(f.week, 0, IDLE.weekPct)) return null;
-  return { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, unanswered: f.unanswered };
+  const out = { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, unanswered: f.unanswered };
+  if (time(f.ownerAt) !== null) out.ownerAt = f.ownerAt;
+  if (whole(f.moved, 1, 1000)) out.moved = f.moved;
+  return out;
+}
+
+// A time as the wake-up says it: the server's 24-hour clock and its zone's short name
+// ("21:04 EST", "21:04 GMT+9"), the zone left out if Intl gives none.
+export function clockWords(at) {
+  const d = new Date(at);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  let zone = '';
+  try { zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(d).find(p => p.type === 'timeZoneName')?.value ?? ''; } catch { zone = ''; }
+  return zone ? `${hm} ${zone}` : hm;
 }
 
 // The wake-up's words: facts in a fixed order, numbers only; null for fields that fail.
@@ -221,5 +237,17 @@ export function idleText(fields) {
   const detail = [urgent, f.doing > 0 ? `${f.doing} in doing` : ''].filter(Boolean).join('; ');
   return `Idle: no agent run is live. ${plural(f.workable, 'open board item')} ${f.workable === 1 ? 'has' : 'have'} no ask${detail ? ` (${detail})` : ''}. `
     + `Session at ${f.session}%; weekly limits at most ${f.week}%.`
-    + (f.unanswered > 0 ? ` ${plural(f.unanswered, 'idle event')} since the last run.` : '');
+    + (f.unanswered > 0 ? ` ${plural(f.unanswered, 'idle event')} since the last run.` : '')
+    + changedWords(f);
+}
+
+// What started the back-off again, as the wake-up says it: " Since the last wake-up: the
+// owner wrote in the chat (last at 21:04 EST); 3 repos moved on their branch (a merge
+// or a commit)." Empty when neither did.
+function changedWords(f) {
+  const parts = [
+    f.ownerAt !== undefined ? `the owner wrote in the chat (last at ${clockWords(f.ownerAt)})` : null,
+    f.moved !== undefined ? `${f.moved === 1 ? '1 repo moved on its branch' : `${f.moved} repos moved on their branch`} (a merge or a commit)` : null
+  ].filter(Boolean);
+  return parts.length ? ` Since the last wake-up: ${parts.join('; ')}.` : '';
 }

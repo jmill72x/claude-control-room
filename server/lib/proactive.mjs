@@ -22,13 +22,17 @@ import { ruleFor, windowOf, SESSION_STEPS, NO_RESET_KEEP_MS } from './limit-warn
 import { distinctHeals } from './heal.mjs';
 import { isDueDate } from '../todos.mjs';
 import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit, checkIdle, IDLE } from './proactive-text.mjs';
+import { REPO_NAME } from './to-push.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const CHECK_EVERY_MS = 5 * MIN;
 // Two run times within this are one run: job-status's times wobble by up to 36 s.
 export const SAME_RUN_MS = 2 * MIN;
 // What the state file keeps at most; past this the oldest go.
-export const STATE_MAX = Object.freeze({ board: 3000, jobs: 300, runs: 64, hits: 1000 });
+export const STATE_MAX = Object.freeze({ board: 3000, jobs: 300, runs: 64, hits: 1000, heads: 64 });
+// A reset of the idle back-off that no wake-up or run has used within this goes, so a
+// wake-up much later never says an old message or merge (its back-off stays reset).
+export const RESET_KEEP_MS = 12 * HOUR;
 // A told weekly key with no reset in it is kept this long (a session's: NO_RESET_KEEP_MS).
 export const WEEK_NO_RESET_KEEP_MS = DAY;
 export const STATE_VERSION = 1;
@@ -73,6 +77,29 @@ export function nextQuietEnd(now, end = QUIET_END_HOUR) {
   d.setHours(end, 0, 5, 0);
   if (d.getTime() <= now) { d.setDate(d.getDate() + 1); d.setHours(end, 0, 5, 0); }
   return d.getTime();
+}
+
+// One extra pass at a given time (board e10a01ed): when the owner writes, or a pass
+// says a reset's wait ends (`idleNextAt`), server.mjs asks for a pass then, so the
+// wake-up comes at the end of the settle, not up to 5 minutes after. Only the earliest
+// asked is kept; a time already past, or more than `maxAheadMs` off, is not taken (the
+// 5-minute passes cover it). The timer is unref'd.
+export function createSoonPass({ run, clock = () => Date.now(), maxAheadMs = 20 * MIN, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let timer = null;
+  let dueAt = null;
+  return {
+    at(time) {
+      const now = clock();
+      if (!finite(time) || time <= now || time - now > maxAheadMs) return false;
+      if (timer !== null && dueAt <= time) return false;
+      if (timer !== null) clearTimer(timer);
+      dueAt = time;
+      timer = setTimer(() => { timer = null; dueAt = null; return run(); }, time - now);
+      timer?.unref?.();
+      return true;
+    },
+    get dueAt() { return dueAt; }
+  };
 }
 
 // config.proactive = { "enabled": true }. Absent is unset (off); false is off.
@@ -332,7 +359,7 @@ export function heldWords(found) {
     case 'board-unreadable': return 'the board file could not be read';
     case 'no-work': return 'no open item without an ask';
     case 'quiet-hours': return `quiet ${hh(QUIET_START_HOUR)}-${hh(QUIET_END_HOUR)}, nights off in config; the ${hh(QUIET_END_HOUR)} pass decides afresh`;
-    case 'waiting': return `${found.unanswered === 0 ? 'a run followed the last one' : `${found.unanswered} unanswered since the last run`}; the next in ${spanWords(found.nextAt - found.now)}`;
+    case 'waiting': return `${found.reset ? 'the back-off started again since the last one' : found.unanswered === 0 ? 'a run followed the last one' : `${found.unanswered} unanswered since the last run`}; the next in ${spanWords(found.nextAt - found.now)}`;
     case 'no-events': return 'the events module is off';
     default: return found?.state ?? 'unknown';
   }
@@ -364,7 +391,12 @@ export const sourceOf = key => { const kind = String(key).split(':')[0]; return 
 // ---- the state file ----
 
 const emptyIdle = () => ({ since: null, sentAt: null, unanswered: 0 });
-const emptyState = () => ({ board: new Map(), jobs: new Map(), hits: new Map(), idle: emptyIdle() });
+// What resets the idle wake-up's back-off (board e10a01ed): the owner's last chat message
+// seen (`ownerSeen`), each repo's branch and commit as hashes (`heads`, by repo name), and
+// the reset waiting for the next wake-up (`reset`: when it began, the owner's last
+// message in it, the repos that moved), or null.
+const emptyWake = () => ({ ownerSeen: null, heads: new Map(), reset: null });
+const emptyState = () => ({ board: new Map(), jobs: new Map(), hits: new Map(), idle: emptyIdle(), wake: emptyWake() });
 const entries = v => (Array.isArray(v) ? v.filter(e => Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && isObject(e[1])) : []);
 const timeOrNull = v => (finite(v) ? v : null);
 
@@ -389,9 +421,23 @@ export function cleanState(raw) {
   // The idle wake-up's: since when the board has sat idle, when the last one went, and
   // how many went since a run was last seen.
   if (isObject(raw.idle)) s.idle = { since: timeOrNull(raw.idle.since), sentAt: timeOrNull(raw.idle.sentAt), unanswered: Number.isInteger(raw.idle.unanswered) && raw.idle.unanswered > 0 ? Math.min(raw.idle.unanswered, 1000) : 0 };
+  // The back-off's reset (board e10a01ed). A file from before it has no `wake`: the
+  // owner's messages then count from the last wake-up, and each repo is first seen now.
+  if (isObject(raw.wake)) {
+    s.wake.ownerSeen = timeOrNull(raw.wake.ownerSeen);
+    for (const [name, e] of entries(raw.wake.heads).slice(-STATE_MAX.heads)) {
+      if (REPO_NAME.test(name) && HASH16.test(e.b ?? '') && HASH16.test(e.c ?? '')) s.wake.heads.set(name, { b: e.b, c: e.c });
+    }
+    const r = raw.wake.reset;
+    if (isObject(r) && finite(r.at)) {
+      const repos = [...new Set((Array.isArray(r.repos) ? r.repos : []).filter(n => typeof n === 'string' && REPO_NAME.test(n)))].slice(0, STATE_MAX.heads);
+      s.wake.reset = { at: r.at, ownerAt: timeOrNull(r.ownerAt), repos };
+    }
+  }
   return s;
 }
-const stateToFile = s => ({ v: STATE_VERSION, board: [...s.board], jobs: [...s.jobs], hits: [...s.hits], idle: { ...s.idle } });
+const HASH16 = /^[0-9a-f]{16}$/;
+const stateToFile = s => ({ v: STATE_VERSION, board: [...s.board], jobs: [...s.jobs], hits: [...s.hits], idle: { ...s.idle }, wake: { ownerSeen: s.wake.ownerSeen, heads: [...s.wake.heads], reset: s.wake.reset && { ...s.wake.reset, repos: [...s.wake.reset.repos] } } });
 
 // ---- the check ----
 
@@ -415,6 +461,12 @@ export function createProactive({
   killed = () => false,
   // The idle wake-up's own kill file (`idle-off`).
   idleKilled = () => false,
+  // What starts the idle back-off again (board e10a01ed): the times of the first and the
+  // last of the owner's chat messages after a time, `{ first, last }` or null
+  // (lib/chat-store.mjs, ownerChatAfter), and each repo's branch and commit
+  // (collectors/to-push.mjs, heads: a Map by repo name of { branch, oid }).
+  ownerChat = () => null,
+  repoHeads = () => null,
   clock = () => Date.now(),
   log = console.log
 }) {
@@ -570,8 +622,65 @@ export function createProactive({
   async function idleStep(now) {
     if (!idleSettings.on) return { state: 'off' };
     const r = await idleRule(now);
-    if (HELD_STATES.includes(r.state)) holdFor(r.state === 'waiting' ? { state: 'waiting', nextAt: r.nextAt, unanswered: r.unanswered, now } : r.found ?? r, now);
+    if (HELD_STATES.includes(r.state)) holdFor(r.state === 'waiting' ? { state: 'waiting', nextAt: r.nextAt, unanswered: r.unanswered, reset: Boolean(r.reset), now } : r.found ?? r, now);
     return r.found ? { state: r.state } : r;
+  }
+
+  // What happened since the last wake-up that may have freed work (board e10a01ed, 11-24:
+  // a wake-up found every repo blocked behind a staged branch, the owner's C&P freed three
+  // eight minutes later, and the back-off kept the next one two hours off). Two signals:
+  // a chat message from the owner newer than the last wake-up and the last one seen; and
+  // a repo whose checkout's branch moved to another commit (a merge or a commit landing),
+  // the same branch as last read. Either sets the back-off to none (`unanswered` 0) and
+  // starts a reset, which the next wake-up says and ends. A live run ends one unsaid: the
+  // lead is working. The marks move every pass, a run's included, so nothing counts twice.
+  // A repo first seen, or on another branch than last time, is a new mark, not a move.
+  function noteSignals(now, running) {
+    const w = state.wake;
+    const sentAt = state.idle.sentAt;
+    // The first message since the marks is the settle's start; the last is the words'.
+    // With no mark yet (no wake-up made and no message seen), the newest is the mark.
+    let owner = null;
+    const after = Math.max(w.ownerSeen ?? -Infinity, sentAt ?? -Infinity);
+    let got = null;
+    try { got = ownerChat(after); } catch { got = null; }
+    // A message stamped more than a minute ahead (the clock set back) is not read, so it
+    // can't hold the mark ahead of every later one.
+    if (isObject(got) && finite(got.first) && finite(got.last) && got.first > after && got.last <= now + MIN) {
+      if (after !== -Infinity) owner = got;
+      w.ownerSeen = got.last;
+    }
+    const moved = [];
+    let heads = null;
+    try { heads = repoHeads(); } catch { heads = null; }
+    if (heads instanceof Map) {
+      for (const [name, h] of heads) {
+        if (typeof name !== 'string' || !REPO_NAME.test(name) || !isObject(h) || typeof h.branch !== 'string' || typeof h.oid !== 'string') continue;
+        const mark = { b: hash(['branch', h.branch]), c: hash(['commit', h.oid]) };
+        const was = w.heads.get(name);
+        if (was && was.b === mark.b && was.c !== mark.c) moved.push(name);
+        w.heads.delete(name);
+        w.heads.set(name, mark);
+      }
+      while (w.heads.size > STATE_MAX.heads) w.heads.delete(w.heads.keys().next().value);
+    }
+    if (w.reset && now - w.reset.at > RESET_KEEP_MS) w.reset = null;
+    if (running) { w.reset = null; return; }
+    if (owner === null && moved.length === 0) return;
+    const before = state.idle.unanswered;
+    state.idle.unanswered = 0;
+    const started = !w.reset;
+    // The settle counts from the first signal of a reset: the owner's message, or the
+    // pass that saw a repo move. Later ones never push it out, so a long chat can't hold
+    // the wake-up off (board 638d21d2's lesson).
+    const r = w.reset ?? { at: owner?.first ?? now, ownerAt: null, repos: [] };
+    if (owner !== null) r.ownerAt = Math.max(r.ownerAt ?? owner.last, owner.last);
+    for (const name of moved) if (!r.repos.includes(name)) r.repos.push(name);
+    w.reset = r;
+    if (started) {
+      const what = [owner !== null ? 'the owner wrote in the chat' : null, moved.length > 0 ? `${moved.length === 1 ? 'a repo moved on its branch' : `${moved.length} repos moved on their branch`} (${moved.join(', ')})` : null].filter(Boolean).join('; ');
+      log(`proactive: the idle wake-up's back-off starts again (${what}; ${before} unanswered before); the next once idle ${spanWords(IDLE.settleMs)} from it`);
+    }
   }
 
   // The rule itself: its state for the view, and for a state idleCheck gave, `found`.
@@ -580,12 +689,17 @@ export function createProactive({
     if (idleKilled()) { idle.since = null; return { state: 'killed' }; }
     const found = idleCheck({ sessions: snapNow.sessions, usage: snapNow.usage, todos: boardNow, now });
     if (found.state === 'running') idle.unanswered = 0;
+    noteSignals(now, found.state === 'running');
     // The view gets the state only; the log line its numbers too.
     if (found.state !== 'idle') { idle.since = null; return { state: found.state, found }; }
     if (!finite(idle.since) || idle.since > now) idle.since = now;
-    const base = { since: idle.since, ...found.fields, unanswered: idle.unanswered };
-    if (now - idle.since < IDLE.settleMs) return { state: 'settling', ...base };
+    const reset = state.wake.reset;
+    const base = { since: idle.since, ...found.fields, unanswered: idle.unanswered, ...(reset ? { reset: { at: reset.at, ownerAt: reset.ownerAt, moved: reset.repos.length } } : {}) };
+    // With a reset, a wait says when it ends, so server.mjs can run a pass then rather
+    // than up to 5 minutes later (createSoonPass).
+    if (now - idle.since < IDLE.settleMs) return { state: 'settling', ...base, ...(reset ? { nextAt: idle.since + IDLE.settleMs } : {}) };
     if (idleSettings.quietHours && isQuiet(now)) return { state: 'quiet-hours', ...base };
+    if (reset && now - reset.at < IDLE.settleMs) return { state: 'settling', ...base, nextAt: reset.at + IDLE.settleMs };
     // A quarter of an hour after one a run followed; one hour after one none did, two
     // after a second, then four.
     const wait = idle.unanswered === 0 ? IDLE.gapMs : IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** (idle.unanswered - 1));
@@ -596,7 +710,8 @@ export function createProactive({
     holdEnds(now);
     let status;
     try {
-      const r = await ev.idle(checkIdle({ ...found.fields, unanswered: idle.unanswered }), { nights: !idleSettings.quietHours });
+      const said = reset ? { ownerAt: reset.ownerAt, moved: reset.repos.length } : {};
+      const r = await ev.idle(checkIdle({ ...found.fields, unanswered: idle.unanswered, ...said }), { nights: !idleSettings.quietHours });
       status = typeof r?.status === 'string' ? r.status : 'unknown';
     } catch (err) {
       status = 'error';
@@ -605,6 +720,8 @@ export function createProactive({
     if (SENT_STATUSES.includes(status)) {
       idle.sentAt = now;
       idle.unanswered++;
+      // Said: the next reset needs a new signal.
+      state.wake.reset = null;
       idleUnsentSaid = null;
       const backoff = IDLE.everyMs * Math.min(IDLE.backoffMax, 2 ** (idle.unanswered - 1));
       log(`proactive: an idle wake-up to the lead's event (${status}): ${found.fields.workable} open item${found.fields.workable === 1 ? '' : 's'} with no ask; the next no sooner than ${spanWords(IDLE.gapMs)} on if a run follows, else ${spanWords(backoff)}`);
@@ -681,7 +798,9 @@ export function createProactive({
       }
       idleNow = await idleStep(now);
       await save();
-      return { status: 'on', hits: found.length, told, waiting: due.length - told, quiet: isQuiet(now) };
+      // A reset's wait ending before the next 5-minute pass: when (createSoonPass).
+      const soon = idleNow.reset && (idleNow.state === 'settling' || idleNow.state === 'waiting') && finite(idleNow.nextAt) ? { idleNextAt: idleNow.nextAt } : {};
+      return { status: 'on', hits: found.length, told, waiting: due.length - told, quiet: isQuiet(now), ...soon };
     });
   }
 

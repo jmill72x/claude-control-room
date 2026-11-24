@@ -3206,7 +3206,7 @@ on (per Jarvis's notes; I did not check the log). What follows is how it was sta
   for Jeff below). (7) The 10 minutes count from the lead's own last request as well, so
   a conversation between Jeff and Jarvis is not "idle". (8) The back-off (1, 2, 4 hours)
   is mine: an unanswered wake-up would otherwise cost Jarvis a turn every hour. Only a
-  run seen live resets it. (9) Nothing is held for the morning: the 07:00 pass decides
+  run seen live resets it (since §45, the owner's chat message or a merge does too). (9) Nothing is held for the morning: the 07:00 pass decides
   afresh. (10) No row on the page: Heads up is for things that want Jeff's eye; the GET
   carries an `idle` object for checks. (11) The events ledger counts idle events under a
   name of its own (`proactive-idle`), so they use up neither the heads-ups' 8 a day nor
@@ -4883,3 +4883,83 @@ caught. The server suite passes (1788).
   as above. Web suite 381 of 381 in local time and `TZ=Asia/Tokyo`; oxlint clean on the
   test file. The server suite wasn't run (no server file changed).
 - **Go-live:** none (test only).
+
+## 45. The idle wake-up's back-off starts again on the owner's message or a merge (board e10a01ed, P1; staged 2026-11-24 on `jos/idle-reset`, off main a75503c)
+
+**Jeff, 11-24 22:04 ET: "ok fix this now. i want this to be the very next thing that's
+built."** Agent runs did not start after his C&P freed repos: on 11-24 his 21:00Z C&P freed
+three, and nothing started until he asked at 21:47. README "The idle wake-up", bullet
+"The back-off starts again", is the reference.
+
+- **The cause (this repo's half).** The 20:52 wake-up found every repo blocked behind a
+  staged branch, so no run followed and the back-off (1, then 2, then 4 hours; §18 choice
+  8, "only a run seen live resets it") put the next one hours off. Nothing woke Jarvis
+  after the C&P. The other half (Jarvis starts runs only when a report lands) is Jarvis's
+  style, his to fix.
+- **What it does now.** Two signals, read every pass, each set the count of unanswered
+  wake-ups to none and start a reset: a chat message from the owner (page or Shortcut,
+  `from: jeff`, `kind: chat`) newer than the last wake-up; and a repo whose checked-out
+  branch moved to another commit since the last pass (a merge or commit landing). The next
+  wake-up then comes 5 minutes after the first signal (later ones never push it out),
+  still no sooner than 15 minutes after the last wake-up, and ends with what changed:
+  `Since the last wake-up: the owner wrote in the chat (last at 21:04 EST); 3 repos moved
+  on their branch (a merge or a commit).` A run seen live ends a reset unsaid. Quiet hours
+  unchanged. An owner's message, and a pass that ends in a reset's wait, each ask for one
+  extra pass at the end of the wait (`createSoonPass` in `lib/proactive.mjs`), so it is
+  about 5 minutes after the message, not up to 10.
+- **Choices to defend.**
+  - **The merge signal reads what the To push collector already asks git-read** (`git
+    status --porcelain=v2 --branch` on each `toPush.repos` checkout, every 5 minutes): the
+    answer's `# branch.oid` and `# branch.head` lines, kept in memory by the collector and
+    hashed into `proactive.json` by the check. No new process, no new git argument, no
+    route, no socket, read-only through the hardened runner. The other option, a loopback
+    endpoint Jarvis calls after each merge, would add a write route and only work when he
+    remembers; a merge Jeff or a routine makes would go unseen.
+  - **"Base branch" is the branch each configured checkout has out** (main, or build/v1 in
+    the jarvis repo), not a configured name. A commit there that frees nothing (a tier-0
+    docs commit, the weekly `chore: automated` refresh) also starts a reset: one extra
+    wake-up at most, accepted. A branch switch in a checkout is a new mark, not a move.
+  - **The settle counts from the first signal** of a reset, so a long chat can't hold the
+    wake-up off (board 638d21d2's lesson). Cost: while the owner chats and no run starts,
+    a wake-up can come every 15 minutes (each message after a wake-up resets it again);
+    the 48-a-day cap holds.
+  - **The 15-minute floor after the last wake-up stays** (the events ledger has it anyway).
+    A message 2 minutes after a wake-up gets the next at the quarter.
+  - **A run ends a reset unsaid**, and a reset unused for 12 hours loses its words (the
+    count stays at none), so a wake-up never says an old message.
+  - **The words say counts and a time only:** no repo name, hash or message text reaches
+    the lead's event; the service log names the repos (folder names from config).
+  - **Marks persist** (`proactive.json`'s new `wake` block): a merge or message while the
+    server was down (C&P, then the go-live restart) is seen at the first pass after it. A
+    state file from before has no `wake`: messages count from the last wake-up, and each
+    repo's first read is its mark, so a merge before the first start of this code is not
+    seen. The older code ignores the block (rollback-safe).
+- **Not covered:** a C&P typed in Discord, until its merge lands (the branch move covers
+  that); repos not in `toPush.repos`; a merge pushed from a worktree without moving the
+  local base branch (here the local main moves, as `git worktree list` shows).
+- **Checked (2026-11-24):** server 1,850 tests in local time and `TZ=Asia/Tokyo` (main
+  a75503c: 1,828), umask 022. New: `proactive-idle-reset.test.mjs` (22), through the real
+  chat store, events module and To push collector (git-read stood in for) on one fake
+  clock, wired as server.mjs is (the subscription and the extra pass): the owner's message
+  after two unanswered wake-ups gives a third 5 minutes after it (on main's code the next
+  would be two hours on); a merge seen by a pass gives one 5 minutes after; events, a
+  limit-reset event, a routine's post, the lead's message, a verdict and a notice reset
+  nothing (the two-hour back-off holds); plus the floor, the long chat, a run, restarts,
+  the state file, `headOf`, the words and the server.mjs wiring (source test). The test
+  file can't run on main at all (the new exports are missing); the "main" mutant (no
+  signals) fails it. 68 mutants over the new code, all caught on the final code (two
+  no-op baselines pass); on the way 9 survived: 7 became tests (the cap's order, a run
+  ending a reset, a signal in a run's last pass, one log line a reset, the off-grid
+  settle, a half-bad mark on file, the held wait's words) and 2 were dead checks, removed
+  (a detached-head test BRANCH_NAME already refuses, a zone-shape regex). Listing the
+  mutants first removed three more that could not bind (a min, a cap, an order check).
+  oxlint: no new warnings. **Not verified:** the live server (needs the restart), a real
+  git-read answer through the new parse (the format is what loop 3 already reads live),
+  and how Jarvis acts on the new words.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server code only; no web build,
+  no config change), with no agent runs going. After it: the start line unchanged; on the
+  owner's next chat message after an unanswered wake-up, one `proactive: the idle wake-up's
+  back-off starts again (the owner wrote in the chat; N unanswered before)` line and a
+  wake-up about 5 minutes later; on the next merge, the same with `repos moved`. Undo:
+  `~/.local/state/jarvis-os/idle-off` stops all wake-ups with no restart; reverting the
+  commit and restarting goes back to the plain back-off (the `wake` block is ignored).

@@ -43,7 +43,7 @@ import { startIngestSocket, createLegacyNotice } from './lib/ingest-socket.mjs';
 import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
-import { createChatStore, ATTACHMENT_MAX_BYTES } from './lib/chat-store.mjs';
+import { createChatStore, isOwnerChat, ATTACHMENT_MAX_BYTES } from './lib/chat-store.mjs';
 import { createRoutineChat } from './lib/routine-chat.mjs';
 import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
@@ -56,7 +56,8 @@ import { createPushService, loadVapid } from './lib/chat-push.mjs';
 import { parityStartLine, createApprovals, readApprovalsConfig } from './lib/approvals.mjs';
 import { createFeedReader, readFeedConfig } from './lib/feed.mjs';
 import { createFeedRoutes } from './lib/feed-routes.mjs';
-import { createProactive, readProactiveConfig, proactiveStart, targetNamer, nextQuietEnd, CHECK_EVERY_MS as PROACTIVE_EVERY_MS } from './lib/proactive.mjs';
+import { createProactive, createSoonPass, readProactiveConfig, proactiveStart, targetNamer, nextQuietEnd, CHECK_EVERY_MS as PROACTIVE_EVERY_MS } from './lib/proactive.mjs';
+import { IDLE } from './lib/proactive-text.mjs';
 import { createProactiveRoutes } from './lib/proactive-routes.mjs';
 import { createShortcutKeys } from './lib/shortcut-keys.mjs';
 import { createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, SERVER_REQUEST_TIMEOUT_MS } from './lib/shortcut-routes.mjs';
@@ -426,6 +427,11 @@ let shortcuts = null;
 let chatDevicesForFeed = null; // the Feed's reads take the chat's device cookie
 // The Shortcut keys, for the proactive check's expiry rule: set once they are loaded.
 let shortcutKeysForProactive = null;
+// The idle wake-up's reset on the owner's chat messages (board e10a01ed): the store's
+// read of the last one, set with the chat; and what a new one asks of the check's
+// timer, set once the passes run (an extra pass at the end of the settle).
+let ownerChatForProactive = null;
+let ownerWroteForProactive = () => {};
 // Read aloud in the Mac's own voice (lib/chat-speech.mjs): set once it has started.
 let speech = null;
 const chatSettings = readChatConfig(config, hosts.mode);
@@ -490,6 +496,10 @@ if (chatSettings.on && socketsReady) {
   });
   const chatStore = createChatStore({ dir: chatDir });
   const loaded = await chatStore.load();
+  // The owner's chat messages start the idle wake-up's back-off again (board e10a01ed);
+  // an event, a routine's post, the lead's own message, a verdict or a stop never does.
+  ownerChatForProactive = after => chatStore.ownerChatAfter(after);
+  chatStore.subscribe(e => { if (e?.type === 'message' && isOwnerChat(e.message)) ownerWroteForProactive(e.message.at); });
   console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
   await chatStore.pruneAttachments();
   // Uploads never sent before the last stop: no message carries them, so after an
@@ -709,7 +719,9 @@ const proactive = createProactive({
   jobNames: roster.jobs,
   excludeKeys: eventsSettings.excludeKeys,
   killed: () => existsSync(proactiveOffPath),
-  idleKilled: () => existsSync(idleOffPath)
+  idleKilled: () => existsSync(idleOffPath),
+  ownerChat: after => ownerChatForProactive?.(after) ?? null,
+  repoHeads: () => toPush.heads()
 });
 const proactiveRoutes = createProactiveRoutes({
   view: () => proactive.view(),
@@ -720,7 +732,10 @@ const proactiveStarted = proactiveStart({ settings: proactiveSettings, events: B
 if (proactiveStarted.run) {
   const stale = await proactiveStore.sweep();
   if (stale > 0) console.log(`proactive: removed ${stale} temp file${stale === 1 ? '' : 's'} an interrupted write left`);
-  const runPass = () => { proactive.pass().catch(err => console.error(`proactive: the pass failed (${err?.message ?? err})`)); };
+  // An extra pass when a reset of the idle back-off ends its wait (board e10a01ed): at
+  // the end of the settle after the owner writes, or when a pass says so.
+  const soon = createSoonPass({ run: () => runPass() });
+  const runPass = () => { proactive.pass().then(r => soon.at(r?.idleNextAt)).catch(err => console.error(`proactive: the pass failed (${err?.message ?? err})`)); };
   // At 07:00 sharp too, so the night's held hits go then and not up to 5 minutes later.
   const atQuietEnd = () => { setTimeout(() => { runPass(); atQuietEnd(); }, nextQuietEnd(Date.now()) - Date.now()).unref(); };
   // The first pass waits for every collector's first run, so the panels it reads are filled.
@@ -728,6 +743,7 @@ if (proactiveStarted.run) {
     runPass();
     setInterval(runPass, PROACTIVE_EVERY_MS).unref();
     atQuietEnd();
+    ownerWroteForProactive = at => soon.at(at + IDLE.settleMs + 1000);
   });
 }
 console.log(proactiveStarted.line);

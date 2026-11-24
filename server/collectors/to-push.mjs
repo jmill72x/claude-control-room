@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { parseStatus, repoView } from '../lib/to-push.mjs';
+import { parseStatus, repoView, headOf } from '../lib/to-push.mjs';
 import { PYTHON, pythonArgs, programEnv } from '../lib/program-check.mjs';
 
 // The To push collector (Orbit plan, Phase 4). Every 5 minutes, for each repo
@@ -109,6 +109,11 @@ export function createToPush({ settings, run = runGitRead, log = console.error, 
     else lastProblem.delete(name);
   };
 
+  // Each repo's branch and commit from its last answer that had both (lib/to-push.mjs,
+  // headOf), for the idle wake-up's merge signal (lib/proactive.mjs). In memory only and
+  // never on the page; a repo that can't be read keeps its last one.
+  const lastHeads = new Map();
+
   return {
     async collect() {
       if (!settings.gitRead || settings.repos.length === 0) return { configured: false, repos: [] };
@@ -116,7 +121,10 @@ export function createToPush({ settings, run = runGitRead, log = console.error, 
       for (const repo of settings.repos) {
         const at = now();
         try {
-          repos.push(repoView(repo, parseStatus(await run(settings.gitRead, repo.path)), at));
+          const raw = await run(settings.gitRead, repo.path);
+          repos.push(repoView(repo, parseStatus(raw), at));
+          const head = headOf(raw);
+          if (head) lastHeads.set(repo.name, head);
           note(repo.name, null);
         } catch (err) {
           const why = whyNotRead(err);
@@ -128,6 +136,8 @@ export function createToPush({ settings, run = runGitRead, log = console.error, 
         }
       }
       return { configured: true, repos };
-    }
+    },
+    // A copy: repo name to { branch, oid }.
+    heads: () => new Map([...lastHeads].map(([name, h]) => [name, { ...h }]))
   };
 }

@@ -96,6 +96,23 @@ export function parseStatus(raw) {
   return { branch, detached, upstream, ahead, behind, staged, partial };
 }
 
+// The commit the checkout's branch is at, and that branch, from the same answer, for the
+// proactive check's idle wake-up (lib/proactive.mjs, `repoMoves`): a branch that moves is
+// a merge or a commit landing, which is what frees work held behind a staged branch.
+// Never on the page: `repoView` leaves both out. A detached HEAD (git's "(detached)",
+// outside BRANCH_NAME like any other odd name) or an id that is not a full hash (40
+// hex, or 64 for a SHA-256 repo) is null, so it is never compared.
+const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+export function headOf(raw) {
+  let branch = null, oid = null;
+  for (const line of String(raw ?? '').split('\n')) {
+    if (line.startsWith('# branch.oid ')) oid = line.slice('# branch.oid '.length).trim();
+    else if (line.startsWith('# branch.head ')) branch = line.slice('# branch.head '.length).trim();
+  }
+  if (branch === null || !BRANCH_NAME.test(branch) || !OID.test(oid ?? '')) return null;
+  return { branch, oid };
+}
+
 // One repo as the page gets it, built field by field. An unread repo carries
 // only its name, owner and why, in the collector's fixed words.
 export function repoView(repo, status, at, why = null) {

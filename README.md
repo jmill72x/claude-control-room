@@ -2994,8 +2994,37 @@ decides what to run.
 - **The spacing**, kept in the check's state (`proactive.json`'s `idle`, so a restart
   repeats nothing): after a wake-up a run followed, the next may go 15 minutes after it
   (once idle 5 minutes); after one no run followed, an hour, then 2, then 4 (the cap). A
-  run seen live sets the count back to none. The events ledger is the floor whoever asks:
-  at most one in 15 minutes and 48 in any 24 hours (`held`).
+  run seen live sets the count back to none, and so does either reset below. The events
+  ledger is the floor whoever asks: at most one in 15 minutes and 48 in any 24 hours
+  (`held`).
+- **The back-off starts again** (board e10a01ed, 2026-11-24) on what frees work, since a
+  wake-up that found every repo blocked behind a staged branch is unanswered for a good
+  reason. Two signals, read on every pass:
+  - **A chat message from the owner** (`from: jeff`, `kind: chat`, from the page or a
+    Shortcut) newer than the last wake-up and the last one the check saw
+    (`chat-store.mjs`'s `ownerChatAfter`, `isOwnerChat`). Events, the routines' posts,
+    the lead's own messages, verdicts and stops never count.
+  - **A repo's branch moving**: the To push collector already runs `git status
+    --porcelain=v2 --branch` through git-read on each repo in `toPush.repos` every 5
+    minutes; it now also keeps each answer's branch and commit (`headOf` in
+    `lib/to-push.mjs`) in memory, never on the page, and the check compares them with
+    its marks (`proactive.json`'s `wake.heads`, the branch and commit as 16-hex hashes).
+    The same branch on another commit is a move (a merge or a commit landing); a repo
+    first seen, or on another branch, is a new mark, not a move. No new process, route
+    or socket.
+  Either sets the count to none and starts a reset: the next wake-up waits 5 minutes from
+  the first signal (later ones never push it out, so a long chat can't hold it off) and
+  still no sooner than 15 minutes after the last one, and its words end
+  `Since the last wake-up: the owner wrote in the chat (last at 21:04 EST); 3 repos moved
+  on their branch (a merge or a commit).` The wake-up ends the reset; so does a run seen
+  live (unsaid: the lead is working), and one unused for 12 hours loses its words. The log
+  says it once: `proactive: the idle wake-up's back-off starts again (the owner wrote in
+  the chat; 2 repos moved on their branch (repo-a, repo-b); 2 unanswered before); the next
+  once idle 5 min from it`. So the wake-up comes at the end of the settle, not up to 5
+  minutes later, an owner's message and a pass that ends in a reset's wait each ask for
+  one extra pass at that time (`createSoonPass`, unref'd, the earliest only). Quiet hours
+  are unchanged. Not seen: a C&P given in Discord until its merge lands (the branch move
+  covers it), and repos not in `toPush.repos`.
 - **Not from 22:00 to 07:00**, and none held for the morning: the 07:00 pass decides
   afresh. `"quietHours": false` lets it go at night too. `events.idle` checks the hours
   again itself (`quiet`), unless its caller passes `nights: true`, which the check does
@@ -3036,7 +3065,9 @@ decides what to run.
   alone never justifies a write, so its own instructions need a line that an `idle` event
   is the cue to pick the next item under the owner's standing ask.
 
-Tests: `server/test/proactive-idle.test.mjs`, `server/test/proactive-idle-events.test.mjs`.
+Tests: `server/test/proactive-idle.test.mjs`, `server/test/proactive-idle-events.test.mjs`,
+`server/test/proactive-idle-reset.test.mjs` (the resets, through the real chat store,
+events module and To push collector).
 
 ### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
 

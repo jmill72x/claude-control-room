@@ -26,6 +26,10 @@ const HOUR = 3600e3, DAY = 24 * HOUR;
 // fields in meta, fixed words in text, and only the owner's side makes one.
 export const CHAT_KINDS = new Set(['chat', 'permission', 'verdict', 'notice', 'event', 'stop']);
 export const CHAT_FROM = new Set(['jeff', 'jarvis', 'system']);
+// A chat message of the owner's: from the page or a Shortcut. Not a verdict, a stop, an
+// event (always `system`), a routine's post or the lead's own (both `jarvis`). The idle
+// wake-up's back-off starts again on one (lib/proactive.mjs; board e10a01ed).
+export const isOwnerChat = m => isObject(m) && m.from === 'jeff' && m.kind === 'chat';
 export const MAX_TEXT = 32000;
 export const MAX_PAGE_TEXT = 8000;
 export const EDIT_WINDOW_MS = DAY;
@@ -589,6 +593,18 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     // The page's "slow" state: an answer to an event is not an answer to the owner.
     lastJarvisAt: () => lastFrom('jarvis', answersOwner),
     lastJeffAt: () => lastFrom('jeff'),
+    // The times of the first and the last of the owner's chat messages after `after`
+    // (isOwnerChat), or null when there is none, for the idle wake-up's reset
+    // (lib/proactive.mjs, `ownerChat`).
+    ownerChatAfter: after => {
+      let first = null, last = null;
+      for (const m of messages) {
+        if (!isOwnerChat(m) || !(typeof m.at === 'number' && m.at > after)) continue;
+        if (first === null || m.at < first) first = m.at;
+        if (last === null || m.at > last) last = m.at;
+      }
+      return first === null ? null : { first, last };
+    },
     openPermission, answerPermission, openPermissions, redrawPermission, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
     setPermissionHold, noteChannelAlive,
     permission: id => { prunePermissions(); return findPermission(id); },
