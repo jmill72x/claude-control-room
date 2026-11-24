@@ -976,6 +976,44 @@ test('the page lists the keys and revokes one: a device cookie, never a hash or 
   assert.equal((await env.post('/api/shortcut/send', { text: 'after the revoke' }, env.withKey(key))).status, 401);
 });
 
+// Ultron's 11-23 L1 on jos/login-403-n1n3: the page's two key writes ran the write guard
+// before the login, so anyone else's request was a 415 or a cross-origin 403 and its line
+// said so. Now the login comes first there too, as on the chat's writes.
+test('making and revoking a key: the login before the write guard; anyone else\'s request is the login\'s 403 and its line says so, the owner\'s still the guard\'s', async t => {
+  const env = await setup(t);
+  const pad = await env.pairDevice('the pad');
+  await env.pairKey('Phone');
+  const id = env.keys.list()[0].id;
+  const make = headers => call({ port: env.port, method: 'POST', path: '/api/shortcut/keys', body: { name: 'Another' }, headers });
+  const revoke = headers => call({ port: env.port, method: 'DELETE', path: `/api/shortcut/keys/${id}`, headers });
+  const elsewhere = { origin: 'https://elsewhere.example' };
+  for (const who of [{ 'tailscale-user-login': 'someone-else@example.com', cookie: pad }, { cookie: pad }]) {
+    env.requests.length = 0;
+    const m = await make({ ...who, 'Content-Type': 'text/plain' });
+    const r = await revoke({ ...who, ...elsewhere });
+    for (const [what, a] of [['make', m], ['revoke', r]]) {
+      assert.equal(a.status, 403, `${what}: ${a.text}`);
+      assert.match(a.text, /did not come as the owner/, what);
+    }
+    assert.equal(env.requests.length, 2);
+    assert.match(env.requests[0], /^shortcut: request POST keys 403 \(the request did not come as the owner through the tailnet\) /);
+    assert.match(env.requests[1], /^shortcut: request DELETE key 403 \(the request did not come as the owner through the tailnet\) /);
+  }
+  // The owner's own: the guard's answers, as before, and nothing made or revoked.
+  const asPad = { ...AS_OWNER, cookie: pad };
+  env.requests.length = 0;
+  const m = await make({ ...asPad, 'Content-Type': 'text/plain' });
+  assert.deepEqual([m.status, m.json?.error], [415, 'Content-Type must be application/json']);
+  const c = await make({ ...asPad, ...elsewhere });
+  assert.deepEqual([c.status, c.json?.error], [403, 'cross-origin write refused']);
+  const r = await revoke({ ...asPad, ...elsewhere });
+  assert.deepEqual([r.status, r.json?.error], [403, 'cross-origin write refused']);
+  assert.match(env.requests[0], / POST keys 415 \(Content-Type must be application\/json\) /);
+  assert.match(env.requests[2], / DELETE key 403 \(cross-origin write refused\) /);
+  assert.equal(env.keys.waiting(), null);
+  assert.equal(env.keys.list()[0].revokedAt, null);
+});
+
 test('the admin socket: make a code on the machine, list the keys, revoke by name', async t => {
   const env = await setup(t);
   const admin = createShortcutAdminRouter({ keys: env.keys, killed: () => env.state.killed });
@@ -3211,7 +3249,12 @@ test('a refusal\'s wait for the body ends the form\'s time limit after the reque
   sent.req.destroy();
   assert.deepEqual([a.status, a.headers?.connection], [413, 'close']);
   assert.ok(took >= 600 && took < 950, `answered ${took} ms after the request began (700 from its start; 1,100 if counted from the refusal)`);
-  // Past the limit already when it is refused: no wait at all.
+  // Past the limit already when it is refused: no wait at all, and no negative timer
+  // (Node's TimeoutNegativeWarning, a line in the service log; Ultron's 11-23 N3).
+  const negative = [];
+  const onWarning = w => { if (w?.name === 'TimeoutNegativeWarning') negative.push(w.name); };
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
   const env2 = await setup(t, { formTimeoutMs: 300 });
   const began2 = Date.now();
   const late = handSend(env2, { 'Content-Type': 'application/json', 'Content-Length': body.length }, { path: '/api/shortcut/pair' });
@@ -3223,6 +3266,8 @@ test('a refusal\'s wait for the body ends the form\'s time limit after the reque
   late.req.destroy();
   assert.deepEqual([b.status, b.headers?.connection], [413, 'close']);
   assert.ok(took2 < 650, `answered ${took2} ms after the request began`);
+  await pause(20);
+  assert.deepEqual(negative, [], 'the wait is never a negative timer');
 });
 
 // ---- a caller that is not the owner is never waited for (board bfd5e3ef, Ultron's 11-23 L3) ----

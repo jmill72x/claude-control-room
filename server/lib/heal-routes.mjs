@@ -57,13 +57,15 @@ export function createHealTaps({ loops, now = () => Date.now(), onEvent = () => 
     if (typeof requireLogin !== 'function') throw new Error('the heal routes need the login check');
     const m = ROUTE.exec(path);
     if (req.method !== 'POST' || !m) throw new HttpError(404, 'not found');
+    // The owner's login first (Ultron's 11-23 N1): anyone else gets the login's 403,
+    // counted in the chat's log, before the write guard's 415 or the key's 403.
+    requireLogin(req);
     guardWrite(req);
     // The two refusals that mean someone tried more than a slip of the finger are
     // alerted (`heal-tap-refused`, capped like the Shortcut kinds: lib/chat-alert-limit.mjs), L5.
-    // A key's refusal is alerted only from the owner's login (fe4d2bfe): anyone else is
-    // refused by the login check, unalerted.
+    // A key's refusal is alerted only from the owner's login (fe4d2bfe): anyone else was
+    // refused by the login check above, unalerted.
     if (req.headers?.authorization !== undefined) {
-      requireLogin(req);
       onEvent({ kind: 'heal-tap-refused', why: 'key' });
       throw new HttpError(403, 'a Shortcut key can never answer a heal');
     }

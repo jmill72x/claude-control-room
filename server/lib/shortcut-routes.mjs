@@ -835,7 +835,9 @@ export function createShortcutRoutes({
         if (draining >= DRAINS_AT_ONCE) seen.drain = 'full';
         else {
           draining++;
-          try { whole = await drain(req, seen, FORM_DRAIN_MAX, formTimeoutMs - (performance.now() - began)); } finally { draining--; }
+          // At least 1 ms: past the limit already, the wait ends at once, and Node never
+          // warns of a negative timer in the service log (Ultron's 11-23 N3).
+          try { whole = await drain(req, seen, FORM_DRAIN_MAX, Math.max(1, formTimeoutMs - (performance.now() - began))); } finally { draining--; }
         }
       }
       logged(code, reason);
@@ -867,8 +869,11 @@ export function createShortcutRoutes({
       requireDevice(req);
       return json(res, 200, { keys: keys.list(), waiting: keys.waiting(), off: killed() }, NO_STORE);
     }
-    // A code for one new key: shown on this page, typed into the Shortcut.
+    // A code for one new key: shown on this page, typed into the Shortcut. The owner's
+    // login before the write guard, as on the chat's writes (Ultron's 11-23 L1 on
+    // jos/login-403-n1n3): anyone else's request line reads the login's 403.
     if (req.method === 'POST' && path === '/api/shortcut/keys') {
+      requireLogin(req);
       guardWrite(req);
       const device = requireDevice(req);
       if (killed()) throw new HttpError(503, 'Shortcut keys are switched off on the server');
@@ -879,6 +884,7 @@ export function createShortcutRoutes({
     }
     const one = /^\/api\/shortcut\/keys\/([a-f0-9]{16})$/.exec(path);
     if (req.method === 'DELETE' && one) {
+      requireLogin(req);
       guardDelete(req);
       const device = requireDevice(req);
       const r = await keys.revoke(one[1], device.name);

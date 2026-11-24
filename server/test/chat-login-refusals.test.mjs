@@ -16,6 +16,9 @@ import { createDeviceStore, COOKIE_NAME, PAIR_COOKIE_NAME } from '../lib/chat-de
 import { createApprovals } from '../lib/approvals.mjs';
 import { createChatRoutes, chatRouteName, loginRefusalFirstLine, LOGIN_REFUSAL_REASON, LOGIN_REFUSAL_WORDS } from '../lib/chat-routes.mjs';
 import { REFUSAL_LOG_EVERY_MS as HOUR, REFUSAL_MAX_KEYS } from '../lib/refusal-counts.mjs';
+import { createAgentStop } from '../lib/agent-stop.mjs';
+import { createRecover } from '../lib/jarvis-recover.mjs';
+import { createHealTaps } from '../lib/heal-routes.mjs';
 
 const OWNER = 'owner@example.com';
 const STRANGER = 'someone-else@example.com';
@@ -34,7 +37,9 @@ const call = ({ port, method = 'GET', path, headers = {}, body }) => new Promise
   req.end();
 });
 
-async function setup(t) {
+// `mode`: the approvals' mode. `gates`: the stop, restart and heal routes too, each the
+// real router with stubs behind it (their refusals come before any of those is used).
+async function setup(t, { mode = 'on', gates = false } = {}) {
   const env = { clock: { t: 1794380000000 }, lines: [], events: [], timers: [] };
   env.dir = await mkdtemp(join(tmpdir(), 'chat-login-'));
   const now = () => env.clock.t;
@@ -42,13 +47,19 @@ async function setup(t) {
   await env.store.load();
   env.devices = createDeviceStore({ path: join(env.dir, 'devices.json'), now });
   await env.devices.load();
-  const approvals = createApprovals({ mode: 'on', now, exists: () => false });
+  const approvals = createApprovals({ mode, now, exists: () => false });
+  const stepUp = { pendingFor: () => null, has: () => false };
+  const extra = gates ? {
+    agentStop: createAgentStop({ stepUp, liveRuns: () => [], socket: { stopsOk: () => true }, store: env.store, now, onEvent: e => env.events.push(e), log: l => env.lines.push(l) }),
+    recover: createRecover({ home: env.dir, dir: join(env.dir, 'chat'), stepUp, enabled: true, now, onEvent: e => env.events.push(e), log: l => env.lines.push(l), spawn: () => { throw new Error('no run in this test'); } }),
+    healTaps: createHealTaps({ loops: null, now, onEvent: e => env.events.push(e), log: l => env.lines.push(l) })
+  } : {};
   // A sub-router as the chat passes its checks to one (read aloud, stops, heals,
   // restarts): its own paths, the chat's requireDevice.
   const speech = { owns: p => p === '/api/chat/speech' || p.startsWith('/api/chat/speech/'), handle: async (req, res, path, { requireDevice }) => { requireDevice(req); res.writeHead(204); res.end(); }, info: () => null };
   env.routes = createChatRoutes({
     store: env.store, devices: env.devices, socket: { status: () => ({ channelConnected: true, lastHeartbeatAt: null, helloAt: null }) },
-    config: { chat: { login: OWNER } }, now, onEvent: e => env.events.push(e), log: l => env.lines.push(l), approvals, speech,
+    config: { chat: { login: OWNER } }, now, onEvent: e => env.events.push(e), log: l => env.lines.push(l), approvals, speech, ...extra,
     setTimer: (fn, ms) => { env.timers.push({ at: env.clock.t + ms, fn }); }
   });
   // The hour moves on: every timer due by then runs.
@@ -62,6 +73,7 @@ async function setup(t) {
   await new Promise(r => env.srv.listen(0, '127.0.0.1', r));
   env.port = env.srv.address().port;
   t.after(async () => {
+    extra.recover?.stop();
     await new Promise(r => { env.srv.close(r); env.srv.closeAllConnections(); });
     await rm(env.dir, { recursive: true, force: true });
   });
@@ -160,4 +172,114 @@ test('the login lines are bounded: past the route cap, refusals are counted toge
   env.advance(HOUR);
   assert.equal(env.lines.at(-1), LOGIN_REFUSAL_WORDS.other(sent - REFUSAL_MAX_KEYS - 1, sent - REFUSAL_MAX_KEYS, false, REFUSAL_MAX_KEYS));
   assert.ok(env.lines.every(l => !l.includes(MARK)));
+});
+
+// Ultron's 11-23 N1 on b534aa2: the write guard's 415 and cross-origin 403, the
+// approvals-off 403 and the Shortcut key's 403 came before the login on the verdict,
+// stop, restart and heal routes (and the write guard on every chat write), so a probe
+// from anyone but the owner there was answered by them and counted nowhere. Now the
+// login comes first: such a probe gets the login's 403 and its line.
+const RUN = 'c'.repeat(16);
+const CARD = 'd'.repeat(32);
+const ELSEWHERE = 'https://elsewhere.example.com';
+// Each a request that breaks one rule that used to come before the login.
+const BREAKS = [
+  ['POST', `/api/chat/permission/${MARK}`, { 'Content-Type': 'text/plain' }, 'POST /api/chat/permission/:id'],
+  ['POST', '/api/pair/start', { 'Content-Type': 'text/plain' }, 'POST /api/pair/start'],
+  ['POST', '/api/pair/approve', { origin: ELSEWHERE }, 'POST /api/pair/approve'],
+  ['POST', '/api/chat/messages', { 'Content-Type': 'text/plain' }, 'POST /api/chat/messages'],
+  ['POST', '/api/chat/attachments', { origin: ELSEWHERE }, 'POST /api/chat/attachments'],
+  ['DELETE', `/api/devices/${'b'.repeat(16)}`, { origin: ELSEWHERE }, 'DELETE /api/devices/:id'],
+  ['POST', '/api/push/subscription', { 'Content-Type': 'text/plain' }, 'POST /api/push/subscription'],
+  ['DELETE', '/api/push/subscription', { origin: ELSEWHERE }, 'DELETE /api/push/subscription'],
+  ['POST', `/api/agents/${RUN}/stop`, { authorization: `Bearer ${MARK}` }, 'POST /api/agents/:run/stop'],
+  ['POST', `/api/agents/${RUN}/stop/challenge`, { 'Content-Type': 'text/plain' }, 'POST /api/agents/:run/stop/challenge'],
+  ['GET', '/api/stepup/status', { authorization: `Bearer ${MARK}` }, 'GET /api/stepup/status'],
+  ['POST', '/api/stepup/register/options', { 'Content-Type': 'text/plain' }, 'POST /api/stepup/register/options'],
+  ['GET', '/api/recover/status', { authorization: `Bearer ${MARK}` }, 'GET /api/recover/status'],
+  ['POST', '/api/recover/challenge', { 'Content-Type': 'text/plain' }, 'POST /api/recover/challenge'],
+  ['POST', '/api/recover', { authorization: `Bearer ${MARK}` }, 'POST /api/recover'],
+  ['POST', `/api/loops/${CARD}/approve`, { 'Content-Type': 'text/plain' }, 'POST /api/loops/:card/approve'],
+  ['POST', `/api/loops/${CARD}/decline`, { authorization: `Bearer ${MARK}` }, 'POST /api/loops/:card/decline']
+];
+
+test('N1: a caller that is not the owner meets the login before any write rule or key check, on every chat write and the stop, restart and heal routes; counted, never an event', async t => {
+  const env = await setup(t, { gates: true });
+  for (const login of [STRANGER, undefined]) {
+    for (const [method, path, breaks] of BREAKS) {
+      const headers = { ...(login ? { 'tailscale-user-login': login } : {}), cookie: env.cookie, ...breaks };
+      const r = await env.call({ method, path, headers, body: method === 'GET' ? undefined : { x: MARK } });
+      assert.equal(r.status, 403, `${login} ${method} ${path}: ${r.text}`);
+      assert.match(r.text, /did not come as the owner/, `${login} ${method} ${path}`);
+    }
+  }
+  // One first line per route, in the order sent; the second round only counted.
+  assert.deepEqual(env.lines, BREAKS.map(([, , , route]) => loginRefusalFirstLine(route)));
+  // Neither the restart's nor a heal's key refusal is alerted for anyone but the owner.
+  assert.deepEqual(env.events, []);
+  env.advance(HOUR);
+  assert.deepEqual(env.lines.slice(BREAKS.length), BREAKS.map(([, , , route]) => LOGIN_REFUSAL_WORDS.count(route, LOGIN_REFUSAL_REASON, 1, 2)));
+  assert.ok(env.lines.every(l => !l.includes(MARK) && !l.includes('example.com')));
+});
+
+test('N1: the owner\'s own requests meet the same rules as before: the 415, the cross-origin 403, the key\'s 403 and its alerts; no login line', async t => {
+  const env = await setup(t, { gates: true });
+  const owner = { 'tailscale-user-login': OWNER, cookie: env.cookie };
+  const expect = [
+    ['POST', `/api/chat/permission/${MARK}`, { 'Content-Type': 'text/plain' }, 415, /Content-Type must be application\/json/],
+    ['POST', `/api/chat/permission/${MARK}`, { origin: ELSEWHERE }, 403, /cross-origin write refused/],
+    ['POST', '/api/pair/start', { 'Content-Type': 'text/plain', cookie: '' }, 415, /Content-Type/],
+    ['POST', '/api/chat/messages', { 'Content-Type': 'text/plain' }, 415, /Content-Type/],
+    ['POST', '/api/chat/attachments', { origin: ELSEWHERE }, 403, /cross-origin write refused/],
+    ['DELETE', `/api/devices/${'b'.repeat(16)}`, { origin: ELSEWHERE }, 403, /cross-origin write refused/],
+    ['POST', `/api/agents/${RUN}/stop`, { authorization: `Bearer ${MARK}` }, 403, /a Shortcut key can never stop/],
+    ['POST', `/api/agents/${RUN}/stop/challenge`, { 'Content-Type': 'text/plain' }, 415, /Content-Type/],
+    ['GET', '/api/stepup/status', { authorization: `Bearer ${MARK}` }, 403, /a Shortcut key can never stop/],
+    ['GET', '/api/recover/status', { authorization: `Bearer ${MARK}` }, 403, /a Shortcut key can never restart Jarvis/],
+    ['POST', '/api/recover/challenge', { 'Content-Type': 'text/plain' }, 415, /Content-Type/],
+    ['POST', '/api/recover', { authorization: `Bearer ${MARK}` }, 403, /a Shortcut key can never restart Jarvis/],
+    ['POST', `/api/loops/${CARD}/approve`, { 'Content-Type': 'text/plain' }, 415, /Content-Type/],
+    ['POST', `/api/loops/${CARD}/decline`, { authorization: `Bearer ${MARK}` }, 403, /a Shortcut key can never answer a heal/]
+  ];
+  for (const [method, path, breaks, status, words] of expect) {
+    const r = await env.call({ method, path, headers: { ...owner, ...breaks }, body: method === 'GET' ? undefined : { x: MARK } });
+    assert.equal(r.status, status, `${method} ${path}: ${r.text}`);
+    assert.match(r.text, words, `${method} ${path}`);
+  }
+  // The key's refusals on the restart's POST and a heal are alerted, as before (the
+  // status read never is); nothing else.
+  assert.deepEqual(env.events.map(e => `${e.kind}:${e.why}`), ['recover-refused:key', 'heal-tap-refused:key']);
+  assert.ok(!env.lines.some(l => l.includes(LOGIN_REFUSAL_REASON)), env.lines.join('\n'));
+});
+
+test('N1: with approvals off, the owner still hears so, and anyone else gets the login\'s 403, counted', async t => {
+  const env = await setup(t, { mode: 'off' });
+  const verdict = headers => env.call({ method: 'POST', path: `/api/chat/permission/${MARK}`, headers, body: { behavior: 'deny', shown: MARK } });
+  const mine = await verdict({ 'tailscale-user-login': OWNER, cookie: env.cookie });
+  assert.equal(mine.status, 403);
+  assert.match(mine.text, /approvals are off on this server/);
+  assert.deepEqual(env.lines, []);
+  for (const headers of [{ 'tailscale-user-login': STRANGER, cookie: env.cookie }, {}]) {
+    const r = await verdict(headers);
+    assert.equal(r.status, 403);
+    assert.match(r.text, /did not come as the owner/);
+  }
+  assert.deepEqual(env.lines, [loginRefusalFirstLine('POST /api/chat/permission/:id')]);
+  env.advance(HOUR);
+  assert.equal(env.lines.at(-1), LOGIN_REFUSAL_WORDS.count('POST /api/chat/permission/:id', LOGIN_REFUSAL_REASON, 1, 2));
+  assert.deepEqual(env.events, []);
+});
+
+test('N1: the stop and restart routes refuse to run without the login check, as the heal routes do', async () => {
+  const stepUp = { pendingFor: () => null, has: () => false };
+  const stop = createAgentStop({ stepUp, liveRuns: () => [], socket: { stopsOk: () => true }, store: null, log: () => {} });
+  const ctx = { requireDevice: () => ({ id: 'x', name: 'x', approver: true }), notifyHosts: new Set() };
+  await assert.rejects(stop.handle({ method: 'POST', headers: { 'content-type': 'application/json' } }, {}, `/api/agents/${RUN}/stop`, ctx), /the stop routes need the login check/);
+  await assert.rejects(stop.handle({ method: 'GET', headers: {} }, {}, '/api/stepup/status', ctx), /the stop routes need the login check/);
+  const dir = await mkdtemp(join(tmpdir(), 'chat-login-gate-'));
+  const rec = createRecover({ home: dir, dir: join(dir, 'chat'), stepUp, enabled: true, log: () => {} });
+  try {
+    await assert.rejects(rec.handle({ method: 'GET', headers: {} }, {}, '/api/recover/status', ctx), /the restart routes need the login check/);
+    await assert.rejects(rec.handle({ method: 'POST', headers: { 'content-type': 'application/json' } }, {}, '/api/recover', ctx), /the restart routes need the login check/);
+  } finally { rec.stop(); await rm(dir, { recursive: true, force: true }); }
 });

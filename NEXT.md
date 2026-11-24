@@ -4559,7 +4559,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going. Until then the live server behaves as before.
 
-## 39. Ultron's lows on §38: login 403s counted in the log, and no body wait for them on the Shortcut routes (boards 261d8525 and bfd5e3ef, P3; staged 2026-11-23 on `jos/login-403-lows`, off main eae9efd)
+## 39. Ultron's lows on §38: login 403s counted in the log, and no body wait for them on the Shortcut routes (boards 261d8525 and bfd5e3ef, P3; merged as main b534aa2, 2026-11-23, not live yet; Ultron's re-read lows on it are §40)
 
 - **L1 (261d8525): a login 403 on a chat route left no trace.** Since §38 the verdict
   route checks the login before its anonymous count, and the chat router's catch answers
@@ -4603,3 +4603,73 @@ caught. The server suite passes (1788).
   as it came. **Not verified:** the running service (no restart), and an iPhone send.
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going. Until then the live server behaves as before.
+
+## 40. Ultron's re-read lows on §39 (N1-N3, board ba1f2f7e, P3; staged 2026-11-23 on `jos/login-403-n1n3`, off main b534aa2)
+
+- **N1, the login first: moved, not accepted.** Before, on the verdict, stop, restart
+  and heal routes (and on every chat write), the write guard's 415 and cross-origin 403,
+  the approvals-off 403 and a Shortcut key's 403 answered before the login check, so a
+  probe from anyone but the owner that broke one of them was counted nowhere (§39's
+  lines count only the login's 403). Now the login is the first check there:
+  `writeAsOwner` / `deleteAsOwner` in `lib/chat-routes.mjs` (the login, then
+  `guardWrite` / `guardDelete`) on every chat write and the verdict; the stop routes'
+  `gate` (`lib/agent-stop.mjs`, which now gets `requireLogin` from the chat's router),
+  the restart's `gate` (`lib/jarvis-recover.mjs`, its status read included) and the heal
+  taps (`lib/heal-routes.mjs`) each call `requireLogin` before anything else. The stop
+  and restart gates refuse to run without it, as the heal routes already did.
+  **Why moving it changes nothing for Jeff:** his requests carry the owner's login, pass
+  it, and then meet the same rules in the same order; with no `chat.login` the check is
+  a no-op. Only a caller that is not the owner sees a change: the login's 403 (and its
+  line) where it got a 415 or another 403. The restart's and a heal's key refusals are
+  still alerted only from the owner's login, now because the login came first.
+  **Left before the login, on purpose:** routing answers (404 for an unknown path, the
+  restart's 405 for a wrong method). They refuse nothing a route would take, and §39's
+  line names such paths only as `another chat route` anyway.
+- **N2, the sign:** README, in the Shortcut section after the request-line bullet ("The
+  sign of a login that doesn't match"): every photo send says "The network connection
+  was lost" and the request lines show `403 (the request did not come as the owner
+  through the tailnet)`; check `chat.login` against the login the phone is signed in as
+  (`tailscale whois <the phone's tailnet IP>`). Not the Bring Jarvis Back down-card: that
+  card is for Jarvis being down, and this is a Control Room config problem that leaves
+  Jarvis up.
+- **N3, the 20-key cap: accepted.** A caller that is not the owner can fill §39's 20 named
+  login-refusal routes (odd methods on the read-aloud sub-router reach the login, as the
+  cap test does), after which a real route's probes go into the one "other" line. Accepted
+  because the lines are diagnostics only (never a push or an event), the "other" line
+  still counts every refusal, the cap is what bounds the log and the memory, and only a
+  tailnet caller can do it. The optional clamp is in: the Shortcut drain's timer is
+  `Math.max(1, …)`, so a refusal already past the form's limit never sets a negative
+  timer (Node 26 writes one `TimeoutNegativeWarning` to stderr, the service log, the first
+  time).
+- **Checked (2026-11-23):** server suite 1,810 of 1,810, local and `TZ=Asia/Tokyo`; the
+  changed files' tests (chat-login-refusals, shortcuts, agent-stop, jarvis-recover,
+  heal-routes, approvals) 211 of 211. New tests in `test/chat-login-refusals.test.mjs`:
+  17 requests from another login and from none, each breaking one rule that used to come
+  first (a text body, another `Origin`, a key), across the chat writes, verdict, stops,
+  step-up, restart and heal taps: each the login's 403, one line per route, counted at the
+  hour, no event; the owner's same requests still get the 415, the cross-origin 403 and
+  the key's 403, with the restart's and a heal's key alerts, and no login line; with
+  approvals off the owner still hears so and anyone else gets the login's 403; the stop
+  and restart routes refuse to run without the login check. In `test/shortcuts.test.mjs`,
+  the past-the-limit drain case asserts no `TimeoutNegativeWarning`. Mutants, all caught:
+  each helper without its login, the verdict's old order, the stop gate without its
+  login and without its guard, the chat not passing the login to the stops, the
+  restart's old order and missing guard, the restart's status read alerting a key, the
+  heal's old order, and the drain timer unclamped. **Not verified:** the running service
+  (no restart).
+- **Ultron's review (2026-11-23): GO, one low (L1), fixed.** The page's two Shortcut key
+  writes (`POST /api/shortcut/keys`, `DELETE /api/shortcut/keys/:id` in
+  `lib/shortcut-routes.mjs`) still ran `guardWrite` / `guardDelete` before the login, so
+  the README's "the login is the first check on every write" was not true there. Now
+  `requireLogin` comes first on both (the owner sees no change). Their trace is the
+  Shortcut handler's request line, which every request gets: anyone else's now reads
+  `403 (the request did not come as the owner through the tailnet)`, where it read the
+  415 or the cross-origin 403. The Shortcut side's own routes (pair, send, event) keep
+  their "never a page" 403 before the login: it refuses any page whoever sends it, and
+  their login order is §39's. New test in `test/shortcuts.test.mjs` (another login and
+  none: the login's 403 and its line on both; the owner: the 415 and the cross-origin
+  403, nothing made or revoked); both mutants (each guard back before the login) caught.
+  After the fix: server suite 1,811 of 1,811, local and `TZ=Asia/Tokyo`; the changed
+  files' tests 212 of 212.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
+  no agent runs going; it can share §39's restart.

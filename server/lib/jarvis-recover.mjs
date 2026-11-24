@@ -452,16 +452,16 @@ export function createRecover({
   // ---- the routes (served by the chat's router) ----
   const owns = path => path === ROUTES.status || path === ROUTES.challenge || path === ROUTES.run;
 
-  // `write`: the two POSTs, whose refusals are alerted (`recover-refused`, L4). A key's
-  // refusal is alerted only from the owner's login (requireLogin, as for a heal tap):
-  // anyone else is refused by the login check, unalerted.
+  // `write`: the two POSTs, whose refusals are alerted (`recover-refused`, L4). The
+  // owner's login comes first of all (as for a heal tap; before the write guard and the
+  // key's 403 since Ultron's 11-23 N1): anyone else gets the login's 403, counted in the
+  // chat's log and never alerted, so a key's refusal is alerted only from the owner's login.
   function gate(req, { requireDevice, requireLogin, notifyHosts }, write) {
+    if (typeof requireLogin !== 'function') throw new Error('the restart routes need the login check');
+    requireLogin(req);
     if (write) guardWrite(req);
     if (req.headers?.authorization !== undefined) {
-      if (write && typeof requireLogin === 'function') {
-        requireLogin(req);
-        onEvent({ kind: 'recover-refused', why: 'key' });
-      }
+      if (write) onEvent({ kind: 'recover-refused', why: 'key' });
       throw new HttpError(403, 'a Shortcut key can never restart Jarvis');
     }
     const device = requireDevice(req);

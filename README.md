@@ -1183,8 +1183,9 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   - `POST /api/recover`: the Face ID answer, plus `stopRuns`; 202 `{ ok, run, note }`, and
     the script starts. Either POST answers 409 `{ error, agents }` while a live run isn't
     named in `stopRuns`.
-  Every route: no `Authorization` header (a Shortcut key never restarts anything), a
-  paired device by its cookie and the owner's login header, an approver device; the two
+  Every route: the owner's login header first (before any other refusal, so anyone else
+  gets the login's 403 and its log line), no `Authorization` header (a Shortcut key never
+  restarts anything), a paired device by its cookie, an approver device; the two
   POSTs also the write guard (same origin, JSON) and the page's own https `Origin` (the
   approvals rule). The passkey is the Stop's (`lib/stepup.mjs`): set up once per device,
   confirmed at the machine with `bin/chat-pair passkey <CODE>`. A challenge is for one
@@ -1780,7 +1781,11 @@ through the tailnet …`), later ones counted, at most one line an hour per rout
 refused 4 more requests to … since the last such line (5 since the start)`). A route is
 named by its fixed shape (an id is `:id`), never by the path as it came; no login,
 cookie, address or body reaches a line; past 20 routes the rest share one "other" line;
-never a push. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
+never a push. The login is the first check on every write from the page (the chat's,
+and the Shortcut keys' make and revoke) and on the stop, restart and heal routes, before the write guard's 415 or cross-origin 403, the approvals-off 403 and
+a Shortcut key's 403 (Ultron's N1, 2026-11-23), so a caller that is not the owner always
+gets the login's 403 and its line; the owner's own requests meet the same rules in the
+same order as before. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
 log and pushed like an alert: the details to #pepper, and to ntfy (which shows on a lock
@@ -1911,9 +1916,10 @@ it if the prompt was still open": the page never knows more, because there is no
 "closed" signal from Claude Code.
 
 **The verdict route** (`POST /api/chat/permission/<id> {behavior, shown}`) checks, in
-order: the write guard; the mode (off answers 403 to anyone); the owner's login header
-(another login, or none, is a 403 that is never counted, so a caller that isn't the owner
-can't raise an alert); the device cookie (a refusal with no device behind it is counted
+order: the owner's login header (another login, or none, is the login's 403, logged
+with the login refusals and never counted toward an alert, so a caller that isn't the
+owner can't raise one); the write guard; the mode (off answers 403 to any caller from
+the owner's login); the device cookie (a refusal with no device behind it is counted
 apart and can lock nobody out, alerted past 10 in 10 minutes); the device's lockout (10 refused taps in 10 minutes lock it out of
 verdicts for 10 minutes, alerted); its limits (6 a minute, 30 an hour); the `Origin`
 (required, `https`, one of `allowedHosts`) and `Sec-Fetch-Site` (when sent,
@@ -2269,8 +2275,8 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   every unrevoked key it made, expired ones too. An expired key's request gets a 401
   with a `say` of its own (below), given only to a request that carries the real key.
 - **Pairing never shows the key.** A paired device makes a one-time code on the page (Chat
-  settings › Shortcut keys › New key: `POST /api/shortcut/keys {name}`, the device cookie
-  and the write guards), or `bin/chat-pair shortcut-code <name>` does on the machine: 6
+  settings › Shortcut keys › New key: `POST /api/shortcut/keys {name}`, the owner's login
+  first, then the write guards and the device cookie), or `bin/chat-pair shortcut-code <name>` does on the machine: 6
   letters, 10 minutes, one at a time (a new one replaces the last), dead after three wrong
   tries. The Shortcut sends it once (`POST /api/shortcut/pair {code}`) and the answer
   carries the key, which the Shortcut saves to a file on the phone; the other Shortcuts
@@ -2436,6 +2442,20 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   set in server.mjs (`server.requestTimeout`, 5 minutes, Node's default made explicit).
   A form with no file in it (a blank `file` field, or none) is refused in words that say
   so; words alone go as JSON.
+- **The sign of a login that doesn't match** (from main b534aa2 on): every photo or file send
+  says "The network connection was lost" on the iPhone, and the service log's request
+  lines read `shortcut: request POST send 403 (the request did not come as the owner
+  through the tailnet) …`, its `read=` short of its `length=`. The login's 403 is
+  answered before the body is read and closes the connection, so a phone still uploading never sees its `say` line (a
+  short text send may show it: "Jarvis OS refused this: it did not come through the
+  tailnet as the owner."). Check `chat.login` in `server/config.json` against the
+  tailnet login the phone is signed in as (`tailscale whois <the phone's tailnet IP>`
+  on the Mac, where the CLI is `/Applications/Tailscale.app/Contents/MacOS/Tailscale` if
+  `tailscale` is not on the PATH, or the admin console's Machines page): another
+  account, a tagged device or a login renamed in Tailscale each give this. When `chat.login` itself is wrong the
+  chat page is refused too, and its routes' own log lines say so (`chat: refused a
+  request to … that did not come as the owner through the tailnet`). Fix the config or
+  the phone's sign-in; a config change takes a Control Room restart.
 - **Reported like the other chat events** (`server/lib/chat-events.mjs`; #pepper the words,
   ntfy its fixed title): a code made, a key made, a key revoked, three wrong codes, five
   wrong keys in 10 minutes, five refused pairing tries in 10 minutes (a wrong code, or no
@@ -2727,9 +2747,9 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   22:00 to 07:00, when it waits for the morning; it closes 2 hours after its push
   (`expired`), as soon as the job runs (the counter moved: `cleared`), or on a tap.
 - **What a tap does.** `POST /api/loops/<id>/approve` with `{ "action": … }`, or
-  `/decline`, served by the chat's router behind its rules: same origin and JSON, no
-  `Authorization` header (a Shortcut key never acts), a paired device's cookie and the
-  login header, the page's own https Origin, an approver device (`bin/chat-pair
+  `/decline`, served by the chat's router behind its rules: the owner's login header
+  first, then same origin and JSON, no `Authorization` header (a Shortcut key never
+  acts), a paired device's cookie, the page's own https Origin, an approver device (`bin/chat-pair
   approver`), and at most 6 taps a minute in all, refused ones included. A request with
   an `Authorization` header is refused before the device is looked at, and alerted only
   once the owner's login header has passed, so a caller that isn't the owner can't raise

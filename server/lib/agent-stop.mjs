@@ -41,8 +41,12 @@ export function createAgentStop({ stepUp, liveRuns, socket, store, now = () => D
 
   const owns = path => path.startsWith('/api/agents/') || path.startsWith('/api/stepup/');
 
-  // The checks every route shares; the device, and the page's origin.
-  function gate(req, { requireDevice, notifyHosts, write = true }) {
+  // The checks every route shares: the owner's login first (Ultron's 11-23 N1: a caller
+  // that is not the owner gets the login's 403, counted in the chat's log, before the
+  // write guard or the key's 403), then the device, and the page's origin.
+  function gate(req, { requireDevice, requireLogin, notifyHosts, write = true }) {
+    if (typeof requireLogin !== 'function') throw new Error('the stop routes need the login check');
+    requireLogin(req);
     if (write) guardWrite(req);
     if (req.headers?.authorization !== undefined) throw new HttpError(403, 'a Shortcut key can never stop or step up anything');
     const device = requireDevice(req);

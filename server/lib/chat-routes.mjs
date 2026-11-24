@@ -194,7 +194,8 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   sweepTimer.unref?.();
 
   // The login header, when configured, must match (403): it says which tailnet user
-  // the proxy saw. Checked on every chat route, the pairing ones first of all.
+  // the proxy saw. Checked on every chat route, the pairing ones first of all, and
+  // before the write rules on a write (writeAsOwner, below).
   function requireLogin(req) {
     if (login === null) return;
     const seen = req.headers?.['tailscale-user-login'];
@@ -211,6 +212,12 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     if (!device) throw new HttpError(401, 'this device is not paired');
     return device;
   }
+  // The write rules, after the login (Ultron's 11-23 N1 on b534aa2): a caller that is
+  // not the owner gets the login's 403, counted, never the cross-origin 403 or the
+  // 415 first, which no line counts. The owner's own requests pass the login and meet
+  // the same rules in the same order as before.
+  const writeAsOwner = req => { requireLogin(req); guardWrite(req); };
+  const deleteAsOwner = req => { requireLogin(req); guardDelete(req); };
 
   // End every open stream of a device (its revoke), with one last event so the page
   // knows why, and never on a later ping alone.
@@ -251,7 +258,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     const path = url.pathname;
     try {
       // ---- stops and their Face ID (lib/agent-stop.mjs) ----
-      if (agentStop?.owns(path)) return await agentStop.handle(req, res, path, { requireDevice, notifyHosts });
+      if (agentStop?.owns(path)) return await agentStop.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
       // ---- Restart Jarvis with Face ID (lib/jarvis-recover.mjs): the stop's device and Origin rules ----
       if (recover?.owns(path)) return await recover.handle(req, res, path, { requireDevice, requireLogin, notifyHosts });
       // ---- taps on a heal card (lib/heal-routes.mjs): the same device and Origin rules ----
@@ -260,8 +267,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       if (speech?.owns(path)) return await speech.handle(req, res, path, { requireDevice });
       // ---- pairing (§2.2) ----
       if (req.method === 'POST' && path === '/api/pair/start') {
-        guardWrite(req);
-        requireLogin(req);
+        writeAsOwner(req);
         // A device that is paired already has nothing to pair: refused, so it can
         // never hold an approved pairing that outlives its own revoke.
         if (devices.authenticate(req.headers?.cookie)) throw new HttpError(409, 'this device is already paired');
@@ -274,7 +280,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { code: r.code, expiresAt: r.expiresAt }, { ...NO_STORE, 'Set-Cookie': cookieHeader(PAIR_COOKIE_NAME, r.pairToken, Math.round(PAIR_CODE_TTL_MS / 1000)) });
       }
       if (req.method === 'POST' && path === '/api/pair/approve') {
-        guardWrite(req);
+        writeAsOwner(req);
         const device = requireDevice(req);
         const body = await readBody(req);
         const r = await devices.approve(isObject(body) ? body.code : null, { by: device.name, login: req.headers?.['tailscale-user-login'] ?? null });
@@ -301,7 +307,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       }
       const dev = /^\/api\/devices\/([a-f0-9]{16})$/.exec(path);
       if (req.method === 'DELETE' && dev) {
-        guardDelete(req);
+        deleteAsOwner(req);
         const device = requireDevice(req);
         const r = await devices.revoke(dev[1], device.name);
         if (!r.ok) throw new HttpError(r.status, r.error);
@@ -321,7 +327,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { messages: list.map(publicMessage), seq: store.seq, epoch: store.epoch }, { 'Cache-Control': 'no-store' });
       }
       if (req.method === 'POST' && path === '/api/chat/messages') {
-        guardWrite(req);
+        writeAsOwner(req);
         const device = requireDevice(req);
         const body = await readBody(req);
         if (!isObject(body)) throw new HttpError(400, 'the body must be an object');
@@ -356,7 +362,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
       }
       if (req.method === 'POST' && path === '/api/chat/attachments') {
         // Raw bytes, so no JSON to require: the origin rule alone, like a DELETE.
-        guardDelete(req);
+        deleteAsOwner(req);
         const device = requireDevice(req);
         await sweepUploads();
         if ([...pendingUploads.values()].filter(up => up.deviceId === device.id).length >= PENDING_UPLOADS_MAX) {
@@ -432,7 +438,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { key: push.publicKey(), subscribed: devices.hasPush(device.id) }, NO_STORE);
       }
       if (req.method === 'POST' && path === '/api/push/subscription') {
-        guardWrite(req);
+        writeAsOwner(req);
         const device = requireDevice(req);
         if (!push?.on()) throw new HttpError(503, 'notifications are not set up on the server yet');
         const checked = checkSubscription(await readBody(req), { testHosts: push.testHosts ?? null });
@@ -446,7 +452,7 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
         return json(res, 200, { ok: true });
       }
       if (req.method === 'DELETE' && path === '/api/push/subscription') {
-        guardDelete(req);
+        deleteAsOwner(req);
         const device = requireDevice(req);
         await devices.setPush(device.id, null);
         log(`push: ${device.name} turned notifications off`);
@@ -476,20 +482,19 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     }
   }
 
-  // A verdict (design §5.1 step 7, with Ultron's order): the write guard, the mode
-  // (off answers 403 to anyone), the device (a refusal with no device locks nobody
+  // A verdict (design §5.1 step 7, with Ultron's order): the login, the write guard,
+  // the mode (off answers 403 to any caller from the owner's login), the device (a refusal with no device locks nobody
   // out), its lockout and limits, the Origin rule, then the body: Allow needs mode
   // "on" and an approver device, and the store checks the request is open, the
   // `shown` hash matches and nothing makes it Deny-only now. Every refusal after the
   // device is known counts toward its lockout, and changes nothing, except a card that
   // changed under the tap (below), which still counts toward the tap limits.
-  // The owner's login comes before the anonymous count (board a12184bc, as fe4d2bfe for
-  // a heal tap): a caller that is not the owner gets the login's 403 and is never
-  // counted, so it can't raise `approvals-anonymous`.
+  // The owner's login comes first of all (board a12184bc, as fe4d2bfe for a heal tap;
+  // before the write guard and the mode since N1): a caller that is not the owner gets
+  // the login's 403, counted in the log, never toward `approvals-anonymous`.
   async function verdict(req, res, requestId) {
-    guardWrite(req);
+    writeAsOwner(req);
     if (!approvals || approvals.mode() === 'off') throw new HttpError(403, 'approvals are off on this server');
-    requireLogin(req);
     let device;
     try { device = requireDevice(req); } catch (err) { approvals.noteAnonymousRefusal(); throw err; }
     const refuse = (status, error) => { approvals.noteRefusal(device.id, device.name); log(`chat: a verdict from ${device.name} was refused (${status}: ${error})`); return new HttpError(status, error); };
