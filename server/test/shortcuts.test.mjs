@@ -2967,13 +2967,13 @@ test('a refusal is answered when the body is in, on a connection that stays open
   const agent = new Agent({ keepAlive: true, maxSockets: 1 });
   t.after(() => agent.destroy());
   const photo = form([field('text', 'a big photo'), file('IMG_0002.jpeg', 'image/jpeg', jpegOf(3 * 1024 * 1024))]);
-  // Each refusal that is decided before the body is read: a wrong key, a body that is
-  // no form and no JSON, a caller that is not the owner, the off switch, and JSON far
-  // over its limit (read to its end and dropped; that connection still goes).
+  // Each of the owner's refusals that is decided before the body is read: a wrong key,
+  // a body that is no form and no JSON, the off switch, and JSON far over its limit
+  // (read to its end and dropped; that connection still goes). A caller that is not the
+  // owner is never waited for (board bfd5e3ef): the test after the next one.
   const cases = [
     ['a wrong key', { 'Content-Type': photo.type, ...wrong }, 401, /not paired/, 'keep-alive'],
     ['a body that is a file, not a form', { 'Content-Type': 'image/jpeg', ...auth }, 415, /could not take that request/, 'keep-alive'],
-    ['not the owner', { 'Content-Type': photo.type, ...auth, 'tailscale-user-login': 'someone@example.com' }, 403, /did not come through the tailnet/, 'keep-alive'],
     ['switched off', { 'Content-Type': photo.type, ...auth }, 503, /switched off/, 'keep-alive'],
     ['JSON over its limit', { 'Content-Type': 'application/json', ...auth }, 413, /could not take that request/, 'close']
   ];
@@ -2997,7 +2997,7 @@ test('a refusal is answered when the body is in, on a connection that stays open
     assert.match(env.requests[0], new RegExp(`^shortcut: request POST send ${status} \\(.+\\) .* read=${photo.body.length}( parts=unread)?$`), what);
   }
   env.state.killed = false;
-  // The four that kept their connection used one between them: nothing was reset. (The
+  // The three that kept their connection used one between them: nothing was reset. (The
   // 413 closed it after its answer; the send below opens the second.)
   env.clock.t += 1000;
   const after = handSend(env, { 'Content-Type': photo.type, 'Content-Length': photo.body.length, ...auth }, { agent });
@@ -3223,6 +3223,74 @@ test('a refusal\'s wait for the body ends the form\'s time limit after the reque
   late.req.destroy();
   assert.deepEqual([b.status, b.headers?.connection], [413, 'close']);
   assert.ok(took2 < 650, `answered ${took2} ms after the request began`);
+});
+
+// ---- a caller that is not the owner is never waited for (board bfd5e3ef, Ultron's 11-23 L3) ----
+// Before, the login's 403 on a Shortcut route waited for the body like any refusal, so
+// four such callers with slow bodies held every place, and the owner's own refused send
+// was answered at once (drain=full), which his iPhone shows as "connection lost".
+
+test('the login\'s 403 on a Shortcut route is answered at once with Connection: close, never waits for the body, and takes no place from the owner\'s refusals', async t => {
+  const env = await setup(t, { formTimeoutMs: 5000 });
+  const key = await env.pairKey('Phone');
+  env.requests.length = 0;
+  const wrong = env.withKey(`${KEY_PREFIX}${'A'.repeat(43)}`);
+  const agent = new Agent({ keepAlive: true, maxSockets: 16 });
+  t.after(() => agent.destroy());
+  const f = form([field('text', 'a photo'), file('a.jpg', 'image/jpeg', jpegOf(200 * 1024))]);
+  const json = Buffer.from(JSON.stringify({ code: 'x'.repeat(200 * 1024) }));
+  // Another login, an empty one, and the owner's key with another login; on each route,
+  // and with a body that is neither JSON nor a form (the login now comes before that rule).
+  const strangers = [
+    ['send, another login', '/api/shortcut/send', { 'Content-Type': f.type, 'Content-Length': f.body.length, ...env.withKey(key), 'tailscale-user-login': 'someone@example.com' }, f.body],
+    ['send, an empty login', '/api/shortcut/send', { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong, 'tailscale-user-login': '' }, f.body],
+    ['event, another login', '/api/shortcut/event', { 'Content-Type': 'application/json', 'Content-Length': json.length, ...wrong, 'tailscale-user-login': 'someone@example.com' }, json],
+    ['pair, another login', '/api/shortcut/pair', { 'Content-Type': 'application/json', 'Content-Length': json.length, 'tailscale-user-login': 'someone@example.com' }, json],
+    ['send as text, another login', '/api/shortcut/send', { 'Content-Type': 'text/plain', 'Content-Length': f.body.length, ...wrong, 'tailscale-user-login': 'someone@example.com' }, f.body]
+  ];
+  // Each is left open, its body unfinished, the whole time: under the old rule these
+  // were the refusals holding every place.
+  const held = [];
+  t.after(() => { for (const h of held) h.req.destroy(); });
+  for (const [what, path, headers, body] of strangers) {
+    env.requests.length = 0;
+    const began = Date.now();
+    const sent = handSend(env, headers, { agent, path });
+    held.push(sent);
+    sent.req.write(body.subarray(0, 1000));
+    const a = await Promise.race([sent.answer, pause(1500).then(() => ({ status: 'nothing' }))]);
+    assert.deepEqual([a.status, a.headers?.connection, a.json?.say], [403, 'close', 'Jarvis OS refused this: it did not come through the tailnet as the owner.'], what);
+    assert.ok(Date.now() - began < 800, `${what}: answered after ${Date.now() - began} ms`);
+    await waitFor(`${what}: logged`, () => env.requests.length === 1);
+    assert.match(env.requests[0], / 403 \(the request did not come as the owner through the tailnet\) /, what);
+    assert.ok(Number(/read=(\d+)/.exec(env.requests[0])[1]) < body.length, `${what}: the body was not read to its end`);
+    assert.doesNotMatch(env.requests[0], /drain=/, what);
+  }
+  // A small body sent whole is refused the same way: its connection goes too.
+  const small = await call({ port: env.port, method: 'POST', path: '/api/shortcut/send', body: { text: 'hi' }, headers: { ...wrong, 'tailscale-user-login': 'someone@example.com' } });
+  assert.deepEqual([small.status, small.headers.connection], [403, 'close']);
+  // The owner's own refused sends still wait for their bodies, all four places free.
+  env.requests.length = 0;
+  const own = [];
+  for (let i = 0; i < DRAINS_AT_ONCE; i++) {
+    const sent = handSend(env, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...wrong }, { agent });
+    held.push(sent);
+    own.push(sent);
+    sent.req.write(f.body.subarray(0, 1000));
+  }
+  await pause(200);
+  assert.deepEqual(own.map(o => o.done), [false, false, false, false], 'each of the owner\'s refusals waits for its body');
+  for (const o of own) o.req.end(f.body.subarray(1000));
+  for (const o of own) {
+    const b = await o.answer;
+    assert.deepEqual([b.status, b.headers?.connection, b.json?.say], [401, 'keep-alive', 'This Shortcut is not paired with Jarvis OS. Run the Jarvis Setup Shortcut.']);
+  }
+  await waitFor('the owner\'s four were logged', () => env.requests.length === DRAINS_AT_ONCE);
+  for (const line of env.requests) {
+    assert.match(line, new RegExp(` 401 \\(this Shortcut is not paired\\) .* read=${f.body.length} parts=unread$`));
+    assert.doesNotMatch(line, /drain=full/);
+  }
+  assert.equal(env.chatMessages().length, 0);
 });
 
 test('server.mjs sets its HTTP server\'s request timeout itself, longer than a form\'s own two minutes', async () => {

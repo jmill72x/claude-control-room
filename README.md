@@ -1773,7 +1773,14 @@ context, which is how the headless checks of the Chat tab pair against a scratch
 (the Serve proxy's login header is added by that scratch server alone). Every chat request, `/api/pair/start` and
 `/api/pair/status` included, must carry `Tailscale-User-Login` equal to `chat.login`: a
 second factor the Serve proxy adds, never the credential, since a local process can forge
-it. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
+it. A request that fails it gets a 403 and is never counted toward any alert; it is
+logged like the ingest's refusals (`lib/refusal-counts.mjs`): a route's first at once
+(`chat: refused a request to POST /api/chat/permission/:id that did not come as the owner
+through the tailnet …`), later ones counted, at most one line an hour per route (`chat:
+refused 4 more requests to … since the last such line (5 since the start)`). A route is
+named by its fixed shape (an id is `:id`), never by the path as it came; no login,
+cookie, address or body reaches a line; past 20 routes the rest share one "other" line;
+never a push. Writes keep the board's write guards (JSON only, same origin or none); a pairing (logged and
 pushed with the cleaned device name, never the raw text), a revoke, a refused second
 channel, a takeover after a stale heartbeat and every verdict are written to the service
 log and pushed like an alert: the details to #pepper, and to ntfy (which shows on a lock
@@ -2421,7 +2428,9 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   request's start: an answer written while a phone is still uploading reaches it as
   "The network connection was lost", never as its `say` line. Only the Shortcut's own
   routes (pair, send, event) wait so, only for a caller with no `Origin` and no
-  `Sec-Fetch-Site`, and at most 4 at a time; any other refusal whose body is not in is
+  `Sec-Fetch-Site` whose login header has passed (the owner's; checked before the JSON
+  rule), and at most 4 at a time. A caller that is not the owner gets the login's 403 at
+  once with `Connection: close` and never holds one of the 4 places; any other refusal whose body is not in is
   answered at once with `Connection: close`, and one turned away because 4 already wait
   ends its line with ` drain=full`. The HTTP server's own limit on receiving a request is
   set in server.mjs (`server.requestTimeout`, 5 minutes, Node's default made explicit).

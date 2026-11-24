@@ -4521,7 +4521,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going.
 
-## 38. Refusal alerts only after the owner's login (board a12184bc, P3; staged 2026-11-23 on `jos/shortcut-alert-after-login`, off main 55c124d)
+## 38. Refusal alerts only after the owner's login (board a12184bc, P3; merged as main eae9efd, 2026-11-23; Ultron's two lows on it are §39)
 
 - **The premise was half wrong.** My 11-15 note (§ loop 2, N1) said the Shortcut routes'
   `shortcut-refused` had the same posture as fe4d2bfe (an alert raised before the login
@@ -4559,3 +4559,47 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going. Until then the live server behaves as before.
 
+## 39. Ultron's lows on §38: login 403s counted in the log, and no body wait for them on the Shortcut routes (boards 261d8525 and bfd5e3ef, P3; staged 2026-11-23 on `jos/login-403-lows`, off main eae9efd)
+
+- **L1 (261d8525): a login 403 on a chat route left no trace.** Since §38 the verdict
+  route checks the login before its anonymous count, and the chat router's catch answers
+  a 4xx without logging, so probes from anyone but the owner were silent. Now
+  `requireLogin` in `lib/chat-routes.mjs` marks its 403 (`err.login`), and the router's
+  catch counts it per route with `lib/refusal-counts.mjs`, which now takes a `words`
+  option (the ingest's wording stays the default). A route's first is logged at once
+  (`chat: refused a request to POST /api/chat/permission/:id that did not come as the
+  owner through the tailnet (the login check; later ones are counted, one line an
+  hour)`); later ones are held, one line an hour per route with the count. The route is
+  `chatRouteName(method, path)`: a fixed list of the chat's routes, ids as `:id`, the
+  rest `another chat route`, odd methods `OTHER`, so the path as it came never reaches
+  a line; nor does a login, cookie, address or body. Past 20 routes they share one
+  "other" line. Never a push or an event. It covers the sub-routers the chat passes its
+  checks to (stops, step-up, Restart Jarvis, heal taps, read aloud). **Choice:** the
+  Shortcut routes are left out, because each of their requests already writes one
+  request line (ec4a9f0), the login's 403 included.
+- **L3 (bfd5e3ef, pre-existing): a login-refused Shortcut request still waited for its
+  body.** The drain rule (`fromShortcut`) looked only at the path and headers, so four
+  callers that were not the owner, with slow bodies, could hold all `DRAINS_AT_ONCE`
+  places and Jeff's own refused sends got `drain=full` ("connection lost" on the
+  iPhone). Now `requireLogin` in `lib/shortcut-routes.mjs` records each request whose
+  login passed (a WeakSet), and only those wait for a body. The login's 403 is answered
+  at once with `Connection: close` (the body is never read). `requireShortcutCaller` now
+  checks the login before the JSON rule, so the owner's own wrong-type send still waits
+  for its body as before, and anyone else's is the login's 403 (it was a 415).
+- **Checked (2026-11-23):** server suite 1,806 of 1,806, local and `TZ=Asia/Tokyo`. New
+  `test/chat-login-refusals.test.mjs` (route names; five verdict probes from another
+  login are one line, then one count line at the hour; other routes, no login and a
+  sub-router's made-up path each their own line; the owner's 401 and his own reads write
+  none; no event; no line holds the path's id, the login, the cookie or the address; the
+  cap's "other" line). In `test/shortcuts.test.mjs`, a new test sends five non-owner
+  requests (send, event, pair, a text body, an empty login) and leaves their bodies
+  unfinished: each is answered at once, 403, `Connection: close`, read short, no
+  `drain=`; with all five still open, four of the owner's wrong-key sends all wait, get
+  their 401 on a kept connection and log the whole body, none `drain=full`. The older
+  "answered when the body is in" test no longer lists "not the owner". Mutants, all
+  caught: the drain without the owner check, the JSON rule back before the login, the
+  owner never recorded, no count, the raw path in the line, no login mark, every 403/401
+  counted, the `words` option ignored (both lines), an unknown path or a method printed
+  as it came. **Not verified:** the running service (no restart), and an iPhone send.
+- **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
+  no agent runs going. Until then the live server behaves as before.

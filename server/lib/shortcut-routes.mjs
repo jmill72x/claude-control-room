@@ -68,8 +68,11 @@
 // uploading reaches it as "The network connection was lost", never as the answer. Only
 // a Shortcut's own routes wait so (pair, send, event, from a caller with no `Origin` and
 // no `Sec-Fetch-Site`), at most DRAINS_AT_ONCE at a time, and never past the request's
-// own FORM_TIMEOUT_MS from its start (Ultron's L1 on ec4a9f0); any other refusal whose
-// body is not in is answered at once, and the connection goes with it.
+// own FORM_TIMEOUT_MS from its start (Ultron's L1 on ec4a9f0), and only once the
+// owner's login has passed (board bfd5e3ef, Ultron's 11-23 L3): a caller that is not
+// the owner gets the login's 403 at once, with `Connection: close`, and never takes one
+// of the places Jeff's own refused sends wait in. Any other refusal whose body is not
+// in is answered at once, and the connection goes with it.
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mjs';
@@ -472,11 +475,14 @@ export function createShortcutRoutes({
   let refusals = { start: 0, n: 0 };
   let pairRefusals = { start: 0, n: 0 };
   let draining = 0;            // refusals waiting for their bodies right now
+  const asOwner = new WeakSet(); // requests whose login check passed: only these may wait for a body
 
   function requireLogin(req) {
-    if (owner === null) return;
     const seen = req.headers?.['tailscale-user-login'];
-    if (typeof seen !== 'string' || seen.trim().toLowerCase() !== owner) throw new Refusal(403, 'the request did not come as the owner through the tailnet', 'Jarvis OS refused this: it did not come through the tailnet as the owner.');
+    if (owner !== null && (typeof seen !== 'string' || seen.trim().toLowerCase() !== owner)) {
+      throw new Refusal(403, 'the request did not come as the owner through the tailnet', 'Jarvis OS refused this: it did not come through the tailnet as the owner.');
+    }
+    asOwner.add(req);
   }
   function requireDevice(req) {
     requireLogin(req);
@@ -491,12 +497,14 @@ export function createShortcutRoutes({
   // how a Shortcut sends a file. A form needs no preflight from a page, so the JSON rule
   // is not what keeps a page out here: the line above it is (any Origin or
   // Sec-Fetch-Site header), and the key in `Authorization`, which no page's form can
-  // set. Answers whether the body is a form.
+  // set. Answers whether the body is a form. The login comes before the JSON rule, so
+  // the owner's own wrong-type send still waits for its body (bfd5e3ef), and anyone
+  // else's is the login's 403.
   function requireShortcutCaller(req, { forms = false } = {}) {
     if (req.headers?.origin !== undefined || req.headers?.['sec-fetch-site'] !== undefined) throw new Refusal(403, 'this route is for a Shortcut, never a page', 'Jarvis OS refused this: the route is for a Shortcut.');
+    requireLogin(req);
     const form = forms && mediaType(req.headers?.['content-type']) === MULTIPART_TYPE;
     if (!form) guardWrite(req);
-    requireLogin(req);
     if (killed()) throw switchedOff();
     return form;
   }
@@ -817,12 +825,13 @@ export function createShortcutRoutes({
       if (err instanceof Refusal) answer.say = err.say;
       else if (SHORTCUT_SIDE.has(path)) answer.say = code === 500 ? 'Jarvis OS had a problem. Try again.' : 'Jarvis OS could not take that request.';
       // The answer waits for the rest of the body (`drain`) only on a Shortcut's own
-      // routes, from a caller that is no page, while fewer than DRAINS_AT_ONCE wait, and
-      // until formTimeoutMs from the request's start; never for a read that ran out of
-      // time. A body that was cut off (413, 408), or is not all in, leaves unread bytes
-      // on the connection, which then goes with the answer.
+      // routes, from a caller that is no page and passed the owner's login, while fewer
+      // than DRAINS_AT_ONCE wait, and until formTimeoutMs from the request's start; never
+      // for a read that ran out of time. A body that was cut off (413, 408), or is not
+      // all in, leaves unread bytes on the connection, which then goes with the answer.
+      // The login's own 403 comes before any body is read, so it always closes it.
       let whole = req.readableEnded === true;
-      if (!whole && code !== 408 && fromShortcut(req, path)) {
+      if (!whole && code !== 408 && asOwner.has(req) && fromShortcut(req, path)) {
         if (draining >= DRAINS_AT_ONCE) seen.drain = 'full';
         else {
           draining++;

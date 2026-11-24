@@ -10,6 +10,9 @@
 // value, address or token ever reaches a line. Keys are few (seven routes, a dozen
 // reasons), but a cap keeps the map bounded anyway: past `maxKeys`, refusals are
 // counted together under one "other" line.
+//
+// The chat's login 403s are counted the same way (board 261d8525, Ultron's 11-23 L1 on
+// eae9efd): `words` gives their lines (lib/chat-routes.mjs), the default is the ingest's.
 
 export const REFUSAL_LOG_EVERY_MS = 60 * 60 * 1000;
 export const REFUSAL_MAX_KEYS = 20;
@@ -23,17 +26,20 @@ export function refusalOtherLine(count, total, first, maxKeys = REFUSAL_MAX_KEYS
   return `ingest: refused ${posts(count)} on other routes and reasons ${first ? 'past the first' : 'since the last such line'} (${total} since the start; the log names ${maxKeys} routes and reasons at most)`;
 }
 
+export const INGEST_REFUSAL_WORDS = Object.freeze({ count: refusalCountLine, other: refusalOtherLine });
+
 export function createRefusalCounts({
   log = console.log,
   clock = () => Date.now(),
   everyMs = REFUSAL_LOG_EVERY_MS,
   maxKeys = REFUSAL_MAX_KEYS,
-  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; }
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+  words = INGEST_REFUSAL_WORDS
 } = {}) {
   const keys = new Map(); // `${path} ${reason}` -> { path, reason, loggedAt, count, total, timer }
   const other = { loggedAt: null, count: 0, total: 0, timer: false };
   const write = (seen, now) => {
-    log(seen === other ? refusalOtherLine(seen.count, seen.total, seen.loggedAt === null, maxKeys) : refusalCountLine(seen.path, seen.reason, seen.count, seen.total));
+    log(seen === other ? words.other(seen.count, seen.total, seen.loggedAt === null, maxKeys) : words.count(seen.path, seen.reason, seen.count, seen.total));
     seen.loggedAt = now;
     seen.count = 0;
     seen.timer = false;

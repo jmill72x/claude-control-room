@@ -21,6 +21,7 @@ import { verdictOriginProblem } from './approvals.mjs';
 import { oneLine } from './chat-events.mjs';
 import { searchAnswer } from './chat-search.mjs';
 import { composedAtOf, badTime, staleSend, lateMeta, lateBy, when } from './chat-late.mjs';
+import { createRefusalCounts } from './refusal-counts.mjs';
 
 export const SSE_PING_MS = 20e3;
 export const SLOW_AFTER_MS = 10 * 60e3;
@@ -83,6 +84,47 @@ const readRaw = (req, limit) => new Promise((resolve, reject) => {
   req.on('error', err => { if (!done) { done = true; reject(new HttpError(400, String(err?.message ?? err))); } });
 });
 
+// ---- the login's 403s, counted (board 261d8525, Ultron's 11-23 L1 on eae9efd) ----
+// A request that does not come as the owner gets the login's 403 on every chat route,
+// and since the verdict route checks the login first (a12184bc) such a caller leaves
+// no count and no alert anywhere. Its trace is a log line, counted like the ingest's
+// refusals (lib/refusal-counts.mjs): a route's first is logged at once, later ones at
+// most once an hour per route, with the count. Never a push or an event. A line names
+// the route by its fixed name (`chatRouteName`), never the path as it came, a header,
+// a login, an address or a byte of the body.
+const LOGGED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']);
+const CHAT_ROUTES = new Set([
+  '/api/pair/start', '/api/pair/approve', '/api/pair/status', '/api/devices',
+  '/api/chat/messages', '/api/chat/attachments', '/api/chat/stream', '/api/chat/search', '/api/chat/status', '/api/chat/speech',
+  '/api/push/key', '/api/push/subscription',
+  '/api/stepup/status', '/api/stepup/register/options', '/api/stepup/register',
+  '/api/recover', '/api/recover/status', '/api/recover/challenge'
+]);
+// A route with an id in it is named with a placeholder: the id is the caller's.
+const CHAT_ROUTE_SHAPES = [
+  [/^\/api\/devices\/[^/]+$/, '/api/devices/:id'],
+  [/^\/api\/chat\/attachments\/[^/]+$/, '/api/chat/attachments/:id'],
+  [/^\/api\/chat\/permission\/[^/]+$/, '/api/chat/permission/:id'],
+  [/^\/api\/chat\/speech\/[^/]+$/, '/api/chat/speech/:id'],
+  [/^\/api\/agents\/[^/]+\/stop$/, '/api/agents/:run/stop'],
+  [/^\/api\/agents\/[^/]+\/stop\/challenge$/, '/api/agents/:run/stop/challenge'],
+  [/^\/api\/loops\/[^/]+\/approve$/, '/api/loops/:card/approve'],
+  [/^\/api\/loops\/[^/]+\/decline$/, '/api/loops/:card/decline']
+];
+export function chatRouteName(method, path) {
+  const route = CHAT_ROUTES.has(path) ? path : CHAT_ROUTE_SHAPES.find(([re]) => re.test(path))?.[1] ?? 'another chat route';
+  return `${LOGGED_METHODS.has(method) ? method : 'OTHER'} ${route}`;
+}
+export const LOGIN_REFUSAL_REASON = 'that did not come as the owner through the tailnet';
+const nRequests = n => `${n} ${n === 1 ? 'request' : 'requests'}`;
+export function loginRefusalFirstLine(route) {
+  return `chat: refused a request to ${route} ${LOGIN_REFUSAL_REASON} (the login check; later ones are counted, one line an hour)`;
+}
+export const LOGIN_REFUSAL_WORDS = Object.freeze({
+  count: (route, reason, count, total) => `chat: refused ${count} more ${count === 1 ? 'request' : 'requests'} to ${route} ${reason} since the last such line (${total} since the start)`,
+  other: (count, total, first, maxKeys) => `chat: refused ${nRequests(count)} to other routes ${LOGIN_REFUSAL_REASON} ${first ? 'past the first' : 'since the last such line'} (${total} since the start; the log names ${maxKeys} routes at most)`
+});
+
 // The chat status (§2.6): online, waiting on you, offline or slow, and since when.
 export function chatState({ socket, store, now, approvals = null }) {
   const open = store.openPermissions();
@@ -123,10 +165,12 @@ export function notificationOrigin(raw, allowedHosts) {
 // status answer carries it, so the page asks for the keys only when there are any.
 // `speech` is read aloud in the Mac's own voice (lib/chat-speech.mjs), or null while it
 // is off: its route, and the voice it reads in, which every status carries.
-export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null, speech = null, recover = null }) {
+// `setTimer` is the login refusals' hourly timer (lib/refusal-counts.mjs), a test's own.
+export function createChatRoutes({ store, devices, socket, config = {}, now = () => Date.now(), onEvent = () => {}, log: logLine = console.log, pingMs = SSE_PING_MS, push = null, approvals = null, shortcutKeys = false, agentStop = null, healTaps = null, speech = null, recover = null, setTimer = null }) {
   // Every log line here names a device, and a name read back from devices.json was
   // never cleaned, so each line is made one line (lib/chat-events.mjs).
   const log = line => logLine(oneLine(line));
+  const countLoginRefusal = createRefusalCounts({ log, clock: now, words: LOGIN_REFUSAL_WORDS, ...(setTimer ? { setTimer } : {}) });
   const login = typeof config?.chat?.login === 'string' && config.chat.login.trim() ? config.chat.login.trim().toLowerCase() : null;
   const notifyHosts = new Set(readAllowedHosts(config).names);
   const pendingUploads = new Map(); // id -> { attachment, at, deviceId }
@@ -154,7 +198,11 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   function requireLogin(req) {
     if (login === null) return;
     const seen = req.headers?.['tailscale-user-login'];
-    if (typeof seen !== 'string' || seen.trim().toLowerCase() !== login) throw new HttpError(403, 'the request did not come as the owner through the tailnet');
+    if (typeof seen !== 'string' || seen.trim().toLowerCase() !== login) {
+      const refused = new HttpError(403, 'the request did not come as the owner through the tailnet');
+      refused.login = true; // counted in the handler's catch, by route
+      throw refused;
+    }
   }
   // The device behind a request, or a 401.
   function requireDevice(req) {
@@ -418,6 +466,10 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
     } catch (err) {
       const code = err instanceof HttpError ? err.status : 500;
       if (code === 500) console.error('chat route error', path, err);
+      if (err instanceof HttpError && err.login === true) {
+        const route = chatRouteName(req.method, path);
+        countLoginRefusal(route, LOGIN_REFUSAL_REASON, loginRefusalFirstLine(route));
+      }
       if (res.headersSent) return res.end();
       if (code === 413) { res.writeHead(413, { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff', Connection: 'close' }); return res.end(JSON.stringify({ error: String(err.message) })); }
       return json(res, code, { error: code === 500 ? 'internal error' : String(err.message) });
