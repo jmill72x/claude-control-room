@@ -675,8 +675,9 @@ Loops panel. README, "Self-healing loops", has the mechanism and the config bloc
     `Authorization` header raised the `heal-tap-refused` alert before the login check, so
     any caller that reached the port could spend ntfy's daily pushes. The alert now goes
     out only after the owner's login header passes (`requireLogin`, handed to the heal
-    routes by the chat router); anyone else gets the login's 403, unalerted. The Shortcut
-    routes' `shortcut-refused` has the same posture and is not changed here.
+    routes by the chat router); anyone else gets the login's 403, unalerted. (The Shortcut
+    routes' `shortcut-refused` never had this posture; the verdict route's anonymous count
+    did: §38.)
 - **Loop 3, a restart of this server due after a merge (T2), staged 2026-11-15 on
   `jos/loop3`; Ultron reviewed it the same day: ship with fixes (1 medium, 10 lows), all
   made and restaged.** README, "Self-healing loops", has the mechanism. In short: at start
@@ -4519,3 +4520,42 @@ caught. The server suite passes (1788).
   caught. **Not verified:** a real hour passing in the running service.
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going.
+
+## 38. Refusal alerts only after the owner's login (board a12184bc, P3; staged 2026-11-23 on `jos/shortcut-alert-after-login`, off main 55c124d)
+
+- **The premise was half wrong.** My 11-15 note (§ loop 2, N1) said the Shortcut routes'
+  `shortcut-refused` had the same posture as fe4d2bfe (an alert raised before the login
+  check). They never did: since fc845fc every Shortcut route runs `requireShortcutCaller`,
+  whose `requireLogin` comes first, and only then `requireKey` (wrong-key count,
+  `shortcut-refused`, `shortcut-expired`) or the pairing claim (`shortcut-pair-refused`).
+  Nothing pinned that order, so this branch adds a test and a comment at both counts.
+- **The same posture was real in one other place: the verdict route.** In
+  `lib/chat-routes.mjs`, `verdict()` called `requireDevice` inside a try whose catch counted
+  `approvals.noteAnonymousRefusal()`, and `requireDevice` runs the login check. So a
+  request from another login, or with none, counted as an anonymous refusal, and ten in
+  10 minutes raised `approvals-anonymous` (an alerted kind, one per 10 minutes). Now
+  `requireLogin(req)` runs before that try: such a caller gets the login's 403 and is
+  never counted. A request from the owner's login with no paired device still counts and
+  alerts as before.
+- **The other alert and log paths, checked:** heal taps (fe4d2bfe) and Restart Jarvis
+  (`recover-refused`) already alert a key's refusal only after `requireLogin`; pairing,
+  step-up, stops, verdict lockouts and every other route alert only after the device (and
+  so the login) is known; the host guard logs each unknown Host once (capped); the TCP
+  port's ingest refusals are counted (§37). **One log path is still before the login:**
+  the Shortcut handler writes one request line per request, including the login's 403s.
+  That is by design (ec4a9f0, the lines that diagnosed the iPhone form), and only lines,
+  never pushes; a flood would grow the service log by one line each. Left as is; a
+  follow-up idea could hold login-refused lines to one per 10 minutes, counted.
+- **Checked (2026-11-23):** server suite 1,802 of 1,802, local and `TZ=Asia/Tokyo`. New tests:
+  `test/shortcuts.test.mjs` (another login and no login, wrong key, no key, a form, an
+  event, wrong codes and an expired key, 15 rounds of 8 requests: no report and no refusal line; then
+  the owner's own fifth wrong key, expired key and fifth refused pairing still report,
+  counted from his alone) and `test/approvals.test.mjs` (120 verdicts from another login
+  or none, with and without a paired cookie: 403, no `approvals-anonymous`, no lockout;
+  then the owner's tenth cookieless tap alerts once and his iPad still answers). Mutants,
+  all caught: the send route's key check before the login, the event route's, the pairing
+  count before the login, and the verdict route without its new `requireLogin`.
+  **Not verified:** the running service (no restart).
+- **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
+  no agent runs going. Until then the live server behaves as before.
+

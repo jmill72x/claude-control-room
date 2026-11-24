@@ -1904,9 +1904,10 @@ it if the prompt was still open": the page never knows more, because there is no
 "closed" signal from Claude Code.
 
 **The verdict route** (`POST /api/chat/permission/<id> {behavior, shown}`) checks, in
-order: the write guard; the mode (off answers 403 to anyone); the device cookie and login
-(a refusal with no device behind it is counted apart and can lock nobody out, alerted past
-10 in 10 minutes); the device's lockout (10 refused taps in 10 minutes lock it out of
+order: the write guard; the mode (off answers 403 to anyone); the owner's login header
+(another login, or none, is a 403 that is never counted, so a caller that isn't the owner
+can't raise an alert); the device cookie (a refusal with no device behind it is counted
+apart and can lock nobody out, alerted past 10 in 10 minutes); the device's lockout (10 refused taps in 10 minutes lock it out of
 verdicts for 10 minutes, alerted); its limits (6 a minute, 30 an hour); the `Origin`
 (required, `https`, one of `allowedHosts`) and `Sec-Fetch-Site` (when sent,
 `same-origin`); `shown`, the sha256 of `JSON.stringify([tool, description, inputPreview])`
@@ -2438,7 +2439,9 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   tailnet addresses, so pinning one would break it. The last four kinds push at most once
   per 10 minutes. An expired key that is tried is reported too (`shortcut-expired`), once
   per key per day however often it is tried, and is not counted with the wrong keys: an
-  automation shows nothing on the phone, so the report is how its owner hears.
+  automation shows nothing on the phone, so the report is how its owner hears. All of
+  these are counted and reported only after the owner's login header has passed: a caller
+  that isn't the owner gets the login's 403 and leaves only its request line.
 - **The keys file is never written over when it can't be read.** One that is not a list
   of keys (cut short, or not JSON) is renamed `shortcut-keys.json.corrupt-<time>` and
   logged, and no key is known; one with some unreadable entries is copied aside under that

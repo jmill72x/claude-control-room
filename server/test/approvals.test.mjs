@@ -704,7 +704,7 @@ async function setup(opts = {}) {
   await env.devices.load();
   env.approvals = createApprovals({ mode, killPath: '/k/approvals-off', exists: p => env.files.has(p), now, onEvent, home: HOME, realpath: noReal, isLead: id => id !== 'other', isLink: () => false, isExecutable: () => false, cards: env.store, ...(opts.gate ?? {}) });
   env.socket = createSocketRouter({ store: env.store, now, onEvent, log: l => env.logs.push(l), pingMs: 60, approvals: env.approvals, verifyRestart: async () => ({ ok: true }) });
-  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST] }, now, onEvent, log: l => env.routeLogs.push(l), pingMs: 60, approvals: env.approvals });
+  env.routes = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { allowedHosts: [PAGE_HOST], ...(opts.login ? { chat: { login: opts.login } } : {}) }, now, onEvent, log: l => env.routeLogs.push(l), pingMs: 60, approvals: env.approvals });
   env.sockPath = join(env.dir, 'c.sock');
   env.adminPath = join(env.dir, 'a.sock');
   env.servers = [createServer((q, s) => env.socket.handler(q, s)), createServer((q, s) => createAdminRouter({ devices: env.devices, onEvent })(q, s)), createServer((q, s) => env.routes.handler(q, s))];
@@ -830,6 +830,34 @@ test('limits: the 7th tap in a minute is 429; ten refusals lock the device out f
     for (let i = 0; i < 20; i++) assert.equal((await env.tap('abcde', null, 'deny')).status, 401);
     assert.equal(env.events.filter(e => e.kind === 'approvals-anonymous').length, 1);
     assert.equal((await env.tap('abcde', env.ipad, 'deny')).status, 200);
+  } finally { await env.close(); }
+});
+
+// Board a12184bc (the posture of fe4d2bfe): the anonymous count, and its alert, start only
+// once the owner's login has passed. Another login, or none (not through the tailnet
+// proxy), is the login's 403, with or without a device's cookie, and counts for nothing.
+test('a verdict from a caller that is not the owner is the login\'s 403 and never raises approvals-anonymous', async () => {
+  const LOGIN = 'owner@example.com';
+  const env = await setup({ login: LOGIN });
+  try {
+    await env.open('abcde');
+    const as = login => (login ? { headers: { ...PAGE, 'tailscale-user-login': login } } : {});
+    for (let i = 0; i < 30; i++) {
+      for (const [login, cookie] of [['someone@example.com', null], ['someone@example.com', env.phone], [null, null], [null, env.ipad]]) {
+        const r = await env.tap('abcde', cookie, 'deny', as(login));
+        assert.equal(r.status, 403, `${login ?? 'no login'} ${cookie ? 'with' : 'without'} a cookie`);
+        assert.match(r.json.error, /did not come as the owner/);
+      }
+    }
+    assert.deepEqual(env.events.filter(e => e.kind === 'approvals-anonymous' || e.kind === 'approvals-lockout'), []);
+    assert.equal(env.store.permission('abcde').state, 'open', 'nothing answered');
+    // From the owner's login with no device: counted, and alerted once the window fills.
+    for (let i = 0; i < REFUSALS_FOR_LOCKOUT - 1; i++) assert.equal((await env.tap('abcde', null, 'deny', as(LOGIN))).status, 401);
+    assert.equal(env.events.filter(e => e.kind === 'approvals-anonymous').length, 0, 'the 120 before were not counted');
+    assert.equal((await env.tap('abcde', null, 'deny', as(LOGIN))).status, 401);
+    assert.equal(env.events.filter(e => e.kind === 'approvals-anonymous').length, 1);
+    // And the owner's paired device still answers.
+    assert.equal((await env.tap('abcde', env.ipad, 'deny', as(LOGIN))).status, 200);
   } finally { await env.close(); }
 });
 

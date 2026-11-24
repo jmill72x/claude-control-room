@@ -431,9 +431,13 @@ export function createChatRoutes({ store, devices, socket, config = {}, now = ()
   // `shown` hash matches and nothing makes it Deny-only now. Every refusal after the
   // device is known counts toward its lockout, and changes nothing, except a card that
   // changed under the tap (below), which still counts toward the tap limits.
+  // The owner's login comes before the anonymous count (board a12184bc, as fe4d2bfe for
+  // a heal tap): a caller that is not the owner gets the login's 403 and is never
+  // counted, so it can't raise `approvals-anonymous`.
   async function verdict(req, res, requestId) {
     guardWrite(req);
     if (!approvals || approvals.mode() === 'off') throw new HttpError(403, 'approvals are off on this server');
+    requireLogin(req);
     let device;
     try { device = requireDevice(req); } catch (err) { approvals.noteAnonymousRefusal(); throw err; }
     const refuse = (status, error) => { approvals.noteRefusal(device.id, device.name); log(`chat: a verdict from ${device.name} was refused (${status}: ${error})`); return new HttpError(status, error); };

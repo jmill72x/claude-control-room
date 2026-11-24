@@ -838,6 +838,60 @@ test('a wrong, missing or revoked key is a 401 that says what to do; the fifth i
   assert.equal(env.chatMessages().length, 1);
 });
 
+// Board a12184bc (the posture of fe4d2bfe): a refusal is reported only once the owner's
+// login has passed, so a caller that reaches the port but is not the owner (any other
+// login, or none: not through the tailnet proxy) can't spend the alerts. Its requests
+// are the login's 403, never counted toward a report, and leave nothing in the log but
+// each request's own line.
+test('a caller that is not the owner raises no Shortcut refusal report: wrong keys, expired keys and wrong codes', async t => {
+  const env = await setup(t);
+  const key = await env.pairKey('Phone');
+  const id = env.keys.list()[0].id;
+  env.seen.length = 0;
+  env.lines.length = 0;
+  env.requests.length = 0;
+  const wrong = { authorization: `Bearer ${KEY_PREFIX}${'A'.repeat(43)}` };
+  const stranger = { 'tailscale-user-login': 'someone@example.com' };
+  const offProxy = (path, body, headers) => call({ port: env.port, method: 'POST', path, body, headers });
+  const tries = REFUSALS_REPORTED_AT * 3;
+  for (let i = 0; i < tries; i++) {
+    // A wrong key and no key, on send (JSON and a form) and on event, as another login.
+    assert.equal((await env.post('/api/shortcut/send', { text: 'hi' }, { ...wrong, ...stranger })).status, 403);
+    assert.equal((await env.post('/api/shortcut/send', { text: 'hi' }, stranger)).status, 403);
+    assert.equal((await env.postForm([{ name: 'text', value: 'hi' }], { ...wrong, ...stranger })).status, 403);
+    assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, { ...wrong, ...stranger })).status, 403);
+    // The same with no login header at all.
+    assert.equal((await offProxy('/api/shortcut/send', { text: 'hi' }, wrong)).status, 403);
+    assert.equal((await offProxy('/api/shortcut/event', { event: 'arrived-home' }, wrong)).status, 403);
+    // Wrong pairing codes, both ways.
+    assert.equal((await env.post('/api/shortcut/pair', { code: 'ABCDEF' }, stranger)).status, 403);
+    assert.equal((await offProxy('/api/shortcut/pair', { code: 'ABCDEF' }, {})).status, 403);
+  }
+  assert.deepEqual(env.seen, [], 'no report of any kind');
+  assert.deepEqual(env.lines, [], 'and no refusal line (each request keeps its own line)');
+  assert.equal(env.requests.length, tries * 8, 'every request was still logged, once');
+  // A real key gone stale, tried by someone else: not reported either.
+  env.clock.t += KEY_IDLE_MS;
+  assert.equal((await env.post('/api/shortcut/send', { text: 'too late' }, { ...env.withKey(key), ...stranger })).status, 403);
+  assert.equal((await offProxy('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key))).status, 403);
+  assert.deepEqual(env.seen, []);
+  // From the owner's login the same refusals still report, and only the owner's count:
+  // the fifth wrong key is the fifth of his, not the 300-odd strangers' before it.
+  for (let i = 1; i < REFUSALS_REPORTED_AT; i++) assert.equal((await env.post('/api/shortcut/send', { text: 'hi' }, wrong)).status, 401);
+  assert.deepEqual(env.seen, []);
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, wrong)).status, 401);
+  assert.deepEqual(env.seen, [{ kind: 'shortcut-refused', count: REFUSALS_REPORTED_AT }]);
+  env.seen.length = 0;
+  assert.equal((await env.post('/api/shortcut/send', { text: 'too late' }, env.withKey(key))).status, 401);
+  assert.deepEqual(env.seen, [{ kind: 'shortcut-expired', key: { id, name: 'Phone' }, days: KEY_IDLE_DAYS }]);
+  env.seen.length = 0;
+  for (let i = 1; i < REFUSALS_REPORTED_AT; i++) assert.equal((await env.post('/api/shortcut/pair', { code: 'ABCDEF' })).status, 404);
+  assert.deepEqual(env.seen, []);
+  assert.equal(env.lines.filter(l => l.includes('a pairing try was refused')).length, 1, 'the first of his is logged');
+  assert.equal((await env.post('/api/shortcut/pair', { code: 'ABCDEF' })).status, 404);
+  assert.deepEqual(env.seen, [{ kind: 'shortcut-pair-refused', count: REFUSALS_REPORTED_AT }]);
+});
+
 test('a key is not a device: it reads nothing, approves nothing and answers no permission', async t => {
   // A gate that would let a device answer, so a refusal here is the key's alone.
   const anonymous = [];

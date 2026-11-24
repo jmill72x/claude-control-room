@@ -513,6 +513,9 @@ export function createShortcutRoutes({
   // minutes is reported once. An expired key is a 401 of its own: the answer says to
   // pair again, and it is reported once a day per key however often it is tried (an
   // automation shows nothing on the phone, so the report is how its owner hears).
+  // Always called after requireShortcutCaller, whose login check comes first: a caller
+  // that is not the owner gets that 403 and is never counted or reported here, so it
+  // can't spend the alerts (board a12184bc, as fe4d2bfe for a heal tap; pinned by a test).
   function requireKey(req) {
     const { key, expired } = keys.check(req.headers?.authorization, { addr: proxyAddress(req.headers) });
     if (key) return key;
@@ -562,7 +565,8 @@ export function createShortcutRoutes({
     onEvent({ kind: 'shortcut-over-limit', key: { id: key.id, name: key.name }, what });
   }
   // A refused pairing try (a wrong code, or none waiting): the first in 10 minutes is
-  // logged, the fifth reported, the rest only counted.
+  // logged, the fifth reported, the rest only counted. Only ever after the login check,
+  // like a wrong key.
   function pairRefused(status) {
     const at = now();
     if (at - pairRefusals.start >= SEND_WINDOW_MS) pairRefusals = { start: at, n: 0 };
