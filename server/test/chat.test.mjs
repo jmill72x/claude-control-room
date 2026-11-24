@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createChatStore, newMessageId, sniffType, isMessageId, publicMessage,
-  PERMISSION_TTL_MS, PREVIEW_TTL_MS, EDIT_WINDOW_MS, UNANSWERED_MAX, ATTACHMENT_TTL_MS
+  PERMISSION_TTL_MS, PREVIEW_TTL_MS, EDIT_WINDOW_MS, ATTACHMENT_TTL_MS
 } from '../lib/chat-store.mjs';
 import { createDeviceStore, readCookie, cookieHeader, newCode, cleanName, COOKIE_NAME, PAIR_COOKIE_NAME, DEVICES_MAX } from '../lib/chat-devices.mjs';
 import { createSocketRouter, inboundEvent, HEARTBEAT_FRESH_MS, SESSION_HEADER } from '../lib/chat-socket.mjs';
@@ -133,9 +133,9 @@ test('listing after a seq or before an id, the unanswered rule, and the delivery
     await store.append({ from: 'jeff', text: 'q6', clientId: 'c6' });
     assert.deepEqual(store.unanswered().map(m => m.text), ['q6']);
     for (let i = 7; i <= 20; i++) await store.append({ from: 'jeff', text: `q${i}`, clientId: `c${i}` });
-    assert.equal(store.unanswered().length, UNANSWERED_MAX);
+    assert.equal(store.unanswered().length, 15, 'all of them: the catch-up\'s cut to the channel\'s room is lib/chat-catchup.mjs');
     await store.append({ from: 'jeff', text: 'x'.repeat(9000), clientId: 'big' });
-    assert.equal(store.unanswered().length, UNANSWERED_MAX, 'the big one is past both caps');
+    assert.deepEqual(store.unanswered().map(m => m.clientId).slice(-2), ['c20', 'big'], 'a big one too, newest last');
     clock.t += DAY + 1;
     assert.deepEqual(store.unanswered(), [], 'nothing within 24 hours');
     // The cursor: forward only, never past the last seq, and queued messages up to it become delivered.
@@ -650,9 +650,9 @@ test('a message from the page is queued, reaches the channel\'s inbound stream, 
   assert.deepEqual(lines.filter(l => l.type === 'message').map(l => [l.seq, l.text, l.device]), [[1, 'hi there', 'phone'], [2, 'second', 'ipad']]);
   assert.ok(lines.some(l => l.type === 'ping'), 'pings keep the stream warm');
   assert.ok(!lines.some(l => 'clientId' in l));
-  const un = await unix({ path: '/v1/unanswered' });
-  assert.deepEqual(un.json.messages.map(m => m.text), ['hi there', 'second']);
-  assert.deepEqual(Object.keys(un.json.messages[0]).sort(), ['at', 'attachments', 'device', 'editedAt', 'from', 'id', 'kind', 'meta', 'replyTo', 'seq', 'state', 'text']);
+  // The catch-up lists only what was handed over (at or under the cursor): before the
+  // ack, the next stream replays both from the cursor instead.
+  assert.deepEqual(await unix({ path: '/v1/unanswered' }).then(r => r.json), { messages: [], omitted: 0 });
 
   // Ack: the owner's messages up to the seq become delivered.
   const stale = await unix({ method: 'POST', path: '/v1/ack', body: { seq: 2, epoch: 'not-this-one' } });
@@ -663,6 +663,10 @@ test('a message from the page is queued, reaches the channel\'s inbound stream, 
   assert.equal(noEpoch.status, 400, 'the epoch is required');
   assert.match(noEpoch.json.error, /epoch/);
   assert.equal(env.store.deliveredSeq, 2);
+  const un = await unix({ path: '/v1/unanswered' });
+  assert.deepEqual(un.json.messages.map(m => m.text), ['hi there', 'second']);
+  assert.equal(un.json.omitted, 0);
+  assert.deepEqual(Object.keys(un.json.messages[0]).sort(), ['at', 'attachments', 'device', 'editedAt', 'from', 'id', 'kind', 'meta', 'replyTo', 'seq', 'state', 'text']);
   assert.deepEqual((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 1, epoch: env.store.epoch } })).json, { deliveredSeq: 2, epoch: env.store.epoch }, 'never back');
   assert.equal((await unix({ method: 'POST', path: '/v1/ack', body: { seq: 'x' } })).status, 400);
   const after = await tcp({ path: '/api/chat/messages', headers: { cookie: env.phone } });

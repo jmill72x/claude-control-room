@@ -248,6 +248,7 @@ test('M1: the late note is the same on the inbound stream, the restart catch-up 
 
     const token = JSON.parse((await viaSocket(sockPath, 'POST', '/v1/hello', { pid: 1 })).text).token;
     const lines = await readMessages(sockPath, '/v1/inbound?after=0', token, { want: 3 });
+    await env.store.ack(env.store.seq); // handed over, so the catch-up lists them (lib/chat-catchup.mjs)
     const unanswered = JSON.parse((await viaSocket(sockPath, 'GET', '/v1/unanswered', undefined, token)).text).messages;
     const history = JSON.parse((await viaSocket(sockPath, 'GET', '/v1/history?limit=10', undefined, token)).text).messages;
     const before = JSON.parse((await viaSocket(sockPath, 'GET', `/v1/history?before=${filesOnly.json.id}&limit=10`, undefined, token)).text).messages;

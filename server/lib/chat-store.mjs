@@ -56,8 +56,6 @@ export const CHANNEL_GONE_MS = 10 * 60e3;
 export const CARD_REPLAY_MS = 50 * 60e3;
 export const PREVIEW_TTL_MS = DAY;
 export const UNANSWERED_WINDOW_MS = DAY;
-export const UNANSWERED_MAX = 10;
-export const UNANSWERED_BYTES = 8 * 1024;
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_TTL_MS = 90 * DAY;
 export const ORPHAN_AFTER_MS = 3600e3;
@@ -267,22 +265,15 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   // routine's message (the brief, the digest: lib/routine-chat.mjs) answers nothing.
   const answersOwner = m => m.from === 'jarvis' && !isRoutineMessage(m) && !(m.replyTo && byId.get(m.replyTo)?.kind === 'event');
 
-  // The owner's messages after the lead's last answer to the owner, within 24 hours,
-  // at most 10 messages or 8 KB of text: what the channel reads after a restart.
-  // Events are never the owner's, and the lead's replies to them answer nothing here.
+  // The owner's chat messages after the lead's last answer to the owner, within 24
+  // hours, oldest first. Events are never the owner's, and the lead's replies to them
+  // answer nothing here. What the channel reads after a restart is cut from this list
+  // by lib/chat-catchup.mjs (the newest first, to fit the channel's room).
   function unanswered() {
     const at = now();
     let lastJarvis = 0;
     for (const m of messages) if (answersOwner(m) && m.seq > lastJarvis) lastJarvis = m.seq;
-    const out = [];
-    let bytes = 0;
-    for (const m of messages) {
-      if (m.seq <= lastJarvis || m.from !== 'jeff' || m.kind !== 'chat' || at - m.at > UNANSWERED_WINDOW_MS) continue;
-      bytes += Buffer.byteLength(m.text);
-      if (out.length >= UNANSWERED_MAX || bytes > UNANSWERED_BYTES) break;
-      out.push(m);
-    }
-    return out;
+    return messages.filter(m => m.seq > lastJarvis && m.from === 'jeff' && m.kind === 'chat' && at - m.at <= UNANSWERED_WINDOW_MS);
   }
 
   const lastFrom = (who, ok = () => true) => messages.reduce((best, m) => (m.from === who && ok(m) && m.at > best ? m.at : best), 0) || null;

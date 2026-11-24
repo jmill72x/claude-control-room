@@ -4692,8 +4692,8 @@ caught. The server suite passes (1788).
   `lib/chat-socket.mjs`) uses it, and now serves `/v1/unanswered` too (it served only
   `/v1/history`). For the catch-up that changes nothing else: it lists only the owner's
   chat messages, never a routine's. The page's routes still use `publicMessage`, so the
-  page gets the text as typed and draws its own "written" line. The catch-up's 8 KB cap
-  still counts the stored text, not the note (about 100 bytes a late message).
+  page gets the text as typed and draws its own "written" line. (The catch-up's cap
+  counted the stored text, not the note; §42 replaced that cap.)
 - **Checked (2026-11-24):** two new tests in `test/chat-late.test.mjs`. One stores a late
   message (Send now, 3 h 28 min), an on-time one and a late files-only one through the
   page route, then reads them over a unix socket through the real router: the inbound
@@ -4721,3 +4721,83 @@ caught. The server suite passes (1788).
   their own items. Server suite after: 1,813 of 1,813, local and `TZ=Asia/Tokyo`;
   `chat-late.test.mjs` five runs in a row clean.
 - **Not here:** Ultron's M2 (a rule in Jarvis's style about late notes) is Jarvis's.
+
+## 42. The restart catch-up never comes back empty, keeps the newest and says what it left out (Ultron's L4 on §41, board e0f5a95d, P2; staged 2026-11-24 on `jos/catchup-cap`, off main d19fd8d)
+
+- **The bug.** `unanswered()` in `server/lib/chat-store.mjs` added each message's bytes,
+  oldest first, and stopped once the total passed 8,192, even on the first message. One
+  large non-ASCII message (2,049 emoji are past 8 KB; the page allows 4,000) came back as
+  an empty list, so after a restart the channel sent Jarvis no catch-up at all. An
+  overflow dropped the newest messages, the ones most likely still open, and nothing
+  said anything was missing. Bytes were the wrong unit too: the channel caps its
+  catch-up at 8,000 code points and cuts from the end (`capContent` in
+  jarvis-channel `server.mjs`), so three 2,700-character ASCII messages passed the
+  server's cap (8,100 bytes) and the channel's cut then dropped the newest line.
+- **The fix.** The store's `unanswered()` now only picks the messages (the owner's chat
+  messages after the lead's last answer, within 24 hours) and caps nothing. A new
+  `server/lib/chat-catchup.mjs` `fitCatchUp` makes the catch-up from them, in the lead's
+  form (`historyMessage`, so `leadText`'s late note counts):
+  - Only messages at or under the delivery cursor. The channel drops the rest itself
+    (its inbound stream replays them from the cursor), so they only took room, and a
+    note on one would be lost. The answer for an empty or all-undelivered list is
+    `{ messages: [], omitted: 0 }`.
+  - Filled from the newest end, at most 10 (the channel lists 10), stopping at the first
+    that doesn't fit, so what is left out is always the oldest run.
+  - Never empty when anything is unanswered: a newest message too big for the room by
+    itself goes in cut, its start kept (where the late note sits), at a whole grapheme
+    (an emoji sequence is never split), ending in ` … [Cut to fit the catch-up: the first
+    N of M characters. Read the whole message with fetch_history before acting on
+    it.]` (Ultron's L1 wording). `fetch_history` gives the text uncut.
+  - When older messages were left out, the oldest one listed starts with `[Catch-up: K
+    older unanswered message(s) left out to fit. fetch_history with before set to this
+    message's id lists them.]`, and the answer carries `omitted: K` for a channel that
+    reads it (today's reads only `messages`).
+  - The room is counted the way the channel counts: code points of the line it builds
+    (`[ISO] jeff: text (id: …, +Natt)`), a line break as 3 (it folds to ` ⏎ `), `<` as
+    4 (it may become `&lt;`), plus 200 for its header (117 today), within 7,600 of its
+    8,000. So the channel's own cut never reaches the newest line.
+- **Why this design, of Ultron's three options:** all three, because each covers a
+  different failure. At-least-one alone still lost the newest on overflow; newest-first
+  alone still returned nothing for one huge message; the note alone told Jarvis
+  something was missing without giving him the message most likely still open. The
+  note goes in the message text because the channel renders only `m.text` (its meta
+  keys are fixed), the same path as §41's late note, so no channel change is needed.
+  Cutting keeps the start because the start holds the late note and usually the ask.
+- **Checked (2026-11-24):** `server/test/chat-catchup.test.mjs`, 9 tests (11 after Ultron's lows, below). Four go
+  through the real socket router (`/v1/hello`, then `/v1/unanswered`) and fail on main
+  d19fd8d (run on a scratch copy of main with the new test): a 4,000-emoji message came
+  back `[]` (now whole); a late 727-family-emoji message came back `[]` (now whole, late
+  note first); 12 short messages gave the oldest ten and 3 × 3,000 characters the
+  oldest two (now the newest, with the note and `omitted`); a message past the cursor
+  was listed (now not). Five unit tests pin the cut (line-break heavy, emoji families
+  never split, `<channel` text), cut plus note together within the room, the count of
+  10, attachments and ids in the line cost, the cursor filter, and that the cost is an
+  upper bound on the channel's folding. Every test checks the result against a copy of
+  the channel's line format under 8,000. Changed tests: `chat.test.mjs` (the store
+  test no longer expects caps; the socket test asks for the catch-up after the ack, and
+  before it, now `[]`) and `chat-late.test.mjs` (acks before the catch-up). Mutants,
+  each caught: oldest first, no cut, no note, no room kept for the note, no cursor
+  filter (lib and route), break and `<` costed 1, attachments left out of the line,
+  cut by code point instead of grapheme, the route without the fit. Server suite 1,822
+  of 1,822, local and `TZ=Asia/Tokyo`. A scratch check ran seven cases through the live
+  channel's own `foldLine` and `capContent` (imported read-only from the
+  jarvis-release worktree): on the branch none hits the channel's cut and the newest id
+  always shows (largest 7,516 of 8,000); under main's rule six of seven hid the newest
+  message (two as empty lists, three through the channel's cut, one by the byte cap). **Not verified:** the running service (no restart) and
+  a live channel catch-up after a real restart.
+- **Go-live (Jeff, after C&P):** a Control Room restart only; no web build and no
+  channel change.
+- **Ultron's review (2026-11-24): GO, four lows; L1, L3 and L4 fixed here.** L1: the cut
+  note now ends "Read the whole message with fetch_history before acting on it." L3: a
+  drift test reads the channel's `server.mjs` as text (never imported; skipped where
+  the jarvis-release worktree is absent) and checks that the catch-up header, the line
+  template, `foldLine`'s pattern and replacement, the `<channel` escape and
+  `CONTENT_MAX` match the test's copies; each of five altered copies fails it, and a
+  wrong path skips it. L4: a comment in `chat-catchup.mjs` says the server's cursor
+  filter equals the channel's hello cursor only because the channel awaits
+  `catchUp()` before `openInbound()` (`connectOnce`, about :1543-1556), and a test pins
+  a single grapheme bigger than the room (one letter with 8,000 combining marks): it
+  cuts to "the first 0 of 8001". Server suite after: 1,824 of 1,824, local and
+  `TZ=Asia/Tokyo`. **L2** (the channel reads `omitted` and says it in the tag) is for
+  the next channel release, on the board; not needed for this fix, since the note is in
+  the text.

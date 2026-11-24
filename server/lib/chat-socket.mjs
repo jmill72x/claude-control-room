@@ -53,6 +53,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { publicMessage, isMessageId, isClientId, isAttachmentId, MAX_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { isRoutineMessage } from './routine-chat.mjs';
 import { lateComposedAt, leadText } from './chat-late.mjs';
+import { fitCatchUp } from './chat-catchup.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -490,7 +491,9 @@ export function createSocketRouter({
         return json(res, 200, { deliveredSeq: await store.ack(upTo), epoch: store.epoch });
       }
       if (req.method === 'GET' && path === '/v1/unanswered') {
-        return json(res, 200, { messages: store.unanswered().map(historyMessage) });
+        // The restart catch-up: the newest that fit the channel's room, never none when
+        // any are open, and a note when older ones were left out (lib/chat-catchup.mjs).
+        return json(res, 200, fitCatchUp(store.unanswered().map(historyMessage), { upTo: store.deliveredSeq }));
       }
       if (req.method === 'POST' && path === '/v1/reply') {
         const body = await readBody(req, REPLY_BODY_MAX);

@@ -1311,7 +1311,12 @@ three pieces, each with its own router:
   a bye logs the gap, "quick" under 5 s, and records a quiet `notice` from `system`,
   "Jarvis's channel restarted HH:MM" in local time, shown in the chat and never pushed; that
   hello must pass the restart check below, and a bye with no hello for 2 minutes is alerted
-  once as `channel-silent`), `unanswered`, `reply` (deduped on `clientId`; answers `{id, seq}`),
+  once as `channel-silent`), `unanswered` (the restart catch-up, `{messages, omitted}`:
+  the owner's unanswered chat messages up to the delivery cursor, newest first into at
+  most 10 and the channel's 8,000-character room, oldest first in the answer; never
+  empty when any are open, the newest cut down if it alone is too big, and a note on
+  the oldest listed when older ones were left out: `lib/chat-catchup.mjs`, NEXT.md §42),
+  `reply` (deduped on `clientId`; answers `{id, seq}`),
   `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
   `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
   `status`. **One client at a time, held by a session token:** `hello` answers a random
