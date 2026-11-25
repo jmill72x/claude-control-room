@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { duoStyle, agentColors, ACCENT_COLORS } from '../src/lib/orbit/page.js';
 import { SHADES, SHADES_NIGHT, shadeColors, eventColors } from '../src/lib/orbit/overview.js';
 import { todayView } from '../src/lib/orbit/agents.js';
+import { TICK_MARKS, TICK_WORDS } from '../src/lib/orbit/chat.js';
 
 const CSS = readFileSync(new URL('../src/orbit/orbit.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
@@ -40,7 +41,7 @@ const TOP = [], DARK = [];
 for (const b of blocks(CSS)) {
   if (b.prelude.startsWith('@media')) {
     const into = /prefers-color-scheme:\s*dark/.test(b.prelude) ? DARK : null;
-    if (into) for (const r of blocks(b.body)) into.push({ sels: sels(r.prelude), decls: decls(r.body) });
+    if (into) for (const r of blocks(b.body)) into.push({ sels: sels(r.prelude), decls: decls(r.body), at: b.at });
   } else if (!b.prelude.startsWith('@')) {
     TOP.push({ sels: sels(b.prelude), decls: decls(b.body), at: b.at });
   }
@@ -293,6 +294,68 @@ for (const theme of ['light', 'dark']) {
     assert.ok(ratio(chip, bubble) >= 1.2, `the chip shows: ${ratio(chip, bubble).toFixed(2)}`);
     // Secondary: clearly dimmer than the message text it sits under.
     assert.ok(inkR / subR >= 1.2, `the time line reads as secondary: ${inkR.toFixed(2)} vs ${subR.toFixed(2)}`);
+    assert.deepEqual(fails, []);
+  });
+}
+
+// ---- the Chat: a message sending or not sent (boards af456791, 98edbd48) ----
+
+// Where a selector last sets a property among these rules (its position in the file).
+const lastAt = (rules, sel, prop) => { let at = -1; for (const r of rules) if (r.sels.includes(sel) && prop in r.decls) at = r.at; return at; };
+
+test('a sending or not-sent bubble is dimmed by its fill, never by opacity', () => {
+  // Opacity fades the words with the fill (it took the time line to 3.74:1 in dark).
+  for (const r of [...TOP, ...DARK]) {
+    if (!r.sels.some(s => /o-chat-(pending|failed)/.test(s))) continue;
+    for (const p of ['opacity', 'filter']) assert.equal(r.decls[p], undefined, `${r.sels.join(', ')} { ${p} }`);
+  }
+  // The fill changes, the words keep the bubble's own colours.
+  assert.equal(value(TOP, '.o-chat-pending .o-chat-bubble', 'background'), 'var(--c-mine-pending)');
+  assert.equal(value(TOP, '.o-chat-pending .o-chat-bubble', 'color'), undefined);
+  // A not-sent bubble is pending too, and keeps its orange border: the failed rule comes later.
+  assert.ok(lastAt(TOP, '.o-chat-failed .o-chat-bubble', 'border-color') > lastAt(TOP, '.o-chat-pending .o-chat-bubble', 'border-color'), "the failed border isn't lost to the pending one");
+  // The dark "!" is a later rule, not a token: it must come after the base rule to win.
+  assert.ok(lastAt(DARK, '.o-chat-tick-failed', 'background') > lastAt(TOP, '.o-chat-tick-failed', 'color'), 'the dark Not-sent mark comes after its base rule');
+  // The mark still means Not sent.
+  assert.equal(TICK_MARKS.failed, '!');
+  assert.equal(TICK_WORDS.failed, 'Not sent');
+});
+
+for (const theme of ['light', 'dark']) {
+  test(`${theme}: a sending or not-sent bubble keeps its words at AA and its Not-sent mark at 3:1`, () => {
+    const { env, rules } = CHAT[theme];
+    const c = v => resolve(v, env);
+    const bubble = c(value(rules, '.o-chat-mine .o-chat-bubble', 'background'));
+    // What a pending bubble draws, whatever the technique: its fill (the sent one's if
+    // it sets none), and an opacity, which blends everything in it with the page.
+    const fill = c(value(rules, '.o-chat-pending .o-chat-bubble', 'background') ?? value(rules, '.o-chat-mine .o-chat-bubble', 'background'));
+    const opacity = Number(value(rules, '.o-chat-pending .o-chat-bubble', 'opacity') ?? 1);
+    const page = c('var(--c-bg)');
+    const ink = c(value(rules, '.o-chat-mine .o-chat-bubble', 'color'));
+    const sub = c(value(rules, '.o-chat-mine .o-chat-meta', 'color'));
+    const flat = (...layers) => { let bg = rgba(layers[layers.length - 1]); for (const l of layers.slice(0, -1).reverse()) bg = over(rgba(l), bg); return bg; };
+    const seen = col => `rgb(${[0, 1, 2].map(i => col[i] * opacity + rgba(page)[i] * (1 - opacity)).join(', ')})`;
+    const fails = [];
+    const check = (what, min, fg, ...bgs) => { const r = ratio(seen(flat(fg, ...bgs)), seen(flat(...bgs))); if (r < min) fails.push(`${what}: ${r.toFixed(2)}`); return r; };
+    const inkR = check('the message while sending', 4.5, ink, fill);
+    const subR = check('the time line while sending', 4.5, sub, fill);
+    check('the Not-sent line', 4.5, c(value(rules, '.o-chat-retry', 'color')), fill);
+    check('a file still uploading', 4.5, ink, c(value(rules, '.o-chat-file', 'background')), fill);
+    // Still reads as sending: the fill differs from a sent bubble's, and the time line is secondary.
+    const shows = ratio(seen(flat(fill)), bubble);
+    if (shows < 1.3) fails.push(`the sending fill against a sent bubble: ${shows.toFixed(2)}`);
+    if (inkR / subR < 1.2) fails.push(`the time line is not secondary: ${inkR.toFixed(2)} vs ${subR.toFixed(2)}`);
+    // The "!" is a symbol (3:1). It sits on its own disc in dark, on the bubble in light;
+    // checked on a not-sent bubble's fill and on a sent one's, in case one ever shows there.
+    const mark = c(value(rules, '.o-chat-tick-failed', 'color'));
+    const disc = value(rules, '.o-chat-tick-failed', 'background');
+    const under = disc ? [c(disc)] : [];
+    check('the Not-sent mark on a not-sent bubble', 3, mark, ...under, fill);
+    const onSent = ratio(mark, ...under, bubble);
+    if (onSent < 3) fails.push(`the Not-sent mark on a sent bubble: ${onSent.toFixed(2)}`);
+    // It keeps the error orange, as the glyph or as its disc.
+    const orange = c('var(--accent-bright)');
+    assert.ok(mark === orange || under[0] === orange, `the mark keeps its orange (${mark} on ${under[0] ?? 'the bubble'})`);
     assert.deepEqual(fails, []);
   });
 }

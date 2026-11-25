@@ -5054,7 +5054,7 @@ The screenshots are in `~/.local/state/jarvis/outbox/overview-dark/`.
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.
 
-## 47. The time line on Jeff's own Chat bubbles clears AA in dark mode (board 15156e62, P3; staged 2026-11-24 on `jos/mine-sub-contrast`, off main 9b63041)
+## 47. The time line on Jeff's own Chat bubbles clears AA in dark mode (board 15156e62, P3; merged as main 1c61328, 2026-11-24, web build live per Jarvis)
 
 **What it does.** In dark mode, `--c-mine-sub` (the time line, "edited", "via iPhone"
 and a late note under Jeff's own messages, and a file's size in his bubble) goes from
@@ -5090,12 +5090,62 @@ the file.
 **Not verified.** Safari and real devices (no WebKit here): Jeff should glance at one of
 his messages with a file on the iPhone in dark mode.
 
-**Found on the way, not fixed.**
-- A sending bubble is drawn at 75% opacity, which pulls the time line down to 3.74:1
-  while it sends (a few seconds; the message text stays 4.83:1).
-- On Jeff's bubbles in dark, the "Not sent" mark (`!`, #FF7A45) is 2.41:1 on the blue,
-  under 3:1 for a symbol. The red border and the retry line say the same thing, so it is
-  not the only cue. "Answered" (#5EDCF0) is 3.85:1.
+**Found on the way.** The sending bubble's 75% opacity (time line 3.74:1) and the dark
+"Not sent" mark (2.41:1) are fixed in §48. "Answered" (#5EDCF0) is 3.85:1, which clears
+a symbol's 3:1.
+
+## 48. A sending or not-sent Chat bubble keeps its words at AA, and the Not-sent mark at 3:1 (boards af456791 and 98edbd48, P3; staged 2026-11-24 on `jos/chat-dark-gaps`, off main 1c61328)
+
+**What it does.** A message Jeff has sent that the server hasn't confirmed yet, and one
+that failed, were drawn at 75% opacity, which faded the words along with the fill. A
+failed send keeps no seq, so it is pending too: it stayed dimmed until retried or
+discarded, not only for a few seconds. Now only the fill dims, through a new token,
+`--c-mine-pending`, and the words keep the bubble's own colours.
+- Dark: the fill is #254998, the same colour the old 75% drew, so the bubble looks as
+  dim as before. The time line goes from 3.74:1 to 6.39:1, the message from 4.83 to 8.45,
+  a file still uploading from 4.18 to 6.76, and the "Not sent" line (#FFB3A8) from 2.95
+  to 4.94. That line was under AA too, which §47 didn't list.
+- Light had the same gap: the time line was 4.26:1 while sending. Its fill is #30405F
+  (navy at 85% over the paper, not 75%, because a lighter navy loses contrast against the
+  light words): time line 4.98, message 9.68, "Not sent" line 6.06, the `!` 4.01 (was
+  3.53). It is still visibly lighter than a sent bubble (1.55:1 against it).
+- The failed bubble keeps its orange border: the failed rule still comes after the
+  pending one.
+
+The "Not sent" mark in dark is now a dark `!` (the page colour, #0B1324) on an orange
+disc (#FF7A45, `--c-bad`), 7.17:1, about 1.4em across. The orange stays, as the disc,
+and the disc itself is 3.27:1 against the not-sent fill. Before, the orange `!` was
+2.41:1 on the blue and 2.03 with the opacity. Light keeps its plain orange `!`, which
+was already over 3:1. The disc is a dark rule in its own `@media` block just after
+`.o-chat-tick-failed`, because the chat's main dark block sits earlier in the file and a
+rule there would lose to the base rule.
+
+**Checks.**
+- Three new tests in `web/test/orbit-dark.test.js`. One checks the technique: no
+  `opacity` or `filter` on a pending or failed bubble, the fill comes from
+  `--c-mine-pending` with no colour of its own, the failed border comes after the
+  pending one, the dark disc comes after its base rule (the test's reader now records
+  each dark rule's position), and the mark is still `!` / "Not sent". Two, one per theme,
+  measure what is drawn, blending any opacity with the page: the message, time line,
+  "Not sent" line and an uploading file clear 4.5:1 on the pending fill, the fill shows
+  against a sent bubble (1.3:1 or more), the time line stays secondary (the message 1.2x
+  its ratio), the `!` clears 3:1 on a not-sent and on a sent bubble, and the mark keeps
+  the orange. Against main's CSS they fail with light "time line 4.26" and dark "time
+  line 3.74", "Not-sent line 2.95", "a file still uploading 4.18" and "mark 2.03".
+- Web suite 395/395 in America/New_York and in UTC (392 on main, plus these 3).
+- 15 of 15 mutants caught, and the no-change baseline passed: opacity back, the fill
+  plus an opacity or a filter, the dark fill as the sent blue or too pale, the light fill
+  at 75% or as navy, the pending rule setting a text colour, the failed rule moved
+  before the pending one, no dark disc, the glyph as orange on the disc, the disc not
+  orange, a white glyph with no disc, a fainter "Not sent" line, and a light `!` too dark.
+- Headless Chromium (1223) with a scratch build (`--outDir` in the scratchpad; the live
+  `web/dist` untouched): a sent, a sending (with a file uploading) and a not-sent bubble
+  at 390 px in both themes read the same numbers as the test; the failed border is
+  orange, the meta row keeps its height (15.7 px) and the disc is 15.7 px round. The same
+  page on the live CSS read the old numbers.
+
+**Not verified.** Safari and real devices (no WebKit here). Jeff could glance at a
+message while it sends, or one sent in airplane mode, on the iPhone in dark mode.
 
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.

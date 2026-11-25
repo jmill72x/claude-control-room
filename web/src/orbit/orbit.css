@@ -858,6 +858,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   --c-mine-ink: #F8F7F3;
   --c-mine-sub: #A9B4CB;
   --c-mine-chip: rgba(255, 255, 255, 0.12);
+  --c-mine-pending: #30405F;
   --c-theirs: #FFFFFF;
   --c-theirs-ink: var(--ink);
   --c-theirs-border: var(--rule);
@@ -890,6 +891,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
     --c-mine-ink: #FFFFFF;
     --c-mine-sub: #D6E0F8;
     --c-mine-chip: rgba(11, 19, 36, 0.2);
+    --c-mine-pending: #254998;
     --c-theirs: #18233D;
     --c-theirs-ink: #E4E8F1;
     --c-theirs-border: rgba(228, 232, 241, 0.1);
@@ -994,7 +996,12 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 }
 .o-chat-theirs .o-chat-bubble { border-bottom-left-radius: 6px; }
 .o-chat-mine .o-chat-bubble { background: var(--c-mine); color: var(--c-mine-ink); border-color: var(--c-mine); border-bottom-right-radius: 6px; }
-.o-chat-pending .o-chat-bubble { opacity: 0.75; }
+/* A message still sending, or not sent (only Jeff's own; a failed send stays seqless,
+   so it is pending too): a dimmer fill, words at full strength. Whole-bubble opacity
+   faded the words with the fill and took the time line under 4.5:1 in both themes
+   (board af456791). The dark fill is the old 75% look; light's is 85%, because a
+   lighter navy loses contrast against light words. */
+.o-chat-pending .o-chat-bubble { background: var(--c-mine-pending); border-color: var(--c-mine-pending); }
 .o-chat-failed .o-chat-bubble { border-color: var(--c-bad); }
 .o-chat-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 1em; }
 /* A message's Markdown (Markdown.jsx): paragraphs keep their line breaks, a code
@@ -1027,6 +1034,16 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-tick-answered { color: #5EDCF0; }
 .o-chat-tick-sending { letter-spacing: 0; }
 .o-chat-tick-failed { color: var(--accent-bright); }
+/* Dark: the orange "!" was 2.41:1 on the blue (2.03 with the old opacity), under a
+   symbol's 3:1, so it is now drawn in the page colour on an orange disc, 7.17:1, and
+   keeps its orange (board 98edbd48). Light keeps the plain glyph. This block comes after
+   the rule above so it wins; the chat's other dark block is earlier in the file. */
+@media (prefers-color-scheme: dark) {
+  .o-chat-tick-failed {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 0; width: 1.4em; height: 1.4em;
+    border-radius: 50%; letter-spacing: 0; background: var(--c-bad); color: var(--c-bg);
+  }
+}
 .o-chat-quote { margin: 0; padding: 6px 10px; border-left: 3px solid currentColor; border-radius: 6px; background: var(--c-quote); font-size: 0.85em; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 2px; }
 .o-chat-quote-who { font-size: 0.75em; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.8; }
 .o-chat-photos { display: flex; flex-wrap: wrap; gap: 6px; }
