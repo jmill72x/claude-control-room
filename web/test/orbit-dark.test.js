@@ -263,6 +263,40 @@ for (const theme of ['light', 'dark']) {
   });
 }
 
+// ---- the Chat: Jeff's own bubbles (board 15156e62) ----
+
+// The chat's tokens in each theme: light ones on .o-chat, dark ones on ':root, .o-chat'.
+const CHAT = {
+  light: { env: { ...LIGHT, ...tokensOf(TOP, '.o-chat') }, rules: TOP },
+  dark: { env: { ...LIGHT, ...tokensOf(TOP, '.o-chat'), ...tokensOf(DARK, '.o-chat') }, rules: [...TOP, ...DARK] }
+};
+
+for (const theme of ['light', 'dark']) {
+  test(`${theme}: the time line and file size on Jeff's bubbles clear AA and stay secondary`, () => {
+    const { env, rules } = CHAT[theme];
+    const c = v => resolve(v, env);
+    const bubble = c(value(rules, '.o-chat-mine .o-chat-bubble', 'background'));
+    const ink = c(value(rules, '.o-chat-mine .o-chat-bubble', 'color'));
+    // The time line (and edited, via, a late note) and a file's size both take --c-mine-sub.
+    assert.equal(value(rules, '.o-chat-mine .o-chat-meta', 'color'), 'var(--c-mine-sub)');
+    assert.equal(value(rules, '.o-chat-mine .o-chat-pdf-size', 'color'), 'var(--c-mine-sub)');
+    const sub = c('var(--c-mine-sub)');
+    const fails = [];
+    const check = (what, fg, ...bgs) => { const r = ratio(fg, ...bgs); if (r < 4.5) fails.push(`${what}: ${r.toFixed(2)}`); return r; };
+    const subR = check('the time line on the bubble', sub, bubble);
+    const inkR = check('the message on the bubble', ink, bubble);
+    // A file chip sits on its own inset in the bubble: its name (the bubble's ink) and size.
+    const chip = c(value(rules, '.o-chat-mine .o-chat-pdf', 'background'));
+    check("a file's name on its chip", ink, chip, bubble);
+    check("a file's size on its chip", sub, chip, bubble);
+    // The chip still shows against the bubble, about as much as the light one does.
+    assert.ok(ratio(chip, bubble) >= 1.2, `the chip shows: ${ratio(chip, bubble).toFixed(2)}`);
+    // Secondary: clearly dimmer than the message text it sits under.
+    assert.ok(inkR / subR >= 1.2, `the time line reads as secondary: ${inkR.toFixed(2)} vs ${subR.toFixed(2)}`);
+    assert.deepEqual(fails, []);
+  });
+}
+
 // ---- the charts ----
 
 test("the heat map's shades: darker is busier in light, lighter in dark, each a visible step", () => {

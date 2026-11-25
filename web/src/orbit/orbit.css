@@ -857,6 +857,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   --c-mine: var(--navy);
   --c-mine-ink: #F8F7F3;
   --c-mine-sub: #A9B4CB;
+  --c-mine-chip: rgba(255, 255, 255, 0.12);
   --c-theirs: #FFFFFF;
   --c-theirs-ink: var(--ink);
   --c-theirs-border: var(--rule);
@@ -887,7 +888,8 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
     --c-rule: rgba(228, 232, 241, 0.14);
     --c-mine: #2E5BBF;
     --c-mine-ink: #FFFFFF;
-    --c-mine-sub: #C9D6F5;
+    --c-mine-sub: #D6E0F8;
+    --c-mine-chip: rgba(11, 19, 36, 0.2);
     --c-theirs: #18233D;
     --c-theirs-ink: #E4E8F1;
     --c-theirs-border: rgba(228, 232, 241, 0.1);
@@ -1137,7 +1139,7 @@ ul.o-md-list { list-style-type: disc; }
 .o-chat-mine .o-chat-pdf-size { color: var(--c-mine-sub); }
 .o-chat-thread-page { position: relative; }
 .o-chat-dropzone { position: fixed; inset: 8px; z-index: 30; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--c-focus); border-radius: 16px; background: var(--c-composer); color: var(--c-heading); pointer-events: none; }
-.o-chat-mine .o-chat-pdf { background: rgba(255, 255, 255, 0.12); }
+.o-chat-mine .o-chat-pdf { background: var(--c-mine-chip); }
 
 /* ---- the Feed tab (Feed.jsx): the chat's tokens and type, one column of cards ----
    A long post is folded to a few lines with a fade; the filter row scrolls sideways

@@ -4964,7 +4964,7 @@ three, and nothing started until he asked at 21:47. README "The idle wake-up", b
   `~/.local/state/jarvis-os/idle-off` stops all wake-ups with no restart; reverting the
   commit and restarting goes back to the plain back-off (the `wake` block is ignored).
 
-## 46. Dark mode for the Overview and the Board (board e0ad4cfe, P3; staged 2026-11-24 on `jos/overview-dark`, off main a75503c)
+## 46. Dark mode for the Overview and the Board (board e0ad4cfe, P3; merged as main 9b63041, 2026-11-24, live per Jarvis)
 
 **What it does.** The Overview and the Board now follow the device's dark setting, like
 the Chat and the Feed: the same switch (`prefers-color-scheme`, no toggle) and the same
@@ -5031,8 +5031,8 @@ The screenshots are in `~/.local/state/jarvis/outbox/overview-dark/`.
    the layers keep light mode's order.
 2. The chat's blue fills are about 2.5 to 3:1 against their surface, the same as the
    Feed's filters, and their words change colour too. Navy would be about 1.1:1.
-3. Hot waiting cards don't use the chat's `--c-mine-sub` (#C9D6F5 is 4.29:1 on the
-   blue). They use #E4E8F1 (5.09:1).
+3. Hot waiting cards don't use the chat's `--c-mine-sub` (it was #C9D6F5 then, 4.29:1
+   on the blue; §47 lifts it). They use #E4E8F1 (5.09:1).
 
 **Not verified.**
 - Safari and real devices: there is no WebKit here. Jeff should look on the iPhone and
@@ -5049,7 +5049,53 @@ The screenshots are in `~/.local/state/jarvis/outbox/overview-dark/`.
   both rules below their base rules, which changes the look in light, so it is Jeff's
   call (board follow-up).
 - In the Chat, a bubble's time line in dark ("mine" bubbles, `--c-mine-sub` on
-  `--c-mine`) is 4.29:1, under AA for its small size (board follow-up).
+  `--c-mine`) was 4.29:1, under AA for its small size. Fixed in §47.
+
+**Go-live.** C&P, then a web build. The page is the only change, so no restart is
+needed. A build is a live deploy, so build only after the C&P.
+
+## 47. The time line on Jeff's own Chat bubbles clears AA in dark mode (board 15156e62, P3; staged 2026-11-24 on `jos/mine-sub-contrast`, off main 9b63041)
+
+**What it does.** In dark mode, `--c-mine-sub` (the time line, "edited", "via iPhone"
+and a late note under Jeff's own messages, and a file's size in his bubble) goes from
+#C9D6F5 to #D6E0F8: 4.29:1 on the blue bubble (#2E5BBF) becomes 4.72:1. Same hue, a
+little lighter. The message text is white at 6.24:1, so the time line still reads as
+secondary (it is also 0.7em). Light mode is unchanged (#A9B4CB on navy, 7.70:1).
+
+A file chip in Jeff's bubble had the same problem worse: it is 12% white over the blue,
+so the size sat at 3.32:1 before and would still be 3.65:1 with the new colour (even
+white is only 4.83:1 there). In dark mode the chip is now 20% of the page colour
+(#0B1324) over the blue instead, a darker inset rather than a lighter one: the size is
+6.00:1 and the name 7.94:1, and the chip still stands out from the bubble about as much
+as before (1.27:1, was 1.29:1). It goes through a new token, `--c-mine-chip`, set in
+both themes (light keeps 12% white), so the dark value can't lose to a later rule in
+the file.
+
+**Checks.**
+- Two new tests in `web/test/orbit-dark.test.js`, one a theme. Each reads the bubble,
+  ink, `--c-mine-sub` and chip from orbit.css and checks: the time line and a file's
+  name and size clear 4.5:1, the chip shows (1.2:1 or more), and the message is at least
+  1.2 times the time line's ratio (secondary). Against main's CSS the dark one failed
+  with "time line 4.29" and "a file's size on its chip 3.32"; with the fix it passes.
+- Web suite 392/392 in America/New_York and in UTC (390 on main, plus these 2).
+- 8 of 8 mutants caught, and the no-change baseline passed: the old colour, a colour
+  just under 4.5, the old white chip in dark, a chip too faint to see, the time line as
+  white (no longer secondary), the meta or size taking the ink, and a light value too
+  dark.
+- Headless Chromium (1223) with a scratch build of the branch: a mine bubble with a file
+  chip, at 390 px in both themes, read 4.72 (time, via), 6.00 (size), 7.94 (name) and
+  6.24 (message) in dark, and 7.70 / 5.39 / 10.47 / 14.96 in light, the same as the
+  test.
+
+**Not verified.** Safari and real devices (no WebKit here): Jeff should glance at one of
+his messages with a file on the iPhone in dark mode.
+
+**Found on the way, not fixed.**
+- A sending bubble is drawn at 75% opacity, which pulls the time line down to 3.74:1
+  while it sends (a few seconds; the message text stays 4.83:1).
+- On Jeff's bubbles in dark, the "Not sent" mark (`!`, #FF7A45) is 2.41:1 on the blue,
+  under 3:1 for a symbol. The red border and the retry line say the same thing, so it is
+  not the only cue. "Answered" (#5EDCF0) is 3.85:1.
 
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.
