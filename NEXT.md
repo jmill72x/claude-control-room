@@ -408,7 +408,7 @@ the build notes in §8.3 to §8.5 wherever the two differ.
   components and CSS and the `classic` Vite entry are deleted, and the README describes
   the Orbit page. The sideways scroll went with the page.
 
-## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a built, staged; Phase 2 Feed staged 11-11)
+## 10. The Jarvis OS home screen (designed 2026-11-10; Phase 1a on main as 96cd2b6, live; chat, events, approvals and the Phase 2 Feed live since 2026-11-11)
 
 Jeff's pick of 2026-11-10: the Control Room becomes the one home screen (what's running,
 what's waiting on you, today's routines, usage, approvals), built on the Orbit page. The
@@ -1631,9 +1631,9 @@ PDF, drop, the four-file cap, the 404 stop, the self-revoke clearing the cookie)
 iPad drag and drop are not verified. Tests now: 698 server (local time and Tokyo), 122 web. **Left for later:** a "Start over" on a pairing resumed
 after a reload can't start a new one until the pending code expires (the server allows one
 pending at a time, 10 minutes); the Chat tab mounts its stream only while open (Web Push, C6,
-covers a message arriving while it isn't); the playwright-cli on the mini
-updated itself to 1.64 alpha and lacks its browser, so the checks ran playwright-core against
-the installed 1223 headless shell by `executablePath`.
+covers a message arriving while it isn't); the CLI's playwright-core (1.64 alpha) wants a
+headless shell (1247) that was never installed, so the checks ran it against the older 1223
+shell by `executablePath` (since 2026-11-24, §49, they launch the installed Chrome instead).
 **Ultron's 11-11 review: merge with chat off; no-go to switch on until findings 1-4 are
 fixed.** Fixed on the branch the same night: (1) a session token from `hello`, required in
 `X-Session-Token` on every socket route but `hello` and `status` (409 otherwise, whatever
@@ -2012,7 +2012,7 @@ leaves no stale card (an entry with no `at` still works, in arrival order). Serv
 in local time and Tokyo. **Follow-up:** the design's §5.2
 `PermissionRequest` payload is unconfirmed; the `Notification` hook alone is enough.
 
-**Phase 1a, the acknowledge mechanism, is built and committed (96cd2b6, 2026-11-10), not live.** README
+**Phase 1a, the acknowledge mechanism, is on main (96cd2b6, 2026-11-10) and live.** README
 "Acknowledging a known miss" describes it: `server/lib/acks.mjs` (pure), `server/acks.mjs`
 (the file `server/data/acks.json`), `POST`/`DELETE`/`GET /api/acks`, `acks` and `acked` in
 `/api/dashboard`, `ack` on covered crons, jobs and services, the notifier silenced for a
@@ -4397,7 +4397,7 @@ ntfy pushes agree. README, "Push notifications", is the reference now.
   interactive session reloads the mod's hooks when a file in `mod/` changes); no Control
   Room restart and no web build. It builds on §33, which is already on main (1c2eb7c).
 
-## 35. No self-update from any claude the Control Room starts (board a24a6aee, P3; staged 2026-11-21 on `jos/no-autoupdate`, off main 3029556)
+## 35. No self-update from any claude the Control Room starts (board a24a6aee, P3; merged as main 58bdd43, 2026-11-22)
 
 Jeff, 2026-11-21: "Turn off auto code updates too." Jarvis set
 `"env": {"DISABLE_AUTOUPDATER": "1"}` in the user settings, but a session started with
@@ -4498,7 +4498,7 @@ caught. The server suite passes (1788).
   with no agent runs going. The script and README need nothing; the matching only matters
   once §28's hook script has been applied.
 
-## 37. The TCP port's ingest refusals are counted, per route and reason (board 1ba66c95, P3, Ultron's 11-11 L5; staged 2026-11-22 on `jos/refusal-counts`, off main 39fd448)
+## 37. The TCP port's ingest refusals are counted, per route and reason (board 1ba66c95, P3, Ultron's 11-11 L5; merged as main 55c124d, 2026-11-23)
 
 - **Before:** `refuse()` in `routes.mjs` logged the first refusal of each route and reason
   (the first 20 keys), then nothing, so a hook posting to the wrong place, or a tailnet
@@ -4560,7 +4560,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going. Until then the live server behaves as before.
 
-## 39. Ultron's lows on §38: login 403s counted in the log, and no body wait for them on the Shortcut routes (boards 261d8525 and bfd5e3ef, P3; merged as main b534aa2, 2026-11-23, not live yet; Ultron's re-read lows on it are §40)
+## 39. Ultron's lows on §38: login 403s counted in the log, and no body wait for them on the Shortcut routes (boards 261d8525 and bfd5e3ef, P3; merged as main b534aa2, 2026-11-23, in the server started 2026-11-24; Ultron's re-read lows on it are §40)
 
 - **L1 (261d8525): a login 403 on a chat route left no trace.** Since §38 the verdict
   route checks the login before its anonymous count, and the chat router's catch answers
@@ -4605,7 +4605,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going. Until then the live server behaves as before.
 
-## 40. Ultron's re-read lows on §39 (N1-N3, board ba1f2f7e, P3; staged 2026-11-23 on `jos/login-403-n1n3`, off main b534aa2)
+## 40. Ultron's re-read lows on §39 (N1-N3, board ba1f2f7e, P3; merged as main 7b10b02, 2026-11-24)
 
 - **N1, the login first: moved, not accepted.** Before, on the verdict, stop, restart
   and heal routes (and on every chat write), the write guard's 415 and cross-origin 403,
@@ -4675,7 +4675,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart (server only, no web build), with
   no agent runs going; it can share §39's restart.
 
-## 41. The late note on every path the lead reads (Ultron's M1 on §23, board cd4d7dc3, parent 89248590, P2; staged 2026-11-24 on `jos/late-note-everywhere`, off main 7b10b02)
+## 41. The late note on every path the lead reads (Ultron's M1 on §23, board cd4d7dc3, parent 89248590, P2; merged as main d19fd8d, 2026-11-24)
 
 - **The gap.** §23's `[Written …, delivered …]` note was added in `toInbound` only, so
   the inbound stream had it but the restart catch-up (`GET /v1/unanswered`, which the
@@ -4721,7 +4721,7 @@ caught. The server suite passes (1788).
   `chat-late.test.mjs` five runs in a row clean.
 - **Not here:** Ultron's M2 (a rule in Jarvis's style about late notes) is Jarvis's.
 
-## 42. The restart catch-up never comes back empty, keeps the newest and says what it left out (Ultron's L4 on §41, board e0f5a95d, P2; staged 2026-11-24 on `jos/catchup-cap`, off main d19fd8d)
+## 42. The restart catch-up never comes back empty, keeps the newest and says what it left out (Ultron's L4 on §41, board e0f5a95d, P2; merged as main 3b0304e, 2026-11-24)
 
 - **The bug.** `unanswered()` in `server/lib/chat-store.mjs` added each message's bytes,
   oldest first, and stopped once the total passed 8,192, even on the first message. One
@@ -4801,7 +4801,7 @@ caught. The server suite passes (1788).
   the next channel release, on the board; not needed for this fix, since the note is in
   the text.
 
-## 43. The late note's times say their zone (Ultron's L3 on §41, board b547ea09, P3; staged 2026-11-24 on `jos/late-note-zone`, off main 3b0304e)
+## 43. The late note's times say their zone (Ultron's L3 on §41, board b547ea09, P3; merged as main 464e57a, 2026-11-24)
 
 - **The gap.** `when()` in `server/lib/chat-late.mjs` wrote the note's times as the
   server's local `HH:MM` with no zone (`[Written 15:10, delivered 18:38: …]`), right
@@ -4849,7 +4849,7 @@ caught. The server suite passes (1788).
 - **Go-live (Jeff, after C&P):** a Control Room restart only; no web build (no page
   change) and no channel change.
 
-## 44. The markdown "linear time" test can't be failed by a busy machine (board a30c458a, P3 Bug; staged 2026-11-24 on `jos/flaky-md-timing`, off main 464e57a)
+## 44. The markdown "linear time" test can't be failed by a busy machine (board a30c458a, P3 Bug; merged as main a75503c, 2026-11-24)
 
 - **Why it flaked.** `web/test/orbit-markdown.test.js` "pathological input parses in
   linear time" divided one cold parse of 60k characters by one parse of 6k and failed
@@ -4884,7 +4884,7 @@ caught. The server suite passes (1788).
   test file. The server suite wasn't run (no server file changed).
 - **Go-live:** none (test only).
 
-## 45. The idle wake-up's back-off starts again on the owner's message or a merge (board e10a01ed, P1; staged 2026-11-24 on `jos/idle-reset`, off main a75503c)
+## 45. The idle wake-up's back-off starts again on the owner's message or a merge (board e10a01ed, P1; merged as main c8a31cc, 2026-11-24, in the server started that evening)
 
 **Jeff, 11-24 22:04 ET: "ok fix this now. i want this to be the very next thing that's
 built."** Agent runs did not start after his C&P freed repos: on 11-24 his 21:00Z C&P freed
@@ -5094,7 +5094,7 @@ his messages with a file on the iPhone in dark mode.
 "Not sent" mark (2.41:1) are fixed in §48. "Answered" (#5EDCF0) is 3.85:1, which clears
 a symbol's 3:1.
 
-## 48. A sending or not-sent Chat bubble keeps its words at AA, and the Not-sent mark at 3:1 (boards af456791 and 98edbd48, P3; staged 2026-11-24 on `jos/chat-dark-gaps`, off main 1c61328)
+## 48. A sending or not-sent Chat bubble keeps its words at AA, and the Not-sent mark at 3:1 (boards af456791 and 98edbd48, P3; merged as main 9eca6d1, 2026-11-24)
 
 **What it does.** A message Jeff has sent that the server hasn't confirmed yet, and one
 that failed, were drawn at 75% opacity, which faded the words along with the fill. A
@@ -5149,3 +5149,55 @@ message while it sends, or one sent in airplane mode, on the iPhone in dark mode
 
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.
+
+## 49. README status headers match what is live, and headless checks launch the installed Chrome (boards e652ff11 and cb22d592, P3; staged 2026-11-24 on `jos/readme-headless`, off main 9eca6d1)
+
+**e652ff11 (the degraded-modes plan, 11-21).** Eleven README section headers and one bold
+lead-in still said "built, not live", "switched off" or "off by default" alone for features
+that run on the mini, which sends Jeff the wrong way in an outage. Each now says when it
+went live and what its code default is, checked against the code and the config file, never
+against the page's data:
+
+| Section | Code default | Header now |
+|---|---|---|
+| A routine's message in the chat | no key: on with the chat | live since 2026-11-17 |
+| A local script's alert | no key: on with the server | live since 2026-11-20 |
+| Restart Jarvis from the page | off unless `recover.enabled` | live since 2026-11-20 |
+| The chat with the lead agent | off unless `chat.login` and `hostCheck: "enforce"` | live since 2026-11-11 |
+| Approvals as buttons | `chat.approvals` `"off"` | live since 2026-11-11, parity since 11-12 |
+| Shortcut keys | off unless `chat.shortcuts: true` | live since 2026-11-12 |
+| Events | on with the chat | live since 2026-11-11 |
+| Self-healing loops | off unless `heal.enabled` | loops 1 to 3 live, the last since 11-15 |
+| The proactive check | off unless `proactive.enabled` | live since 2026-11-19 |
+| The idle wake-up | off unless `proactive.idle.enabled` | live since 2026-11-19 |
+| The Feed | on unless `feed.off` | live since 2026-11-11 |
+| Stop (war room, a bold lead-in) | needs channel 0.4.7 | live since 2026-11-14 |
+
+The routine and local-alert callers were checked in the running Jarvis release
+(`jarvis/routine.py`, `bin/jarvis-start`), the Feed's writer by its files under
+`~/.local/state/jarvis/feed/`. The same pass rewrote stale "staged" headers here (§35, §37,
+§39 to §45, §48) to their merge commits.
+
+**cb22d592 (Vision, 11-23).** The headless check scripts (scratch kits in the session
+scratchpads, not in this repo) launched playwright-core with `executablePath` pointing at
+the 1223 Chromium shell, because the CLI's playwright-core (1.64 alpha) wants a 1247 shell
+that was never installed; the CLI itself never updated. All nine now call
+`chromium.launch({ channel: 'chrome', headless: true })`, which runs the installed Google
+Chrome (158.0.8127.37) headless in its own profile; nothing is downloaded. So the scripts no
+longer need `chromium-1223`, `chromium_headless_shell-1223` or the npx cache that Vision
+proposes removing.
+
+**Checks.**
+- README: 12 exact replacements, 324,911 to 325,206 bytes; no reference elsewhere quoted
+  an old header.
+- Each switched script ran once on a scratch server (ports 8611 to 8615) over a scratch
+  build of this branch: Overview dark mode 54 of 54; both bubble probes read the numbers in
+  §47 and §48; Restart warns of runs 36 of 36 plus its dark shot; Next 24 hours 70 of 70;
+  stale re-send 11 of 12 twice, the one miss the check's own regex (the moved clock crossed
+  midnight, so the label gained "Tue"); Restart Jarvis launched, loaded, set up Face ID and
+  stopped where the sheet now shows "Restart anyway" (that kit predates §24's run warning).
+  None of the misses is the launch. A probe confirmed the binary is
+  `/Applications/Google Chrome.app` with `--headless`.
+- Server suite 1850 of 1850 in local time and Tokyo; web suite 395 of 395.
+
+**Go-live.** C&P. Docs only, so nothing to restart or build.

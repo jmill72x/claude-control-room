@@ -487,7 +487,7 @@ Phases 1 to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   too many), and only the waits read it ("A session waiting on
   you"). A run that ends shows for up to about 90 s more (the minute's collector pass
   plus the page's 30 s poll).
-  **Stop (slice 2, option B with Face ID; built 2026-11-13, not live):** a row the server
+  **Stop (slice 2, option B with Face ID; live since 2026-11-14, with channel 0.4.7 or later):** a row the server
   marks `stoppable` (a background subagent of a roster agent, in the session named as
   the lead's) shows **Stop** on an approver device. Stop opens a confirm sheet, then the
   browser's Face ID sheet; the server checks the passkey's answer and puts a typed stop
@@ -799,7 +799,7 @@ curl --unix-socket ~/.local/state/jarvis-os/ingest.sock -X POST http://localhost
   -d '[{"name":"cloud-digest","ok":false,"last":"Failed · 1","schedule":"Daily, 07:00"}]'
 ```
 
-### A routine's message in the chat (the morning brief, the weekly digest; built, not live)
+### A routine's message in the chat (the morning brief, the weekly digest; live since 2026-11-17, on whenever the chat is)
 
 The lead agent's routines run headless from launchd, outside its session, so they have no
 channel to reply through and their text reached Discord only. Since 2026-11-17 a routine
@@ -882,7 +882,7 @@ A routine in Python needs no client but the standard library: an
 (the server down, a 4xx, a 503) is noted in the routine's own log and must never fail
 the run, whose report is already in Discord.
 
-### A local script's alert: Jarvis down without Discord (board 5f892918; built, not live)
+### A local script's alert: Jarvis down without Discord (board 5f892918; live since 2026-11-20, on whenever the server runs)
 
 The lead's start script (`bin/jarvis-start` in the Jarvis repo) and its routines alert to
 Discord first. Every fallback after Discord has a weak spot: an ntfy topic is only as good
@@ -1151,7 +1151,7 @@ pipe's status is curl's alone, so a jq failure was never seen either way. A post
 fails (no server, or jq's empty output, which the server answers with a 400) records
 nothing; it leaves no trace in the session, only a missing line in the service log.
 
-### Restart Jarvis from the page (board 98a30b15; built, off by default)
+### Restart Jarvis from the page (board 98a30b15; live since 2026-11-20, off by default)
 
 When the lead is down, the page offers **Restart Jarvis**: one tap, Face ID, and this
 server runs the run sheet's one line, the lead's recovery script, and shows how it ended
@@ -1292,7 +1292,7 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   ntfy push ("Push notifications" below). Web Push (signed with this server's own key),
   `#pepper` and the page carry the command.
 
-### The chat with the lead agent (Jarvis OS, built, not live)
+### The chat with the lead agent (Jarvis OS; live since 2026-11-11, off by default)
 
 The chat (`~/Projects/jarvis/docs/jarvis-os-chat-spec.md`, its C2 part) is on only when
 `config.json` has a `chat` block with `"login"` set (the owner's tailnet login, checked on
@@ -1843,7 +1843,7 @@ off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
 
-### Approvals as buttons (Jarvis OS; built, switched off)
+### Approvals as buttons (Jarvis OS; live since 2026-11-11, parity since 2026-11-12, off by default)
 
 Design and decisions: `docs/design/2026-11-11-jarvis-os-approvals.md` (with Ultron's 11-11
 findings folded in; section 0.2 is his final read and the exact-command hook). Claude Code's channel permission relay sends a tool-approval prompt
@@ -2265,7 +2265,7 @@ The switch-on runbook (who does what, in which order) is in NEXT.md §10. Tests:
 `server/test/approvals.test.mjs`, `server/test/exact-commands.test.mjs`, plus the
 PermissionDenied ingest in `server/test/needs-you.test.mjs`.
 
-### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; off by default)
+### Shortcut keys: an iPhone Shortcut sends into the chat (Jarvis OS; live since 2026-11-12, off by default)
 
 Three iPhone Shortcuts reach the chat without the page: one shares a link, text, a photo
 or a file from the share sheet, one takes a dictated question through Siri, and a
@@ -2521,7 +2521,7 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   … after 30 days without use · make a new key and run Jarvis Setup again", and keeps its
   Revoke. `bin/chat-pair shortcuts` prints `(expired)` or `expires <time> if unused`.
 
-### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; built, not live)
+### Events: a failed job wakes the lead (Jarvis OS pillar 3, slice 1; live since 2026-11-11, on whenever the chat is)
 
 An event is a short line from `system` (kind `event`) in the chat store, handed to the lead's
 live session by the channel. Slice 1 makes one only for a **failed launchd job** or a **down
@@ -2641,7 +2641,7 @@ or 202 with `held`, `coalescing`, `quiet` or `off`. Any process running as the o
 post (the owner's decision, 2026-11-11). A problem with its path keeps this socket off and
 leaves the chat up.
 
-### Self-healing loops (Jarvis OS 6; loops 1 to 3 built, off by default)
+### Self-healing loops (Jarvis OS 6; loops 1 to 3 live, the last since 2026-11-15, off by default)
 
 A loop is detect, diagnose, act, verify, then close or escalate, for one failure instance
 (the alert's key plus its `since`, the pair an ack uses). The design, with the tiers (T0
@@ -2886,7 +2886,7 @@ T2 loops run, and loop 3's checkout reader), the first pass in
   it tells the lead, who opens the board item for the lasting fix. The morning brief reads job-status itself, so it still
   calls a quiet job overdue.
 
-### The proactive check: wake the lead only on a hit (board a77b4757; off unless config turns it on)
+### The proactive check: wake the lead only on a hit (board a77b4757; live since 2026-11-19, off by default)
 
 A pass every 5 minutes inside this server, with no model and no network, over what it
 already has. It finds **hits**, tells each one once in a single event for the lead, and
@@ -2977,7 +2977,7 @@ on the page `web/src/lib/orbit/headsup.js` and `web/src/orbit/HeadsUp.jsx`. Test
   `idle` the lead's tag reads `event="unknown"`; the words still arrive
   (`source="proactive"`).
 
-#### The idle wake-up (board 5ffd0041; built 2026-11-19, off by default; weekly gate flat at 90% since 2026-11-21)
+#### The idle wake-up (board 5ffd0041; live since 2026-11-19, off by default; weekly gate flat at 90% since 2026-11-21)
 
 The lead wakes only on events, so when the last agent run ends nothing starts the next
 one, though the board holds work and the limits have room. The check's pass makes **one
@@ -3090,7 +3090,7 @@ Tests: `server/test/proactive-idle.test.mjs`, `server/test/proactive-idle-events
 `server/test/proactive-idle-reset.test.mjs` (the resets, through the real chat store,
 events module and To push collector).
 
-### The Feed: what the agents posted (Jarvis OS Phase 2; built, not live)
+### The Feed: what the agents posted (Jarvis OS Phase 2; live since 2026-11-11, on whenever the chat is)
 
 The Feed tab shows what each agent and job posted to its Discord feed, without Discord
 (design doc §5.7). The lead's `discord-post` (its repo, branch `jos/feed-log`) keeps a copy
