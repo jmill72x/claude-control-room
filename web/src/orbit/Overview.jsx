@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { envelopeOf } from '../lib/format.js';
-import { compactTokens, agentColors, unavailable, PARTIAL } from '../lib/orbit/page.js';
+import { compactTokens, unavailable, PARTIAL, duoStyle } from '../lib/orbit/page.js';
 import { agentOf } from '../lib/orbit/board.js';
 import {
-  ringView, sessionCountdown, next24, burnBars, burnShares, heatRows, SHADES
+  ringView, sessionCountdown, next24, burnBars, burnShares, heatRows, SHADES, shadeColors, eventColors
 } from '../lib/orbit/overview.js';
 import { routinesView } from '../lib/orbit/routines.js';
 import { homeSections, usageFoldLabel, scheduleSub, loopsLine, FOLD_KEYS } from '../lib/orbit/home.js';
@@ -135,11 +135,7 @@ function Schedule({ payload, now, roster, items }) {
 // the line, its ticks and dots move down by the lanes above.
 function NextDay({ events, ticks, lanes, roster }) {
   const yours = events.filter(e => e.kind === 'you').length;
-  const colorOf = e => {
-    if (e.kind === 'reset' || e.kind === 'you') return '#C2410C';
-    const agent = agentOf(e.owner, roster);
-    return agent ? agentColors(agent.index).day : '#4E5872';
-  };
+  const colorsOf = e => eventColors(e.kind, agentOf(e.owner, roster));
   return (
     <div className="o-next">
       <div className="o-panel-head">
@@ -156,7 +152,7 @@ function NextDay({ events, ticks, lanes, roster }) {
             <span className="o-now" aria-hidden="true"><span /></span>
             {events.map(e => (
               <div key={`${e.t}-${e.name}`} role="listitem">
-                <span className={`o-event-dot${e.kind === 'you' ? ' o-event-dot-you' : ''}`} aria-hidden="true" style={{ left: e.left, borderColor: colorOf(e) }} />
+                <span className={`o-duo o-event-dot${e.kind === 'you' ? ' o-event-dot-you' : ''}`} aria-hidden="true" style={{ left: e.left, ...duoStyle(colorsOf(e)) }} />
                 <span className={`o-event o-event-${e.row} o-event-${e.align}${e.kind === 'you' ? ' o-event-you' : ''}`} style={{ left: e.left, '--o-lane': e.lane ?? 0 }} title={e.name}>
                   <span className="o-mono o-event-time">{e.at}</span>
                   <span className="o-event-name">{e.name}</span>
@@ -237,7 +233,7 @@ function HeatMap({ payload }) {
         {heat && <span className="o-sub"><b className="o-strong">{compactTokens(heat.total)}</b> tokens{heat.peakLabel ? ` · peak ${heat.peakLabel}` : ''}</span>}
       </div>
       {!heat ? <Note>{env.status === 'unavailable' ? unavailable(env) : NOT_SENT}</Note> : (
-        <div className="o-heat-grid" role="img" aria-label={`Tokens by hour for today and the six days before it${heat.peakLabel ? `, peaking ${heat.peakLabel}` : ''}. Darker is busier, scaled to the week's busiest hour.`}>
+        <div className="o-heat-grid" role="img" aria-label={`Tokens by hour for today and the six days before it${heat.peakLabel ? `, peaking ${heat.peakLabel}` : ''}. The stronger the shade, the busier the hour, scaled to the week's busiest hour.`}>
           <div className="o-heat-row o-heat-axis" aria-hidden="true">
             <span />
             <div className="o-mono o-heat-hours">
@@ -249,13 +245,13 @@ function HeatMap({ payload }) {
             <div key={row.date} className="o-heat-row">
               <span className="o-mono o-heat-day">{row.label}</span>
               <div className="o-heat-cells">
-                {row.cells.map(c => <span key={c.hour} className={c.peak ? 'o-peak' : ''} style={{ background: SHADES[c.level] }} />)}
+                {row.cells.map(c => <span key={c.hour} className={`o-duo${c.peak ? ' o-peak' : ''}`} style={duoStyle(shadeColors(c.level))} />)}
               </div>
               <span className={`o-mono o-heat-total${row.strong ? ' o-strong' : ''}`}>{row.total}</span>
             </div>
           ))}
           <div className="o-mono o-heat-legend" aria-hidden="true">
-            <span>less</span>{SHADES.map(s => <span key={s} className="o-heat-key" style={{ background: s }} />)}<span>more</span>
+            <span>less</span>{SHADES.map((s, level) => <span key={s} className="o-duo o-heat-key" style={duoStyle(shadeColors(level))} />)}<span>more</span>
           </div>
         </div>
       )}

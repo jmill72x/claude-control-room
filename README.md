@@ -339,8 +339,28 @@ agent by agent over the agent work map) and Recent (Latest runs); **Usage**, the
 up front with Burn and the week's heat map behind a fold, beside **Today's schedule**,
 Today's routines over Next 24 hours with the loops' line at its foot; and **Loops**, only
 while a loop is open. Nothing folds by width any more (the phone's "More" disclosure is
-gone). Each panel below keeps its own content and rules inside its new place. Phases 1
-to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
+gone). Each panel below keeps its own content and rules inside its new place.
+
+**Dark mode** (board e0ad4cfe, 2026-11-24): the whole page follows the device's light or
+dark setting through `prefers-color-scheme`, with no toggle. There is one dark palette,
+the Chat's `--c-*` tokens, set on `:root` in dark mode. Inside the paper surfaces
+(`.o-main`: the Overview, the Board, the error panel; `.o-recover`: Restart Jarvis, on
+every tab) the paper tokens (`--card`, `--lane`, `--ink`, `--heading`, `--sub`,
+`--rule`, the accents and so on) point at them, so a rule written in those tokens needs
+nothing of its own. The navy header, the red alert strip and the navy panels (Usage,
+the work map) look the same in both themes. The rules whose light colour is written out
+have their own dark rule in orbit.css's "dark mode" section. Navy fills on paper (the
+picked tab, a filter that is on, a hot waiting card) take the Chat's blue for "mine",
+because navy vanishes on a dark page. White words on the accent become navy words on
+the bright accent. The marks the code colours (the heat map's shades, Next 24 hours'
+dots, Today's marks) carry both colours as `--o-day` and `--o-night` (`duoStyle` in
+`web/src/lib/orbit/page.js`), and `.o-duo` picks one. The heat map runs the other way
+in dark (lighter is busier). `web/test/orbit-dark.test.js` reads orbit.css and checks
+four things: the token switch; that every written-out colour on the paper surfaces has
+a dark rule or a stated reason; WCAG AA contrast for the words in both themes; and the
+shades' direction.
+
+Phases 1 to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
 
 - **A navy header:** the date, four tabs (Overview, Board, Chat, Feed; Feed since
   2026-11-11, see "The Feed" below) and "Updated N s ago",
@@ -1506,7 +1526,8 @@ three pieces, each with its own router:
   another device's code. The tab keeps the Orbit page's strict policy (no inline script or
   style attributes; the composer's height is set through the CSSOM), 44 px targets, Reduce
   Motion (the only animation is a 180 ms fade-in, off under it), its own light and dark
-  tokens under `prefers-color-scheme` (the rest of the page keeps its paper), sizes in em
+  tokens under `prefers-color-scheme` (the dark ones are the whole page's: "Dark mode"
+  under the Orbit page), sizes in em
   off `-apple-system-body` so iOS Dynamic Type scales them, and a 760 px reading width on a
   wide screen. Looking away (another app, the lock screen, another tab: `visibilitychange`
   to hidden, or `pagehide`) closes the stream at once, so the server knows the device isn't

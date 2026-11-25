@@ -187,7 +187,7 @@ export function Waiting({ board, payload, roster, now, state, setState, onOpenIt
             ))}
             {view.empty && (
               <div className="o-wempty">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1E7A4B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
+                <svg className="o-wempty-ok" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
                 <span>{view.empty}</span>
               </div>
             )}

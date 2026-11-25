@@ -1,7 +1,7 @@
 // The Orbit Overview's logic: the usage rings, Next 24 hours, Burn and the
 // week's heat map. Plain functions over the /api/dashboard payload, checked by
 // web/test/orbit-overview.test.js.
-import { clock, compactTokens } from './page.js';
+import { clock, compactTokens, agentColors, ACCENT_COLORS } from './page.js';
 
 const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -170,6 +170,13 @@ export function next24({ crons, limits, jobs, now, extra = [] }) {
   return { events: placed, ticks, lanes };
 }
 
+// A dot's colours on Next 24 hours: the accent for a limit's reset and your own
+// asks, else its owner's (by place in the roster), grey for an owner it doesn't know.
+export function eventColors(kind, agent) {
+  if (kind === 'reset' || kind === 'you') return ACCENT_COLORS;
+  return agentColors(Number.isInteger(agent?.index) ? agent.index : -1);
+}
+
 // ---- Burn ----
 
 export const FAMILY_ORDER = ['opus', 'fable', 'sonnet', 'haiku', 'other'];
@@ -221,7 +228,11 @@ export function burnShares(last24h) {
 
 // ---- This week, hour by hour ----
 
+// Light, paper to navy: darker is busier. Dark mode runs the same steps the other
+// way on its dark inset, from a shade just off the inset to paper: lighter is busier.
 export const SHADES = ['#ECE9E1', '#C9CFDC', '#8794B4', '#3D4F7A', '#0D2045'];
+export const SHADES_NIGHT = ['#24304C', '#3D4F7A', '#8794B4', '#C9CFDC', '#F8F7F3'];
+export const shadeColors = level => ({ day: SHADES[level], night: SHADES_NIGHT[level] });
 // The mock stepped at fixed figures that assumed cache reads were counted. Here
 // the steps are the same fractions of the week's busiest hour (its 25, 75 and
 // 150 against a peak of 332), so the shades follow whatever the figures are.

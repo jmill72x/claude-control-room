@@ -108,7 +108,7 @@ export function todayView({ work, roster, crons, jobs, now }) {
   const lane = (agent, name, runs) => {
     const next = runs.length === 0 ? nextJob(agent.key) : null;
     return {
-      key: `agent-${agent.key}`, name, agent, color: agentColors(agent.index).day,
+      key: `agent-${agent.key}`, name, agent, colors: agentColors(agent.index),
       count: runs.length, marks: runs.map(mark), scheduled: false,
       note: runs.length > 0 ? '' : `No runs today${next ? ` · next: ${next.name}, ${whenLabel(next.t, now)}` : ''}`
     };
@@ -137,7 +137,7 @@ export function todayView({ work, roster, crons, jobs, now }) {
     return { left: pos(e.t), d: 10, hollow: ran === false, title: `${clock(e.t)} · ${e.name} · ${word}` };
   };
   lanes.push({
-    key: 'scheduled', name: 'Scheduled', agent: null, color: '#4E5872', scheduled: true, count: due.length, note: '',
+    key: 'scheduled', name: 'Scheduled', agent: null, colors: agentColors(-1), scheduled: true, count: due.length, note: '',
     marks: due.map(dueMark)
   });
 
