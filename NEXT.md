@@ -443,7 +443,7 @@ trip keeps the tab, both folds and their memory, 44 px buttons, no sideways scro
 - On an iPad held sideways (1180) Next 24 hours sits in the narrower right column and
   scrolls sideways; its label collisions for events close together (4:30 PM You item and
   a 5:34 PM reset) are as on main.
-- The Overview stays light-only in dark mode, as on main (dark tokens cover Chat and Feed).
+- Dark mode for the Overview came later: §46.
 - Safari and real devices unverified (Chromium headless only).
 - Go-live: Jeff's OK on the layout, C&P, then a web build (page only; no restart is
   needed for this branch, but a build is a live deploy, so build after the C&P).
@@ -4963,3 +4963,93 @@ three, and nothing started until he asked at 21:47. README "The idle wake-up", b
   wake-up about 5 minutes later; on the next merge, the same with `repos moved`. Undo:
   `~/.local/state/jarvis-os/idle-off` stops all wake-ups with no restart; reverting the
   commit and restarting goes back to the plain back-off (the `wake` block is ignored).
+
+## 46. Dark mode for the Overview and the Board (board e0ad4cfe, P3; staged 2026-11-24 on `jos/overview-dark`, off main a75503c)
+
+**What it does.** The Overview and the Board now follow the device's dark setting, like
+the Chat and the Feed: the same switch (`prefers-color-scheme`, no toggle) and the same
+dark values. The Chat's dark `--c-*` tokens moved from `.o-chat, .o-page-chat,
+.o-page-feed` to `:root, .o-chat` (Chat and Feed get the same values as before, by
+inheritance). Inside `.o-main` and `.o-recover`, the paper tokens point at them:
+
+| Paper token | Dark value | Hex |
+| --- | --- | --- |
+| `--card` (panels, board cards) | `--c-theirs`, the Feed's card colour | #18233D |
+| `--lane` (tiles, board lanes, the tab track) | `--c-card` | #141D33 |
+| page, and paper inside a panel | `--c-bg` | #0B1324 |
+| `--ink` / `--heading` / `--sub` | `--c-ink` / `--c-heading` / `--c-sub` | #E4E8F1 / #F8F7F3 / #A9B4CB |
+| `--rule` / `--rule-strong` | `--c-rule` / `--c-input-border` | 14% / 22% of #E4E8F1 |
+| `--chip-soft` | `--c-quote` | 10% of #E4E8F1 |
+| `--accent`, `--accent-deep`, `--accent-ink` | `--c-bad` | #FF7A45 |
+| `--accent-soft` | new | 16% of #FF7A45 |
+
+Rules with their own dark rule (orbit.css's "dark mode" section, before the Chat's):
+- Navy fills on paper take `--c-mine` #2E5BBF with white words: the picked Agents tab,
+  the Board's filter chips that are on, solid buttons, the tiles' icon circles, and hot
+  waiting cards (sub line #E4E8F1). A picked tile and an open board card get a
+  `--heading` border.
+- White words on the accent become navy (6.2:1): New item / accent buttons, P0, overdue,
+  the Due soon icon, Save in a card's acknowledge form.
+- Greens go to `--c-ok` #3FCB82: a routine that ran, a loop that held, the empty Needs
+  you tick, the push chip (on 16% green), Restart Jarvis done (on 14% green).
+- Fields get `--c-input`. `color-scheme: dark` darkens native controls (the date
+  picker, scroll bars). Today's hour lines go to 8% of #E4E8F1. Navy panels get a
+  faint edge.
+- Charts: Usage's rings, Burn, the shares bar and the work map sit on navy and stay as
+  they were. The heat map's shades are `SHADES_NIGHT` in dark, the light ramp reversed
+  (#24304C to #F8F7F3: lighter is busier). Its label now says "the stronger the shade,
+  the busier the hour". Next 24 hours' dots and Today's marks use the agents' night
+  colours (#FF7A45 for resets and your asks) through `.o-duo` and `duoStyle`. Today's
+  20% fill is `color-mix()`, which needs iOS 16.2 or later.
+- Restart Jarvis's card is now dark in dark mode on every tab, the Chat and Feed
+  included (it was light paper there).
+
+**Checks.** The web suite passes 390/390 with this branch applied to c8a31cc (381
+before, plus 9 in the new `web/test/orbit-dark.test.js`). The new tests check that:
+- every paper token has a dark value that reuses a chat token;
+- every written-out colour on the paper surfaces has a dark rule or a stated reason;
+- the words clear AA in both themes (about 30 pairs, read from orbit.css);
+- a state fill shows against its surface;
+- the shades run the right way;
+- the marks carry both colours.
+
+27 of 27 mutants were caught. In headless Chromium (1223) at 390, 820 and 1440 px, in
+light and dark, on a read-only scratch server (port 8397, never :8322), I checked the
+Overview (each Agents tab, the Usage fold open, a waiting card open) and the Board (a
+card open, the New item form open):
+- All 104 texts clear AA in each theme. The lowest in dark is 4.76:1: #FF7A45 on the
+  accent tint (the Due soon count, the P1 chip, a quiet run). The lowest in light is
+  5.18:1.
+- There was no sideways scroll and no page error.
+- A planted grey failed the audit (the negative control).
+
+Light mode is unchanged: the computed styles of all 776 elements match main's build.
+The screenshots are in `~/.local/state/jarvis/outbox/overview-dark/`.
+
+**Choices to defend.**
+1. Panels take the Feed's card colour, and tiles and lanes the darker `--c-card`, so
+   the layers keep light mode's order.
+2. The chat's blue fills are about 2.5 to 3:1 against their surface, the same as the
+   Feed's filters, and their words change colour too. Navy would be about 1.1:1.
+3. Hot waiting cards don't use the chat's `--c-mine-sub` (#C9D6F5 is 4.29:1 on the
+   blue). They use #E4E8F1 (5.09:1).
+
+**Not verified.**
+- Safari and real devices: there is no WebKit here. Jeff should look on the iPhone and
+  iPad.
+- These were not drawn in the browser check: Restart Jarvis's states, the acknowledge
+  form in a card, heal cards, an open loop, and the error panel. Their colours are in
+  the token contrast test.
+
+**Found on the way.**
+- In orbit.css, `.o-wtile-alerts` and `.o-wcard-alert` (from 1f7aa8d, 11-10) never
+  apply. `.o-wtile` and `.o-wcard`, later in the file, set the same custom properties,
+  so the Alerts tile's icon is navy rather than red, and an alert card has the plain
+  border and grey chip. Dark mode draws them the way light mode does. The fix is to move
+  both rules below their base rules, which changes the look in light, so it is Jeff's
+  call (board follow-up).
+- In the Chat, a bubble's time line in dark ("mine" bubbles, `--c-mine-sub` on
+  `--c-mine`) is 4.29:1, under AA for its small size (board follow-up).
+
+**Go-live.** C&P, then a web build. The page is the only change, so no restart is
+needed. A build is a live deploy, so build only after the C&P.

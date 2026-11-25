@@ -231,7 +231,8 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 /* A margin, not a space: a flex link (the buttons, the menu item) drops a leading space. */
 .o-runbook-arrow { margin-left: 0.25em; }
 /* Restart Jarvis (Recover.jsx; board 98a30b15): the card under the alert strip, on every
-   tab, in the Overview's paper colours (the strip keeps its red in both themes too). */
+   tab, in the Overview's paper colours, dark ones too ("dark mode" below; the strip keeps
+   its red in both themes). */
 .o-recover { background: var(--accent-soft); color: var(--ink); border-bottom: 1px solid var(--rule-strong); }
 .o-recover-ok { background: #E3F4EA; }
 .o-recover-running { background: var(--chip-soft); }
@@ -445,7 +446,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-now::before { background: var(--accent); }
 .o-now span { border: 2px solid var(--accent); animation: o-pulse 1.8s ease-out infinite; }
 @keyframes o-pulse { from { transform: scale(1); opacity: 0.7; } to { transform: scale(2.6); opacity: 0; } }
-.o-event-dot { position: absolute; top: calc(76px + var(--o-shift)); width: 18px; height: 18px; transform: translateX(-50%); border-radius: 50%; background: var(--card); border: 3px solid var(--sub); }
+.o-event-dot { position: absolute; top: calc(76px + var(--o-shift)); width: 18px; height: 18px; transform: translateX(-50%); border-radius: 50%; background: var(--card); border: 3px solid var(--o-tone, var(--sub)); }
 .o-event { position: absolute; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1px; width: 132px; }
 .o-event-start { transform: translateX(-9px); align-items: flex-start; text-align: left; }
 .o-event-end { transform: translateX(calc(-100% + 9px)); align-items: flex-end; text-align: right; }
@@ -483,12 +484,12 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-heat-hours .o-last { transform: translateX(-100%); }
 .o-heat-day { font-size: 11px; color: var(--sub); }
 .o-heat-cells { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; }
-.o-heat-cells span { height: 22px; border-radius: 4px; }
+.o-heat-cells span { height: 22px; border-radius: 4px; background: var(--o-tone); }
 .o-heat-cells .o-peak { box-shadow: 0 0 0 2px var(--accent); }
 .o-heat-total { font-size: 11px; text-align: right; color: var(--sub); }
 .o-heat-total.o-strong { color: var(--heading); }
 .o-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-top: 6px; font-size: 10.5px; color: var(--sub); }
-.o-heat-key { width: 14px; height: 14px; border-radius: 3px; }
+.o-heat-key { width: 14px; height: 14px; border-radius: 3px; background: var(--o-tone); }
 
 /* ---- Waiting on you: the count, three tiles, and cards that open in place ---- */
 
@@ -556,6 +557,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 18px 16px; border-radius: 12px;
   background: var(--paper); border: 1px dashed var(--rule-strong); font-size: 14px; color: var(--sub);
 }
+.o-wempty-ok { flex: none; color: #1E7A4B; }
 
 /* ---- the agent views ---- */
 
@@ -612,10 +614,14 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-today-label { min-width: 0; }
 .o-today-count { font-size: 11px; font-weight: 500; color: var(--sub); }
 .o-today-name .o-initial { font-size: 11px; }
-.o-today-clock { flex: none; width: var(--lane-avatar); height: var(--lane-avatar); border-radius: 8px; background: var(--lane); display: flex; align-items: center; justify-content: center; }
+.o-today-clock { flex: none; width: var(--lane-avatar); height: var(--lane-avatar); border-radius: 8px; background: var(--lane); color: var(--sub); display: flex; align-items: center; justify-content: center; }
 .o-today-track { position: relative; height: 48px; background-image: repeating-linear-gradient(to right, #ECE9E1 0, #ECE9E1 1px, transparent 1px, transparent 12.5%); }
-.o-today-mark { position: absolute; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; border: 1.5px solid; box-sizing: border-box; }
-.o-today-sched { border-radius: 2px; }
+.o-today-mark {
+  position: absolute; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; border: 1.5px solid var(--o-tone); box-sizing: border-box;
+  background: color-mix(in srgb, var(--o-tone) 20%, transparent);
+}
+.o-today-sched { border-radius: 2px; background: var(--o-tone); }
+.o-today-hollow { background: transparent; }
 /* In the flow and sticky, so it stays beside the names when the lanes scroll. */
 .o-today-note { position: sticky; left: calc(var(--names) + 10px); display: inline-block; margin-left: 10px; line-height: 48px; font-size: 12.5px; color: var(--sub); white-space: nowrap; }
 .o-today-now { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); }
@@ -771,10 +777,76 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   .o-wcard-turn { transition: none; }
 }
 
+/* ---- dark mode: the Overview and the Board (board e0ad4cfe) ----
+   The Chat's and Feed's switch (the device's setting, through prefers-color-scheme; no
+   toggle) and their dark values (the --c-* tokens, set on :root in the Chat section
+   below). Inside the paper surfaces, .o-main (the Overview, the Board, the error panel)
+   and .o-recover (Restart Jarvis, on every tab), the paper tokens point at those dark
+   ones, so most rules need nothing of their own. The navy header, the red alert strip
+   and the navy panels (Usage, the work map) keep their colours in both themes. After
+   the tokens come the rules whose light colour is written out, and the navy fills that
+   would vanish on a dark page: those take the chat's blue for "mine" (--c-mine).
+   web/test/orbit-dark.test.js checks the tokens, their contrast and these overrides. */
+
+/* A mark drawn in a colour from the code (the heat map, Next 24 hours, Today agent by
+   agent) carries both colours, --o-day and --o-night (duoStyle in lib/orbit/page.js);
+   --o-tone is the one for the device's setting. */
+.o-duo { --o-tone: var(--o-day); }
+
+@media (prefers-color-scheme: dark) {
+  .o-duo { --o-tone: var(--o-night); }
+  body { background: var(--c-bg); }
+  .o-main, .o-recover {
+    color-scheme: dark;
+    --card: var(--c-theirs);
+    --lane: var(--c-card);
+    --rule: var(--c-rule);
+    --rule-strong: var(--c-input-border);
+    --ink: var(--c-ink);
+    --heading: var(--c-heading);
+    --sub: var(--c-sub);
+    --chip-soft: var(--c-quote);
+    --accent: var(--c-bad);
+    --accent-deep: var(--c-bad);
+    --accent-ink: var(--c-bad);
+    --accent-soft: rgba(255, 122, 69, 0.16);
+    color: var(--ink);
+  }
+  /* Paper as a background (a card inside a panel, the empty note, a done item). */
+  .o-wcard { --w-bg: var(--c-bg); }
+  .o-wcard-soon { --w-bg: var(--card); }
+  .o-wempty, .o-card-done { background: var(--c-bg); }
+  /* A navy panel on a dark page needs an edge. */
+  .o-panel-dark { border-color: var(--c-rule); }
+  /* Navy fills with paper words: the chat's blue, white on it. */
+  .o-atab[aria-selected='true'], .o-chip-on, .o-btn-solid { background: var(--c-mine); border-color: var(--c-mine); color: var(--c-mine-ink); }
+  .o-wtile, .o-wtile-heals { --t-icon: var(--c-mine); --t-icon-fg: var(--c-mine-ink); }
+  .o-wtile-push { --t-icon: #1E7A4B; --t-icon-fg: #FFFFFF; }
+  .o-wtile-due { --t-icon: var(--accent); --t-icon-fg: var(--navy); }
+  .o-wtile[aria-pressed='true'], .o-card-open { border-color: var(--heading); }
+  .o-wcard-hot {
+    --w-bg: var(--c-mine); --w-border: var(--c-mine); --w-ink: var(--c-mine-ink); --w-sub: var(--navy-ink);
+    --w-rule: rgba(255, 255, 255, 0.24); --w-btn: rgba(255, 255, 255, 0.5);
+  }
+  .o-wcard-hot *:focus-visible { outline-color: #FFFFFF; }
+  /* White words on the accent: navy on the bright accent, as on the header's tabs. */
+  .o-btn-accent, .o-pri-P0, .o-due-overdue, .o-ack-form-card .o-ack-save { color: var(--navy); }
+  .o-btn-accent:disabled { background: rgba(255, 122, 69, 0.4); border-color: transparent; color: var(--ink); }
+  /* The day greens. */
+  .o-routine.o-tone-ok .o-routine-mark, .o-loop-row.o-tone-ok .o-loop-mark, .o-wempty-ok { color: var(--c-ok); }
+  .o-loop-chip.o-tone-ok { border-color: var(--c-ok); color: var(--c-ok); }
+  .o-wcard-push { --w-chip-bg: rgba(63, 203, 130, 0.16); --w-chip-fg: var(--c-ok); }
+  .o-recover-ok { background: rgba(63, 203, 130, 0.14); }
+  /* Today agent by agent: the hour lines. */
+  .o-today-track { background-image: repeating-linear-gradient(to right, rgba(228, 232, 241, 0.08) 0, rgba(228, 232, 241, 0.08) 1px, transparent 1px, transparent 12.5%); }
+  .o-input { background: var(--c-input); }
+}
+
 /* ---- the Chat tab (jarvis-os-chat-spec.md, C5) ----
-   Its own tokens, so the thread follows the viewer's light or dark setting while
-   the rest of the page keeps its paper; sizes in em off a system body size, so
-   iOS Dynamic Type scales the words. */
+   Its own tokens, so the thread follows the viewer's light or dark setting; their
+   dark values are the whole page's (the Overview and the Board point their paper
+   tokens at them: "dark mode" above). Sizes in em off a system body size, so iOS
+   Dynamic Type scales the words. */
 
 .o-chat {
   --c-bg: var(--paper);
@@ -807,7 +879,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-page-chat, .o-page-feed { background: var(--c-bg, var(--paper)); min-height: 100dvh; display: flex; flex-direction: column; }
 .o-page-chat .o-chat-thread-page { flex: 1 1 auto; display: flex; flex-direction: column; }
 @media (prefers-color-scheme: dark) {
-  .o-chat, .o-page-chat, .o-page-feed {
+  :root, .o-chat {
     --c-bg: #0B1324;
     --c-ink: #E4E8F1;
     --c-heading: #F8F7F3;

@@ -12,7 +12,7 @@ import { AGENT_TABS, agentTab, agentTabLabels, tabAfterKey } from '../lib/orbit/
 import { Avatar } from './Avatar.jsx';
 import { Note } from './Note.jsx';
 import { LiveList } from './Live.jsx';
-import { unavailable, PARTIAL } from '../lib/orbit/page.js';
+import { unavailable, PARTIAL, duoStyle } from '../lib/orbit/page.js';
 import { useReducedMotion } from './useReducedMotion.js';
 
 const REQUEST = '#FF7A45';
@@ -112,7 +112,7 @@ function AgentMap({ payload, now, roster }) {
 
 const ClockIcon = () => (
   <span className="o-today-clock" aria-hidden="true">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4E5872" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
   </span>
 );
 
@@ -156,8 +156,8 @@ function TodayByAgent({ view, env, work, partial, roster }) {
                 </span>
                 <div className="o-today-track" role="img" aria-label={laneLabel(l)}>
                   {l.marks.map((m, i) => (
-                    <span key={i} title={m.title} className={`o-today-mark${l.scheduled ? ' o-today-sched' : ''}`}
-                      style={{ left: m.left, width: m.d, height: m.d, borderColor: l.color, background: m.hollow ? 'transparent' : l.scheduled ? l.color : `${l.color}33` }} />
+                    <span key={i} title={m.title} className={`o-duo o-today-mark${l.scheduled ? ' o-today-sched' : ''}${m.hollow ? ' o-today-hollow' : ''}`}
+                      style={{ left: m.left, width: m.d, height: m.d, ...duoStyle(l.colors) }} />
                   ))}
                   {l.note && <span className="o-today-note">{l.note}</span>}
                   <span className="o-today-now" style={{ left: view.nowLeft }} aria-hidden="true" />

@@ -93,14 +93,21 @@ export const PARTIAL = 'Some transcripts could not be read, so these figures are
 // ---- the agents' colours ----
 
 // By place in config's roster: the design's eight, in the order it drew its
-// agents. `night` is for the navy header, `day` for the paper panels. An agent
-// the roster doesn't know is grey.
+// agents. `night` is for the navy header and for the paper panels in dark mode,
+// `day` for the paper panels in light. An agent the roster doesn't know is grey.
 const NIGHT = ['#5EDCF0', '#B5E86A', '#F59AC8', '#F5C860', '#B9A6FB', '#FF9F6E', '#FF8F8F', '#F8F7F3'];
 const DAY = ['#0E7490', '#4D7C0F', '#BE185D', '#A16207', '#6D28D9', '#C2410C', '#B91C1C', '#3D4F7A'];
 export function agentColors(index) {
   if (!Number.isInteger(index) || index < 0) return { night: '#A9B4CB', day: '#4E5872' };
   return { night: NIGHT[index % NIGHT.length], day: DAY[index % DAY.length] };
 }
+
+// The accent as a mark's colour: a limit's reset, your own ask.
+export const ACCENT_COLORS = { day: '#C2410C', night: '#FF7A45' };
+
+// A mark's colours for both themes, as the custom properties orbit.css's .o-duo
+// picks between by the device's setting (light takes --o-day, dark --o-night).
+export const duoStyle = ({ day, night }) => ({ '--o-day': day, '--o-night': night });
 
 // The neutral stand-in for an avatar: the first letter of the name or key.
 export const initialOf = name => (Array.from(String(name ?? '').trim())[0] ?? '?').toUpperCase();
