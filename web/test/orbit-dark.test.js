@@ -41,9 +41,10 @@ const TOP = [], DARK = [];
 for (const b of blocks(CSS)) {
   if (b.prelude.startsWith('@media')) {
     const into = /prefers-color-scheme:\s*dark/.test(b.prelude) ? DARK : null;
-    if (into) for (const r of blocks(b.body)) into.push({ sels: sels(r.prelude), decls: decls(r.body), at: b.at });
+    // at: the dark block's place in the file; pos: the rule's own (the cascade needs it).
+    if (into) for (const r of blocks(b.body)) into.push({ sels: sels(r.prelude), decls: decls(r.body), at: b.at, pos: b.at + 1 + r.at });
   } else if (!b.prelude.startsWith('@')) {
-    TOP.push({ sels: sels(b.prelude), decls: decls(b.body), at: b.at });
+    TOP.push({ sels: sels(b.prelude), decls: decls(b.body), at: b.at, pos: b.at });
   }
 }
 // The last value a selector gets for a property, in source order.
@@ -155,15 +156,11 @@ const SAME_IN_BOTH = {
   '.o-alerts .o-runbook-btn': 'red strip', '.o-ack-save': 'red strip', '.o-ack-btn': 'red strip', '.o-ack-form': 'red strip',
   '.o-ack-choice input': 'red strip',
   // The Now chip, in the navy header.
-  '.o-now-chip': 'navy header', '.o-now-chip.o-tone-bad': 'navy header',
-  // Never applied: .o-wtile and .o-wcard, later in the file, set the same properties
-  // (a light-mode slip from 11-10, on the board as a follow-up). Dark mode draws
-  // these as light mode does.
-  '.o-wtile-alerts': 'overridden', '.o-wcard-alert': 'overridden'
+  '.o-now-chip': 'navy header', '.o-now-chip.o-tone-bad': 'navy header'
 };
 
 test('every written-out colour on the paper surfaces has a dark rule or a reason', () => {
-  const from = CSS.indexOf('.o-wtile-alerts');
+  const from = CSS.indexOf('.o-ack-form-card {');
   const to = CSS.indexOf('.o-duo {');
   assert.ok(from > 0 && to > from);
   const navyBand = new Set(['.o-health-runbook', '.o-runbook-night']); // the health details, in the header
@@ -260,6 +257,85 @@ for (const theme of ['light', 'dark']) {
     shows("the picked Agents tab", c(ruleVal(theme, ".o-atab[aria-selected='true']", 'background')), lane);
     shows('a filter that is on', c(ruleVal(theme, '.o-chip-on', 'background')), page);
     shows('a hot card', c(hot['--w-bg']), card);
+    assert.deepEqual(fails, []);
+  });
+}
+
+// ---- the Needs you tiles and cards: a variant's rule beats the base (board 86d94e74) ----
+
+// What an element with these classes gets for a property, by the cascade: among the
+// rules whose selector is classes alone (".o-wtile", ".o-wcard.o-x") and all match, the
+// most classes wins, then the later place in the file. Dark rules count by their own
+// place, so one in an early dark block loses to a later light rule, as in a browser.
+const CLASSES_ONLY = /^(\.[a-z0-9-]+)+$/i;
+function cascade(rules, classes, prop) {
+  let best = null;
+  for (const r of rules) {
+    if (!(prop in r.decls)) continue;
+    for (const s of r.sels) {
+      if (!CLASSES_ONLY.test(s)) continue;
+      const need = s.split('.').filter(Boolean);
+      if (!need.every(c => classes.includes(c))) continue;
+      if (!best || need.length > best.n || (need.length === best.n && r.pos > best.pos)) best = { n: need.length, pos: r.pos, sel: s, v: r.decls[prop], rule: r };
+    }
+  }
+  return best;
+}
+const CASCADE = { light: TOP, dark: [...TOP, ...DARK] };
+
+// The variants the page draws: o-wtile-<tile id> (waitingView's tiles) and
+// o-wcard-<look> (waitingCards' and loopsCards' looks).
+const TILE_IDS = ['heals', 'due', 'decide', 'push', 'alerts'];
+const CARD_LOOKS = ['hot', 'soon', 'decide', 'push', 'alert'];
+
+test("every Needs you tile and card variant's own properties win over the base rule, in both themes", () => {
+  const read = f => readFileSync(new URL(`../src/lib/orbit/${f}`, import.meta.url), 'utf8');
+  // The lists above are the page's own: each id and look is still in the code.
+  for (const id of TILE_IDS) assert.match(read('waiting.js'), new RegExp(`id: '${id}'`), `tile ${id}`);
+  for (const look of CARD_LOOKS) assert.match(read('waiting.js') + read('loops.js'), new RegExp(`'${look}'`), `look ${look}`);
+  const lost = [];
+  let seen = 0;
+  for (const [base, variants] of [['o-wtile', TILE_IDS], ['o-wcard', CARD_LOOKS]]) {
+    for (const v of variants) {
+      const mod = `.${base}-${v}`;
+      for (const theme of ['light', 'dark']) {
+        const rules = CASCADE[theme];
+        const props = new Set(rules.filter(r => r.sels.includes(mod)).flatMap(r => Object.keys(r.decls)));
+        for (const prop of props) {
+          seen++;
+          const won = cascade(rules, [base, `${base}-${v}`], prop);
+          // The winning rule names the variant (".o-wtile, .o-wtile-heals" counts: one declaration).
+          if (!won.rule.sels.includes(mod)) lost.push(`${theme}: ${mod} { ${prop} } loses to ${won.sel} { ${prop}: ${won.v} }`);
+        }
+      }
+    }
+  }
+  assert.ok(seen > 20, `the check found the variants' properties (${seen})`);
+  assert.deepEqual(lost, []);
+});
+
+for (const theme of ['light', 'dark']) {
+  test(`${theme}: the Alerts tile's icon and an alert card are drawn in the alert red`, () => {
+    const c = v => col(theme, v);
+    const red = c('var(--accent)'), deep = c('var(--accent-deep)');
+    const tile = p => cascade(CASCADE[theme], ['o-wtile', 'o-wtile-alerts'], p).v;
+    const card = p => cascade(CASCADE[theme], ['o-wcard', 'o-wcard-alert'], p).v;
+    const plainTile = p => cascade(CASCADE[theme], ['o-wtile', 'o-wtile-decide'], p).v;
+    const fails = [];
+    const check = (what, min, fg, ...bgs) => { const r = ratio(fg, ...bgs); if (r < min) fails.push(`${what}: ${r.toFixed(2)}`); };
+    // The tile: a red disc, unlike a plain tile's, its glyph clear of it (3:1, a graphic).
+    assert.equal(c(tile('--t-icon')), deep, 'the Alerts icon is the deep red');
+    assert.notEqual(c(tile('--t-icon')), c(plainTile('--t-icon')), "it isn't a plain tile's icon");
+    check('the Alerts glyph on its disc', 3, c(tile('--t-icon-fg')), c(tile('--t-icon')));
+    check('the Alerts disc on its tile', 3, c(tile('--t-icon')), c(tile('--t-bg')));
+    // The card: a red border and a red chip on the panel colour, the chip's words at AA.
+    assert.equal(c(card('--w-border')), red, 'the alert card has the red border');
+    assert.equal(c(card('--w-chip-bg')), red, 'the alert card has the red chip');
+    assert.equal(c(card('--w-bg')), c('var(--card)'), 'the alert card sits on the panel colour');
+    check('the alert chip', 4.5, c(card('--w-chip-fg')), c(card('--w-chip-bg')), c(card('--w-bg')));
+    check('the alert card title', 4.5, c(card('--w-ink')), c(card('--w-bg')));
+    check('the alert card sub', 4.5, c(card('--w-sub')), c(card('--w-bg')));
+    check('the red border on the card', 3, c(card('--w-border')), c(card('--w-bg')));
     assert.deepEqual(fails, []);
   });
 }

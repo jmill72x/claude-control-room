@@ -355,10 +355,14 @@ because navy vanishes on a dark page. White words on the accent become navy word
 the bright accent. The marks the code colours (the heat map's shades, Next 24 hours'
 dots, Today's marks) carry both colours as `--o-day` and `--o-night` (`duoStyle` in
 `web/src/lib/orbit/page.js`), and `.o-duo` picks one. The heat map runs the other way
-in dark (lighter is busier). `web/test/orbit-dark.test.js` reads orbit.css and checks
-four things: the token switch; that every written-out colour on the paper surfaces has
-a dark rule or a stated reason; WCAG AA contrast for the words in both themes; and the
-shades' direction.
+in dark (lighter is busier). A Needs you tile or card variant (`.o-wtile-<id>`,
+`.o-wcard-<look>`) has the same specificity as its base rule, so it must come after
+`.o-wtile` / `.o-wcard` in the file, and its dark rule after their dark rules (the
+Alerts tile and alert cards lost their red that way from 11-10 to 11-25, board
+86d94e74). `web/test/orbit-dark.test.js` reads orbit.css and checks five things: the
+token switch; that every written-out colour on the paper surfaces has a dark rule or a
+stated reason; WCAG AA contrast for the words in both themes; that each tile and card
+variant wins the cascade over its base rule in both themes; and the shades' direction.
 
 Phases 1 to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
 

@@ -199,11 +199,6 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-alerts { background: var(--accent); color: #FFFFFF; }
 .o-alerts-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding-top: 10px; padding-bottom: 10px; font-size: 13.5px; font-weight: 600; }
 .o-alerts-tag { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--navy); }
-/* The Alerts tile and its cards. */
-.o-wtile-alerts { --t-icon: var(--accent-deep); --t-icon-fg: #FFFFFF; }
-.o-wtile-heals { --t-icon: var(--navy); --t-icon-fg: var(--paper); }
-.o-wtile-sub { letter-spacing: 0.04em; text-transform: none; }
-.o-wcard-alert { --w-bg: var(--card); --w-border: var(--accent); --w-chip-bg: var(--accent); --w-chip-fg: #FFFFFF; }
 /* The acknowledge form inside a paper card, instead of on the red strip. */
 .o-ack-form-card { flex: 1 1 100%; border-top-color: var(--w-rule); color: var(--w-ink); }
 .o-ack-form-card .o-ack-btn { border-color: var(--rule-strong); color: var(--heading); }
@@ -507,10 +502,16 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-wtile[aria-pressed='true'] { border-color: var(--navy); }
 .o-wtile-due { --t-bg: var(--accent-soft); --t-icon: var(--accent); --t-icon-fg: #FFFFFF; --t-num: var(--accent-ink); }
 .o-wtile-push { --t-icon: #1E7A4B; --t-icon-fg: #FFFFFF; }
+/* The Alerts tile and its cards. A variant's rule comes after the base .o-wtile and
+   .o-wcard rules, or theirs win (same specificity): from 11-10 to 11-25 these sat
+   above them and never applied (board 86d94e74; orbit-dark.test.js checks the order). */
+.o-wtile-alerts { --t-icon: var(--accent-deep); --t-icon-fg: #FFFFFF; }
+.o-wtile-heals { --t-icon: var(--navy); --t-icon-fg: var(--paper); }
 .o-wtile-icon { flex: none; width: 44px; height: 44px; border-radius: 50%; background: var(--t-icon); color: var(--t-icon-fg); display: flex; align-items: center; justify-content: center; }
 .o-wtile-text { display: flex; flex-direction: column; min-width: 0; }
 .o-wtile-n { font-size: 34px; font-weight: 800; line-height: 1; color: var(--t-num); font-variant-numeric: tabular-nums; }
 .o-wtile-label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--sub); }
+.o-wtile-sub { letter-spacing: 0.04em; text-transform: none; }
 .o-wcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; }
 .o-wcard {
   --w-bg: var(--paper); --w-border: var(--rule); --w-ink: var(--heading); --w-sub: var(--sub); --w-rule: var(--rule);
@@ -525,6 +526,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-wcard-hot *:focus-visible { outline-color: var(--accent-bright); }
 .o-wcard-soon { --w-bg: var(--card); --w-chip-bg: var(--accent-soft); --w-chip-fg: var(--accent-ink); }
 .o-wcard-push { --w-chip-bg: #E3F1E8; --w-chip-fg: #17633C; }
+.o-wcard-alert { --w-bg: var(--card); --w-border: var(--accent); --w-chip-bg: var(--accent); --w-chip-fg: #FFFFFF; }
 .o-wcard-head {
   display: flex; flex-direction: column; gap: 10px; width: 100%; min-height: 96px; margin: 0; padding: 14px 16px;
   background: transparent; border: 0; color: var(--w-ink); text-align: left;
@@ -814,7 +816,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   }
   /* Paper as a background (a card inside a panel, the empty note, a done item). */
   .o-wcard { --w-bg: var(--c-bg); }
-  .o-wcard-soon { --w-bg: var(--card); }
+  .o-wcard-soon, .o-wcard-alert { --w-bg: var(--card); }
   .o-wempty, .o-card-done { background: var(--c-bg); }
   /* A navy panel on a dark page needs an edge. */
   .o-panel-dark { border-color: var(--c-rule); }
@@ -823,6 +825,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   .o-wtile, .o-wtile-heals { --t-icon: var(--c-mine); --t-icon-fg: var(--c-mine-ink); }
   .o-wtile-push { --t-icon: #1E7A4B; --t-icon-fg: #FFFFFF; }
   .o-wtile-due { --t-icon: var(--accent); --t-icon-fg: var(--navy); }
+  .o-wtile-alerts { --t-icon: var(--accent-deep); --t-icon-fg: var(--navy); }
   .o-wtile[aria-pressed='true'], .o-card-open { border-color: var(--heading); }
   .o-wcard-hot {
     --w-bg: var(--c-mine); --w-border: var(--c-mine); --w-ink: var(--c-mine-ink); --w-sub: var(--navy-ink);
@@ -831,6 +834,7 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
   .o-wcard-hot *:focus-visible { outline-color: #FFFFFF; }
   /* White words on the accent: navy on the bright accent, as on the header's tabs. */
   .o-btn-accent, .o-pri-P0, .o-due-overdue, .o-ack-form-card .o-ack-save { color: var(--navy); }
+  .o-wcard-alert { --w-chip-fg: var(--navy); }
   .o-btn-accent:disabled { background: rgba(255, 122, 69, 0.4); border-color: transparent; color: var(--ink); }
   /* The day greens. */
   .o-routine.o-tone-ok .o-routine-mark, .o-loop-row.o-tone-ok .o-loop-mark, .o-wempty-ok { color: var(--c-ok); }

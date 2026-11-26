@@ -5043,11 +5043,8 @@ The screenshots are in `~/.local/state/jarvis/outbox/overview-dark/`.
 
 **Found on the way.**
 - In orbit.css, `.o-wtile-alerts` and `.o-wcard-alert` (from 1f7aa8d, 11-10) never
-  apply. `.o-wtile` and `.o-wcard`, later in the file, set the same custom properties,
-  so the Alerts tile's icon is navy rather than red, and an alert card has the plain
-  border and grey chip. Dark mode draws them the way light mode does. The fix is to move
-  both rules below their base rules, which changes the look in light, so it is Jeff's
-  call (board follow-up).
+  applied, because `.o-wtile` and `.o-wcard`, later in the file, set the same custom
+  properties. Fixed in §50.
 - In the Chat, a bubble's time line in dark ("mine" bubbles, `--c-mine-sub` on
   `--c-mine`) was 4.29:1, under AA for its small size. Fixed in §47.
 
@@ -5150,7 +5147,7 @@ message while it sends, or one sent in airplane mode, on the iPhone in dark mode
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.
 
-## 49. README status headers match what is live, and headless checks launch the installed Chrome (boards e652ff11 and cb22d592, P3; staged 2026-11-24 on `jos/readme-headless`, off main 9eca6d1)
+## 49. README status headers match what is live, and headless checks launch the installed Chrome (boards e652ff11 and cb22d592, P3; merged as main 7b97ba0, 2026-11-24)
 
 **e652ff11 (the degraded-modes plan, 11-21).** Eleven README section headers and one bold
 lead-in still said "built, not live", "switched off" or "off by default" alone for features
@@ -5201,3 +5198,68 @@ proposes removing.
 - Server suite 1850 of 1850 in local time and Tokyo; web suite 395 of 395.
 
 **Go-live.** C&P. Docs only, so nothing to restart or build.
+
+## 50. The Alerts tile and alert cards get their red (board 86d94e74, P3; staged 2026-11-25 on `jos/alert-red`, off main 7b97ba0)
+
+**What was wrong.** `.o-wtile-alerts` and `.o-wcard-alert` (1f7aa8d, 11-10) sat in the
+alert strip's section of orbit.css, above `.o-wtile` and `.o-wcard`. All four are one
+class each, so the later base rules won and the alert rules never applied: the Alerts
+tile's icon was navy like every other tile, and an alert card (an alert, or a loop
+alert from `loops.js`) had the plain paper fill, grey border and grey chip. Dark mode
+(§46) copied that: its `.o-wtile, .o-wtile-heals` and `.o-wcard` dark rules beat them
+too. `.o-wtile-heals` had the same order slip, with no visible effect (it sets the base
+values).
+
+**What changed (CSS only, `web/src/orbit/orbit.css`).**
+- `.o-wtile-alerts` and `.o-wtile-heals` moved below `.o-wtile-push`, `.o-wtile-sub`
+  below `.o-wtile-label`, and `.o-wcard-alert` below `.o-wcard-push`. Their values are
+  unchanged. A comment there says why the order matters.
+- Dark: `.o-wtile-alerts { --t-icon: var(--accent-deep); --t-icon-fg: var(--navy) }`
+  after the dark `.o-wtile` rule (navy on the bright accent, as the dark Due tile does);
+  `.o-wcard-alert` joins `.o-wcard-soon` on `--w-bg: var(--card)`; and its chip's words
+  become navy (`--w-chip-fg`), 6.20:1, because white on #FF7A45 is 2.59:1. Light keeps
+  white on #C2410C (5.18:1) for the chip and on #A8380A (6.49:1) for the icon.
+
+**How it looks now** (computed in headless Chrome, live build vs this branch):
+
+| | Before, light | After, light | Before, dark | After, dark |
+|---|---|---|---|---|
+| Alerts tile icon | navy #0D2045, paper glyph | red #A8380A, white glyph | blue #2E5BBF, white glyph | orange #FF7A45, navy glyph |
+| Alert card fill | paper #F8F7F3 | card #FCFBF8 | page #0B1324 | card #18233D |
+| Alert card border | rule #DEDAD0 | red #C2410C | rule (14% white) | orange #FF7A45 |
+| Alert card chip | #E4E8F1, navy words | #C2410C, white words | 10% white, paper words | #FF7A45, navy words |
+
+Every other tile (Decide, Due, Heals, To push) and card look (decide, soon, hot, push)
+computed exactly the same before and after, in both themes. An acked alert uses the
+`decide` look, so it stays plain.
+
+**Checks.**
+- Two new kinds of test in `web/test/orbit-dark.test.js`. A cascade reader (rules made
+  of classes only: more classes win, then the later place in the file, with each dark
+  rule at its own place, not its block's) checks that every property a tile variant
+  (`heals`, `due`, `decide`, `push`, `alerts`) or card look (`hot`, `soon`, `decide`,
+  `push`, `alert`) sets wins over the base rule, in light and dark; the lists are
+  checked against `waiting.js` and `loops.js`. Then, per theme: the Alerts icon is the
+  deep red and differs from a plain tile's, its glyph is 3:1 on it and it is 3:1 on the
+  tile, and an alert card has the red border and chip on the panel colour, chip words,
+  title and sub at 4.5:1 and the border at 3:1. The written-out-colour scan now starts
+  at `.o-ack-form-card` and no longer exempts the two rules. On main's CSS three of the
+  new tests fail: 14 "loses to" lines (8 light, 6 dark; the dark Heals tile passes
+  because its dark rule names it) and "the Alerts icon is the deep red" in each theme.
+- 14 of 14 mutants caught, no-change baseline passing (scratch `mutate.py`): each of the
+  three rules moved back above its base, the push tile rule moved above, no dark tile
+  rule, the dark tile rule above the dark base, the dark card on the page colour, no
+  dark chip-word rule, a white dark glyph, a navy light icon, a plain border, a grey
+  chip, red-on-red chip words, the card on paper.
+- Web suite 398 of 398 in America/New_York and in UTC (395 on main, plus these 3);
+  server suite 1850 of 1850; oxlint clean on the test.
+- Headless Chrome (`channel: 'chrome'`) on a scratch build (`--outDir` in the
+  scratchpad; the live `web/dist` untouched): invented tiles and cards drawn with the
+  live CSS and with this branch's, in light and dark, read the table above.
+
+**Not verified.** Safari and real devices (no WebKit here). The real page wasn't
+drawn with live alerts: the probe draws invented tiles and cards with the built
+stylesheet.
+
+**Go-live.** C&P, then a web build. The page is the only change, so no restart is
+needed. A build is a live deploy, so build only after the C&P.
