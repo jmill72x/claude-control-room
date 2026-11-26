@@ -63,7 +63,13 @@
 // the route, the status, a refusal's own fixed reason, what kind of body the request
 // said it had and how long, how many bytes of it were read, and for a form how many
 // parts of each kind it held and what each file part's first bytes are, with its size.
-// Never a name, a text, a key or a byte of the body. **A refusal is answered only when
+// Never a name, a text, a key or a byte of the body. One kind is held: **the login's
+// 403s** (a caller that is not the owner) write the first request's line, and the rest
+// within LOGIN_REFUSALS_EVERY_MS are counted, one line at the window's end with the
+// count and how many carried a key's shape; a flood that goes on writes one such line
+// every 10 minutes, and after a quiet window the next is logged in full again (board
+// 903c5147; `loginRefused`). Lines only, never a push or an event: a caller that is not
+// the owner can't spend the alerts (a12184bc). **A refusal is answered only when
 // the request's body is in** (`drain`): an answer written while a phone is still
 // uploading reaches it as "The network connection was lost", never as the answer. Only
 // a Shortcut's own routes wait so (pair, send, event, from a caller with no `Origin` and
@@ -79,7 +85,7 @@ import { json, readBody, guardWrite, guardDelete, HttpError } from '../routes.mj
 import { isClientId, sniffType, MAX_PAGE_TEXT, ATTACHMENT_MAX_BYTES } from './chat-store.mjs';
 import { formBoundary, parseMultipart, mediaType, MultipartError } from './multipart.mjs';
 import { PRESENCE_EVENTS } from './events.mjs';
-import { proxyAddress, KEY_IDLE_DAYS } from './shortcut-keys.mjs';
+import { proxyAddress, readBearer, KEY_IDLE_DAYS } from './shortcut-keys.mjs';
 import { oneLine } from './chat-events.mjs';
 import { isHiddenCodePoint } from './hidden-chars.mjs';
 import { REASONS } from './heic-convert.mjs';
@@ -101,6 +107,9 @@ export const EVENT_DEBOUNCE_MS = 10 * MIN;
 export const EVENTS_PER_DAY = 6;
 // Wrong or missing keys in 10 minutes before it is reported (once per window).
 export const REFUSALS_REPORTED_AT = 5;
+// The login's 403s (a caller that is not the owner) are held in the log to one line in
+// this long (board 903c5147): the first request's own line, then a count.
+export const LOGIN_REFUSALS_EVERY_MS = 10 * MIN;
 export const CLIENT_ID_MAX = 60;
 // How a send says where it came from, and what the message's device then reads.
 export const VIAS = Object.freeze({ share: ' (Shortcut, share)', siri: ' (Shortcut, Siri)' });
@@ -219,8 +228,10 @@ export function readShortcutsConfig(config) {
 // other shared content (Ultron's M3). Short: at most LINK_INLINE_MAX characters as
 // rebuilt (percent-escapes counted), so a link can't carry a paragraph. Public: a DNS name with a dot whose last label is
 // letters (so no IPv4 or IPv6 literal, in any spelling `URL` folds to one) and is not a
-// name for this machine or a private network. No white space, no credentials.
-const PRIVATE_SUFFIX = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|arpa|test|invalid|onion)$/;
+// name for this machine or a private network. No white space, no credentials. A
+// tailnet's MagicDNS names (`<machine>.<tailnet>.ts.net`, this server's own included)
+// are private too (board 3d38337f, Ultron's 11-12 re-read).
+const PRIVATE_SUFFIX = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|arpa|test|invalid|onion|ts\.net)$/;
 export function publicHostName(hostname) {
   const h = typeof hostname === 'string' ? hostname.toLowerCase().replace(/\.$/, '') : '';
   if (h === '' || h.length > 253) return false;
@@ -458,7 +469,8 @@ const readForm = (req, limit, drainLimit, timeoutMs, seen = { read: 0 }) => new 
 // `formTimeoutMs` FORM_TIMEOUT_MS but in a test, which can't wait two minutes.
 export function createShortcutRoutes({
   keys, devices, store, events = null, socket = null, login = null,
-  now = () => Date.now(), log: logLine = console.log, onEvent = () => {}, killed = () => false, convertHeic = null, fileBytesPerDay = FILE_BYTES_PER_DAY, formTimeoutMs = FORM_TIMEOUT_MS
+  now = () => Date.now(), log: logLine = console.log, onEvent = () => {}, killed = () => false, convertHeic = null, fileBytesPerDay = FILE_BYTES_PER_DAY, formTimeoutMs = FORM_TIMEOUT_MS,
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; }
 }) {
   // A key's name is cleaned when it pairs; one read back from the file was not.
   const log = line => logLine(oneLine(line));
@@ -474,13 +486,18 @@ export function createShortcutRoutes({
   const expiredAt = new Map(); // key id -> when its use after expiry was last reported
   let refusals = { start: 0, n: 0 };
   let pairRefusals = { start: 0, n: 0 };
+  // The login's 403s in the window now open (`loginRefused`): held, and how many of
+  // them carried a key's shape. `open` is false between floods.
+  let loginRefusals = { open: false, n: 0, keyed: 0 };
   let draining = 0;            // refusals waiting for their bodies right now
   const asOwner = new WeakSet(); // requests whose login check passed: only these may wait for a body
 
   function requireLogin(req) {
     const seen = req.headers?.['tailscale-user-login'];
     if (owner !== null && (typeof seen !== 'string' || seen.trim().toLowerCase() !== owner)) {
-      throw new Refusal(403, 'the request did not come as the owner through the tailnet', 'Jarvis OS refused this: it did not come through the tailnet as the owner.');
+      const refused = new Refusal(403, 'the request did not come as the owner through the tailnet', 'Jarvis OS refused this: it did not come through the tailnet as the owner.');
+      refused.login = true;
+      throw refused;
     }
     asOwner.add(req);
   }
@@ -581,6 +598,31 @@ export function createShortcutRoutes({
     pairRefusals.n++;
     if (pairRefusals.n === 1) log(`shortcut: a pairing try was refused (${status}); more in the next 10 minutes are counted, not logged`);
     if (pairRefusals.n === REFUSALS_REPORTED_AT) onEvent({ kind: 'shortcut-pair-refused', count: pairRefusals.n });
+  }
+
+  // A login 403's request line (board 903c5147): the first since a quiet window is
+  // written as it is, with a note; the rest are counted, and at the window's end one
+  // line says how many, and how many carried a key's shape (a wrong key, or the
+  // owner's own from another login, which is never checked: the login comes first). A
+  // window with any held opens the next at once, so a flood writes one line every
+  // LOGIN_REFUSALS_EVERY_MS; one with none held closes, and the next is logged in full.
+  // Counts and fixed words only, like the request line.
+  function loginRefused(line, keyed) {
+    if (loginRefusals.open) {
+      loginRefusals.n++;
+      if (keyed) loginRefusals.keyed++;
+      return;
+    }
+    loginRefusals = { open: true, n: 0, keyed: 0 };
+    log(`${line} (more refused at the login in the next 10 minutes are counted, not logged)`);
+    setTimer(endLoginWindow, LOGIN_REFUSALS_EVERY_MS);
+  }
+  function endLoginWindow() {
+    const { n, keyed } = loginRefusals;
+    if (n === 0) { loginRefusals = { open: false, n: 0, keyed: 0 }; return; }
+    log(`shortcut: refused ${n} more ${n === 1 ? 'request' : 'requests'} that did not come as the owner through the tailnet in 10 minutes (${keyed} with a key's shape); more in the next 10 minutes are counted, not logged`);
+    loginRefusals = { open: true, n: 0, keyed: 0 };
+    setTimer(endLoginWindow, LOGIN_REFUSALS_EVERY_MS);
   }
 
   async function send(req, res, seen) {
@@ -809,7 +851,10 @@ export function createShortcutRoutes({
     const path = new URL(req.url, 'http://localhost').pathname;
     // What is learnt of the request's body on the way, for its one log line.
     const seen = { read: 0, form: false, parts: null };
-    const logged = (status, reason) => log(requestLine({ method: req.method, path, headers: req.headers, status, reason, seen }));
+    const logged = (status, reason, login = false) => {
+      const line = requestLine({ method: req.method, path, headers: req.headers, status, reason, seen });
+      return login ? loginRefused(line, readBearer(req.headers?.authorization) !== null) : log(line);
+    };
     try {
       await route(req, res, path, seen);
       const status = res.statusCode ?? res.status ?? 0;
@@ -819,7 +864,7 @@ export function createShortcutRoutes({
       if (code === 500) console.error('shortcut route error', path, err?.message ?? err);
       // A refusal's message is fixed words (and counts); a fault's own is never logged here.
       const reason = code === 500 ? 'internal error' : String(err.message).slice(0, 120);
-      if (res.headersSent) { logged(code, reason); return res.end(); }
+      if (res.headersSent) { logged(code, reason, err?.login === true); return res.end(); }
       const answer = { error: code === 500 ? 'internal error' : String(err.message) };
       // The Shortcut's side always gets a line to show, whatever refused it.
       if (err instanceof Refusal) answer.say = err.say;
@@ -840,7 +885,7 @@ export function createShortcutRoutes({
           try { whole = await drain(req, seen, FORM_DRAIN_MAX, Math.max(1, formTimeoutMs - (performance.now() - began))); } finally { draining--; }
         }
       }
-      logged(code, reason);
+      logged(code, reason, err?.login === true);
       return json(res, code, answer, code === 413 || !whole ? { ...NO_STORE, Connection: 'close' } : NO_STORE);
     }
   }

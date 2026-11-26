@@ -1245,8 +1245,9 @@ else" describe both parts; the header of `server/lib/approvals.mjs` has the rule
 **Approvals as buttons (board 2422f9d1): live since 2026-11-11 20:40 ET, Deny and Allow
 once** (main edfb349, which holds the final build e61708e and the go-live patch; the lead's
 repo build/v1 57f0a9e, channel 0.4.5; Jarvis reports all six live checks passed). **Channel
-0.4.6 is live since 2026-11-11 21:47 ET** (main 1e1da2d): see "Channel 0.4.6" below the
-runbook, and its open follow-up there (the no-`test` hello log, then option (b) on 11-19). The go-live patch (`server/lib/approvals.mjs`, tests; Jeff's option A,
+0.4.6 is live since 2026-11-11 21:47 ET** (main 1e1da2d), and 0.4.10 since 2026-11-20 (0.4.11
+merged, not released): see "Channel 0.4.6" and "Channel 0.4.10 and 0.4.11" below the
+runbook, and the 0.4.6 open follow-up there (the no-`test` hello log, then option (b) on 11-19). The go-live patch (`server/lib/approvals.mjs`, tests; Jeff's option A,
 2026-11-11 23:33Z): a write of any `*.py`, `*.pyc`,
 `*.pyw` or `*.so`, of `CLAUDE.local.md`, `pytest.ini`, `tox.ini` or `.python-version`, or
 under `.vscode/` is Deny-only in every write folder (board 97332dd5); any path through
@@ -1494,6 +1495,23 @@ names the socket variable and hands Jarvis a command for tmux's global environme
 - *Unverified:* everything live (no restart, no release); the plugin update's effect on the
   cache going to 0.4.6 and back; the channel's refusal against the real `channel.sock`
   (tested with a scratch account home standing in, never the real socket).
+
+*Channel 0.4.10 and 0.4.11 (released from the lead's repo; this repo needed no change for
+either).*
+- **0.4.10 (board 42bfa1e0): live since 2026-11-20** (the lead's repo
+  `docs/jarvis-os-channel-golive.md` §7; plugin cache entry 20:02Z, reviewed hash c08d45b9…).
+  It names the `idle` and `limit-reset` events, which reached the lead as `event="unknown"`
+  before. It forgets a relayed permission request after 11 minutes and sends no
+  `permHoldMs`, so the page answers one for 10 minutes; the start log reads `chat: the page
+  can answer a permission request for 10 min (the channel does not say how long it holds
+  one)`.
+- **0.4.11 (board 0c61a2ea, for 94b380fd): merged to the lead's repo build/v1 as 6b9643f on
+  2026-11-26, not released yet.** It holds a request 12 h 3 min and sends `permHoldMs` in
+  hello. This repo's side (d2e0e0a: the page answers for the channel's hold less a minute,
+  at most 12 hours) is live already. It waits on the channel release sitting (golive §8:
+  pin, plugin update, reviewed hash and Jarvis restart in one go, with no agent run live).
+  After it the start log reads `… for 720 min (the channel holds one that long, less a
+  minute)`; a `10 min` line after the release means the old channel is still running.
 
 *Unverified:* WebKit (headless checks were Chromium only, at 390 and 1440 px); whether a
 subagent's prompt relays and whether both channels get each request (design A0-3, first
@@ -5631,3 +5649,60 @@ subagent from running it, so its protocol was checked by an HTTP test that does 
 does (GET with ETag, PUT with If-Match and no Origin, read-back count). Jarvis can run it
 against a scratch server from this branch. Safari and real devices (no WebKit here). The
 first real move on the live board.
+
+## 53. Six small lows in one branch (boards c73778aa, f8e1ea1b, bd038b0c, 1a17b845, 903c5147, 3d38337f, all P3; staged 2026-11-26 on `jos/lows-1126`, off main d80f7ed)
+
+Worktree `~/Projects/.worktrees/ccr-lows-1126`, no upstream, not committed. All server-side:
+it goes live with one Control Room restart (no web build, no config change).
+
+- **c73778aa (Ultron 11-19 L1): the lead can't edit a routine's message.** `edit()` in
+  `lib/chat-store.mjs` took any `from: jarvis` chat; a brief or digest is `jarvis`'s too,
+  so the lead could rewrite it under its routine mark. Now `isRoutineMessage(m)` answers
+  403 `a routine's message can't be edited`, nothing is written or announced. The lead's
+  own replies edit as before.
+- **f8e1ea1b (Ultron 11-20 L2): a `composedAt` before 2020 is a 400.** `badTime` took any
+  positive number, and `composedAtOf` then read one before 2020 as no time (it never falls
+  back to the clientId's when the field is there), so such a send skipped the stale check.
+  Picked the 400 over the clientId fallback: the page always sends its clock at the Send
+  tap, a refusal keeps one rule in one place, and the error says why (`composedAt must be
+  a time in ms, from 2020 on`). **The umask half:** `test/acks.test.mjs` made its "a file
+  that was not 0600" fixture with `writeFile`'s default mode, which is 0600 under umask 077;
+  it now chmods it 0644. The same trap was in `test/board-archive-safety.test.mjs` ("a board
+  file made before…", §52's, merged d80f7ed), found by the 077 run and fixed the same way.
+- **bd038b0c: the comments say "0.4.10 and older".** `lib/chat-store.mjs` (the
+  permission window) and `lib/chat-socket.mjs` (hello), and the README's approvals
+  passage, said 0.4.6; every channel before 0.4.11 forgets a request after 11 minutes and
+  sends no `permHoldMs` (checked in the lead's repo: `PERM_FORGET_MS` is 11 min at build/v1
+  7923d85, 12 h 3 min at 6b9643f).
+- **1a17b845: channel 0.4.10 and 0.4.11 lines,** in a block "Channel 0.4.10 and 0.4.11"
+  right after the "Channel 0.4.6" block, and the approvals status line names them.
+- **903c5147: the Shortcut routes' login 403s are held in the log.** The first is its
+  request line with a note; the rest in the next 10 minutes are counted, and at the
+  window's end one line gives the count and how many carried a key's shape. A window with
+  any held opens the next at once (a flood: one line every 10 minutes); a quiet one closes,
+  and the next is logged in full. Lines only, never a push or an event. Ultron's 11-23 note
+  on the item said the per-request lines were safe and log rotation (f06821b9) covers
+  growth; this is the "second option" the item names, done because the brief asked.
+  **Choice:** one counter for all Shortcut routes, not one per route, as pairRefused.
+  Timer injectable (`setTimer`), unref'd by default.
+- **3d38337f (Ultron 11-12 re-read), three parts.** (1) `ts.net` is in the private suffix
+  list, so a shared link to a tailnet name (this server's own included) is attached as text,
+  never inlined as a public link. (2) "Count wrong-tailnet-login refusals with wrong keys":
+  **not counted toward the wrong-key report, on purpose.** Since board a12184bc (11-23) a
+  caller that is not the owner is never counted or reported, so it can't spend the alerts,
+  and a test pins that. What the item wanted is now in the log: 903c5147's count line says
+  how many of those 403s carried a key's shape. (3) The keys file's aside copy is made once
+  per content: a file with bad entries stays until the next write, so each restart copied it
+  again. A copy with the same bytes is named instead, and past `ASIDE_COPIES_MAX` (10) copies
+  beside the file none is made and the line says so. A file that is not a list is still
+  renamed aside whatever the count (never written over).
+- **Checked (2026-11-26):** server suite 1,948 of 1,948, local and `TZ=Asia/Tokyo` under
+  umask 077; web 410 of 410. Mutants, all caught, with three no-op baselines passing: the
+  routine refusal removed; `badTime` back to `> 0` and to `> FLOOR`; the login hold off, the
+  key-shape count off or always on, a quiet window that never closes, a window not re-armed
+  after a count, the login mark never set, every 401/403 held; `ts.net` removed and
+  unanchored; the same-bytes check off, the cap off, the cap off by one, whole files left
+  out of the cap. `oxlint` on the changed files: no new warnings (two old ones).
+  **Not verified:** the running service (no restart).
+- **Go-live (Jeff, after C&P):** a Control Room restart, server only, with no agent runs
+  going.

@@ -3,7 +3,7 @@
 // so the tests hold in any time zone.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, stat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, stat, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -275,9 +275,12 @@ test('the store reads an absent file as nothing, writes whole, prunes on read an
     await store.remove(KEY, NOW + 1000);
     assert.deepEqual(await store.read(NOW + 1000), []);
     await rm(path);
-    await writeFile(path, '{not json'); // a fresh file, with the default mode
+    // A fresh file someone else could read. A mode on writeFile is cut by the umask
+    // (under 077 it lands 0600, and the check below would prove nothing), so chmod it.
+    await writeFile(path, '{not json');
+    await chmod(path, 0o644);
     assert.deepEqual(await store.read(NOW), [], 'a corrupt file reads as nothing');
-    assert.notEqual((await stat(path)).mode & 0o777, 0o600);
+    assert.equal((await stat(path)).mode & 0o777, 0o644);
     await store.add(ack(), NOW);
     assert.equal((await stat(path)).mode & 0o777, 0o600, 'the file is the service user\'s alone, even replacing one that was not');
     assert.deepEqual(await readdir(join(dir, 'data')), ['acks.json'], 'no temp file is left beside it');

@@ -22,12 +22,13 @@ import { createChatRoutes } from '../lib/chat-routes.mjs';
 import { createSocketRouter, toInbound, SESSION_HEADER } from '../lib/chat-socket.mjs';
 import { createEvents, eventText, readEventsConfig, PRESENCE_EVENTS, PRESENCE_SOURCE, PER_SOURCE_HOURLY } from '../lib/events.mjs';
 import { chatEventLine, ALERTED_KINDS } from '../lib/chat-events.mjs';
-import { createShortcutKeys, readBearer, proxyAddress, cleanKeyName, isKeyName, keyExpiresAt, keyExpired, KEYS_MAX, KEY_NAME_MAX, KEY_NAME_WORDS, UNNAMED, KEY_PREFIX, ADDRS_MAX, KEY_IDLE_DAYS, KEY_IDLE_MS } from '../lib/shortcut-keys.mjs';
+import { createShortcutKeys, readBearer, proxyAddress, cleanKeyName, isKeyName, keyExpiresAt, keyExpired, KEYS_MAX, KEY_NAME_MAX, KEY_NAME_WORDS, UNNAMED, KEY_PREFIX, ADDRS_MAX, KEY_IDLE_DAYS, KEY_IDLE_MS, ASIDE_COPIES_MAX } from '../lib/shortcut-keys.mjs';
 import {
   createShortcutRoutes, createShortcutAdminRouter, readShortcutsConfig, sharedLink, publicHostName, checkSend,
   SHARED_MAX, SHARED_WORDS, SHARED_LINK_WORDS, LINK_INLINE_MAX, SENDS_PER_WINDOW, SEND_WINDOW_MS, SENDS_PER_DAY, DUPLICATE_MS, EVENT_DEBOUNCE_MS, EVENTS_PER_DAY, REFUSALS_REPORTED_AT, CLIENT_ID_MAX, VIAS,
   classifyFile, cleanFileName, splitFileName, checkSendForm, attachedWords, FILE_SAY, FILES_MAX, FORM_BODY_MAX, FORM_DRAIN_MAX, FILE_BYTES_PER_DAY, UPLOADS_AT_ONCE, FILE_NAME_MAX, HEIC_MODES,
-  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX, requestLine, partsSeen, DRAINS_AT_ONCE, SERVER_REQUEST_TIMEOUT_MS
+  FORM_TIMEOUT_MS, CONVERSIONS_PER_WINDOW, CONVERSIONS_PER_DAY, FIELD_BYTES_MAX, requestLine, partsSeen, DRAINS_AT_ONCE, SERVER_REQUEST_TIMEOUT_MS,
+  LOGIN_REFUSALS_EVERY_MS
 } from '../lib/shortcut-routes.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -63,7 +64,7 @@ const call = ({ socketPath, port, method = 'GET', path, headers = {}, body, raw 
 // fake clock, and both routers behind one port, split the way server.mjs splits them.
 async function setup(t, { login = LOGIN, withEvents = true, approvals = null, at = AFTERNOON, shortcutKeys = true, convertHeic = null, fileBytesPerDay = undefined, formTimeoutMs = undefined } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'sc-'));
-  const env = { dir, clock: { t: at }, seen: [], lines: [], requests: [], timers: [], state: { killed: false, eventsKilled: false, online: true } };
+  const env = { dir, clock: { t: at }, seen: [], lines: [], requests: [], timers: [], loginTimers: [], state: { killed: false, eventsKilled: false, online: true } };
   const now = () => env.clock.t;
   const onEvent = e => env.seen.push(e);
   env.store = createChatStore({ dir: join(dir, 'chat'), now });
@@ -79,8 +80,15 @@ async function setup(t, { login = LOGIN, withEvents = true, approvals = null, at
     : null;
   env.socket = { status: () => ({ channelConnected: env.state.online, lastHeartbeatAt: null, helloAt: null }) };
   env.chat = createChatRoutes({ store: env.store, devices: env.devices, socket: env.socket, config: { chat: { login } }, now, onEvent, log: () => {}, approvals, shortcutKeys });
-  env.shortcuts = createShortcutRoutes({ keys: env.keys, devices: env.devices, store: env.store, events: env.events, socket: env.socket, login, now, log: l => (l.startsWith('shortcut: request ') ? env.requests : env.lines).push(l), onEvent, killed: () => env.state.killed, convertHeic, ...(fileBytesPerDay === undefined ? {} : { fileBytesPerDay }), ...(formTimeoutMs === undefined ? {} : { formTimeoutMs }) });
+  env.shortcuts = createShortcutRoutes({ keys: env.keys, devices: env.devices, store: env.store, events: env.events, socket: env.socket, login, now, log: l => (l.startsWith('shortcut: request ') ? env.requests : env.lines).push(l), onEvent, killed: () => env.state.killed, convertHeic, setTimer: (fn, ms) => { env.loginTimers.push({ fn, ms }); }, ...(fileBytesPerDay === undefined ? {} : { fileBytesPerDay }), ...(formTimeoutMs === undefined ? {} : { formTimeoutMs }) });
   // Each request's one log line (`requestLine`) goes to `env.requests`, every other line to `env.lines`.
+  // The end of the login 403s' 10-minute window (board 903c5147), run by the test.
+  env.endLoginWindow = () => {
+    const due = env.loginTimers.splice(0);
+    assert.equal(due.length, 1, 'one window timer at a time');
+    assert.equal(due[0].ms, LOGIN_REFUSALS_EVERY_MS);
+    due[0].fn();
+  };
   env.srv = createServer((req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     return env.shortcuts.owns(path) ? env.shortcuts.handler(req, res) : env.chat.handler(req, res);
@@ -263,13 +271,15 @@ test('sharedLink: one short http(s) link to a public host name, rebuilt; everyth
   assert.equal(sharedLink('https://user@example.com/'), null);
   // An address in any spelling, this machine, a bare name, a private network's names.
   for (const local of ['http://127.0.0.1/', 'http://10.0.0.5:8322/api/todos', 'http://[::1]/', 'http://[fd7a:115c:a1e0::1]/x', 'http://2130706433/', 'http://0x7f.1/', 'http://localhost/', 'http://localhost:8322/',
-    'http://a.localhost/', 'http://mini/', 'http://mini.local/', 'http://nas.lan/x', 'http://printer.home.arpa/', 'http://box.internal/', 'http://x.test/', 'http://abc.onion/']) {
+    'http://a.localhost/', 'http://mini/', 'http://mini.local/', 'http://nas.lan/x', 'http://printer.home.arpa/', 'http://box.internal/', 'http://x.test/', 'http://abc.onion/',
+    // A tailnet's MagicDNS names, this server's own among them (board 3d38337f).
+    'https://mini-hostname.tailnet-name.ts.net/', 'https://mini-hostname.tailnet-name.ts.net:8443/x', 'https://MINI.TAILNET.TS.NET./', 'https://ts.net/']) {
     assert.equal(sharedLink(local), null, local);
   }
   assert.equal(sharedLink(''), null);
   assert.equal(sharedLink(7), null);
-  for (const name of ['example.com', 'a.b.c.io', 'xn--bcher-kva.example', 'EXAMPLE.COM', 'example.com.']) assert.equal(publicHostName(name), true, name);
-  for (const name of ['localhost', 'mini', '10.1.2.3', '::1', '[::1]', 'a..b', '-a.com', 'a.b_c.com', 'example.c', 'example.123', '', 7, null]) assert.equal(publicHostName(name), false, String(name));
+  for (const name of ['example.com', 'a.b.c.io', 'xn--bcher-kva.example', 'EXAMPLE.COM', 'example.com.', 'tailscale.com', 'notts.net', 'ts.network', 'ts.net.example']) assert.equal(publicHostName(name), true, name);
+  for (const name of ['mini.tailnet-name.ts.net', 'ts.net', 'A.B.TS.NET', 'localhost', 'mini', '10.1.2.3', '::1', '[::1]', 'a..b', '-a.com', 'a.b_c.com', 'example.c', 'example.123', '', 7, null]) assert.equal(publicHostName(name), false, String(name));
 });
 
 test('checkSend: text, shared, via and clientId only, and something to say', () => {
@@ -842,7 +852,7 @@ test('a wrong, missing or revoked key is a 401 that says what to do; the fifth i
 // login has passed, so a caller that reaches the port but is not the owner (any other
 // login, or none: not through the tailnet proxy) can't spend the alerts. Its requests
 // are the login's 403, never counted toward a report, and leave nothing in the log but
-// each request's own line.
+// the first request's own line and, at most once in 10 minutes, a count (board 903c5147).
 test('a caller that is not the owner raises no Shortcut refusal report: wrong keys, expired keys and wrong codes', async t => {
   const env = await setup(t);
   const key = await env.pairKey('Phone');
@@ -868,13 +878,42 @@ test('a caller that is not the owner raises no Shortcut refusal report: wrong ke
     assert.equal((await offProxy('/api/shortcut/pair', { code: 'ABCDEF' }, {})).status, 403);
   }
   assert.deepEqual(env.seen, [], 'no report of any kind');
-  assert.deepEqual(env.lines, [], 'and no refusal line (each request keeps its own line)');
-  assert.equal(env.requests.length, tries * 8, 'every request was still logged, once');
-  // A real key gone stale, tried by someone else: not reported either.
+  // The log holds them (board 903c5147): the first request's own line, with a note, and
+  // at the window's end one line with the count; never a line a request.
+  assert.equal(env.requests.length, 1, 'only the first request\'s line');
+  assert.match(env.requests[0], /^shortcut: request POST send 403 \(the request did not come as the owner through the tailnet\) .* \(more refused at the login in the next 10 minutes are counted, not logged\)$/);
+  assert.deepEqual(env.lines, [], 'nothing else until the window ends');
+  env.endLoginWindow();
+  // Five of each round's eight carried a key's shape (the wrong key), less the first, logged in full.
+  assert.deepEqual(env.lines, [`shortcut: refused ${tries * 8 - 1} more requests that did not come as the owner through the tailnet in 10 minutes (${tries * 5 - 1} with a key's shape); more in the next 10 minutes are counted, not logged`]);
+  env.lines.length = 0;
+  // A real key gone stale, tried by someone else: not reported either, and still held,
+  // since the window went on.
   env.clock.t += KEY_IDLE_MS;
   assert.equal((await env.post('/api/shortcut/send', { text: 'too late' }, { ...env.withKey(key), ...stranger })).status, 403);
   assert.equal((await offProxy('/api/shortcut/event', { event: 'arrived-home' }, env.withKey(key))).status, 403);
+  assert.equal((await offProxy('/api/shortcut/pair', { code: 'ABCDEF' }, {})).status, 403);
   assert.deepEqual(env.seen, []);
+  assert.equal(env.requests.length, 1);
+  env.endLoginWindow();
+  assert.deepEqual(env.lines, ['shortcut: refused 3 more requests that did not come as the owner through the tailnet in 10 minutes (2 with a key\'s shape); more in the next 10 minutes are counted, not logged']);
+  // A window with none held writes nothing and closes: the next is logged in full again.
+  env.lines.length = 0;
+  env.endLoginWindow();
+  assert.deepEqual(env.lines, []);
+  assert.deepEqual(env.loginTimers, [], 'no timer left once quiet');
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, stranger)).status, 403);
+  assert.equal(env.requests.length, 2);
+  assert.match(env.requests[1], /^shortcut: request POST event 403 \(the request did not come as the owner through the tailnet\) /);
+  env.endLoginWindow();
+  assert.deepEqual(env.lines, [], 'one alone in its window writes no count');
+  // One held in a window: the words count one.
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, stranger)).status, 403);
+  assert.equal((await env.post('/api/shortcut/event', { event: 'arrived-home' }, stranger)).status, 403);
+  env.endLoginWindow();
+  assert.deepEqual(env.lines, ['shortcut: refused 1 more request that did not come as the owner through the tailnet in 10 minutes (0 with a key\'s shape); more in the next 10 minutes are counted, not logged']);
+  env.lines.length = 0;
+  env.requests.length = 0;
   // From the owner's login the same refusals still report, and only the owner's count:
   // the fifth wrong key is the fifth of his, not the 300-odd strangers' before it.
   for (let i = 1; i < REFUSALS_REPORTED_AT; i++) assert.equal((await env.post('/api/shortcut/send', { text: 'hi' }, wrong)).status, 401);
@@ -989,8 +1028,11 @@ test('making and revoking a key: the login before the write guard; anyone else\'
   const elsewhere = { origin: 'https://elsewhere.example' };
   for (const who of [{ 'tailscale-user-login': 'someone-else@example.com', cookie: pad }, { cookie: pad }]) {
     env.requests.length = 0;
+    // Each alone in its 10-minute window, so each line is written (board 903c5147).
     const m = await make({ ...who, 'Content-Type': 'text/plain' });
+    env.endLoginWindow();
     const r = await revoke({ ...who, ...elsewhere });
+    env.endLoginWindow();
     for (const [what, a] of [['make', m], ['revoke', r]]) {
       assert.equal(a.status, 403, `${what}: ${a.text}`);
       assert.match(a.text, /did not come as the owner/, what);
@@ -1261,6 +1303,37 @@ test('a keys file that is not a list of keys is set aside, never written over; o
   assert.equal((await stat(`${path}.corrupt-3000`)).mode & 0o077, 0, 'the copy is the owner\'s alone');
   assert.equal(await readFile(path, 'utf8'), mixed, 'and the file itself is left as it was');
   assert.deepEqual(lines, ['shortcut: 2 of 3 entries in the keys file could not be read; a copy of the file was kept as shortcut-keys.json.corrupt-3000']);
+  // Loaded again as it is (a restart: nothing wrote the file): no second copy of the same
+  // bytes, and the line names the one kept (board 3d38337f).
+  const asideNow = async () => (await readdir(dir)).filter(n => n.startsWith('shortcut-keys.json.corrupt-')).sort();
+  for (const at of [4000, 5000, 6000]) {
+    clock.t = at;
+    lines.length = 0;
+    assert.equal(await keys.load(), 1);
+    assert.deepEqual(lines, ['shortcut: 2 of 3 entries in the keys file could not be read; a copy of the same file was kept already as shortcut-keys.json.corrupt-3000']);
+  }
+  assert.deepEqual(await asideNow(), ['shortcut-keys.json.corrupt-1000', 'shortcut-keys.json.corrupt-2000', 'shortcut-keys.json.corrupt-3000']);
+  // Other bad bytes get their own copy, up to ASIDE_COPIES_MAX beside the file in all
+  // (the whole files set aside count); past that, none, and the line says so.
+  for (let i = 0; i < ASIDE_COPIES_MAX - 3; i++) {
+    clock.t = 10000 + i;
+    await writeFile(path, JSON.stringify([good, { id: i }]));
+    assert.equal(await keys.load(), 1);
+  }
+  assert.equal((await asideNow()).length, ASIDE_COPIES_MAX);
+  clock.t = 20000;
+  lines.length = 0;
+  const last = JSON.stringify([good, 'one more']);
+  await writeFile(path, last);
+  assert.equal(await keys.load(), 1);
+  assert.deepEqual(lines, [`shortcut: 1 of 2 entries in the keys file could not be read; no copy was kept, since ${ASIDE_COPIES_MAX} copies are kept beside it already (shortcut-keys.json.corrupt-*)`]);
+  assert.equal((await asideNow()).length, ASIDE_COPIES_MAX);
+  assert.equal(await readFile(path, 'utf8'), last, 'the file itself is still left as it was');
+  // A file that is not a list is still set aside whole past the cap: never written over.
+  clock.t = 21000;
+  await writeFile(path, 'not json');
+  assert.equal(await keys.load(), 0);
+  assert.equal(await readFile(`${path}.corrupt-21000`, 'utf8'), 'not json');
   // Something that can't be read at all: load throws, and the caller keeps the keys off.
   const folder = join(dir, 'a-folder.json');
   await mkdir(folder);
@@ -3310,6 +3383,8 @@ test('the login\'s 403 on a Shortcut route is answered at once with Connection: 
     assert.match(env.requests[0], / 403 \(the request did not come as the owner through the tailnet\) /, what);
     assert.ok(Number(/read=(\d+)/.exec(env.requests[0])[1]) < body.length, `${what}: the body was not read to its end`);
     assert.doesNotMatch(env.requests[0], /drain=/, what);
+    // Each alone in its 10-minute window, so the next one's line is written (board 903c5147).
+    env.endLoginWindow();
   }
   // A small body sent whole is refused the same way: its connection goes too.
   const small = await call({ port: env.port, method: 'POST', path: '/api/shortcut/send', body: { text: 'hi' }, headers: { ...wrong, 'tailscale-user-login': 'someone@example.com' } });

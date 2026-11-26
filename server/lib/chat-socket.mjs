@@ -300,7 +300,7 @@ export function createSocketRouter({
         if (!holder) store.newPermissionSession?.();
         // How long the channel holds a relayed request before it forgets it (board
         // 94b380fd): the page answers for that long, less a minute, at most 12 hours;
-        // a channel that doesn't say (0.4.6 and older) gets the old 10 minutes.
+        // a channel that doesn't say (0.4.10 and older) gets the old 10 minutes.
         store.noteChannelAlive?.(at);
         const windowMs = store.setPermissionHold?.(body.permHoldMs);
         if (approvals && Number.isFinite(windowMs)) log(`chat: the page can answer a permission request for ${Math.round(windowMs / 60e3)} min (${Number.isSafeInteger(body.permHoldMs) && body.permHoldMs > 0 ? 'the channel holds one that long, less a minute' : 'the channel does not say how long it holds one'})`);

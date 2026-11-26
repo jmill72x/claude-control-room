@@ -231,6 +231,32 @@ test('display only: a routine\'s message never goes down the channel\'s stream, 
   } finally { await e.close(); }
 });
 
+test('the lead can\'t edit a routine\'s message, though it is `jarvis`\'s; its own replies still edit (board c73778aa)', async () => {
+  const e = await env();
+  try {
+    const r = await e.post({ kind: 'brief', text: 'All jobs ran clean.' });
+    const d = await e.post({ kind: 'digest', text: 'Week ahead' });
+    const own = await e.store.append({ from: 'jarvis', kind: 'chat', text: 'a reply', clientId: 'reply-1' });
+    const seen = [];
+    e.store.subscribe(ev => seen.push(ev.type));
+    for (const id of [r.id, d.id]) {
+      const before = { ...e.store.get(id) };
+      const refused = await e.store.edit(id, 'rewritten');
+      assert.deepEqual(refused, { ok: false, status: 403, error: 'a routine\'s message can\'t be edited' });
+      assert.deepEqual(e.store.get(id), before, 'nothing moved');
+    }
+    assert.deepEqual(seen, [], 'and nothing was announced');
+    // Nothing went on file either: a reload has the routine's text as posted.
+    const again = createChatStore({ dir: join(e.dir, 'chat'), now: e.now });
+    await again.load();
+    assert.equal(again.get(r.id).text, '**Morning brief**\n\nAll jobs ran clean.');
+    assert.equal(publicMessage(again.get(r.id)).editedAt, null);
+    const ok = await e.store.edit(own.id, 'a reply, corrected');
+    assert.equal(ok.ok, true);
+    assert.equal(e.store.get(own.id).text, 'a reply, corrected');
+  } finally { await e.close(); }
+});
+
 // ---- the limit, the id, the kill file ----
 
 test(`at most ${ROUTINE_PER_DAY} of a kind in any 24 hours, each kind counted alone, with the wait in seconds`, async () => {

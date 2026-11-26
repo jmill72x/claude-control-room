@@ -131,9 +131,12 @@ test('the timing fields are typed: a composedAt that is not ms and a confirmed t
   const env = await makeChatEnv();
   try {
     const ipad = await env.pair('ipad');
-    for (const [why, extra] of [['string', { composedAt: '12:10' }], ['float', { composedAt: 1.5 }], ['negative', { composedAt: -5 }], ['confirmed string', { confirmed: 'yes' }]]) {
+    // Before 2020 too (board f8e1ea1b): it would read as no time and skip the clientId's.
+    const before2020 = [['1 ms', { composedAt: 1 }], ['the last ms of 2019', { composedAt: Date.UTC(2020, 0, 1) - 1 }], ['in seconds, not ms', { composedAt: Math.floor(Date.UTC(2026, 10, 20) / 1000) }]];
+    for (const [why, extra] of [['string', { composedAt: '12:10' }], ['float', { composedAt: 1.5 }], ['negative', { composedAt: -5 }], ['zero', { composedAt: 0 }], ...before2020, ['confirmed string', { confirmed: 'yes' }]]) {
       const r = await send(env, ipad.cookie, { clientId: 'typed', text: 'x', ...extra });
       assert.equal(r.status, 400, why);
+      if ('composedAt' in extra) assert.equal(r.json.error, 'composedAt must be a time in ms, from 2020 on', why);
     }
     assert.equal(env.store.size, 0);
   } finally { await env.close(); }
@@ -160,6 +163,8 @@ test('chat-late helpers: the time comes from composedAt, else the page clientId;
   assert.equal(badTime({}), null);
   assert.equal(badTime({ composedAt: null, confirmed: null }), null);
   assert.equal(badTime({ composedAt: now, confirmed: true }), null);
+  assert.equal(badTime({ composedAt: Date.UTC(2020, 0, 1) }), null, 'the first ms of 2020 is a time');
+  assert.equal(badTime({ composedAt: Date.UTC(2020, 0, 1) - 1 }), 'composedAt must be a time in ms, from 2020 on');
   assert.equal(lateBy(6 * MIN), '6 min');
   assert.equal(lateBy(3 * HOUR + 28 * MIN), '3 h 28 min');
   assert.equal(lateBy(2 * HOUR), '2 h');

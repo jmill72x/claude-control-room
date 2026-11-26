@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, statSync, existsSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, statSync, existsSync, readdirSync, utimesSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -458,7 +458,9 @@ test('the board, its history copies, the pinned copy and a corrupt aside are wri
 
 test('a board file made before keeps working and becomes 0600 at its next write', async () => {
   const path = tmp();
-  writeFileSync(path, JSON.stringify([{ id: 1, text: 'a', lane: 'idea' }]), { mode: 0o644 });
+  // A mode on writeFileSync is cut by the umask (0600 under 077), so chmod it.
+  writeFileSync(path, JSON.stringify([{ id: 1, text: 'a', lane: 'idea' }]));
+  chmodSync(path, 0o644);
   assert.equal(mode(path), 0o644);
   await createTodoStore(path).write([{ id: 1, text: 'b', lane: 'idea' }]);
   assert.equal(mode(path), 0o600);

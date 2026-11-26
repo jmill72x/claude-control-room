@@ -1346,7 +1346,8 @@ three pieces, each with its own router:
   empty when any are open, the newest cut down if it alone is too big, and a note on
   the oldest listed when older ones were left out: `lib/chat-catchup.mjs`, NEXT.md §42),
   `reply` (deduped on `clientId`; answers `{id, seq}`),
-  `edit` (the lead's own chat messages, 24 hours), `history` (`before` is a message id),
+  `edit` (the lead's own chat messages, 24 hours; never a routine's brief or digest,
+  which is `jarvis`'s too: 403, board c73778aa), `history` (`before` is a message id),
   `attachment/:id` (the bytes with their type), `permission-request`, `heartbeat` and
   `status`. **One client at a time, held by a session token:** `hello` answers a random
   32-byte `token`, and every other route but `status` takes it in the `X-Session-Token`
@@ -1520,8 +1521,10 @@ three pieces, each with its own router:
   (which also carries `composedAt`), the restart catch-up (`/v1/unanswered`) and the
   history call (`/v1/history`), all from one function, `leadText` (the stored text, and
   the page's copy, stay as typed). A page built before this sends no
-  `composedAt`; the time in its `clientId` (`p_<ms in base 36>_…`) is used instead. The
-  device's clock is trusted: one ahead of the server's counts as now, and one more than 5
+  `composedAt`; the time in its `clientId` (`p_<ms in base 36>_…`) is used instead. A
+  `composedAt` that is not whole milliseconds from 2020 on is refused with a 400 (board
+  f8e1ea1b): before that rule one before 2020 read as no time and skipped the stale check.
+  The device's clock is trusted: one ahead of the server's counts as now, and one more than 5
   minutes slow would need a tap on every send. Why: on 2026-11-20 two iPad messages written
   at 12:10, during an outage, arrived at 15:38 as the page woke, with no tap, and were read
   as new. The banner over the thread follows `/api/chat/status` and the
@@ -1916,7 +1919,7 @@ marks its own cut, and the extra 100 leave room for that marker); a longer one i
 marked "⋯ N code points cut by the Control Room ⋯" and Deny-only. A request can be answered
 here for as long as the channel holds it (board 94b380fd): the channel names its hold in
 hello (`permHoldMs`), and expiry is that less a minute, at most 12 hours, from `relayedAt`
-(when the channel got the prompt); a channel that names none (0.4.6 and older, which forget
+(when the channel got the prompt); a channel that names none (0.4.10 and older, which forget
 a request after 11 minutes) gets 10 minutes. The start log says which: `chat: the page can
 answer a permission request for <N> min (…)`. A request keeps the window in force when it
 opened. A request more than 2 minutes old on arrival is `late`, shown with "answer at the
@@ -2347,7 +2350,7 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   **`text` is the owner's words; `shared` is outside content.** When `shared` is exactly
   one `http(s)` link of at most 300 characters to a public host name (a DNS name with a
   dot and a lettered last label: no IP literal in any spelling, no `localhost`, no bare or
-  private-network name; no white space, no credentials), it goes into the text as `URL`
+  private-network name, no tailnet name under `ts.net`; no white space, no credentials), it goes into the text as `URL`
   rebuilt it, under the fixed line `Shared link, outside content:`. Any other shared text
   (a longer link included, up to 100,000 characters) becomes a `text/plain` attachment,
   `shared-text.txt`, which the channel already marks as data; the text is then the note or
@@ -2459,7 +2462,13 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   It says whether the lead is online, and nothing from the chat. No log line or error body carries a
   message's text, a code or a key.
 - **Every request is one line in the service log, and a refusal waits for the body**
-  (2026-11-13). `shortcut: request POST send 200 (ok) type=multipart/form-data
+  (2026-11-13). One kind is held (board 903c5147): **the login's 403s**, from a caller
+  that is not the owner. The first is its request line with `(more refused at the login
+  in the next 10 minutes are counted, not logged)` at its end; at the end of those 10
+  minutes one line gives the count, `shortcut: refused 37 more requests that did not
+  come as the owner through the tailnet in 10 minutes (12 with a key's shape)`, and a
+  flood that goes on writes one such line every 10 minutes; after a quiet 10 minutes the
+  next is logged in full again. Lines only, never a push or an event. `shortcut: request POST send 200 (ok) type=multipart/form-data
   length=482113 chunked=no expect=no form=yes read=482113 parts=1 file, 2 text
   files=jpg:481723`: the route, the status, a refusal's own fixed reason, the
   Content-Type looked up in a fixed list (else `other`), the Content-Length, whether the
@@ -2485,7 +2494,8 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
 - **The sign of a login that doesn't match** (from main b534aa2 on): every photo or file send
   says "The network connection was lost" on the iPhone, and the service log's request
   lines read `shortcut: request POST send 403 (the request did not come as the owner
-  through the tailnet) …`, its `read=` short of its `length=`. The login's 403 is
+  through the tailnet) …`, its `read=` short of its `length=` (the first in 10 minutes;
+  the rest are a count line, above). The login's 403 is
   answered before the body is read and closes the connection, so a phone still uploading never sees its `say` line (a
   short text send may show it: "Jarvis OS refused this: it did not come through the
   tailnet as the owner."). Check `chat.login` in `server/config.json` against the
@@ -2510,12 +2520,18 @@ steps on the phone: `docs/jarvis-os-shortcuts-setup.md`. Code:
   per key per day however often it is tried, and is not counted with the wrong keys: an
   automation shows nothing on the phone, so the report is how its owner hears. All of
   these are counted and reported only after the owner's login header has passed: a caller
-  that isn't the owner gets the login's 403 and leaves only its request line.
+  that isn't the owner gets the login's 403 and leaves only its request line, held to one
+  in 10 minutes with a count (board 903c5147; a wrong key it carries is counted there as
+  "with a key's shape", never toward `shortcut-refused`).
 - **The keys file is never written over when it can't be read.** One that is not a list
   of keys (cut short, or not JSON) is renamed `shortcut-keys.json.corrupt-<time>` and
   logged, and no key is known; one with some unreadable entries is copied aside under that
-  name and the good entries live on; one that can't be read or set aside keeps Shortcut
-  keys off for the run, with a `shortcuts:` line saying so.
+  name and the good entries live on. That copy is made once per content (board 3d38337f):
+  the file stays as it is until the next write, so a restart finds the same bytes and
+  names the copy already kept instead of making another, and past 10 copies beside the
+  file (`shortcut-keys.json.corrupt-*`, whole files set aside included) no new one is made
+  and the line says so. One that can't be read or set aside keeps Shortcut keys off for
+  the run, with a `shortcuts:` line saying so.
 - **Off switches.** Revoke a key on the page (two taps) or with `bin/chat-pair
   shortcut-revoke <name or id>`; `bin/chat-pair shortcuts` lists them. The kill file
   `~/.local/state/jarvis-os/shortcuts-off` refuses every Shortcut request and every new

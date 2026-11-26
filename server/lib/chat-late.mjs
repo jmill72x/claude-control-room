@@ -43,10 +43,12 @@ export function composedAtOf(body, now) {
   return Math.min(t, now);
 }
 
-// Why the timing fields are refused, or null.
+// Why the timing fields are refused, or null. A composedAt before 2020 is refused
+// too (board f8e1ea1b): composedAtOf would read it as no time and skip the clientId's,
+// so the send would pass as fresh. The page sends its clock at the Send tap.
 export function badTime(body) {
   const c = body?.composedAt;
-  if (c !== undefined && c !== null && !(Number.isSafeInteger(c) && c > 0)) return 'composedAt must be a time in ms';
+  if (c !== undefined && c !== null && !(Number.isSafeInteger(c) && c >= FLOOR)) return 'composedAt must be a time in ms, from 2020 on';
   const k = body?.confirmed;
   if (k !== undefined && k !== null && typeof k !== 'boolean') return 'confirmed must be true or false';
   return null;

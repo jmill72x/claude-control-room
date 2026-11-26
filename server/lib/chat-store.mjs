@@ -38,7 +38,7 @@ export const EDIT_WINDOW_MS = DAY;
 // the channel's, which forgets a request after a while (`PERM_FORGET_MS` in the lead's
 // repo) and then drops a verdict for it. So the page answers for as long as the
 // channel says at hello that it holds one (`permHoldMs`), less a minute, and never
-// more than 12 hours. A channel that doesn't say (0.4.6 and older forget after 11
+// more than 12 hours. A channel that doesn't say (0.4.10 and older forget after 11
 // minutes) gets PERMISSION_TTL_MS, the old 10 minutes.
 export const PERMISSION_TTL_MS = 10 * 60e3;
 export const PERMISSION_HOLD_MAX_MS = 12 * HOUR;
@@ -220,11 +220,15 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   // An edit of one of the lead's own messages, within 24 hours; nothing else moves.
+  // A routine's message (the brief, the digest: lib/routine-chat.mjs) is `jarvis`'s
+  // too, but it isn't the lead's own words, so the lead can't rewrite it (board
+  // c73778aa).
   function edit(id, text) {
     return serial(async () => {
       const m = byId.get(id);
       if (!m) return { ok: false, status: 404, error: 'no such message' };
       if (m.from !== 'jarvis' || m.kind !== 'chat') return { ok: false, status: 403, error: 'only the lead\'s own chat messages can be edited' };
+      if (isRoutineMessage(m)) return { ok: false, status: 403, error: 'a routine\'s message can\'t be edited' };
       if (now() - m.at > EDIT_WINDOW_MS) return { ok: false, status: 403, error: 'a message can be edited for 24 hours' };
       if (typeof text !== 'string' || text.length > MAX_TEXT) return { ok: false, status: 400, error: `text must be a string of at most ${MAX_TEXT} characters` };
       const editedAt = now();

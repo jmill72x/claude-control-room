@@ -20,7 +20,10 @@
 // A keys file that can't be parsed is never written over: it is set aside under
 // another name (or, when only some entries are bad, copied aside) and logged; a file
 // that can't be read or set aside makes `load` throw, and the caller keeps Shortcut
-// keys off.
+// keys off. The copy is made once per content (board 3d38337f): a file with bad entries
+// stays as it is until the next write, so every restart would copy it again. A copy
+// already kept with the same bytes is named instead, and past ASIDE_COPIES_MAX copies
+// beside the file no new one is made (the line says so).
 //
 // Each key remembers the addresses it was used from (what the proxy reported, at most
 // 4): the first use from one it has not seen is reported, so a key copied to another
@@ -36,14 +39,16 @@
 // holds none of the 4 places and keeps its row, and the only way back is a new code and
 // a new key. It can still be revoked, and a device revoke takes it too: a revoke is on
 // file, so it holds whatever the clock or the build later says.
-import { readFile, writeFile, rename, unlink, copyFile, chmod } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { readFile, writeFile, rename, unlink, copyFile, chmod, readdir } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { newCode, cleanName, PAIR_CODE_TTL_MS, PAIR_ATTEMPTS } from './chat-devices.mjs';
 import { oneLine } from './chat-events.mjs';
 
 export const KEYS_MAX = 4;
+// Copies of a keys file with bad entries kept beside it at most (`<file>.corrupt-<ms>`).
+export const ASIDE_COPIES_MAX = 10;
 // A message's `device` is cut at 40 UTF-16 units, and the key's name goes there with a
 // suffix of at most 18 (" (Shortcut, share)"). An ASCII name of 22 at most is 22 units,
 // so the suffix always survives whole.
@@ -153,11 +158,28 @@ export function createShortcutKeys({ path, now = () => Date.now(), onEvent = () 
     }
     keys = raw.filter(validRow);
     if (keys.length !== raw.length) {
-      await copyFile(path, aside);
-      await chmod(aside, 0o600);
-      log(`shortcut: ${raw.length - keys.length} of ${raw.length} entries in the keys file could not be read; a copy of the file was kept as ${basename(aside)}`);
+      const bad = `shortcut: ${raw.length - keys.length} of ${raw.length} entries in the keys file could not be read`;
+      const kept = await keptCopies();
+      let same = null;
+      for (const name of kept) {
+        const had = await readFile(join(dirname(path), name), 'utf8').catch(() => null);
+        if (had === text) { same = name; break; }
+      }
+      if (same !== null) log(`${bad}; a copy of the same file was kept already as ${same}`);
+      else if (kept.length >= ASIDE_COPIES_MAX) log(`${bad}; no copy was kept, since ${kept.length} copies are kept beside it already (${basename(path)}.corrupt-*)`);
+      else {
+        await copyFile(path, aside);
+        await chmod(aside, 0o600);
+        log(`${bad}; a copy of the file was kept as ${basename(aside)}`);
+      }
     }
     return keys.length;
+  }
+  // The names of the copies set aside beside the file (whole files set aside count too).
+  async function keptCopies() {
+    const prefix = `${basename(path)}.corrupt-`;
+    const names = await readdir(dirname(path)).catch(() => []);
+    return names.filter(n => n.startsWith(prefix) && /^\d+$/.test(n.slice(prefix.length)));
   }
   const persist = () => writeJson(path, keys);
   // A write nothing waits for (a use, a new address). A failed one is logged: a last
