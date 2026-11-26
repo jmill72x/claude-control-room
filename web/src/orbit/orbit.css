@@ -744,6 +744,9 @@ html { scroll-padding-top: calc(var(--o-navbar-h) + 8px); }
 .o-lane-empty { padding: 12px 4px; font-size: 13.5px; color: var(--sub); }
 .o-lane-note { padding: 2px 4px; font-size: 12.5px; color: var(--sub); }
 .o-more { background: var(--card); align-self: flex-start; }
+/* The Done lane's archive (board 17924110), under the lanes when Show archived is open. */
+.o-archive { margin-top: 14px; }
+.o-archive .o-lane-head .o-btn { margin-left: auto; }
 
 .o-card { display: flex; flex-direction: column; border-radius: 12px; background: var(--card); border: 1px solid var(--rule); overflow: hidden; }
 .o-card-done { background: var(--paper); }

@@ -11,11 +11,13 @@ import { createTodoStore, isDueDate, InvalidBoardError } from '../todos.mjs';
 import { createHandler } from '../routes.mjs';
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-due-')), 'todos.json');
+// Each item brings a createdAt so it round-trips exactly (board 17924110).
+const MADE = '2026-11-01T12:00:00.000Z';
 const DATED = [
-  { id: 'a', text: 'renew the domain', lane: 'idea', tag: 'MAP', priority: 'P1', due: '2026-10-21' },
-  { id: 'b', text: 'no date', lane: 'doing', tag: 'Pi' },
-  { id: 'c', text: 'cleared', lane: 'idea', due: '' },
-  { id: 'd', text: 'null', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', due: null }
+  { id: 'a', text: 'renew the domain', lane: 'idea', tag: 'MAP', priority: 'P1', due: '2026-10-21', createdAt: MADE },
+  { id: 'b', text: 'no date', lane: 'doing', tag: 'Pi', createdAt: MADE },
+  { id: 'c', text: 'cleared', lane: 'idea', due: '', createdAt: MADE },
+  { id: 'd', text: 'null', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', due: null, createdAt: MADE }
 ];
 
 // ---- the date check ----
@@ -70,7 +72,7 @@ const serve = async path => {
 
 test('due round-trips over HTTP: PUT with If-Match, then GET returns it as sent', async () => {
   const path = tmp();
-  writeFileSync(path, JSON.stringify([{ id: 'b', text: 'no date', lane: 'doing', tag: 'Pi' }]));
+  writeFileSync(path, JSON.stringify([{ id: 'b', text: 'no date', lane: 'doing', tag: 'Pi', createdAt: MADE }]));
   const s = await serve(path);
   try {
     const tag = (await fetch(s.base)).headers.get('etag');
@@ -86,7 +88,7 @@ test('due round-trips over HTTP: PUT with If-Match, then GET returns it as sent'
 test('a plain PUT without due (Jarvis, curl, the mod) still lands', async () => {
   const s = await serve(tmp());
   try {
-    const list = [{ id: 1, text: 'old shape', lane: 'idea', tag: 'Note', priority: 'P2' }];
+    const list = [{ id: 1, text: 'old shape', lane: 'idea', tag: 'Note', priority: 'P2', createdAt: MADE }];
     const res = await s.put(list);
     assert.equal(res.status, 200);
     assert.deepEqual(await (await fetch(s.base)).json(), list);

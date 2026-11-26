@@ -15,15 +15,19 @@ import { createHandler } from '../routes.mjs';
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-fields-')), 'todos.json');
 const onDisk = path => JSON.parse(readFileSync(path, 'utf8'));
 const byId = (list, id) => list.find(t => t.id === id);
+// Each item brings a createdAt (null: unknown), so it round-trips exactly: the server
+// stamps one on an item new to the board that brings none (board 17924110).
+const MADE = '2026-11-01T12:00:00.000Z';
 
 const FULL = [
   {
     id: 'a', text: 'Renew the domain before it lapses next month', title: 'Renew the domain', lane: 'idea', tag: 'Ops',
     priority: 'P1', owner: 'builder',
-    ask: { what: 'Pay the renewal invoice', why: 'The site goes dark if it lapses', kind: 'do', time: '09:30' }
+    ask: { what: 'Pay the renewal invoice', why: 'The site goes dark if it lapses', kind: 'do', time: '09:30' },
+    createdAt: MADE
   },
-  { id: 'b', text: 'Pick a theme for the site', lane: 'doing', ask: { what: 'Choose one of the two drafts', kind: 'decide' } },
-  { id: 'c', text: 'Shipped the thing', lane: 'done', doneAt: '2026-10-19T14:05:00.000Z' }
+  { id: 'b', text: 'Pick a theme for the site', lane: 'doing', ask: { what: 'Choose one of the two drafts', kind: 'decide' }, createdAt: MADE },
+  { id: 'c', text: 'Shipped the thing', lane: 'done', doneAt: '2026-10-19T14:05:00.000Z', createdAt: null }
 ];
 
 // ---- the checks ----
@@ -39,9 +43,9 @@ test('title, ask, owner and doneAt round-trip through the store exactly as sent'
 test('absent, null and empty mean none, and such items still save', async () => {
   const path = tmp();
   const list = [
-    { id: 1, text: 'no fields at all', lane: 'idea' },
-    { id: 2, text: 'empty ones', lane: 'idea', title: '', owner: '', ask: null },
-    { id: 3, text: 'null ones', lane: 'doing', title: null, owner: null, ask: { what: 'x', kind: 'do', why: '', time: '' } }
+    { id: 1, text: 'no fields at all', lane: 'idea', createdAt: MADE },
+    { id: 2, text: 'empty ones', lane: 'idea', title: '', owner: '', ask: null, createdAt: MADE },
+    { id: 3, text: 'null ones', lane: 'doing', title: null, owner: null, ask: { what: 'x', kind: 'do', why: '', time: '' }, createdAt: null }
   ];
   assert.deepEqual(await createTodoStore(path).write(list), list);
 });
@@ -160,7 +164,7 @@ const serve = async path => {
 
 test('over HTTP: the new fields round-trip, and a bad kind is a 400 that names it, with the board untouched', async () => {
   const path = tmp();
-  writeFileSync(path, JSON.stringify([{ id: 'b', text: 'b', lane: 'doing' }]));
+  writeFileSync(path, JSON.stringify([{ id: 'b', text: 'b', lane: 'doing', createdAt: MADE }]));
   const s = await serve(path);
   try {
     const tag = (await fetch(s.base)).headers.get('etag');

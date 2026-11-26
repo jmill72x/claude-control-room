@@ -126,7 +126,7 @@ export function OrbitApp() {
   }, [isBoard, isChat, isFeed]);
 
   const openItem = (id, why) => {
-    setFocusFrom(why === 'added' || why === 'waiting' ? { id, why } : null);
+    setFocusFrom(why === 'added' || why === 'waiting' || why === 'back' ? { id, why } : null);
     go({ tab: 'board', item: id });
   };
   const focusWhy = route.item !== null && route.item === focusFrom?.id ? focusFrom.why : 'link';

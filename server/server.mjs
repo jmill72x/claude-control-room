@@ -78,6 +78,7 @@ import { createRecover, readRecoverConfig, leadHealth, KILL_FILE as RECOVER_KILL
 import { buildProjects } from './lib/projects.mjs';
 import { installLogStamps } from './lib/log-stamp.mjs';
 import { createLocalAlerts, KILL_FILE as LOCAL_ALERTS_KILL_FILE } from './lib/local-alerts.mjs';
+import { readBoardArchiveConfig, createArchiveSweeper } from './lib/board-archive.mjs';
 
 // Before anything logs, so every line in the service log carries its time.
 installLogStamps();
@@ -122,6 +123,18 @@ const cache = createCache();
 // The board's file: the store's, and the proactive check's read (one path, Ultron's L6).
 const TODOS_PATH = join(HERE, 'todos.json');
 const todos = createTodoStore(TODOS_PATH);
+// The done-lane archive (board 17924110; lib/board-archive.mjs): off unless config's
+// `board.archiveDays` is set. Its file is the store's default, data/todos-archive.json
+// beside the other runtime data (gitignored), the path restore-todos.mjs names too.
+const archiveSettings = readBoardArchiveConfig(config);
+for (const problem of archiveSettings.problems) console.error(`config: ${problem}`);
+const archiveSweeper = archiveSettings.on ? createArchiveSweeper({ store: todos, days: archiveSettings.days }) : null;
+if (archiveSweeper) {
+  archiveSweeper.start();
+  console.log(`board: the done-lane archive is on: Done items finished ${archiveSettings.days} or more days ago move to data/todos-archive.json (checked hourly)`);
+} else {
+  console.log(`board: the done-lane archive is off${archiveSettings.state === 'unset' ? ' (no board block in config)' : ''}`);
+}
 // Acknowledged alerts (lib/acks.mjs), beside notified.json; gitignored with it.
 const ackStore = createAckStore(join(HERE, 'data', 'acks.json'));
 const registry = createRegistry(cache);
@@ -357,7 +370,15 @@ registry.register('otel', async () => {
 
 // The board's size against its PUT cap (routes.mjs), so an alert warns at 75%
 // while there is still room to archive the done lane. A stat, nothing more.
-registry.register('board', async () => ({ bytes: await todos.size(), cap: BOARD_MAX_BODY }), 60 * 1000);
+// `archive` says whether the done-lane archive is on, its days, its size and the last run.
+registry.register('board', async () => ({
+  bytes: await todos.size(),
+  cap: BOARD_MAX_BODY,
+  archive: {
+    ...(archiveSweeper ? archiveSweeper.status() : { on: false, days: null, last: null }),
+    ...(await todos.archiveSize().catch(() => ({ items: null, bytes: null, unreadable: true })))
+  }
+}), 60 * 1000);
 
 // What the notifier has told (lib/sent-store.mjs): written through a temp file, 0600.
 // A write the last run was stopped in the middle of left its temp file; those go now,
@@ -464,7 +485,9 @@ const api = createHandler({
   // (test/ack-notice-limit.test.mjs): a merge must keep this line.
   onAckNotice: (notice, key) => ackNotices.notice(key, notice),
   // GET /api/loops and the dashboard's `loops` (lib/heal-runner.mjs and lib/heal-missed.mjs, view).
-  loops: () => withLoopParts(heal.view(), [missed.view(), restartLoop.view()])
+  loops: () => withLoopParts(heal.view(), [missed.view(), restartLoop.view()]),
+  // GET /api/todos/archive says the archive's setting (null: off).
+  archiveDays: archiveSettings.days
 });
 
 // The chat (jarvis-os-chat-spec.md): on only when config has a `chat` block with the

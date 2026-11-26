@@ -7,6 +7,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { createTodoStore } from '../todos.mjs';
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-')), 'todos.json');
+// The server stamps createdAt on an item new to the board (stampCreated, board
+// 17924110) unless it brings one, so items that must round-trip exactly bring one.
+const MADE = '2026-11-01T12:00:00.000Z';
 
 test('seeds on first read', async () => {
   const store = createTodoStore(tmp());
@@ -18,8 +21,8 @@ test('seeds on first read', async () => {
 test('writes survive a reread', async () => {
   const path = tmp();
   const store = createTodoStore(path);
-  await store.write([{ id: 1, text: 'x', lane: 'idea', tag: 'Note' }]);
-  assert.deepEqual(await createTodoStore(path).read(), [{ id: 1, text: 'x', lane: 'idea', tag: 'Note' }]);
+  await store.write([{ id: 1, text: 'x', lane: 'idea', tag: 'Note', createdAt: MADE }]);
+  assert.deepEqual(await createTodoStore(path).read(), [{ id: 1, text: 'x', lane: 'idea', tag: 'Note', createdAt: MADE }]);
 });
 
 test('rejects a non-array payload', async () => {
@@ -36,10 +39,10 @@ test('accepts P0–P3, an absent priority, and an explicit null', async () => {
   const path = tmp();
   const store = createTodoStore(path);
   const list = [
-    { id: 1, text: 'a', lane: 'idea', priority: 'P0' },
-    { id: 2, text: 'b', lane: 'idea', priority: 'P3' },
-    { id: 3, text: 'c', lane: 'idea' },
-    { id: 4, text: 'd', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', priority: null }
+    { id: 1, text: 'a', lane: 'idea', priority: 'P0', createdAt: MADE },
+    { id: 2, text: 'b', lane: 'idea', priority: 'P3', createdAt: MADE },
+    { id: 3, text: 'c', lane: 'idea', createdAt: null },
+    { id: 4, text: 'd', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', priority: null, createdAt: MADE }
   ];
   await store.write(list);
   assert.deepEqual(await createTodoStore(path).read(), list);
@@ -114,11 +117,11 @@ test('two writes started at once both land, and the board is one of them, whole'
   const store = createTodoStore(path);
   await store.write([{ id: 1, text: 'the board before', lane: 'idea' }]);
   // Different lengths, so a torn file cannot pass for either payload.
-  const long = Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, text: `a longer board, item ${i}`, lane: 'idea' }));
-  const short = [{ id: 99, text: 'short', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z' }];
+  const long = Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, text: `a longer board, item ${i}`, lane: 'idea', createdAt: MADE }));
+  const short = [{ id: 99, text: 'short', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', createdAt: MADE }];
   const realNow = Date.now;
   try {
-    Date.now = () => 1735689600123;
+    Date.now = () => Date.parse('2026-11-25T00:00:00.123Z');
     await Promise.all([store.write(long), store.write(short)]);
   } finally {
     Date.now = realNow;
@@ -254,10 +257,10 @@ const historyFiles = path => {
 const readCopy = (path, name) => JSON.parse(readFileSync(join(dirname(path), 'todos-history', name), 'utf8'));
 const onDisk = path => JSON.parse(readFileSync(path, 'utf8'));
 // Different lengths, so an item count can tell the boards apart too.
-const A = [{ id: 1, text: 'board A', lane: 'idea', tag: 'Note' }];
+const A = [{ id: 1, text: 'board A', lane: 'idea', tag: 'Note', createdAt: MADE }];
 const B = [
-  { id: 2, text: 'board B', lane: 'doing', tag: 'Note' },
-  { id: 3, text: 'more of B', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', tag: 'Note' }
+  { id: 2, text: 'board B', lane: 'doing', tag: 'Note', createdAt: MADE },
+  { id: 3, text: 'more of B', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', tag: 'Note', createdAt: MADE }
 ];
 
 test('keeps the previous board on every write', async () => {
@@ -326,7 +329,7 @@ test('two writes in the same millisecond keep two copies, named in UTC and in wr
   const store = createTodoStore(path);
   const realNow = Date.now;
   try {
-    Date.now = () => 1735689600123; // 2025-01-01T00:00:00.123Z
+    Date.now = () => Date.parse('2026-11-25T00:00:00.123Z'); // after MADE: a createdAt ahead of the clock is refused
     await store.write(A);
     await store.write(B);
     await store.write([{ id: 4, text: 'board C', lane: 'idea' }]);
@@ -335,12 +338,12 @@ test('two writes in the same millisecond keep two copies, named in UTC and in wr
   }
   // The later copy takes the next free millisecond. A `-1` suffix would not
   // do: `-` sorts before the `.` of `.json`, so it would list as the older.
-  assert.deepEqual(historyFiles(path), ['todos-20250101T000000123Z.json', 'todos-20250101T000000124Z.json']);
-  assert.deepEqual(readCopy(path, 'todos-20250101T000000123Z.json'), A);
-  assert.deepEqual(readCopy(path, 'todos-20250101T000000124Z.json'), B);
+  assert.deepEqual(historyFiles(path), ['todos-20261125T000000123Z.json', 'todos-20261125T000000124Z.json']);
+  assert.deepEqual(readCopy(path, 'todos-20261125T000000123Z.json'), A);
+  assert.deepEqual(readCopy(path, 'todos-20261125T000000124Z.json'), B);
   assert.deepEqual(await store.copies(), [
-    { file: 'todos-20250101T000000124Z.json', items: B.length },
-    { file: 'todos-20250101T000000123Z.json', items: A.length }
+    { file: 'todos-20261125T000000124Z.json', items: B.length },
+    { file: 'todos-20261125T000000123Z.json', items: A.length }
   ], 'listed newest first, with item counts');
 });
 

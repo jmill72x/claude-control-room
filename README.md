@@ -3414,8 +3414,8 @@ commands, and where it draws.
 ### Tests and build
 
 ```bash
-cd server && npm test      # 1522 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
-cd web && npm test         # 332 tests of the Orbit page's logic (node --test, nothing to install)
+cd server && npm test      # 1947 tests, pure-function and collector-seam unit tests, no network, no shelling out to `claude`
+cd web && npm test         # 410 tests of the Orbit page's logic (node --test, nothing to install)
 cd web && npm run build    # produces web/dist (one page, index.html), which the server serves
 ```
 
@@ -3515,6 +3515,25 @@ A restore is checked like any other write and keeps the board it replaces first,
 can be undone the same way. The server needs no restart, and an open page can no longer
 write its old list back over the restore (see the next section).
 
+With the done-lane archive on (below), the copy taken just before the first archive move
+is kept as `todos-pre-archive-<time>.json`, listed with `pinned` after its item count and
+never pruned. Restoring a copy that holds items archived since brings those items back to
+the board and takes them out of the archive, so no item is ever in both files. The pinned
+copy is the board as it was then, so every item added since would leave the board:
+restoring it is refused unless `--force` is added, and the refusal says how many current
+items the copy lacks. To bring archived items back without losing anything, use
+`node server/restore-todos.mjs --unarchive-all` (below).
+
+The server and `restore-todos.mjs` take the same lock file, `server/todos.json.lock`
+(gitignored), around every write of the board and the archive, so they never write at
+the same moment: the script waits up to 10 seconds for the server's write. A lock is
+written whole to a temp file and linked into place, so it is never seen half written; a
+lock left by a process that has stopped, or held over 60 seconds, is broken, and every
+break is logged as a `board:` line. The board, its
+history copies and a corrupt board set aside are written `0600`, and the folders the
+store creates `0700`; a file or folder made before keeps its mode until changed by hand
+(the board itself becomes `0600` at its next write).
+
 ### Two writers, one board: the revision check
 
 The page used to read the board once and PUT its whole copy on every tap, so a tab left
@@ -3569,9 +3588,12 @@ edit of `todos.json` changes it like any other write.
 | `ask` | no | what waits on the board's owner: `{ "what", "kind", "why", "time" }`. `what` is 1 to 500 characters, `kind` is `decide` or `do`, `why` (optional) at most 300 characters, `time` (optional) a 24-hour `HH:MM`, and no other key is taken. Absent or `null` means none (Phase 4 of the Orbit plan shows it) |
 | `owner` | no | an agent key (lowercase letters, digits and hyphens) that overrides the tag's owner; absent or `""` means none |
 | `doneAt` | no | when the item was finished, kept by the server (below); a writer may send one, as an ISO 8601 date and time with its offset |
+| `createdAt` | no | when the item was added, kept by the server (below): an ISO 8601 date and time, or `null` for "unknown" (made before the server began stamping it); never changed once the item is on the board |
+| `restoredAt` | no | when the item last came back from the done-lane archive, set by the server only; the archive counts the item's days from it |
 
-The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`, `owner`
-and `doneAt` on every write. A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
+The server checks `id`, `text`, `tag`, `lane`, `priority`, `due`, `title`, `ask`, `owner`,
+`doneAt`, `createdAt` and `restoredAt` on every write, and refuses an `archivedAt` (only
+the archive's items carry one). A bad one (an empty `id`, a `tag` of `null`, an unknown lane,
 `P4`, a due date like `10/21` or `2026-02-30`, an `ask` whose `kind` is `maybe`) is refused
 with **400** and a message naming the item and the field, and nothing is written. `title`,
 `ask.what` and `ask.why` (and an ack's note) may not hold control characters (a newline or
@@ -3585,12 +3607,12 @@ default-ignorable characters, separators and lone surrogates, so also the soft h
 characters, variation selectors and Hangul fillers; board e6178bb9), because a chip with
 an invisible character can pass for another area ("Vision" and a soft hyphen); no tag on
 the live board held one (checked 2026-11-19). Every field is stored and returned exactly as
-sent, except `doneAt`; other fields an item carries are kept too.
+sent, except `doneAt`, `createdAt` and `restoredAt`; other fields an item carries are kept too.
 
 A board PUT may carry up to **1 MiB**, since every write sends every item ever kept, Done
 included; every other write keeps the 256 KB limit. The `board` panel reports the board
 file's size against that cap each minute, and from 75% an alert says so
-(`The board is at 78% of its save limit`), in time to archive the done lane.
+(`The board is at 78% of its save limit`), in time to archive the done lane (below).
 
 `doneAt` is worked out against the board each write replaces: an item that enters Done
 without one gets the write's time; an item still in Done that arrives without one gets its
@@ -3600,6 +3622,101 @@ finished before 2026-10-21 have none and keep having none while they stay in Don
 Orbit page lists them after the dated ones. Because the server may add a `doneAt`, the
 answer to a PUT can differ from what was sent, and its `ETag` is the revision of what was
 written.
+
+`createdAt` (board 17924110) is worked out the same way, against the board each write
+replaces: an item already on it keeps the `createdAt` it had there, whatever the writer
+sends (so an edit, or a writer that rebuilds its items, never changes it); an item that
+was on it with no `createdAt` at all was made before the field existed and gets `null`,
+"unknown", which it keeps (the first save after the change backfills every such item; no
+date is ever guessed); and an item new to the board gets the write's time, unless it
+brings a `createdAt` of its own (an instant or `null`), as an item restored from
+`todos-history/` or brought back from the archive does. A restore from `todos-history/`
+marks an item it brings with none as unknown, not as made at the restore. A `createdAt`
+that is neither an instant nor `null` is a 400. Readers (the morning brief nagging about
+old P1s, say) treat `null` and a missing key alike: unknown. The Orbit page shows it on an
+opened card as `Added Wed 11-05`, or `Added before dates were kept`.
+
+### The done-lane archive (board 17924110; built 2026-11-25, off by default)
+
+Every PUT carries every item, Done included, and Done only grows: on 2026-11-25 the board
+was 632 KB of the 1 MiB save limit (60%), 64% of it Done items, growing about 16 KB a day.
+Past the limit every save from every writer fails with a 413. With the archive on, the
+server moves Done items finished at least N days ago out of `server/todos.json` into
+`server/data/todos-archive.json` (gitignored with the rest of `server/data/`, written
+`0600`), so the save body shrinks and stays small. Nothing is ever deleted: each item is
+in exactly one of the two files, an archived item stays readable and can be brought back.
+
+Turn it on in `server/config.json` and restart; it is off without the block, or with
+`null`:
+
+```json
+"board": { "archiveDays": 14 }
+```
+
+`archiveDays` is a whole number from 1 to 365; anything else logs a `config:` line and
+leaves it off. At start the log says `board: the done-lane archive is on: ...` or `... is
+off`.
+
+- **When it moves.** Two minutes after a start, then hourly. An item's days are counted
+  from its `doneAt`, or from its `restoredAt` if it came back from the archive later. A
+  Done item with no `doneAt` has been in Done since before the server stamped one
+  (2026-10-21), so it counts from the end of 2026-10-21, the latest it can have been
+  finished; its `doneAt` stays absent in the archive. Each move logs one line with counts
+  and sizes only (`board: archived 12 done items finished 14 or more days ago (board file
+  632 KB -> 498 KB; the archive holds 170)`), and a failure once per failing spell.
+- **Under the board's lock and revision.** The move runs in the same queue as every PUT,
+  restore and bring-back, so it never interleaves with a save, and it is an ordinary
+  write of the board: it keeps a copy in `todos-history/` first and changes the `ETag`.
+  A writer holding the old `ETag` (a tab, the mod, `board-write`) gets the usual 409 and
+  re-reads; its re-read has no archived items, so a GET-modify-PUT never sees them as
+  dropped. It waits for the board to have been quiet two minutes, so it never lands
+  between a writer's PUT and the GET that checks it.
+- **A stale copy can't bring archived items back.** A PUT with no `If-Match` that carries
+  an id now in the archive (a copy read before the move) is refused with **409**
+  `{ error, archived: [ids], revision }` and nothing is written. A PUT that only adds new
+  items is never refused for the archive, and an archive file that can't be read never
+  blocks a save (the move itself then refuses to run, and says so in the log).
+- **Before the first move** the whole board is copied to
+  `todos-history/todos-pre-archive-<time>.json`, which is never pruned, so the board as it
+  was before any archiving can always be put back (above).
+- **Reading it:** `GET /api/todos/archive?offset=0&limit=50` answers a page of it,
+  newest finished first: `{ "days": 14, "total": 170, "offset": 0, "items": [ ... ] }`
+  (`days` is `null` when the archive is off; `limit` is 1 to 200, 50 by default), each
+  item as it left the board plus its `archivedAt`. On the Orbit page, the Done lane's
+  **Show archived** opens the archive under the lanes, 20 at a time (**Show 20 more of
+  170**; if the archive changed in between, it reads again from the start), each card with
+  its finished and archived dates. A file that can't be read is
+  answered in fixed words (`the board's archive could not be read; the server log says
+  why`), the detail only in the log.
+- **Bringing an item back:** `POST /api/todos/archive/restore` with
+  `{ "ids": ["<id>", ...] }` (1 to 50 ids; the board's write guards: same origin, JSON)
+  puts each back on the board as it was, in Done, stamped `restoredAt`, and takes it out of
+  the archive. It answers like a PUT: the board as written, with its new `ETag`. An id the
+  archive doesn't hold is a 404, one already on the board a 409, a board that can't be
+  read a 500, and a bring-back that would leave the board within 128 KB of the save limit
+  a 409 that says so; in each case nothing is written. An edit made on the page while a
+  Bring back is on its way is not sent, and the page says so, as for any stale edit. On the page it is the archived card's **Bring back to Done**, and the item then
+  opens in the box at the top of the Board tab (it keeps its old `doneAt`, so it would
+  otherwise sit below the eight the Done lane shows).
+- **The `board` panel** in `/api/dashboard` carries `archive`: on or off, its days, the
+  archive's item count and bytes (kept in memory and read again only when the file
+  changes), and the last run (moved, held, or `failed: true`, never the error's words:
+  those go to the log). Past 10 MB, each move also logs the archive's size.
+- **Instants from the future are refused.** A `createdAt`, `restoredAt` or `doneAt` more
+  than 5 minutes ahead of the server's clock is a 400 (one already on the board as it is
+  still saves): a far-future `doneAt` would keep an item off the archive for ever.
+- **Before turning it on**, `node server/archive-preview.mjs --days 14` prints what a move
+  would take and the save body before and after, as counts and sizes only, and writes
+  nothing (`--file` reads a copy instead of `server/todos.json`).
+- **Turning it off and putting everything back.** `archiveDays: null` and a restart stop
+  new moves; what is archived stays archived and readable. Then
+  `node server/restore-todos.mjs --unarchive-all` merges every archived item into the
+  board as it is now, so nothing added or changed since is lost: each comes back as it
+  was, stamped `restoredAt`, at the end of the board, and the archive is left empty (an
+  item already on the board keeps the board's copy). It takes the shared lock, so it is
+  safe with the server running, and it is refused (writing nothing) if the board would
+  then be within 128 KB of the save limit: raise the limit first in that case. Restoring
+  the pinned pre-archive copy instead (`--force`) would drop every item added since.
 
 How the page shows `due`: a chip on the card reads `Due today`, `Due tomorrow` or
 `Due Wed 10-21` (the year is added when it is not this year). Once the date has passed it

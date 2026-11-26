@@ -9,6 +9,7 @@
   "proactive": { "enabled": false },
   "recover": { "enabled": false },
   "otel": { "enabled": false, "port": 8323 },
+  "board": { "archiveDays": null },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",

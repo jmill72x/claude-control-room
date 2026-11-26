@@ -15,6 +15,9 @@ server/todos-history/
 # corrupt board set aside. Both hold board content.
 server/todos.json.tmp-*
 server/todos.json.corrupt-*
+# The lock the server and restore-todos.mjs share around every board write (board
+# 17924110), and a stale one being broken.
+server/todos.json.lock*
 
 # Usage history: personal, non-recoverable, and this repo is public
 server/data/

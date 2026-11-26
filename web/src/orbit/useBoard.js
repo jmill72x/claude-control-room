@@ -28,6 +28,17 @@ async function fetchBoard() {
   return { list: body, etag: res.headers.get('ETag') };
 }
 
+// The done-lane archive (board 17924110): a page of it, { days, total, items }, newest
+// finished first, read when the Done lane's Show archived is opened and as more is
+// asked for, never on the minute timer (it only grows).
+export async function fetchArchive({ offset = 0, limit = 20 } = {}) {
+  const res = await fetch(`/api/todos/archive?offset=${offset}&limit=${limit}`, { cache: 'no-store' });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+  if (!body || !Array.isArray(body.items)) throw new Error('the server did not return the archive');
+  return { days: Number.isInteger(body.days) ? body.days : null, total: Number.isInteger(body.total) ? body.total : body.items.length, items: body.items };
+}
+
 // randomUUID exists only in a secure context, and the tailnet serves this page
 // over plain HTTP, so there is a fallback: an id that is unique on this board,
 // which is all the server asks of one.
@@ -96,8 +107,13 @@ export function useBoard() {
 
   const send = async (next, previous, madeAt) => {
     // The list this save was made from was replaced since (an earlier save was
-    // refused and the board re-read), so it is not sent.
-    if (epoch.current !== madeAt) return false;
+    // refused and the board re-read, or a Bring back took the server's board), so it
+    // is not sent, and the page says so (Ultron L7: after a Bring back nothing else
+    // would have).
+    if (epoch.current !== madeAt) {
+      setError(STALE_MESSAGE);
+      return false;
+    }
     try {
       const res = await fetch('/api/todos', {
         method: 'PUT',
@@ -138,6 +154,33 @@ export function useBoard() {
     return run.finally(() => { inFlight.current -= 1; });
   }, []);
 
+  // Bring archived items back (POST /api/todos/archive/restore). Queued behind any
+  // save, like one, and the server's answer is the board as written with its new
+  // ETag, which the page takes. Resolves true when the server took it; a refusal
+  // keeps the board as it is and says why.
+  const bringBack = useCallback(ids => {
+    inFlight.current += 1;
+    const run = chain.current.then(async () => {
+      try {
+        const res = await fetch('/api/todos/archive/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids })
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok || !Array.isArray(body)) throw new Error(body?.error ?? `HTTP ${res.status}`);
+        adopt({ list: body, etag: res.headers.get('ETag') });
+        setError(null);
+        return true;
+      } catch (e) {
+        setError(`Not brought back: ${e.message}`);
+        return false;
+      }
+    });
+    chain.current = run.catch(() => {});
+    return run.finally(() => { inFlight.current -= 1; });
+  }, []);
+
   const clearError = useCallback(() => setError(null), []);
-  return { todos, loaded, error, save, clearError };
+  return { todos, loaded, error, save, bringBack, clearError };
 }

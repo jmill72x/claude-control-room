@@ -252,14 +252,11 @@ bug were built the same day, committed and pushed, and live after the restart (t
    it is `KeepAlive false`, runs `jarvis/bin/jarvis-start` once at load and exits, so it
    shows no PID while Jarvis is perfectly alive. **Built as Phase 2 of the Orbit plan (§9),
    the health strip.**
-5. **Board fields for a co-owned board** (M). Add `created` (the P3 item on the board), an
-   optional `owner` (agent name) and a done-lane archive (37 of 86 items are done). There is
-   no Control Room tag: this dashboard's items sit under Bug, Feature and Infra, so the board
-   can't group them. Plan: the store stamps `created` on items that lack it (never
-   overwrites it); `owner` is a free-text field the page shows as a chip; "archive" moves
-   done items older than 14 days into `todos-archive.json` behind a "show archived" link.
-   The Orbit plan (§9) takes `owner` and a done time (`doneAt`) into its Phase 1; `created`
-   and the archive stay here.
+5. **Board fields for a co-owned board** (M). `owner` and `doneAt` went in with Orbit
+   Phase 1 (§9). **`createdAt` and the done-lane archive are built and staged 2026-11-25 on
+   `jos/board-archive` (board 17924110), the archive off by default: §52.** There is no
+   Control Room tag: this dashboard's items sit under Bug, Feature and Infra, so the board
+   can't group them.
 6. **Source health / `/control-room doctor`** (M, §5 above). Also serve it as a small JSON
    status Jarvis can read for the morning brief, so "is the dashboard right?" is one GET.
 7. **Done (2026-10-19): the service log is timestamped.** Every `console` line and the
@@ -5440,3 +5437,197 @@ exporter sends (times as strings or numbers are both read), and whether a `claud
 run's last export reaches the receiver before it exits. Safari and real devices (no
 WebKit here). The old-server note only by unit test (the scratch server is the new
 code, so it shows "Unavailable: no reading yet" before its first pass, as every panel does).
+
+## 52. Created dates and a done-lane archive (board 17924110; staged 2026-11-25 on `jos/board-archive`, off main 3e283bc, the archive off by default)
+
+**Why now.** On 2026-11-25 `GET /api/todos` was 632,037 bytes, 60% of `BOARD_MAX_BODY`
+(1 MiB), with the size alert at 75%. Done was 481 of 814 items and 64% of the bytes; the
+board grew about 16 KB a day since 10-21 (30% of 256 KB then), so 75% was about ten days
+away and the 413 wall about four weeks. Past it every save from every writer fails.
+
+**What is built** (README, "The board's items" and "The done-lane archive"):
+
+- `createdAt` on every item, kept by the server like `doneAt` (`stampCreated` in
+  `server/todos.mjs`): an item already on the board keeps its own whatever a writer sends;
+  one that was on the board with no key gets `null`, "unknown" (the first save after the
+  merge backfills every current item that way; nothing is guessed); a new item gets the
+  write's time unless it brings an instant or `null`. A restore from `todos-history/`
+  marks an item it brings with none as unknown. A bad value is a 400.
+- The archive move, on the server, in the store's write queue (`archiveDone`): Done items
+  whose clock (the later of `doneAt` and `restoredAt`; the end of 2026-10-21 for undated
+  ones) is at least `board.archiveDays` days old go to `server/data/todos-archive.json`
+  (0600), archive first, board second, so a crash leaves an item in both, never in
+  neither. Two minutes after a start, then hourly (`lib/board-archive.mjs`), skipped while
+  the board was written in the last two minutes. Before the first move,
+  `todos-history/todos-pre-archive-<time>.json`, never pruned.
+- `GET /api/todos/archive` (paged: `{ days, total, offset, items }`), `POST /api/todos/archive/restore`
+  (`{ ids }`, the board's guards, answers like a PUT), and the Done lane's **Show
+  archived** on the page with **Bring back to Done** (the item then opens in the focus box).
+- A PUT with no `If-Match` that would bring an archived id back is a 409 naming it
+  (`archived`). A PUT with an old `If-Match` is the ordinary 409.
+- `restore-todos.mjs` lists the pinned copy and, restoring a copy with since-archived
+  items, takes them out of the archive (stamped `restoredAt`). `--unarchive-all` merges
+  the whole archive into the board as it is now (the way back); the pinned copy restores
+  only with `--force`, and says how many current items it lacks.
+- `node server/archive-preview.mjs --days N`: counts and sizes only, writes nothing. On a
+  copy of the 11-25 board: N=7 moves 307 of 481 Done (save body 60% -> 38%), N=14 moves 237
+  (-> 45%), N=30 moves 106 (-> 56%); 79 of each are undated.
+- The `board` panel carries `archive` (on/off, days, items, bytes, last run, never the
+  error's words).
+
+**Decision for Jeff at the C&P: archive, or raise the limit.**
+
+- (a) **Archive at 14 days (my pick).** Config `"board": { "archiveDays": 14 }` and a
+  restart. The first run moves 237 items and brings the save body to about 45% (459 KB);
+  after that the board holds the open items plus two weeks of Done (about 230 KB of Done
+  at the recent pace), so it stays near that and grows only as the open lanes grow. 14 matches the 10-19 plan above, keeps a weekly look-back
+  with a week to spare, and archived items stay one tap (or one GET) away. 7 is fine too
+  if a smaller page matters more (38%).
+- (b) **Raise `BOARD_MAX_BODY`** (routes.mjs, say to 4 MiB). One line, no new moving part,
+  but it only moves the wall (about 7 months at today's rate), and every page load, every
+  minute's re-read and every save still carries every Done item ever (over 600 KB today,
+  to every device with the page open).
+- (c) Both: archive at 14 and raise the cap to 2 MiB as headroom. Not needed now.
+
+`createdAt` goes live with the merge and a restart whichever is picked; it doesn't depend
+on the archive.
+
+**What `board-write` needs: nothing, to keep working.** Read 2026-11-25
+(`~/Projects/jarvis/jarvis/board.py`, read only): it GETs with the ETag, applies changes to
+those items, refuses a PUT that drops an id from that GET unless `--allow-drop` names it,
+PUTs with `If-Match`, then GETs again and checks the count and changed fields. Archived
+items are never in its GET, so they can't read as drops; a move between its GET and PUT
+changes the revision, so it gets a 409 ("the board changed since it was read ... run it
+again") and its rerun works; the move waits two minutes after any write, so it can't land
+between the PUT and the read-back. It copies whole item dicts, so `createdAt` rides along.
+Worth a later jarvis run (not needed for go-live):
+1. a change on an id that is not on the board but is archived says so ("is in the
+   archive: bring it back first") instead of "no item has id";
+2. an `unarchive` change kind that calls `POST /api/todos/archive/restore`;
+3. refuse `set` of `createdAt`, `restoredAt` or `archivedAt` before the PUT (the server
+   ignores the first two on an existing item, so today the read-back reports a mismatch
+   after a write that did land, and refuses the third with a 400), and mirror the
+   server's `createdAt` check (instant or null);
+4. a 409 whose body has `archived` can say so instead of "run it again".
+The morning brief can read `createdAt` for old P1s (null or missing: unknown).
+
+**Ultron's vet (2026-11-25): GO with conditions, 1 medium and 8 lows, all folded in the
+same day** (his L9 is board-write's, item 3 above). Ultron re-vets the unarchive-all path
+and the lock.
+- M1: the README's way back was restoring the pre-archive copy, which drops every change
+  since the first move. Now `restore-todos.mjs --unarchive-all` (store `unarchiveAll`)
+  merges the archive into the current board, under the lock; the pinned copy restores
+  only with `--force` and the refusal counts the current items it lacks. README and the
+  rollback below use it.
+- L1: one lock file, `server/todos.json.lock` (pid + time + token), held around every
+  write of the board and the archive by the server and restore-todos alike; a writer
+  waits up to 10 s, then fails naming the holder (a PUT gets 503). A lock whose pid is
+  gone, or older than 60 s, is broken by rename-then-check, so a lock taken in between is
+  put back with link(). (Ultron's re-read lows, below, changed the take, the age and the
+  log.)
+- L2: Bring back and unarchive-all read the board strictly; unreadable is a 500 and
+  nothing is written (it used to read an unparseable board as empty).
+- L3: a `createdAt`, `restoredAt` or new `doneAt` over 5 minutes ahead of the clock is a 400.
+- L4: a bring-back that would leave the board within 128 KB of `BOARD_MAX_BODY` (now
+  defined in todos.mjs, re-exported by routes.mjs) is a 409, nothing written.
+- L5: the archive's count, bytes and ids are kept in memory, re-read only when the file's
+  time, length or inode changes; `GET /api/todos/archive` is paged (`offset`, `limit` 1
+  to 200, default 50; answers `total`), and the page loads 20 at a time; past 10 MB a move
+  logs the size.
+- L6: an unreadable archive or board is answered in fixed words; the detail goes to the log.
+- L7: an edit skipped because a Bring back replaced the board now shows the stale-edit
+  message (it was silent).
+- L8: the board, its history copies, the pinned copy and a corrupt aside are written 0600,
+  new folders 0700. Existing files keep their modes until changed (the board becomes 0600
+  at its next write); the go-live step below fixes the rest.
+
+**Ultron's re-read (2026-11-25): GO to C&P and to switch on, 4 new lows; three folded in
+the same night (L-D is board-write's, item 3 above):**
+- L-A: a lock created but not yet written could be read as stale and broken. The lock is
+  now written whole to a temp file of its own (`todos.json.lock.new-<pid>-<token>`) and
+  link()ed to its name, so it is never seen empty; and a lock that isn't a whole
+  "pid time token" line (a hand-made file, or an older writer mid-write) is broken only
+  once it is 5 s old.
+- L-B: the stale age is 60 s (was 10 minutes), so a lock put back under a live pid blocks
+  writes for a minute at most, and every lock broken or put back logs a `board:` line
+  (who held it, when, and why it was judged stale).
+- L-C: Show N more on the page joined pages by offset, so a move or a Bring back between
+  pages repeated or skipped items. It now reads again from the start when the archive's
+  total changed, and otherwise skips ids already shown (`joinArchivePage`).
+
+**Go-live, in order:** Ultron's re-vet (done: GO); C&P; Jarvis sets `board.archiveDays` in
+`server/config.json` (with a backup) only if (a) or (c); a service restart (Vision's
+scope: Needs Jeff); the web build (Show archived, Added line); then, from
+`~/Projects/claude-control-room`, the modes the code can't change on files made before
+(L8): `chmod 700 server/todos-history && chmod 600 server/todos-history/*.json`. Check:
+the start log line `board: the done-lane archive is on`, then within the first few
+minutes one `board: archived N done items ...` line, `GET /api/todos` smaller,
+`GET /api/todos/archive` with `total` N, the pinned copy in `restore-todos.mjs --list`,
+`ls -l server/todos.json` reading `-rw-------`, no `server/todos.json.lock` left between
+writes, and the page's Show archived. An open tab from before the restart gets one 409
+at its next save and re-reads.
+
+**Rollback:** set `board.archiveDays` to `null` and restart (stops new moves), then
+`node server/restore-todos.mjs --unarchive-all` from `~/Projects/claude-control-room`
+(Jarvis, with Jeff's OK, as for any restore): every archived item comes back to the board
+as it is now and nothing since is lost. If the board would then be too big to save, it
+refuses and writes nothing: raise `BOARD_MAX_BODY` first. Never restore the pinned copy
+to roll back.
+
+**Choices to defend.** The move runs on a timer, never inside a PUT (a PUT that shrank the
+board would fail `board-write`'s read-back count). Unknown is `null`, not a guessed date and
+not a missing key. Undated Done items are archived by an upper bound on their date, not
+left on the board forever. A bring-back returns the item to Done as it was, not to Ideas:
+Reopen is one more tap and keeps the history true. For a returning item the archive's copy
+counts as the board it replaces, so it keeps its `createdAt` and `doneAt` (an undated one
+stays undated) even when a restored copy lacks them. A broken archive file never blocks a
+save (fail open), but stops every move (fail closed). `archivedAt` on the live board is a
+400. The restore route needs no `If-Match` (it adds, never overwrites a copy).
+
+**Verified.** Server suite 1944 of 1944 (1887 on main); the new files also in
+`TZ=Asia/Tokyo`: `test/board-created.test.mjs` (8), `test/board-archive.test.mjs` (27),
+`test/board-archive-safety.test.mjs` (21, Ultron's conditions: unarchive-all, force, the
+lock across two stores and across a real second process, stale and foreign locks,
+strict reads, future instants, the size limit, the cache, paging, fixed words, modes),
+one gitignore test, and createdAt added to the
+fixtures of four older files that compare whole boards. Web 409 of 409
+(`test/orbit-board-archive.test.js`, 5). oxlint clean. 19 mutants on the store, routes and
+sweeper (no ARCHIVED refusal, writer-set createdAt, backfill guessing now, no quiet window,
+no pinned copy, restoredAt ignored, not 0600, returned items left in the archive, restore
+without reclaim, restore stamping now, error text in status, no check before the archive
+write, writer-set restoredAt, reseed over an archive, the N-day edge, undated always old,
+ARCHIVED not a 409, restore without guards, a returning item stamped as if new): all
+caught; and 15 more for Ultron's fixes (no lock, a lenient read, no clock check, old
+future values refused, no size check, no force, no cache, the detail in the answer, the
+board and the copies not 0600, a stale lock never broken, release of another's lock, no
+lock folder, unarchive-all replacing the board, no stale age): all caught, the no-lock
+one by the two-stores test too. `restore-todos.mjs` run on a scratch copy of server/
+with an invented board: `--list` shows `pinned`, the pinned copy without `--force` is
+refused with its count (exit 1), `--unarchive-all` brought both back and printed the
+archive-is-on note. Headless Chrome on a second scratch build: the archive pages (20,
+then Show 5 more of 25), and an edit made while a Bring back was held 1.5 s by the
+server shows the stale-edit message and is not saved; with that line removed from a
+scratch build, no message (the check catches it). For the re-read lows: 3 more server
+tests (no lock ever seen partial by a reader polling 60 contended writes; a fresh partial
+lock waited for and a 5 s old one broken and logged; 60 s and the logged break, live and
+dead pids) and 1 web test (`joinArchivePage`); mutants for the grace, the 60 s age, the
+break log, the total check and the id skip all caught. The temp-file-and-link take is
+held by the polling test only by chance (1 of 5 runs caught the old create-then-write
+take), so its guarantee rests on the 5 s grace, which is deterministic. Headless Chrome:
+with one more item archived between pages, Show more read again from the start and
+showed all 26 once, the new one first. The two-stores interleave test was itself wrong
+and failed 2 runs in 4 under the full suite: its third writer was a plain save of a copy
+read before the others, which by design drops whatever they brought back. It now saves
+with the revision it read, as every real writer does; 30 runs alone and 3 full suites
+clean, and it still catches the no-lock mutant 5 of 5. Headless Chrome (`channel:
+'chrome'`) on a scratch build and server (port 8417, invented board): Show archived empty
+then full, a tab open across a move gets the 409 message and no archived item comes back,
+Bring back puts the item in Done with `restoredAt` and opens it in the focus box, the
+Added line, no sideways scroll at 390 and 1440, no page errors. The live board, config,
+data and `web/dist` were not touched (its mtime checked).
+
+**Not verified.** `board-write` itself against a scratch server: the agent fence blocks a
+subagent from running it, so its protocol was checked by an HTTP test that does what it
+does (GET with ETag, PUT with If-Match and no Origin, read-back count). Jarvis can run it
+against a scratch server from this branch. Safari and real devices (no WebKit here). The
+first real move on the live board.

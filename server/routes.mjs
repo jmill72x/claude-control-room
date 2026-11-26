@@ -3,7 +3,8 @@ import { validateIngest } from './lib/validate-ingest.mjs';
 import { checkRoutinePost, ROUTINE_BODY_MAX } from './lib/routine-chat.mjs';
 import { localCaller, PROXY_HEADERS } from './lib/local-caller.mjs';
 import { nextRenewalDate } from './lib/renewal.mjs';
-import { StaleRevisionError, InvalidBoardError } from './todos.mjs';
+import { StaleRevisionError, InvalidBoardError, ArchiveError, BOARD_MAX_BODY } from './todos.mjs';
+import { RESTORE_MAX_IDS } from './lib/board-archive.mjs';
 import { readRoster } from './lib/roster.mjs';
 import {
   applyAcks, decoratePayload, checkAckRequest, makeAck, isAckKey, ACK_MAX_BODY, ackLogLine, unackLogLine, ackNotice
@@ -21,7 +22,9 @@ const MAX_BODY = 256 * 1024;
 // item ever written, Done included, and on 2026-10-21 it was 30% of 256 KB and
 // growing by a few KB a day. It gets 1 MiB of its own. The `board` panel
 // (server.mjs) reports its size against this, and past 75% an alert says so.
-export const BOARD_MAX_BODY = 1024 * 1024;
+// The cap itself lives in todos.mjs since board 17924110, so the store can keep a
+// bring-back from the archive under it (Ultron L4); exported here as before.
+export { BOARD_MAX_BODY };
 // A hook's report of one Bash command (lib/exact-commands.mjs caps the text at 4,000
 // characters; as JSON with every character escaped that is under 32 KB).
 const EXACT_MAX_BODY = 32 * 1024;
@@ -153,6 +156,28 @@ export function pageConfig(config, planData) {
     roster: { agents: roster.agents, tagOwners: roster.tagOwners },
     jobs: roster.jobs
   };
+}
+
+// The archive's GET pages (board 17924110, Ultron L5).
+export const ARCHIVE_PAGE_DEFAULT = 50;
+export const ARCHIVE_PAGE_MAX = 200;
+// Another process (restore-todos.mjs) holds the board's lock: a 503 to try again.
+const boardLocked = err => new HttpError(503, 'the board is being written by another process; try again in a moment');
+// An archive route's error as an answer. A file that can't be read is answered in fixed
+// words, its detail (which can name a path) only in the log (Ultron L6).
+const UNREADABLE_SAYS = {
+  UNREADABLE: "the board's archive could not be read; the server log says why",
+  BOARD_UNREADABLE: 'the board could not be read, so nothing was brought back; the server log says why'
+};
+function archiveHttpError(err, log) {
+  if (err instanceof ArchiveError && UNREADABLE_SAYS[err.code]) {
+    log(`board: ${err.message}`);
+    return new HttpError(err.status, UNREADABLE_SAYS[err.code]);
+  }
+  if (err instanceof ArchiveError) return new HttpError(err.status, err.message);
+  if (err instanceof InvalidBoardError) return new HttpError(400, err.message);
+  if (err?.code === 'BOARD_LOCKED') return boardLocked(err);
+  return err;
 }
 
 // Acks (POST /api/acks) allowed in any one minute before a 429 (createHandler); an
@@ -337,7 +362,7 @@ export function createIngestHandler(deps) {
 // and `loops` in /api/dashboard. Without it, both say the loops are not set up.
 // `localAlerts` is lib/local-alerts.mjs's store: its `view(now)` joins the raised alerts
 // (the strip, Needs you and acks); posts reach it on the ingest socket only.
-export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, localAlerts = NO_LOCAL_ALERTS, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now(), setTimer = undefined }) {
+export function createHandler({ cache, todos, config, archiveDays = null, acks = NO_ACKS, needsYou = NO_NEEDS_YOU, localAlerts = NO_LOCAL_ALERTS, log = console.log, onBlock = null, onExact = null, onMoved = null, onIngestTcp = null, onAckNotice = null, loops = null, clock = () => Date.now(), setTimer = undefined }) {
   const emptyLoops = (status, why) => ({ status, why, open: [], quiet: [], held: [], recent: [], weeks: [], generatedAt: Date.now() });
   // A view that throws must not take /api/dashboard down with it (Ultron's L5, 11-13): the
   // panel says the view failed, and the log says so once until it works again.
@@ -545,10 +570,57 @@ export function createHandler({ cache, todos, config, acks = NO_ACKS, needsYou =
             // date that is not YYYY-MM-DD) is the caller's mistake: say what
             // is wrong, write nothing.
             if (err instanceof InvalidBoardError) throw new HttpError(400, err.message);
+            // A copy read before an archive move, sent with no If-Match (one with a
+            // revision gets the 409 below first): it would bring archived items back
+            // as copies. Refused the same way, so every writer re-reads.
+            if (err instanceof ArchiveError && err.code === 'ARCHIVED') {
+              const { revision } = await todos.readState();
+              return json(res, 409, { error: err.message, archived: err.ids, revision }, boardHeaders(revision));
+            }
+            if (err?.code === 'BOARD_LOCKED') throw boardLocked(err);
             if (!(err instanceof StaleRevisionError)) throw err;
             return json(res, 409, { error: 'the board changed since this copy was read', revision: err.current },
               boardHeaders(err.current));
           }
+        }
+      }
+
+      // The done-lane archive (board 17924110; todos.mjs). Reading it is open like the
+      // board; bringing an item back is a write with the board's guards, and answers
+      // like a PUT: the board as written, with its new ETag.
+      if (path === '/api/todos/archive' && req.method === 'GET') {
+        if (!todos.archived) throw new HttpError(503, 'the archive is not set up on this server');
+        // A page at a time (Ultron L5): ?offset=0&limit=50, newest finished first.
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const offset = query.has('offset') ? Number(query.get('offset')) : 0;
+        const limit = query.has('limit') ? Number(query.get('limit')) : ARCHIVE_PAGE_DEFAULT;
+        if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > ARCHIVE_PAGE_MAX) {
+          throw new HttpError(400, `offset must be a whole number from 0, and limit one from 1 to ${ARCHIVE_PAGE_MAX}`);
+        }
+        try {
+          // `days` is the setting (null: off, nothing new moves), so the page can say when
+          // a Done item moves; `total` the archive's count; `items` this page of it.
+          const page = await todos.archived({ offset, limit });
+          return json(res, 200, { days: archiveDays, ...page }, { 'Cache-Control': 'no-store' });
+        } catch (err) {
+          throw archiveHttpError(err, log);
+        }
+      }
+      if (path === '/api/todos/archive/restore' && req.method === 'POST') {
+        guardWrite(req);
+        if (!todos.unarchive) throw new HttpError(503, 'the archive is not set up on this server');
+        const body = await readBody(req);
+        const ids = body?.ids;
+        const okId = id => (typeof id === 'string' && id !== '' && id.length <= 200) || (typeof id === 'number' && Number.isFinite(id));
+        if (!Array.isArray(ids) || ids.length === 0 || ids.length > RESTORE_MAX_IDS || !ids.every(okId)) {
+          throw new HttpError(400, `the body must be { "ids": [...] } with 1 to ${RESTORE_MAX_IDS} item ids`);
+        }
+        try {
+          const saved = await todos.unarchive(ids);
+          log(`board: ${saved.returned.length} item${saved.returned.length === 1 ? '' : 's'} brought back from the archive`);
+          return json(res, 200, saved.todos, boardHeaders(saved.revision));
+        } catch (err) {
+          throw archiveHttpError(err, log);
         }
       }
 

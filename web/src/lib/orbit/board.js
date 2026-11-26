@@ -284,3 +284,73 @@ export function showingLine({ open, total, filtered }) {
     ? `Showing ${open} of ${total} open item${total === 1 ? '' : 's'}, plus the done ones that match.`
     : `All ${total} open item${total === 1 ? '' : 's'}.`;
 }
+
+// ---- the archive (board 17924110) ----
+//
+// Done items finished at least `days` days ago live in the server's archive file, off
+// the board, read a page at a time at GET /api/todos/archive ({ days, total, items },
+// newest finished first). The Done lane's "Show archived" opens them here, ARCHIVE_SHOWN
+// at a time, each with Bring back.
+
+export const ARCHIVE_SHOWN = 20;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// "Wed 11-05" on the viewer's clock (the year added when it is not this year), or null.
+export function shortDate(instant, now = new Date()) {
+  const ms = Date.parse(instant ?? '');
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${WEEKDAYS[d.getDay()]} ${d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}-${md}`}`;
+}
+
+// The items loaded so far, in the server's order (newest finished first; sorted again
+// here so pages joined together stay in it), and whether the archive holds more.
+export function archiveView(items, { total = null } = {}) {
+  const list = (Array.isArray(items) ? items : []).map((t, order) => ({ t, order, at: doneTime(t) }));
+  list.sort((a, b) => {
+    if (a.at !== null && b.at !== null) return b.at - a.at || b.order - a.order;
+    if (a.at !== null) return -1;
+    if (b.at !== null) return 1;
+    return b.order - a.order;
+  });
+  const shown = list.map(x => x.t);
+  const all = Number.isInteger(total) && total > shown.length ? total : shown.length;
+  return { shown, total: all, more: shown.length < all };
+}
+
+// A further page of the archive joined to what is loaded (Ultron's re-read L-C). When
+// the archive's total changed since what is loaded was read (a move or a Bring back in
+// between), offsets no longer line up, so the answer is to reload from the start
+// ({ reload: true }); otherwise the page is added, less any id already loaded, so an
+// item never shows twice.
+export function joinArchivePage(loaded, page, loadedTotal) {
+  if (!Number.isInteger(page?.total) || page.total !== loadedTotal) return { reload: true };
+  const have = new Set((loaded ?? []).map(t => String(t.id)));
+  return { reload: false, items: [...(loaded ?? []), ...(page.items ?? []).filter(t => !have.has(String(t.id)))] };
+}
+
+// The line under an archived item's title: when it was finished (or that the date is
+// unknown, for items finished before the board kept one) and when it was archived.
+export function archivedLine(item, now = new Date()) {
+  const done = shortDate(item?.doneAt, now);
+  const moved = shortDate(item?.archivedAt, now);
+  return [done ? `Done ${done}` : 'Done before dates were kept', moved ? `archived ${moved}` : null].filter(Boolean).join(' · ');
+}
+
+// What the archive view says about the setting.
+export function archiveNote(days, total) {
+  const when = Number.isInteger(days) && days > 0
+    ? `Done items move here ${days} day${days === 1 ? '' : 's'} after they are finished, to keep the board small enough to save.`
+    : 'Archiving is off, so nothing new moves here.';
+  return total === 0 ? `Nothing is archived. ${when}` : `${total} archived item${total === 1 ? '' : 's'}. ${when}`;
+}
+
+// When an item was added, for the opened card: "Added Wed 11-05", "Added before dates
+// were kept" for createdAt null, nothing when the field is absent (not yet stamped).
+export function addedLine(item, now = new Date()) {
+  if (!item || !('createdAt' in item)) return null;
+  const d = shortDate(item.createdAt, now);
+  return d ? `Added ${d}` : 'Added before dates were kept';
+}

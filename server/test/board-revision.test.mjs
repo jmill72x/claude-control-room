@@ -12,9 +12,11 @@ import { createTodoStore, revisionOf, StaleRevisionError } from '../todos.mjs';
 import { createHandler, parseIfMatch } from '../routes.mjs';
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'ccr-rev-')), 'todos.json');
-const A = [{ id: 1, text: 'a', lane: 'idea' }];
-const B = [{ id: 1, text: 'a', lane: 'idea' }, { id: 2, text: 'b', lane: 'doing' }];
-const C = [{ id: 3, text: 'c', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z' }];
+// Each brings a createdAt, so it round-trips exactly (the server stamps one otherwise).
+const MADE = '2026-11-01T12:00:00.000Z';
+const A = [{ id: 1, text: 'a', lane: 'idea', createdAt: MADE }];
+const B = [{ id: 1, text: 'a', lane: 'idea', createdAt: MADE }, { id: 2, text: 'b', lane: 'doing', createdAt: MADE }];
+const C = [{ id: 3, text: 'c', lane: 'done', doneAt: '2026-10-01T12:00:00.000Z', createdAt: MADE }];
 
 // ---- the store ----
 

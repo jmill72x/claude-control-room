@@ -29,3 +29,12 @@ test('git ignores a dated copy of the config, and no tracked file is caught by a
   }
   assert.equal((await git(['ls-files', '-ci', '--exclude-standard'])).out, '');
 });
+
+// The done-lane archive (board 17924110) holds board content: the archive, its temp
+// files and the copy kept before the first move are all ignored.
+test('git ignores the board archive, its temp files and the pre-archive copy', { skip: existsSync(GIT) && existsSync(join(REPO, '.git')) ? false : 'not a git checkout' }, async () => {
+  for (const name of ['server/data/todos-archive.json', 'server/data/todos-archive.json.tmp-1-2-3', 'server/todos-history/todos-pre-archive-20261125T120000000Z.json',
+    'server/todos.json.lock', 'server/todos.json.lock.stale-1-abc']) {
+    assert.equal((await git(['check-ignore', '-q', '--no-index', name])).code, 0, name);
+  }
+});

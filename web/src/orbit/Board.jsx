@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTick } from '../hooks/useTick.js';
 import { localToday } from '../lib/due.js';
 import {
   PRIORITIES, TITLE_MAX, TAG_MAX, tagProblem, existingTag, cardTitle, cardDetail, editFields, applyEdit, newItem, withPriority, withDue, areaOptions,
-  ownerOf, agentOf, ownerChips, boardView, priorityFilters, moves, dueLook, showingLine
+  ownerOf, agentOf, ownerChips, boardView, priorityFilters, moves, dueLook, showingLine,
+  archiveView, archivedLine, archiveNote, addedLine, joinArchivePage, ARCHIVE_SHOWN
 } from '../lib/orbit/board.js';
 import { agentColors } from '../lib/orbit/page.js';
 import { Avatar } from './Avatar.jsx';
-import { newId } from './useBoard.js';
+import { newId, fetchArchive } from './useBoard.js';
 
 const BAR = { P0: '#FF6B5C', P1: '#FF7A45', P2: '#F8F7F3', P3: '#A9B4CB', none: 'rgba(248, 247, 243, 0.3)' };
 const BAR_LABEL = { P0: 'P0', P1: 'P1', P2: 'P2', P3: 'P3', none: 'no priority' };
@@ -114,7 +115,7 @@ function Card({ item, roster, today, open, onToggle, items, update, standalone =
       {open && (
         <div className="o-card-body" id={bodyId}>
           {detail && <p className="o-card-detail">{detail}</p>}
-          <span className="o-card-owner">{agent ? agent.name : 'No owner'} · {item.tag || 'No area'} · {done ? 'Done' : item.lane === 'doing' ? 'Doing' : 'Ideas'}</span>
+          <span className="o-card-owner">{agent ? agent.name : 'No owner'} · {item.tag || 'No area'} · {done ? 'Done' : item.lane === 'doing' ? 'Doing' : 'Ideas'}{addedLine(item) ? ` · ${addedLine(item)}` : ''}</span>
           <div role="group" aria-label="Priority" className="o-field-row">
             <span className="o-mono o-field-label">Priority</span>
             {[...PRIORITIES, 'none'].map(p => (
@@ -162,6 +163,107 @@ function Card({ item, roster, today, open, onToggle, items, update, standalone =
         </div>
       )}
     </article>
+  );
+}
+
+// ---- an archived item (board 17924110): read-only, with Bring back ----
+
+function ArchivedCard({ item, roster, open, onToggle, onBringBack }) {
+  const [busy, setBusy] = useState(false);
+  const title = cardTitle(item);
+  const detail = cardDetail(item);
+  const agent = agentOf(ownerOf(item, roster), roster);
+  const bodyId = domId('archive-body', item.id);
+  const back = async () => {
+    setBusy(true);
+    await onBringBack(item.id);
+    setBusy(false);
+  };
+  return (
+    <article className={`o-card o-card-done${open ? ' o-card-open' : ''}`}>
+      <button type="button" className="o-card-head" aria-expanded={open} aria-controls={bodyId} onClick={onToggle}>
+        <Avatar agent={agent} fallback={item.tag} size={32} />
+        <span className="o-card-main">
+          <span className="o-card-top"><span className="o-card-title">{title.text || '(no text)'}</span></span>
+          <span className="o-card-meta">
+            <span className="o-mono o-card-tag">{item.tag || 'No area'}</span>
+            <span className="o-mono o-card-tag">{archivedLine(item)}</span>
+          </span>
+        </span>
+      </button>
+      {open && (
+        <div className="o-card-body" id={bodyId}>
+          {detail && <p className="o-card-detail">{detail}</p>}
+          <span className="o-card-owner">{agent ? agent.name : 'No owner'} · {item.tag || 'No area'}{addedLine(item) ? ` · ${addedLine(item)}` : ''}</span>
+          <div className="o-actions">
+            <button type="button" className="o-btn o-btn-quiet" disabled={busy} onClick={back}>Bring back to Done</button>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
+// The Done lane's archive, read when it is opened (GET /api/todos/archive).
+function ArchivePanel({ board, roster, onClose, onBack }) {
+  const [state, setState] = useState({ loading: true, error: null, days: null, total: 0, items: [] });
+  const [openId, setOpenId] = useState(null);
+  const [note, setNote] = useState(null);
+  // The first `count` items (at least a page), again: on open and after a Bring back.
+  const load = async (count = ARCHIVE_SHOWN) => {
+    try {
+      const got = await fetchArchive({ offset: 0, limit: Math.min(200, Math.max(ARCHIVE_SHOWN, count)) });
+      setState({ loading: false, error: null, ...got });
+    } catch (e) {
+      setState(s => ({ ...s, loading: false, error: `Could not load the archive: ${e.message}` }));
+    }
+  };
+  // The next page, added to what is shown; read again from the start if the archive
+  // changed in between (joinArchivePage), so nothing repeats or goes missing.
+  const more = async () => {
+    try {
+      const got = await fetchArchive({ offset: state.items.length, limit: ARCHIVE_SHOWN });
+      const joined = joinArchivePage(state.items, got, state.total);
+      if (joined.reload) return load(state.items.length + ARCHIVE_SHOWN);
+      setState(s => ({ ...s, error: null, days: got.days, total: got.total, items: joined.items }));
+    } catch (e) {
+      setState(s => ({ ...s, error: `Could not load more of the archive: ${e.message}` }));
+    }
+  };
+  useEffect(() => { load(); }, []);
+  const view = archiveView(state.items, { total: state.total });
+  const bringBack = async id => {
+    const ok = await board.bringBack([id]);
+    if (ok) {
+      setNote('Back on the board, in Done: it is shown at the top of the tab.');
+      setOpenId(null);
+      onBack(id);
+      await load(state.items.length);
+    }
+  };
+  return (
+    <section aria-labelledby="o-archive" className="o-lane o-archive">
+      <div className="o-lane-head">
+        <h3 id="o-archive" className="o-mono o-lane-title">Archived</h3>
+        <span className="o-mono o-lane-count">{state.loading ? '…' : view.total}</span>
+        <button type="button" className="o-btn o-btn-quiet" onClick={onClose}>Hide</button>
+      </div>
+      {state.loading
+        ? <span className="o-lane-empty">Loading the archive…</span>
+        : state.error
+          ? <span className="o-lane-empty" role="alert">{state.error}</span>
+          : <span className="o-lane-note">{archiveNote(state.days, view.total)}</span>}
+      {note && <span className="o-lane-note" role="status">{note}</span>}
+      {view.shown.map(t => (
+        <ArchivedCard key={`archive-${t.id}`} item={t} roster={roster} open={openId === String(t.id)}
+          onToggle={() => setOpenId(id => (id === String(t.id) ? null : String(t.id)))} onBringBack={bringBack} />
+      ))}
+      {view.more && (
+        <button type="button" className="o-btn o-btn-quiet o-more" onClick={more}>
+          {`Show ${Math.min(ARCHIVE_SHOWN, view.total - view.shown.length)} more of ${view.total}`}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -248,7 +350,9 @@ function NewItemForm({ areas, items, onAdd, onCancel }) {
 // ---- the tab ----
 
 // What the focus box says about the item the board was opened on.
-const FOCUS_TITLES = { added: 'Just added', waiting: 'From Waiting on you', link: 'Linked item' };
+// `back`: brought back from the archive (board 17924110). It returns to Done with its
+// old doneAt, so it would sit below the eight the lane shows; the box shows it instead.
+const FOCUS_TITLES = { added: 'Just added', waiting: 'From Waiting on you', link: 'Linked item', back: 'Back from the archive' };
 
 function Lane({ id, title, count, children, empty, footer }) {
   return (
@@ -268,6 +372,7 @@ export function BoardTab({ board, roster, filters, focus, focusWhy, onOpen, onCl
   const today = localToday(new Date(useTick(60 * 1000)));
   const [openId, setOpenId] = useState(null);
   const [form, setForm] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const items = board.todos;
   const view = boardView(items, { owner: filters.owner, priority: filters.priority, sort: filters.sort, ideasAll: filters.ideasAll, roster });
   const areas = areaOptions(items);
@@ -360,11 +465,24 @@ export function BoardTab({ board, roster, filters, focus, focusWhy, onOpen, onCl
             {view.ideas.shown.map(t => card(t, 'ideas'))}
           </Lane>
           <Lane id="o-lane-done" title="Done" count={view.done.total} empty={view.done.total === 0}
-            footer={view.done.older > 0 && (
-              <span className="o-lane-note">{view.done.older} older done item{view.done.older === 1 ? ' is' : 's are'} not shown.</span>
+            footer={(
+              <>
+                {view.done.older > 0 && (
+                  <span className="o-lane-note">{view.done.older} older done item{view.done.older === 1 ? ' is' : 's are'} not shown.</span>
+                )}
+                <button type="button" className="o-btn o-btn-quiet o-more" aria-expanded={archiveOpen} aria-controls="o-archive-panel"
+                  onClick={() => setArchiveOpen(o => !o)}>
+                  {archiveOpen ? 'Hide archived' : 'Show archived'}
+                </button>
+              </>
             )}>
             {view.done.shown.map(t => card(t, 'done'))}
           </Lane>
+        </div>
+      )}
+      {board.loaded && archiveOpen && (
+        <div id="o-archive-panel">
+          <ArchivePanel board={board} roster={roster} onClose={() => setArchiveOpen(false)} onBack={id => onOpen(String(id), 'back')} />
         </div>
       )}
     </main>
