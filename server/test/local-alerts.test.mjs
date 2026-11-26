@@ -50,7 +50,7 @@ test('checkLocalAlert: defaults, the allowed fields and values, and refusals in 
   assert.deepEqual(ok, { ok: true, value: { title: 'Jarvis failed to start', body: '', severity: 'warning', kind: 'other', withheld: [] } });
   assert.deepEqual(checkLocalAlert({ title: 'x', body: null, severity: null, kind: null }).value, { title: 'x', body: '', severity: 'warning', kind: 'other', withheld: [] });
   for (const severity of ['info', 'warning', 'critical']) assert.equal(checkLocalAlert({ title: 'x', severity }).value.severity, severity);
-  for (const kind of ['jarvis-down', 'other']) assert.equal(checkLocalAlert({ title: 'x', kind }).value.kind, kind);
+  for (const kind of ['jarvis-down', 'jarvis-back', 'other']) assert.equal(checkLocalAlert({ title: 'x', kind }).value.kind, kind);
   const refusals = [
     [['MARKER'], /must be an object/],
     [null, /must be an object/],
@@ -61,7 +61,7 @@ test('checkLocalAlert: defaults, the allowed fields and values, and refusals in 
     [{ title: 'MARKER', body: 7 }, /body must be text/],
     [{ title: 'MARKER', severity: 'MARKER' }, /severity must be one of info, warning, critical/],
     [{ title: 'MARKER', severity: 'Critical' }, /severity must be one of/],
-    [{ title: 'MARKER', kind: 'MARKER' }, /kind must be one of jarvis-down, other/],
+    [{ title: 'MARKER', kind: 'MARKER' }, /kind must be one of jarvis-down, jarvis-back, other/],
     [{ title: `  ${ZWSP}${RLO}\n\t ` }, /title must hold some visible text/]
   ];
   for (const [body, words] of refusals) {

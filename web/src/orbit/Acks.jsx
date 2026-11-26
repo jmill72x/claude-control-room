@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { canAck, untilChoices, ackBody } from '../lib/orbit/acks.js';
+import { canAck, untilChoices, ackBody, hideSaved, savedId } from '../lib/orbit/acks.js';
 import { ack } from './ackApi.js';
 import { isLeadDownAlert } from '../lib/orbit/runbook.js';
 import { RunbookLink } from './Runbook.jsx';
@@ -26,7 +26,7 @@ export function AckForm({ alert, now, onDone, onCancel, variant = 'strip' }) {
     setError(null);
     try {
       await ack(ackBody(alert, { note, choice }, Date.now()));
-      onDone();
+      onDone(alert);
     } catch (err) {
       setError(String(err?.message ?? err));
       setBusy(false);
@@ -60,8 +60,10 @@ export function AckForm({ alert, now, onDone, onCancel, variant = 'strip' }) {
 
 // "<lead> is not running" also offers "Bring Jarvis Back" (lib/orbit/runbook.js),
 // on every tab: `services` is the health panel's list and `leadName` the roster's lead.
-export function AlertStrip({ alerts, now, onChanged, services = null, leadName = null }) {
+export function AlertStrip({ alerts: given, now, onChanged, services = null, leadName = null }) {
   const [open, setOpen] = useState(null);
+  const [saved, setSaved] = useState(() => new Set());
+  const alerts = hideSaved(given, saved);
   if (!alerts?.length) return null;
   const opened = open ? alerts.find(a => a.key === open) : null;
   return (
@@ -79,7 +81,7 @@ export function AlertStrip({ alerts, now, onChanged, services = null, leadName =
         ))}
         {opened && (
           <AckForm key={opened.key} alert={opened} now={now} onCancel={() => setOpen(null)}
-            onDone={() => { setOpen(null); onChanged?.(); }} />
+            onDone={a => { setSaved(s => new Set([...s, savedId(a)])); setOpen(null); onChanged?.(); }} />
         )}
       </div>
     </div>

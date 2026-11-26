@@ -20,11 +20,14 @@ function readPayload(data) {
 
 // The notification's tag: a local script's alert (its title starts "Local alert",
 // server/lib/chat-push.mjs) has its own, so it never takes the approval's place or
-// the chat's; an approval is the server's own line under the title "Jarvis".
+// the chat's; an approval is the server's own line under the title "Jarvis", and so is
+// an approval reminder (server/lib/approval-wait.mjs: its body ends with REMINDER_TAIL).
+const REMINDER_TAIL = ' on an approval card.';
 function tagFor(n) {
   const title = String(n.title || '');
   if (title === 'Local alert' || title.startsWith('Local alert: ')) return 'jos-local';
-  return title === 'Jarvis' && n.body === 'Jarvis needs an approval' ? 'jos-approval' : 'jos-chat';
+  const body = String(n.body || '');
+  return title === 'Jarvis' && (body === 'Jarvis needs an approval' || body.includes(REMINDER_TAIL)) ? 'jos-approval' : 'jos-chat';
 }
 
 // Only this site's own #chat, whatever a payload says.
@@ -37,9 +40,13 @@ self.addEventListener('activate', event => { event.waitUntil(self.clients.claim(
 
 self.addEventListener('push', event => {
   const n = readPayload(event.data);
+  const tag = tagFor(n);
   const shown = self.registration.showNotification(String(n.title || 'Jarvis'), {
     body: String(n.body || ''),
-    tag: tagFor(n),
+    tag,
+    // An approval or its reminder that takes an older one's place still sounds (board
+    // e7427be1): a second card 18 s after the first must not land silently.
+    ...(tag === 'jos-approval' ? { renotify: true } : {}),
     data: { url: chatUrl() }
   });
   const badge = typeof self.navigator?.setAppBadge === 'function' ? self.navigator.setAppBadge(Number(n.app_badge) || 1).catch(() => {}) : Promise.resolve();

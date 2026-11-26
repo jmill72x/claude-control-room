@@ -8,8 +8,19 @@ async function failure(res) {
   return new Error(body?.error ?? `HTTP ${res.status}`);
 }
 
-export async function ack(body) {
-  const res = await fetch('/api/acks', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+// A save with no answer in ACK_TIMEOUT_MS fails with words that say so, so the form
+// never sits on "Saving…" (board e7427be1's scope add, 11-26: Jeff's Save "doesn't
+// actually do anything", and the server never heard it).
+export const ACK_TIMEOUT_MS = 15e3;
+export async function ack(body, { fetchImpl = fetch, timeoutMs = ACK_TIMEOUT_MS } = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetchImpl('/api/acks', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body), signal: ctl.signal });
+  } catch (err) {
+    throw new Error(ctl.signal.aborted ? `no answer from the server in ${Math.round(timeoutMs / 1000)} s` : `the request did not reach the server (${err?.message ?? err})`);
+  } finally { clearTimeout(timer); }
   if (!res.ok) throw await failure(res);
   return res.json();
 }

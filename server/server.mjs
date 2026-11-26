@@ -44,12 +44,13 @@ import { createWatchdog } from './lib/watchdog.mjs';
 import { readAllowedHosts, allowedHostSet, withHostGuard } from './lib/host-guard.mjs';
 import { createNeedsYouStore } from './lib/needs-you.mjs';
 import { createChatStore, isOwnerChat, ATTACHMENT_MAX_BYTES } from './lib/chat-store.mjs';
-import { createRoutineChat } from './lib/routine-chat.mjs';
+import { createRoutineChat, isRoutineMessage } from './lib/routine-chat.mjs';
 import { createDeviceStore } from './lib/chat-devices.mjs';
 import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
 import { prepareSocketPath } from './lib/chat-listen.mjs';
-import { createEvents, readEventsConfig } from './lib/events.mjs';
+import { createEvents, readEventsConfig, isQuiet } from './lib/events.mjs';
+import { threadTimes, describeWait, approvalWaits, createApprovalReminders, fileView, toolLabel } from './lib/approval-wait.mjs';
 import { createEventSocketRouter } from './lib/event-socket.mjs';
 import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
@@ -284,7 +285,24 @@ const rosterName = word => {
   const w = String(word ?? '').trim().toLowerCase();
   return roster.agents.find(a => a.key.toLowerCase() === w || a.name.toLowerCase() === w)?.name ?? null;
 };
-const needsYou = createNeedsYouStore({ whoFor: id => sessionAgents.get(id) ?? null });
+// The lead's roster name: the sessions named so are his, and their permission waits
+// are his approval cards (lib/approval-wait.mjs).
+const LEAD_NAME = roster.agents[0]?.name ?? null;
+// Each session's threads from the last sessions pass (lib/approval-wait.mjs,
+// threadTimes): their newest requests, for which permission waits are still held, and
+// each subagent's type, for a card's words.
+let threadsNow = new Map();
+// The tool on the chat's newest open card, for a wait of the lead's whose hooks name no
+// tool (set once the chat is on; board e7427be1).
+let cardToolHint = null;
+const needsYou = createNeedsYouStore({
+  whoFor: id => sessionAgents.get(id) ?? null,
+  detailFor: (w, asks) => describeWait(w, asks, { typeOf: (sid, key) => threadsNow.get(sid)?.types.get(key) ?? null, rosterName }),
+  hintFor: (sid, now) => cardToolHint?.(sid, now) ?? null
+});
+// The lead's approval cards now (lib/approval-wait.mjs): for the reminders, the answer
+// watch's file and the idle wake-up.
+const approvalWaitsNow = now => approvalWaits(needsYou.view(now), LEAD_NAME);
 // Each roster agent's tokens by the hour from the transcripts, for the OpenTelemetry
 // cross-check (lib/otel.mjs). Kept here, not in the sessions panel, so the page never gets it.
 let transcriptHours = null;
@@ -302,6 +320,11 @@ registry.register('sessions', async () => {
   transcriptHours = agentHours({ transcripts, sessionNames, roster, now });
   const stopped = needsYou.endThreads(endedThreads(transcripts, now), now);
   if (stopped.dropped > 0) console.log(`needs-you: ${stopped.dropped} ask${stopped.dropped === 1 ? '' : 's'} of stopped subagents dropped, ${stopped.ended} wait${stopped.ended === 1 ? '' : 's'} ended, ${stopped.open} open`);
+  // A permission wait lives while its thread's transcript shows it held, past the
+  // 30-minute lapse, and ends once the thread wrote a request after it (board e7427be1).
+  threadsNow = threadTimes(transcripts);
+  const confirmed = needsYou.confirm(threadsNow, now);
+  if (confirmed.ended > 0 || confirmed.dropped > 0) console.log(`needs-you: the transcripts show ${confirmed.dropped} ask${confirmed.dropped === 1 ? '' : 's'} answered and ${confirmed.ended} permission wait${confirmed.ended === 1 ? '' : 's'} over (a request written after it), ${confirmed.open} open`);
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
@@ -579,6 +602,13 @@ if (chatSettings.on && socketsReady) {
   // an event, a routine's post, the lead's own message, a verdict or a stop never does.
   ownerChatForProactive = after => chatStore.ownerChatAfter(after);
   chatStore.subscribe(e => { if (e?.type === 'message' && isOwnerChat(e.message)) ownerWroteForProactive(e.message.at); });
+  // The lead's own chat message (not a routine's brief or digest) says he is answering:
+  // the "Jarvis is not answering" alerts raised before it go (lib/local-alerts.mjs,
+  // resolveDown; board 80bd2708).
+  chatStore.subscribe(e => {
+    const m = e?.type === 'message' ? e.message : null;
+    if (m && m.from === 'jarvis' && m.kind === 'chat' && !isRoutineMessage(m)) localAlerts.resolveDown(m.at ?? Date.now(), 'the lead wrote in the chat');
+  });
   console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
   await chatStore.pruneAttachments();
   // Uploads never sent before the last stop: no message carries them, so after an
@@ -657,6 +687,30 @@ if (chatSettings.on && socketsReady) {
   const push = createPushService({ devices: chatDevices, store: chatStore, socket: socketRouter, lastStream: id => chat?.lastStream(id) ?? null, vapid, onEvent: chatEvents });
   limitPush = body => push.limitWarning(body);
   localAlertPush = alert => push.localAlert(alert);
+  // Approval cards left waiting (lib/approval-wait.mjs; board e7427be1). A wait of the
+  // lead's whose hooks name no tool takes the tool of the chat's newest open card relayed
+  // in the two minutes before it (a label only). Each minute: a reminder to the paired
+  // devices once a card has waited 10 minutes, then each 30, at most six, held in quiet
+  // hours; and data/approval-waits.json for the jarvis repo's answer watch.
+  cardToolHint = (sid, now) => {
+    if (LEAD_NAME === null || sessionAgents.get(sid) !== LEAD_NAME) return null;
+    const card = chatStore.openPermissions().filter(p => now - p.relayedAt <= 2 * 60e3 && p.relayedAt <= now + 5e3).sort((a, b) => b.relayedAt - a.relayedAt)[0];
+    return card ? toolLabel(card.tool) : null;
+  };
+  const approvalReminders = createApprovalReminders({ push: body => push.approvalReminder(body), quiet: at => isQuiet(at) });
+  const approvalWaitsFile = createSentStore(join(HERE, 'data', 'approval-waits.json'));
+  const staleWaitTemps = await approvalWaitsFile.sweep();
+  if (staleWaitTemps > 0) console.log(`approval-wait: removed ${staleWaitTemps} temp file${staleWaitTemps === 1 ? '' : 's'} an interrupted write left`);
+  let waitFileSaid = false;
+  setInterval(async () => {
+    const now = Date.now();
+    const waits = approvalWaitsNow(now);
+    try { await approvalReminders.step(waits, now); } catch (err) { console.error(`approval-wait: the reminder step failed (${err?.code ?? err?.name ?? 'error'})`); }
+    try { await approvalWaitsFile.write(fileView(waits, now)); waitFileSaid = false; } catch (err) {
+      if (!waitFileSaid) console.error(`approval-wait: the answer watch's file could not be written (${err?.code ?? err?.name ?? 'error'})`);
+      waitFileSaid = true;
+    }
+  }, 60e3).unref();
   const shortcutSettings = readShortcutsConfig(config);
   for (const problem of shortcutSettings.problems) console.error(`config: ${problem}`);
   // Stop buttons (war room slice 2, lib/agent-stop.mjs): the rows come from the
@@ -800,7 +854,10 @@ const proactive = createProactive({
   killed: () => existsSync(proactiveOffPath),
   idleKilled: () => existsSync(idleOffPath),
   ownerChat: after => ownerChatForProactive?.(after) ?? null,
-  repoHeads: () => toPush.heads()
+  repoHeads: () => toPush.heads(),
+  // The lead's approval cards: one on his own thread holds the wake-up, a subagent's is
+  // said in it (board e7427be1).
+  approvalWaits: () => approvalWaitsNow(Date.now())
 });
 const proactiveRoutes = createProactiveRoutes({
   view: () => proactive.view(),

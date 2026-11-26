@@ -11,6 +11,13 @@
 //   push). One the send queue drops (below) starts no window and is held the same
 //   way, tried again every 15 s while a request is open, so a request left open
 //   is announced as soon as the queue has room.
+// - An approval reminder (lib/approval-wait.mjs; board e7427be1): "Jarvis has waited 10
+//   min on an approval card. Answer it in ...", to every device at once, urgent, looking
+//   or not, when a card of the lead's has waited 10 minutes, then each 30 (at most six,
+//   held in quiet hours). Its body is the one other that is not a fixed line: a roster
+//   name and whole minutes in one fixed shape (isReminderPush), never a tool's name; a
+//   body not in that shape is not sent. A tap opens the Chat. The same Topic and tag as
+//   the approval push, so a newer one takes an older one's place.
 // - "Jarvis is offline": once, after 5 minutes without the channel's heartbeat;
 //   once more only after it has come back. With the line that brings him back (the
 //   page's Restart Jarvis, or the run sheet's command): fixed words too.
@@ -40,6 +47,7 @@ import { sendPush, vapidKeys } from './webpush.mjs';
 import { readStoredKey, runSecurity, LOGIN_KEYCHAIN } from './vapid-store.mjs';
 import { isLimitPush } from './limit-warnings.mjs';
 import { RECOVER_LINE } from './recover-command.mjs';
+import { isReminderPush } from './approval-wait.mjs';
 
 export const CHAT_QUIET_MS = 10e3;
 export const CHAT_REPEAT_MS = 60e3;
@@ -63,7 +71,7 @@ export const ALERT_TITLE_PREFIX = 'Local alert: ';
 export const ALERT_FALLBACK_TITLE = 'Local alert';
 export const ALERT_FALLBACK_BODY = 'Open the Control Room for the details.';
 const ELLIPSIS = String.fromCodePoint(0x2026);
-const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', offline: 'jos-chat', limit: 'jos-limit' };
+const TOPICS = { chat: 'jos-chat', approval: 'jos-approval', reminder: 'jos-approval', offline: 'jos-chat', limit: 'jos-limit' };
 // What a limit warning says when its body is not in the fixed shape (payloadFor is
 // exported; limitWarning refuses such a body before it gets here).
 export const LIMIT_FALLBACK = 'Claude limit warning';
@@ -138,6 +146,8 @@ export function payloadFor(kind, origin, body = null) {
     return { web_push: 8030, notification: { title: 'Control Room', body: isLimitPush(body) ? body : LIMIT_FALLBACK, navigate: `${site}/#overview` } };
   }
   const navigate = `${site}/#chat`;
+  // An approval reminder: its body only in the fixed shape, else the approval's line.
+  if (kind === 'reminder') return { web_push: 8030, notification: { title: 'Jarvis', body: isReminderPush(body) ? body : BODIES.approval, navigate, app_badge: 1 } };
   return { web_push: 8030, notification: { title: 'Jarvis', body: BODIES[kind], navigate, app_badge: 1 } };
 }
 
@@ -158,7 +168,7 @@ export function createPushService({
 
   async function send(target, kind, body = null) {
     if (!vapid) return { outcome: 'off' };
-    const urgent = kind === 'approval' || kind === 'limit' || (kind === 'alert' && body?.severity !== 'info');
+    const urgent = kind === 'approval' || kind === 'reminder' || kind === 'limit' || (kind === 'alert' && body?.severity !== 'info');
     const r = await sendPush({
       subscription: target.push, payload: payloadFor(kind, target.push.origin, body), vapid,
       urgency: urgent ? 'high' : 'normal', topic: TOPICS[kind] ?? null, now: now(), fetchImpl, testHosts,
@@ -232,6 +242,19 @@ export function createPushService({
     return { tried: targets.length, reached };
   }
 
+  // An approval reminder (lib/approval-wait.mjs) to every paired device. Resolves to
+  // `{ tried, reached }`, zeros while push is off or for a body not in the fixed shape.
+  async function approvalReminder(body) {
+    if (!vapid) return { tried: 0, reached: 0 };
+    if (!isReminderPush(body)) {
+      log('push: an approval reminder that is not in the fixed shape was not sent');
+      return { tried: 0, reached: 0 };
+    }
+    const targets = devices.pushTargets();
+    const results = await Promise.all(targets.map(target => enqueue(target, 'reminder', body) ?? { outcome: 'dropped' }));
+    return { tried: targets.length, reached: results.filter(r => r?.outcome === 'sent').length };
+  }
+
   // An approval held for `ms`: then pushed if the device is still paired and a
   // request is still open. One timer per device.
   function holdApproval(target, ms) {
@@ -254,8 +277,12 @@ export function createPushService({
       holdApproval(target, last + APPROVAL_REPEAT_MS - at);
       return;
     }
-    if (enqueue(target, 'approval')) {
+    const sent = enqueue(target, 'approval');
+    if (sent) {
       lastApprovalPush.set(target.id, at);
+      // Said when it lands (board e7427be1: on 11-26 nothing in the log could say whether
+      // a card's push went); a failure has its own line in send().
+      sent.then(r => { if (r?.outcome === 'sent') log(`push: an approval push went to ${target.name}`); });
       // A retry still held from a drop is covered by this push.
       const held = heldApproval.get(target.id);
       if (held !== undefined) { clearTimer(held); heldApproval.delete(target.id); }
@@ -323,6 +350,7 @@ export function createPushService({
     checkOffline,
     limitWarning,
     localAlert,
+    approvalReminder,
     idle: async () => { while (sending.size) await Promise.allSettled([...sending]); },
     stop: () => { unsubscribe(); clearInterval(offlineTimer); for (const w of waiting.values()) clearTimer(w.timer); waiting.clear(); for (const t of heldApproval.values()) clearTimer(t); heldApproval.clear(); }
   };

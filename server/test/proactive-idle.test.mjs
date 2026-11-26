@@ -716,7 +716,7 @@ test('each reason\'s words, once an hour of passes: numbers and fixed words only
     assert.deepEqual(idleLines(h), [`${HELD} (${state}): ${words}`], state);
     assert.ok(!h.logs.join('\n').includes('IGNORE') && !h.logs.join('\n').includes('aa11aa11'), state);
   }
-  assert.deepEqual([...HELD_STATES].sort(), [...cases.map(c => c[0]), 'week-high', 'quiet-hours', 'waiting'].sort(), 'every held reason has a case here or its own test');
+  assert.deepEqual([...HELD_STATES].sort(), [...cases.map(c => c[0]), 'week-high', 'quiet-hours', 'waiting', 'approval-wait'].sort(), 'every held reason has a case here or its own test (approval-wait: proactive-approval-wait.test.mjs)');
 });
 
 test('quiet hours: one line at night, and the 07:00 pass says it opened', async () => {

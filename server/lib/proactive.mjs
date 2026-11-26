@@ -23,6 +23,7 @@ import { distinctHeals } from './heal.mjs';
 import { isDueDate } from '../todos.mjs';
 import { RULES, RULE_ORDER, opaqueId, SAFE_NAME, checkHit, checkIdle, IDLE } from './proactive-text.mjs';
 import { REPO_NAME } from './to-push.mjs';
+import { waitWords } from './approval-wait.mjs';
 
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const CHECK_EVERY_MS = 5 * MIN;
@@ -295,6 +296,10 @@ export function expiryHits({ keys, now }) {
 // holds, and with `idle` the wake-up's `fields` (lib/proactive-text.mjs, checkIdle):
 //   sessions-not-current  the live agents list was not read this pass
 //   running               an agent run is live (lib/live-agents.mjs)
+//   approval-wait         the lead's own thread waits on an approval card (board
+//                         e7427be1; lib/approval-wait.mjs, `approvals`, own): an event
+//                         can't reach him until it is answered, and would say something
+//                         stale when it did; `wait` is the oldest such card, for the log
 //   usage-not-current     the usage panel was not read this pass, or has no session
 //                         limit, or no weekly limit with a percent (Ultron's L1, 11-19)
 //   session-high          the session limit is at IDLE.sessionPct or over (with its `pct`)
@@ -306,11 +311,17 @@ export function expiryHits({ keys, now }) {
 //   no-work               no open item (idea or doing) without an ask
 // A source that can't be read never reads as idle. The lead's own session is not read
 // (board 638d21d2, 11-20): a lead talking with the owner still gets the cue, since the
-// runs it starts are what burn the board down.
-export function idleCheck({ sessions, usage, todos, now }) {
+// runs it starts are what burn the board down. A card a subagent of his waits on goes
+// in the wake-up's fields (`waitWho`, `waitRun`, `waitTool`, `waitMin`: the oldest), so
+// it says the card and not "no agent run is live"; `approvals` is approvalWaits' list.
+export function idleCheck({ sessions, usage, todos, now, approvals = [] }) {
   const live = sessions?.status === 'ok' ? sessions.data?.liveAgents : null;
   if (!isObject(live) || !Array.isArray(live.runs)) return { state: 'sessions-not-current' };
   if (live.runs.length > 0) return { state: 'running' };
+  const waits = (Array.isArray(approvals) ? approvals : []).filter(w => isObject(w) && finite(w.since) && typeof w.who === 'string');
+  const own = waits.find(w => w.own === true);
+  if (own) return { state: 'approval-wait', wait: own, now };
+  const sub = waits[0] ?? null;
 
   const limits = usage?.status === 'ok' && Array.isArray(usage.data?.limits) ? usage.data.limits : null;
   const session = limits?.find(l => ruleFor(l?.label)?.name === 'session');
@@ -328,6 +339,7 @@ export function idleCheck({ sessions, usage, todos, now }) {
 
   if (!Array.isArray(todos)) return { state: 'board-unreadable' };
   const fields = { workable: 0, p0: 0, p1: 0, doing: 0, session: Math.round(session.pct), week: Math.round(week) };
+  if (sub) Object.assign(fields, { waitWho: sub.who, waitMin: Math.max(0, Math.floor((now - sub.since) / MIN)), ...(sub.run ? { waitRun: sub.run } : {}), ...(sub.tool ? { waitTool: sub.tool } : {}) });
   for (const t of todos) {
     if (!isObject(t) || !OPEN_LANES.has(t.lane) || (t.ask !== undefined && t.ask !== null)) continue;
     fields.workable++;
@@ -353,6 +365,7 @@ export function heldWords(found) {
   switch (found?.state) {
     case 'killed': return 'the kill file idle-off is there';
     case 'sessions-not-current': return 'the live agents list was not read this pass';
+    case 'approval-wait': return `${found.wait ? waitWords(found.wait, found.now) : 'an approval card of the lead\'s'} waits on the owner, and a wake-up can't reach the lead until it is answered`;
     case 'usage-not-current': return 'the usage panel was not read this pass, or has no session or weekly percent';
     case 'session-high': return `the session limit at ${tenth(found.pct)}%, its bar ${IDLE.sessionPct}%`;
     case 'week-high': return `${found.limit?.name ?? 'a weekly limit'} at ${tenth(found.limit?.pct)}%, its bar ${IDLE.weekPct}%`;
@@ -369,7 +382,7 @@ export function heldWords(found) {
 // (the burn-down is working, and the spell it interrupts goes on when it ends),
 // `settling` (one pass by design after any run), `off` (said at start), and `sent` /
 // `not-sent`, which have their own lines.
-export const HELD_STATES = Object.freeze(['killed', 'sessions-not-current', 'usage-not-current', 'session-high', 'week-high', 'board-unreadable', 'no-work', 'quiet-hours', 'waiting', 'no-events']);
+export const HELD_STATES = Object.freeze(['killed', 'sessions-not-current', 'approval-wait', 'usage-not-current', 'session-high', 'week-high', 'board-unreadable', 'no-work', 'quiet-hours', 'waiting', 'no-events']);
 
 // A heal target's name for a hit (config's `heal.targets`, a Map by label of { id,
 // label }): its job's name from config's `jobs`, else its id when that is a plain name.
@@ -467,6 +480,9 @@ export function createProactive({
   // (collectors/to-push.mjs, heads: a Map by repo name of { branch, oid }).
   ownerChat = () => null,
   repoHeads = () => null,
+  // The lead's approval cards (lib/approval-wait.mjs, approvalWaits): [{ who, run, tool,
+  // since, own }], or [] when none waits.
+  approvalWaits = () => [],
   clock = () => Date.now(),
   log = console.log
 }) {
@@ -687,7 +703,9 @@ export function createProactive({
   async function idleRule(now) {
     const idle = state.idle;
     if (idleKilled()) { idle.since = null; return { state: 'killed' }; }
-    const found = idleCheck({ sessions: snapNow.sessions, usage: snapNow.usage, todos: boardNow, now });
+    let approvals = [];
+    try { approvals = approvalWaits() ?? []; } catch { approvals = []; }
+    const found = idleCheck({ sessions: snapNow.sessions, usage: snapNow.usage, todos: boardNow, now, approvals });
     if (found.state === 'running') idle.unanswered = 0;
     noteSignals(now, found.state === 'running');
     // The view gets the state only; the log line its numbers too.

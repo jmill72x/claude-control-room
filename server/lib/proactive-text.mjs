@@ -11,6 +11,7 @@
 //
 // Nothing here imports lib/events.mjs: that module imports this one.
 import { resetWords, WEEKLY_STEPS } from './limit-warnings.mjs';
+import { TOOL_LABELS } from './approval-wait.mjs';
 
 export const RULES = Object.freeze({
   // An open P0 or P1 item the check has seen unchanged this many days.
@@ -207,7 +208,11 @@ export const IDLE = Object.freeze({
 // the board. Two more when the back-off started again since the last wake-up (board
 // e10a01ed), each kept only when it passes and left out otherwise (the wake-up still
 // goes): `ownerAt`, the time of the owner's last chat message since then, and `moved`,
-// how many repos' branches moved since then (1 or more).
+// how many repos' branches moved since then (1 or more). And while a subagent of the
+// lead's waits on an approval card (board e7427be1; lib/approval-wait.mjs): `waitWho`,
+// the session's roster name, `waitRun` the subagent's, `waitTool` a fixed tool label and
+// `waitMin` the whole minutes it has waited; the card is kept with the first and the
+// last, and a run or a tool that fails its check is left out, and then the wake-up says the card, not "no agent run is live".
 export function checkIdle(f) {
   if (!isObject(f) || !whole(f.workable, 1, 100000)) return null;
   for (const k of ['p0', 'p1', 'doing']) if (!whole(f[k], 0, f.workable)) return null;
@@ -216,6 +221,13 @@ export function checkIdle(f) {
   const out = { workable: f.workable, p0: f.p0, p1: f.p1, doing: f.doing, session: f.session, week: f.week, unanswered: f.unanswered };
   if (time(f.ownerAt) !== null) out.ownerAt = f.ownerAt;
   if (whole(f.moved, 1, 1000)) out.moved = f.moved;
+  const isName = v => typeof v === 'string' && SAFE_NAME.test(v);
+  if (isName(f.waitWho) && whole(f.waitMin, 0, 100000)) {
+    out.waitWho = f.waitWho;
+    out.waitMin = f.waitMin;
+    if (isName(f.waitRun)) out.waitRun = f.waitRun;
+    if (TOOL_LABELS.includes(f.waitTool)) out.waitTool = f.waitTool;
+  }
   return out;
 }
 
@@ -235,10 +247,18 @@ export function idleText(fields) {
   if (!f) return null;
   const urgent = [f.p0 > 0 ? `${f.p0} P0` : null, f.p1 > 0 ? `${f.p1} P1` : null].filter(Boolean).join(', ');
   const detail = [urgent, f.doing > 0 ? `${f.doing} in doing` : ''].filter(Boolean).join('; ');
-  return `Idle: no agent run is live. ${plural(f.workable, 'open board item')} ${f.workable === 1 ? 'has' : 'have'} no ask${detail ? ` (${detail})` : ''}. `
+  return `${waitLead(f)} ${plural(f.workable, 'open board item')} ${f.workable === 1 ? 'has' : 'have'} no ask${detail ? ` (${detail})` : ''}. `
     + `Session at ${f.session}%; weekly limits at most ${f.week}%.`
     + (f.unanswered > 0 ? ` ${plural(f.unanswered, 'idle event')} since the last run.` : '')
     + changedWords(f);
+}
+
+// The wake-up's first sentence: idle, or the card a subagent of the lead's waits on.
+function waitLead(f) {
+  if (f.waitWho === undefined) return 'Idle: no agent run is live.';
+  const subject = f.waitRun ?? f.waitWho;
+  const where = f.waitRun !== undefined ? ` in ${f.waitWho}'s session` : '';
+  return `Waiting on an approval card: ${subject}'s card${f.waitTool !== undefined ? ` (${f.waitTool})` : ''}${where} has waited ${plural(f.waitMin, 'minute')} unanswered, and no other agent run is live.`;
 }
 
 // What started the back-off again, as the wake-up says it: " Since the last wake-up: the

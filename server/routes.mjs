@@ -432,6 +432,24 @@ export function createHandler({ cache, todos, config, archiveDays = null, acks =
     ackWrites.push(now);
     return 0;
   };
+  // A refused ack is one log line (board e7427be1's scope add, 11-26: Jeff's taps on
+  // Save left no trace, since only a saved ack was logged): its status and the server's
+  // own fixed words, never the note or the key; each reason at most once a minute.
+  const ackRefusalSaid = new Map();
+  const withAckRefusalLog = async fn => {
+    try { return await fn(); } catch (err) {
+      const status = err instanceof HttpError ? err.status : 500;
+      const words = err instanceof HttpError ? String(err.message).slice(0, 160) : (err?.code ?? err?.name ?? 'error');
+      const now = clock();
+      const said = ackRefusalSaid.get(words);
+      if (said === undefined || now - said >= 60e3) {
+        ackRefusalSaid.set(words, now);
+        if (ackRefusalSaid.size > 50) ackRefusalSaid.delete(ackRefusalSaid.keys().next().value);
+        log(`ack: refused (${status}: ${words})`);
+      }
+      throw err;
+    }
+  };
   // Logged at most once a minute, so a flood doesn't fill the log either.
   let ackRefusalLoggedAt = -Infinity;
   const tooManyAckWrites = (res, wait) => {
@@ -507,7 +525,7 @@ export function createHandler({ cache, todos, config, archiveDays = null, acks =
       // the key must name an alert raised NOW, so nothing can be acked in advance.
       if (path === '/api/acks') {
         if (req.method === 'GET') return json(res, 200, await acks.read(Date.now()));
-        if (req.method === 'POST') {
+        if (req.method === 'POST') return await withAckRefusalLog(async () => {
           guardWrite(req);
           if (!acks.add) throw new HttpError(503, 'acknowledgements are not set up on this server');
           const wait = ackWriteRefusal();
@@ -530,7 +548,7 @@ export function createHandler({ cache, todos, config, archiveDays = null, acks =
               .catch(err => log(`ack: the notice failed (${err?.code ?? err?.name ?? 'error'})`));
           }
           return json(res, 200, list);
-        }
+        });
       }
       const unack = path.match(/^\/api\/acks\/(.+)$/);
       if (unack && req.method === 'DELETE') {

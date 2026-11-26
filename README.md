@@ -929,7 +929,8 @@ application/json`, body `{ "title", "body"?, "severity"?, "kind"? }` and no othe
   capped at 16 KB.
 - `severity`: `"info"`, `"warning"` (the default) or `"critical"`. Info pushes at normal
   urgency; the other two at high. The card's chip says Critical, Warning or Notice.
-- `kind`: `"jarvis-down"` (the lead is not running, or started degraded) or `"other"`
+- `kind`: `"jarvis-down"` (the lead is not running, or started degraded), `"jarvis-back"`
+  (he is answering again: it ends the earlier `jarvis-down` alerts, below) or `"other"`
   (the default). A `jarvis-down` alert gets the "Bring Jarvis Back" button in the strip
   and on its card, its chip reads "Jarvis down", and it has a reserve under every limit
   below.
@@ -989,8 +990,16 @@ posts on its Unix socket only`, unread.
 - **A kill file.** `touch ~/.local/state/jarvis-os/local-alerts-off` stops every local
   alert's push at once, with no restart; the alerts are still taken and shown. Removing
   the file turns the pushes back on. It is checked on every post.
-- **Kept in memory only:** at most 20, each for 24 hours after it was last raised, or
-  until acknowledged. A restart forgets them. The body is never logged or written to a
+- **Jarvis back ends the down alerts** (board 80bd2708; 11-26 the Overview still showed
+  "Jarvis is not answering" and the "Jarvis is down" card 40 minutes after he answered).
+  Every `jarvis-down` alert last raised before one of these goes from the strip, Needs you
+  and the card on its own, with one log line (`local-alert: 2 jarvis-down alerts resolved
+  (the lead wrote in the chat)`): the lead's own chat message (not a routine's brief or
+  digest), or a post of `kind: "jarvis-back"` (the answer watch's "Jarvis is answering
+  again"; a server older than this refuses that kind with 400). The entry is dropped, so a
+  later repeat is a new instance, shown and pushed again, which an old ack can't cover.
+- **Kept in memory only:** at most 20, each for 24 hours after it was last raised (an
+  `info` one, an all-clear notice, for 1 hour), or until acknowledged or resolved. A restart forgets them. The body is never logged or written to a
   file: the log says `local-alert: jarvis-down critical alert 4483d6a405de taken; pushed
   to 2 of 2 devices` (or why it was not pushed) and `push: a local alert went to 2 of 2
   devices`. The notifier never sees these alerts, so neither `data/notified.json`, ntfy,
@@ -1089,10 +1098,32 @@ and turn), an ask is never stale, and an old post whose call answers the session
 ask still ends the wait (the times were compared on the ask). At most 20 waits
 are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
 
+**A permission wait still held outlives the 30 minutes** (board e7427be1, 2026-11-26: the
+lead's own Bash prompt waited 18:31 to 20:02, and its wait lapsed at 19:01). Each minute
+the sessions pass reads each permission wait's thread in its transcript: the session's
+own transcript for the lead's thread (and for a wait with no ask known), the subagent's
+file (`agent-<id>.jsonl`, matched by the id's hash) for a subagent's. A request that thread
+wrote after the ask (or, with no ask, after the wait opened) means the prompt was answered
+somewhere and the thread went on: the ask, or the wait, ends (log: `needs-you: the
+transcripts show 1 ask answered and 0 permission waits over (a request written after it),
+1 open`). No newer request marks the wait held; a held wait lives on past the 30 minutes
+while a pass in the last 3 minutes saw it held, for 12 hours at most, and its asks and
+order time live with it. A wait whose thread's transcript is not read (a session outside
+the transcripts' folders, an unreadable file) lapses at 30 minutes as before.
+
 `/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
 roster name of the agent whose session it is (the lead's session by its `agent-name`, a
 `--agent` run by its `agent-setting`), or null for a session nobody on the roster owns;
-`kind` is `permission`, `idle` or `question`; `key` is a short hash of the session id.
+`kind` is `permission`, `idle` or `question`; `key` is a short hash of the session id. A
+`permission` wait also carries `tool` (a fixed label: `Bash`, `Read`, `Edit`, `Write`,
+`Glob`, `Grep`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Agent`, `Task`, else `an MCP
+tool` or `a tool`; null when unknown) and `run` (the roster name of the subagent that
+asked, `a subagent` for one not on the roster, null for the session's own thread): from
+the oldest ask, or, for a lead's wait whose hooks name no tool, from the chat's newest
+open card relayed in the two minutes before it opened. Needs you shows such a wait as an
+approval card ("Jarvis is waiting on an approval card (Bash)"), and the Agents card's Now
+tab, with no run live, says so in place of "No agents running." (see "Approval cards left
+waiting", below).
 A wait older than 5 minutes is an alert of kind `needs-you` ("Jarvis is waiting on a
 permission"), pushed as a count ("1 session is waiting on you"), never with a name. The
 service log gets one line per event (`needs-you: Notification (permission), 1 open`;
@@ -1854,6 +1885,61 @@ started by mistake never pulls the live one's socket away; a problem there keeps
 off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-limit.test.mjs`, over real temp Unix
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
+
+### Approval cards left waiting (board e7427be1; staged 2026-11-26)
+
+On 2026-11-26 the lead's own prompt for a Bash call (a restart of this service) opened at
+18:31 UTC and blocked his whole session until Restart Jarvis at 20:02: the card's one
+push went at 18:31, the page's card ended at 18:41 (the channel held a request 10
+minutes; 0.4.11, staged, holds 12 h), the five-minute needs-you alert went to ntfy and
+#pepper only, which ring no phone, the wait lapsed at 19:01, and the idle wake-ups at 18:41
+and 19:41 said "Idle: no agent run is live". `server/lib/approval-wait.mjs` holds the fix's
+pure parts; server.mjs runs it each minute while the chat is on. An approval card here is
+a `permission` wait (above) in a session named as the lead's: his own thread's, or one of
+his subagents'.
+
+- **The reminder.** Once a card has waited 10 minutes, a Web Push to every paired device
+  (`lib/chat-push.mjs`, `approvalReminder`), urgent, looking or not: "Jarvis has waited 10
+  min on an approval card. Answer it in Jarvis OS chat, Discord or the terminal." (the
+  subagent's roster name in place of Jarvis for one of his, and "N more cards are waiting
+  too" when more do). Then every 30 minutes, six at most (10, 40, 70, 100, 130 and 160
+  minutes), never two pushes within 10 minutes whatever the number of cards (one push
+  covers every card due). Quiet hours are the events module's, 22:00-07:00 local: a
+  reminder due then waits, said once in the log, and the first pass from 07:00 sends it if
+  the card still waits. A push that reached no device is tried again 5 minutes later and
+  counts toward none of the six; with push off or no device, the card's time moves on.
+  The body is one fixed shape (`isReminderPush`): a roster name and whole minutes, never a
+  tool's name, as no push names a tool. Same Topic as the approval push (`jos-approval`),
+  and `sw.js` gives it the approval's tag with `renotify`, so a newer one takes an older
+  one's place and still sounds. A tap opens the Chat. Each push is a line in the log
+  (`approval-wait: a reminder went to 2 of 2 devices for Jarvis's approval card (Bash),
+  open 10 min (reminder 1 of 6)`), and since this change so is each approval push that
+  lands (`push: an approval push went to <device>`): on 11-26 nothing said whether the
+  card's push went. In memory only, like the waits: a restart forgets both.
+- **The idle wake-up** (below, "The idle wake-up"): a card on the lead's own thread holds
+  it, as `approval-wait`, one log line a spell (`proactive: the idle wake-up is held
+  (approval-wait): Jarvis's approval card (Bash), open 15 min waits on the owner, and a
+  wake-up can't reach the lead until it is answered`): an event can't reach a session
+  blocked on a prompt, and would say something stale once it did. A live run still comes
+  first (no wake-up then anyway). A subagent's card alone lets the wake-up go, and it
+  starts "Waiting on an approval card: Vision's card (Edit) in Jarvis's session has waited
+  40 minutes unanswered, and no other agent run is live." in place of "Idle: no agent run is
+  live."
+- **The answer watch** (the lead's repo, `jarvis/answer_watch.py`) reads
+  `server/data/approval-waits.json` (0600, written each minute: `{ version: 1, at, waits:
+  [{ who, run, tool, since, own }] }`, labels, roster names and times only) and, while it
+  was written in the last 3 minutes and names a card on the lead's own thread, gives that
+  as the cause of a silence ("waiting on an approval card (Bash), open since 13:31 EST (30
+  minutes)") with where to answer it, in place of "a Jarvis OS approval card may be
+  waiting". That half is the lead's repo's, staged on its own branch.
+- **Home screen.** Needs you's card names it and its tool ("Jarvis is waiting on an approval
+  card (Bash)"; "Vision is waiting on an approval card (Edit, in Jarvis's session)") and
+  says where to answer; the Agents card's Now tab, with no run live, reads "No agent is
+  working: Jarvis is waiting on an approval card (Bash), for 42 min. Needs you has it."
+- **Not covered:** a restart of this service forgets every wait, so a card opened before it
+  is unknown until its session's next hook event; the hooks before board 9fb32c4d's entries
+  name no tool or thread, so with them a wait's tool comes only from the chat's card and
+  any tool call in the lead's session ends his wait, his subagents' included.
 
 ### Approvals as buttons (Jarvis OS; live since 2026-11-11, parity since 2026-11-12, off by default)
 
@@ -3012,7 +3098,9 @@ in that pass:
 1. **Nothing is running**: the sessions panel is current and its live agents list is
    empty (`lib/live-agents.mjs`). The lead's own session is not read (board 638d21d2,
    2026-11-20): a lead talking with the owner still gets the cue, since the runs it
-   starts are what burn the board down.
+   starts are what burn the board down. But an approval card on his own thread holds the
+   wake-up (`approval-wait`; board e7427be1, "Approval cards left waiting"), and a card of
+   one of his subagents is said in it.
 2. **There is room**: the usage panel is current, the session limit is under 75%, at
    least one weekly limit has a percent, and every weekly limit's percent **now** is
    under 90% (`IDLE.weekPct`, the limit warnings' weekly step). Nothing else: no
@@ -3333,7 +3421,12 @@ expiry moves on its own.
   covered alert and forgets its key, so an ack that lapses with the condition still live
   pushes it again. The service log gets one line per ack
   (`ack: cron by jeff until <time> (<key>)`, with `(renewal N)` before the key for a
-  renewal), without the note.
+  renewal), without the note, and so does a refused one (`ack: refused (403: cross-origin
+  write refused)`: the status and the server's own words, never the note or the key; each
+  reason at most once a minute; board e7427be1's scope add, 11-26, when Jeff's Saves left
+  no trace). On the page a Save that gets no answer in 15 s says so in the form ("Couldn't
+  save: no answer from the server in 15 s"), and a saved alert leaves the strip at once,
+  before the reload.
 
 **Every ack and renewal is pushed, at low priority** (board a37d853e), so an ack nobody
 meant can't hide an outage quietly. An ack for a failure that already has a live ack

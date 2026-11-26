@@ -7,7 +7,7 @@
 // lib/agent-stop.mjs). The logic is in src/lib/orbit/live.js and stop.js.
 import { useEffect, useState } from 'react';
 import { envelopeOf } from '../lib/format.js';
-import { liveRows } from '../lib/orbit/live.js';
+import { liveRows, approvalNote } from '../lib/orbit/live.js';
 import { stopQuestion, faceIdError } from '../lib/orbit/stop.js';
 import { unavailable, PARTIAL } from '../lib/orbit/page.js';
 import { stepUpStatus, setUpFaceId, stopRun } from './stopApi.js';
@@ -35,7 +35,7 @@ export function LiveList({ payload, now, roster }) {
   if (env.status === 'unavailable' && !live) note = unavailable(env);
   else if (env.data && !live) note = 'The server running now does not send live agents. They arrive with its next restart.';
   else if (!env.data) note = 'Nothing to show yet.';
-  else if (rows.length === 0) note = 'No agents running.';
+  else if (rows.length === 0) note = approvalNote(payload?.needsYou, now) ?? 'No agents running.';
   return (
     <div className="o-live">
       {note ? <Note>{note}</Note> : (

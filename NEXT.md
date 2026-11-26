@@ -5706,3 +5706,152 @@ it goes live with one Control Room restart (no web build, no config change).
   **Not verified:** the running service (no restart).
 - **Go-live (Jeff, after C&P):** a Control Room restart, server only, with no agent runs
   going.
+
+## 54. Approval cards left waiting: a reminder push, and the words say the card (board e7427be1, P0 incident 2026-11-26; staged 2026-11-26 on `jos/approval-wait`, off main acdcef6)
+
+Worktree `~/Projects/.worktrees/ccr-approval-wait`, no upstream, not committed. The lead's
+repo half is on its own branch, `jos/approval-wait` in `~/Projects/.worktrees/jarvis-approval-wait`
+(off build/v1 fcdb31f). README "Approval cards left waiting" is the reference.
+
+**What happened on 11-26 (the service log, the answer watch's log and the lead's
+transcript, names and times only; UTC).** 18:31:22 the lead asked to run a Bash call
+(`launchctl kickstart` of this service) and the channel relayed it as card `kttdu`; the
+Mac mini's Chat page was open and drew it; Jeff's iPhone had allowed the card before it
+(`zfarj`) at 18:31:04 and had closed its page. The approval push went by the code's path
+(every paired device, then a second 15 s later after the exact-command redraw); no failure
+was logged, but a push that landed wrote no line, so the log cannot prove delivery. With
+the service worker's path (not iOS 18.4's declarative one) a second approval with the same
+tag replaces the first silently. 18:31:28 the needs-you wait opened; 18:36:30 its
+five-minute alert went to ntfy and #pepper, neither of which rings a phone. 18:41:22 the
+page's card ended (channel 0.4.10 holds a request 10 minutes; 0.4.11 is staged). 18:41:34
+and 19:41:34 the idle wake-ups said "Idle: no agent run is live" to a session that could
+not read them. 19:01:33 the wait lapsed (30-minute lapse), Needs you went blank with the
+lead still blocked. 19:01Z the answer watch posted "Jarvis is not answering" to #jarvis and
+pushed both devices, guessing "a Jarvis OS approval card may be waiting"; 20:00Z its
+reminder. 20:02 Restart Jarvis ended the session (SessionEnd closed the card).
+**Also found:** no line in the whole service log names a tool or a subagent, and no
+`PermissionRequest` ever reached needs-you: the live hooks are still the 2026-11-12
+entries, so §28's go-live step (`deploy/add-needs-you-matching.py --apply`) was never run.
+With those entries any tool call in a session ends its permission wait: the 17:30:15 card
+(`nkfap`, a background run's, per Jarvis's brief) opened its wait at 17:30:21 and lost it
+to another thread's PostToolUse at 17:30:38, so it never alerted; its page card closed at
+the lead's 17:38:41 UserPromptSubmit ("answered elsewhere") while the run still waited.
+
+**Built.**
+- **Held waits outlive the lapse** (`lib/needs-you.mjs`, `confirmWaits`, `store.confirm`):
+  each sessions pass reads every permission wait's thread in the transcripts
+  (`lib/approval-wait.mjs`, `threadTimes`: the newest request of each session's own file
+  and of each `agent-<id>.jsonl` by the id's hash). A request after the ask (no ask: after
+  the wait opened) ends the ask or the wait; none marks it held, and a held wait lives
+  while a pass in the last 3 min saw it, up to 12 h; its asks and order time live with it.
+  An unread thread lapses at 30 min as before.
+- **Waits are named** (`describeWait`, the view's `tool` and `run`): the oldest ask's tool
+  as a fixed label and its subagent's roster name; with the old hooks, the tool of the
+  chat's newest open card relayed in the 2 min before the wait opened (`hintFor`).
+- **The reminder** (`createApprovalReminders`, `lib/chat-push.mjs` `approvalReminder`):
+  Web Push to every paired device at 10 min, then each 30, six at most, never two within
+  10 min, quiet hours 22-07 held to 07:00, a miss retried in 5 min; fixed-shape body with a
+  roster name and minutes, never a tool; Topic `jos-approval`; `sw.js` tag + `renotify`.
+  Every landed approval push is now one log line.
+- **The idle wake-up** (`lib/proactive.mjs`): `approval-wait`, a held state, while a card
+  on the lead's own thread waits (a wait with no ask counts as his own); a subagent's card
+  goes in the wake-up's words in place of "no agent run is live" (`waitWho`, `waitRun`,
+  `waitTool`, `waitMin`, checked in `checkIdle`).
+- **The answer watch's file**, `server/data/approval-waits.json` (0600, each minute), and
+  the lead's repo branch: `read_approvals` (fresh within 3 min, version 1, the lead's own
+  cards only, tool only as a label) makes "waiting on an approval card (Bash), open since
+  13:31 EST (30 minutes)" the alert's cause, ahead of the errors and the busy guess, with
+  where to answer. Its timing (the 30-minute busy hold) is unchanged: the reminder push
+  covers the first 30 minutes.
+- **Home screen:** Needs you's card "Jarvis is waiting on an approval card (Bash)", answer
+  on the Chat tab while its card is open, else Discord or the terminal; the Agents card's
+  Now tab, with no run live, "No agent is working: Jarvis is waiting on an approval card
+  (Bash), for 42 min. Needs you has it."
+
+**Choices to defend (mine).**
+- The lead's own card holds the wake-up rather than sending one that says the card: a
+  session blocked on a prompt reads no event, and the queued one would arrive stale. The
+  log line names the card; the reminder push is what reaches Jeff.
+- A wait with no ask known is treated as the lead's own thread (with the old hooks one that
+  lasts is the lead's own prompt or one nothing else in his session is past).
+- The push never names the tool (chat-push's rule since Jarvis OS: no push names a tool);
+  the page, the log, the idle event and the answer watch do, as fixed labels.
+- Reminders only for the lead's session (the brief's "Jarvis or one of its subagents");
+  other sessions keep the five-minute needs-you alert.
+- Six reminders, 10 + 30 n minutes: about three hours, after which the answer watch's own
+  hourly reminders carry on.
+- In memory only, like the waits: a restart forgets the schedule along with the wait.
+- Liveness from the transcripts, not from the chat's card: the card ends at 10 min (before
+  0.4.11) and never sees a terminal-only prompt; the transcript is what the thread did.
+
+**Checked (2026-11-26, with §54b):** server 1,988 of 1,988 (40 new), local and
+`TZ=Asia/Tokyo`, and under umask 077; web 416 of 416 (6 new), both zones; a web build to a
+scratch folder, and headless Chrome on a scratch server (port 8391) through Acknowledge +
+Save; the lead's repo: `tests.test_answer_watch` 77 (5 new) and the
+watch, routine and release-pin suites pass, and the full suite's failing list matches a
+worktree of its base. Mutants: 54 over the JS (needs-you, approval-wait, proactive,
+proactive-text, chat-push, sw.js, waiting.js, live.js), all caught, with a no-op baseline
+passing, and 14 over §54b, all caught; 13 over `answer_watch.py`, 12 caught and one equivalent (the explicit size check
+behind a read already bounded to one byte past the cap). The 11-26 sequence is replayed
+in `test/needs-you-held.test.mjs` (the wait open, named, from 18:31 to 20:02).
+**Not verified:** a real reminder on the iPhone and iPad (sound, tag replacement,
+`renotify` under iOS's declarative push, which does not run `sw.js`); the live transcript
+timing (that a blocked lead writes no request until the prompt is answered: true in the
+11-26 transcript, not tested on other prompts); the scratch server's page (no headless
+check of the Now tab or Needs you; the logic is unit-tested only).
+
+**Go-live (Jeff, after C&P):** a Control Room restart (server) and a web build (`sw.js`,
+Needs you, the Now tab), with no agent runs going; the lead's repo branch through its own
+C&P and release pin. Independently, the hook script from §28, which makes the waits match
+by thread and tool (without it a background run's card is lost to the lead's next tool
+call): `cd ~/Projects && /usr/bin/python3 -I claude-control-room/deploy/add-needs-you-matching.py`,
+read the diff, then the same with `--apply`.
+
+**Follow-ups (board, asked in the report):** the page closes a subagent's card at the
+lead's next turn ("answered elsewhere", `lib/answered-elsewhere.mjs`) though the subagent
+still waits; a restart of this service forgets open waits (a card opened before it is
+unknown until its next hook event); the five-minute needs-you alert still goes only to ntfy
+and #pepper.
+
+### 54b. Scope add (Jarvis, 2026-11-26): the Attention strip doesn't clear (boards 80bd2708, 3d59b66b)
+
+Jeff's 15:41 EST screenshot, with Jarvis back since 15:02: "Jarvis is answering again"
+(3:04 PM), "Jarvis is still not answering" (3:02 PM), "Jarvis is not answering" (2:01 PM,
+its form open), "tuesday cron Failed · 1", and the "Jarvis is down" card. "Acknowledge
+doesn't actually do anything."
+
+**What I found.** The live server never took an ack after 2026-11-20: `data/acks.json` is
+dated 11-20 12:38 local, the live dashboard (GET) answers `acks: []`, and the service log
+has no `ack:` line since the three on 11-20. Before this branch only a saved ack was
+logged, so whether Jeff's Saves reached the server, and what it answered, is not in any
+log. On a scratch server with the same code and build, headless Chrome (390, 820 and 1180
+wide, taps and clicks, polls while the form was open) saved every time, the row left the
+strip and stayed gone after a reload, so the failure is on the device's path (WebKit, or
+the trip through Tailscale Serve), **not found**. Ruled out from the code: the
+cross-origin rule (the chat's own posts from the same pages pass the same `guardWrite`),
+the host check, the key and note rules (curly quotes pass), the ack rate limit (it logs),
+a hung ack store (the dashboard's read is not queued behind it).
+
+**Built.** (1) A refused or failed `POST /api/acks` is one log line, `ack: refused (<status>:
+<the server's words>)`, never the note or key, each reason at most once a minute; the
+page's Save fails in words after 15 s with no answer ("no answer from the server in 15 s"),
+or names a request that never left ("did not reach the server (…)"), instead of sitting on
+"Saving…"; a saved alert leaves the strip at once (`hideSaved`, by key and `since`). (2)
+A `jarvis-down` local alert resolves on its own (`resolveDown`): when the lead writes a
+chat message (not a routine's) after it was last raised, or when a `kind: "jarvis-back"`
+alert comes; the "Jarvis is down" card follows, since it is drawn from those alerts. The
+lead's repo branch sends the answer watch's "Jarvis is answering again" as `jarvis-back`.
+An `info` local alert (an all-clear) is shown 1 hour, not 24. (3) The tuesday cron row is
+untouched; a test acks a failed cron over the Serve-shaped headers and it leaves the strip.
+
+**Go-live order:** the Control Room restart (and the web build) **before** the lead's repo
+release: a server from before this refuses `jarvis-back` with 400, so the answer watch's
+back push would be lost (its Discord post still goes). After the restart, the next Save
+from the iPad either works or leaves an `ack: refused (…)` line that says why: read it
+before changing anything else.
+
+**Not verified:** any of it on the iPad or iPhone (no WebKit here); the root cause.
+**Follow-ups:** the lead's other watches (`jarvis/watch.py`, `jarvis/login_watch.py`) still
+send their all-clears as `other`, so only a lead chat message clears their down alerts;
+3d59b66b (the mod pane's "acked" suffix) is the Claude Code mod, a different surface, not
+touched here.

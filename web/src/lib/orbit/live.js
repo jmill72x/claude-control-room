@@ -4,6 +4,7 @@
 import { compactTokens } from './page.js';
 import { agentOf } from './board.js';
 import { DIRECT_RUN, NO_BRIEF } from './agents.js';
+import { approvalTitle } from './waiting.js';
 
 // A run that has written nothing for this long is marked quiet: a long tool call,
 // or a run stopped from outside that the server drops when its window passes.
@@ -51,4 +52,14 @@ export function liveSummary(live) {
   const total = shown + (Number.isFinite(live?.more) ? live.more : 0);
   if (total === 0) return 'none running';
   return `${total} running${total > shown ? `, ${shown} shown` : ''}`;
+}
+
+// The Now tab's line when no run is live but an approval card waits (board e7427be1):
+// the oldest permission wait in the server's `needsYou`, named, with how long. Null
+// when none waits, so the tab says "No agents running." as before.
+export function approvalNote(needsYou, now) {
+  const waits = (Array.isArray(needsYou) ? needsYou : []).filter(w => w?.kind === 'permission' && Number.isFinite(w.since)).sort((a, b) => a.since - b.since);
+  if (waits.length === 0) return null;
+  const more = waits.length - 1;
+  return `No agent is working: ${approvalTitle(waits[0])}, for ${duration(now - waits[0].since)}.${more > 0 ? ` ${more} more card${more === 1 ? ' waits' : 's wait'} too.` : ''} Needs you has it.`;
 }

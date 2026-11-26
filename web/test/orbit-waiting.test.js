@@ -256,8 +256,9 @@ test('alert cards: waits first, then each raised alert with what to do; acked on
 
 test('a waiting session\'s card: who, what kind of wait, since when, and where to answer', () => {
   const c = waitCard(wait, NOW_MS);
-  assert.equal(c.title, 'Juniper Vale is waiting on a permission prompt');
-  assert.match(c.what, /in Discord for Juniper Vale/);
+  // A permission wait is an approval card (board e7427be1): orbit-approval-wait.test.js.
+  assert.equal(c.title, 'Juniper Vale is waiting on an approval card');
+  assert.match(c.what, /on the Chat tab while its card is open, else in Discord or Juniper Vale's terminal/);
   assert.match(c.what, /Waiting 3 min ago/);
   assert.equal(c.meta, 'since 2:57 PM');
   assert.equal(c.answerUrl, 'https://discord.com/channels/@me');

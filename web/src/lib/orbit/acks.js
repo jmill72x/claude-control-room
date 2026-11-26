@@ -43,3 +43,12 @@ export function ackBody(alert, { note = '', choice = 'next' } = {}, now) {
   if (picked.until !== undefined) body.until = picked.until;
   return body;
 }
+
+// The strip right after a Save: the alerts the server just took an ack for leave at
+// once, without waiting for the reload (`saved` is a Set of `key` + "@" + `since`). A
+// later instance of the same alert (another `since`) shows again.
+export const savedId = alert => `${alert?.key}@${alert?.since ?? ''}`;
+export function hideSaved(alerts, saved) {
+  if (!(saved instanceof Set) || saved.size === 0) return Array.isArray(alerts) ? alerts : [];
+  return (Array.isArray(alerts) ? alerts : []).filter(a => !saved.has(savedId(a)));
+}

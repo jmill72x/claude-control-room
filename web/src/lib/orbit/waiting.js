@@ -173,17 +173,34 @@ function alertCard(alert, acked = false) {
   };
 }
 
+// The words for an approval card (board e7427be1): the server's `tool` (a fixed label,
+// lib/approval-wait.mjs) and `run` (the roster name of the subagent that asked), each
+// shown only when it is a plain short word.
+const PLAIN = /^[A-Za-z][A-Za-z0-9 ._'-]{0,39}$/;
+const plain = v => (typeof v === 'string' && PLAIN.test(v) ? v : null);
+export function approvalTitle(w) {
+  const who = plain(w?.who) ?? 'A session';
+  const run = plain(w?.run);
+  const tool = plain(w?.tool);
+  const what = [tool, run ? `in ${who}'s session` : null].filter(Boolean).join(', ');
+  return `${run ?? who} is waiting on an approval card${what ? ` (${what})` : ''}`;
+}
+
 // A session waiting on a person (the server's `needsYou`, from a Claude Code hook):
-// who, what kind of wait, since when, and where to answer.
+// who, what kind of wait, since when, and where to answer. A permission wait is an
+// approval card: named, with its tool, and where it can be answered.
 export function waitCard(w, now) {
   const who = w.who ?? 'A session';
+  const card = w.kind === 'permission';
   return {
     key: `wait:${w.key}`,
     group: 'alerts',
     look: 'hot',
     chip: 'Waiting',
-    title: `${who} is waiting on ${KIND_WORDS[w.kind] ?? 'an answer'}`,
-    what: `Answer it where the session runs: in Discord for ${who === 'A session' ? 'the lead' : who}, or in its terminal. Waiting ${ago(now - w.since)}.`,
+    title: card ? approvalTitle(w) : `${who} is waiting on ${KIND_WORDS[w.kind] ?? 'an answer'}`,
+    what: card
+      ? `Answer it on the Chat tab while its card is open, else in Discord or ${who === 'A session' ? 'its' : `${who}'s`} terminal. Waiting ${ago(now - w.since)}.`
+      : `Answer it where the session runs: in Discord for ${who === 'A session' ? 'the lead' : who}, or in its terminal. Waiting ${ago(now - w.since)}.`,
     why: 'Until you answer, that session sits idle.',
     owner: null,
     fallback: who[0] ?? '?',

@@ -44,6 +44,14 @@
 //     Retry-After. Pushes have caps of their own, below the intake: PUSH_PER_HOUR an
 //     hour and PUSH_PER_DAY a day, with a reserve for "jarvis-down" too
 //     (PUSH_RESERVE_HOUR, PUSH_RESERVE_DAY); an alert past them is shown and not pushed.
+//   - "Jarvis is back" ends the down alerts (board 80bd2708; the 11-26 Overview kept
+//     "Jarvis is not answering" and its card 40 minutes after he answered). A
+//     "jarvis-down" alert goes from the strip, Needs you and the "Jarvis is down" card
+//     (resolveDown) once, after it was last raised, the lead writes a chat message
+//     (server.mjs hears the chat store) or a `kind: "jarvis-back"` alert comes (the
+//     watches' all-clear). The entry is dropped, so a later repeat is a new instance:
+//     shown and pushed again. An info alert (an all-clear such as "Jarvis is answering
+//     again") is a notice: it leaves the strip INFO_KEEP_MS after it was last raised.
 //   - A kill file: `local-alerts-off` in the state folder (`killed()`, checked on every
 //     post). While it is there an alert is shown and never pushed.
 //   - Kept in memory only, at most KEEP_MAX. The body is never logged or written to a
@@ -83,8 +91,11 @@ export const PUSH_WAIT_MS = 15e3;
 export const SEVERITIES = Object.freeze(['info', 'warning', 'critical']);
 export const DEFAULT_SEVERITY = 'warning';
 // The request's `kind`: "jarvis-down" (the lead is not running or started degraded)
-// adds the run sheet's button on the page; anything else is "other".
-export const LOCAL_KINDS = Object.freeze(['jarvis-down', 'other']);
+// adds the run sheet's button on the page; "jarvis-back" (he is answering again) ends
+// every "jarvis-down" alert raised before it; anything else is "other".
+export const LOCAL_KINDS = Object.freeze(['jarvis-down', 'jarvis-back', 'other']);
+// An info alert is shown this long after it was last raised.
+export const INFO_KEEP_MS = 3600e3;
 export const DEFAULT_KIND = 'other';
 const FIELDS = new Set(['title', 'body', 'severity', 'kind']);
 
@@ -172,7 +183,7 @@ export function createLocalAlerts({ now = () => Date.now(), push = () => null, k
   const pushed = [];      // { at, kind } for each push tried in the last day
   let quietUntil = -Infinity;
   const prune = t => {
-    for (const [key, a] of kept) if (t - a.at >= KEEP_MS) kept.delete(key);
+    for (const [key, a] of kept) if (t - a.at >= (a.severity === 'info' ? INFO_KEEP_MS : KEEP_MS)) kept.delete(key);
     while (taken.length && t - taken[0].at >= HOUR_MS) taken.shift();
     while (pushed.length && t - pushed[0].at >= DAY_MS) pushed.shift();
   };
@@ -251,6 +262,7 @@ export function createLocalAlerts({ now = () => Date.now(), push = () => null, k
       return { status: 200, body: { ok: true, id: before.id, key, duplicate: true, push: before.last.push, devices: { ...before.last.devices } } };
     }
     const entry = remember(value, key, sig, t);
+    if (value.kind === 'jarvis-back') resolveDown(t, 'a jarvis-back alert came');
     const withheld = value.withheld?.length ? { withheld: value.withheld } : {};
     if (!room(taken, PER_HOUR, JARVIS_DOWN_RESERVE, value.kind)) {
       const oldest = taken.find(e => value.kind === 'jarvis-down' || e.kind !== 'jarvis-down') ?? taken[0];
@@ -298,5 +310,15 @@ export function createLocalAlerts({ now = () => Date.now(), push = () => null, k
     return [...kept.values()].reverse().map(view1);
   }
 
-  return { post, view };
+  // Jarvis is back (`why`, fixed words for the log): every "jarvis-down" alert last
+  // raised at or before `upTo` goes. Answers how many went.
+  function resolveDown(upTo, why = 'Jarvis is back') {
+    if (!Number.isFinite(upTo)) return 0;
+    let gone = 0;
+    for (const [key, a] of kept) if (a.kind === 'jarvis-down' && a.at <= upTo) { kept.delete(key); gone++; }
+    if (gone > 0) log(`local-alert: ${gone} jarvis-down alert${gone === 1 ? '' : 's'} resolved (${why})`);
+    return gone;
+  }
+
+  return { post, view, resolveDown };
 }

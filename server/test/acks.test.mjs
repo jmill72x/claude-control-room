@@ -482,7 +482,11 @@ test('nothing can be acked in advance, and nothing but a cron or service alert',
   assert.equal(limit.statusCode, 400);
   assert.match(JSON.parse(limit.body).error, /moves on its own/);
   assert.deepEqual(d.store.peek(), [], 'nothing was written');
-  assert.deepEqual(d.logged, []);
+  // Each refusal is one line, its status and the server's words (board e7427be1's scope add).
+  assert.deepEqual(d.logged, [
+    'ack: refused (404: no such alert is raised now: only a live alert can be acknowledged)',
+    "ack: refused (400: a limit alert can't be acknowledged: it moves on its own)"
+  ]);
 });
 
 test('the ack routes keep the board\'s guards: same origin, JSON only, a 4 KB body', async () => {
