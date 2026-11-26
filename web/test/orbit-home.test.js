@@ -26,8 +26,9 @@ test('five sections at most: Needs you, Agents, Usage, Today\'s schedule, then L
 
 // ---- the Agents card ----
 
-test('the tabs go Now, Today, Recent, and the card opens on Now, where the Stop buttons are', () => {
-  assert.deepEqual(AGENT_TABS.map(t => t.key), ['now', 'today', 'recent']);
+test('the tabs go Now, Today, Recent, Tokens, and the card opens on Now, where the Stop buttons are', () => {
+  assert.deepEqual(AGENT_TABS.map(t => t.key), ['now', 'today', 'recent', 'tokens']);
+  assert.equal(agentTab('tokens'), 'tokens');
   assert.equal(DEFAULT_AGENT_TAB, 'now');
   assert.equal(agentTab('today'), 'today');
   assert.equal(agentTab('recent'), 'recent');
@@ -36,15 +37,15 @@ test('the tabs go Now, Today, Recent, and the card opens on Now, where the Stop 
 
 test('the tab words count what runs now (with the ones the list leaves out) and the runs today', () => {
   const words = agentTabLabels({ live: { runs: [{}, {}], more: 1 }, todayTotal: 6 }).map(t => t.text);
-  assert.deepEqual(words, ['Now · 3', 'Today · 6', 'Recent']);
-  assert.deepEqual(agentTabLabels({ live: { runs: [] }, todayTotal: 0 }).map(t => t.text), ['Now · 0', 'Today · 0', 'Recent'],
+  assert.deepEqual(words, ['Now · 3', 'Today · 6', 'Recent', 'Tokens']);
+  assert.deepEqual(agentTabLabels({ live: { runs: [] }, todayTotal: 0 }).map(t => t.text), ['Now · 0', 'Today · 0', 'Recent', 'Tokens'],
     'an empty list from a server that sends one is a real 0');
 });
 
 test('a count the page has no source for is left off, never shown as 0', () => {
   const t = agentTabLabels({ live: null, todayTotal: null });
-  assert.deepEqual(t.map(x => x.text), ['Now', 'Today', 'Recent']);
-  assert.deepEqual(t.map(x => x.count), [null, null, null]);
+  assert.deepEqual(t.map(x => x.text), ['Now', 'Today', 'Recent', 'Tokens']);
+  assert.deepEqual(t.map(x => x.count), [null, null, null, null]);
   assert.equal(agentTabLabels({ live: { more: 4 }, todayTotal: NaN })[0].text, 'Now', 'no runs list at all');
   assert.equal(agentTabLabels({ live: { runs: [{}], more: 'x' }, todayTotal: 1 })[0].text, 'Now · 1', 'a bad "more" adds nothing');
 });
@@ -52,11 +53,12 @@ test('a count the page has no source for is left off, never shown as 0', () => {
 test('the arrow keys move along the tabs and wrap; Home and End go to the ends; other keys are not the tabs\'', () => {
   assert.equal(tabAfterKey('now', 'ArrowRight'), 'today');
   assert.equal(tabAfterKey('today', 'ArrowRight'), 'recent');
-  assert.equal(tabAfterKey('recent', 'ArrowRight'), 'now');
-  assert.equal(tabAfterKey('now', 'ArrowLeft'), 'recent');
+  assert.equal(tabAfterKey('recent', 'ArrowRight'), 'tokens');
+  assert.equal(tabAfterKey('tokens', 'ArrowRight'), 'now');
+  assert.equal(tabAfterKey('now', 'ArrowLeft'), 'tokens');
   assert.equal(tabAfterKey('recent', 'ArrowLeft'), 'today');
   assert.equal(tabAfterKey('today', 'Home'), 'now');
-  assert.equal(tabAfterKey('now', 'End'), 'recent');
+  assert.equal(tabAfterKey('now', 'End'), 'tokens');
   assert.equal(tabAfterKey('now', 'Enter'), null);
   assert.equal(tabAfterKey('now', 'ArrowDown'), null);
   assert.equal(tabAfterKey('nonsense', 'ArrowRight'), 'today', 'an unknown tab counts as the first');

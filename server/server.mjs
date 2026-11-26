@@ -69,7 +69,8 @@ import { chmod } from 'node:fs/promises';
 import { get } from 'node:http';
 import { aggregate } from './lib/aggregate.mjs';
 import { buildHourly } from './lib/hourly.mjs';
-import { buildAgentWork } from './lib/agent-work.mjs';
+import { buildAgentWork, agentHours } from './lib/agent-work.mjs';
+import { readOtelConfig, createOtelStore, createOtelReceiver, buildOtelPanel, createCheckLog } from './lib/otel.mjs';
 import { buildLiveAgents, endedThreads } from './lib/live-agents.mjs';
 import { createStepUp, deviceEvent } from './lib/stepup.mjs';
 import { createAgentStop } from './lib/agent-stop.mjs';
@@ -113,6 +114,10 @@ const programProblems = await vetPrograms([
   ['toPush.gitRead', toPushSettings, 'gitRead']
 ]);
 for (const problem of programProblems) console.error(`config: ${problem}`);
+// Usage by agent from OpenTelemetry (lib/otel.mjs): off unless config's `otel.enabled` is
+// true. Its receiver is a listener of its own on loopback, never this port or the tailnet.
+const otelSettings = readOtelConfig(config, { dashboardPort: PORT });
+for (const problem of otelSettings.problems) console.error(`config: ${problem}`);
 const cache = createCache();
 // The board's file: the store's, and the proactive check's read (one path, Ultron's L6).
 const TODOS_PATH = join(HERE, 'todos.json');
@@ -267,6 +272,9 @@ const rosterName = word => {
   return roster.agents.find(a => a.key.toLowerCase() === w || a.name.toLowerCase() === w)?.name ?? null;
 };
 const needsYou = createNeedsYouStore({ whoFor: id => sessionAgents.get(id) ?? null });
+// Each roster agent's tokens by the hour from the transcripts, for the OpenTelemetry
+// cross-check (lib/otel.mjs). Kept here, not in the sessions panel, so the page never gets it.
+let transcriptHours = null;
 registry.register('sessions', async () => {
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths, sessionNames } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
@@ -278,6 +286,7 @@ registry.register('sessions', async () => {
   }
   // A stopped subagent sends no SubagentStop, so its asks would hold a permission wait
   // open (board 2c49fcfa): its transcript says it stopped (lib/needs-you.mjs, endThreads).
+  transcriptHours = agentHours({ transcripts, sessionNames, roster, now });
   const stopped = needsYou.endThreads(endedThreads(transcripts, now), now);
   if (stopped.dropped > 0) console.log(`needs-you: ${stopped.dropped} ask${stopped.dropped === 1 ? '' : 's'} of stopped subagents dropped, ${stopped.ended} wait${stopped.ended === 1 ? '' : 's'} ended, ${stopped.open} open`);
   return {
@@ -297,6 +306,53 @@ registry.register('sessions', async () => {
       transcripts
     }, now)
   };
+}, 60 * 1000);
+
+// Usage by agent from OpenTelemetry (lib/otel.mjs; README, "Usage by agent from
+// OpenTelemetry"). With `otel.enabled`, a receiver on 127.0.0.1 at `otel.port` takes OTLP
+// metrics as JSON (no logs, no traces), counts each roster agent's tokens by the hour into
+// data/otel.json, and the panel sets them beside the transcripts' counts. It feeds no
+// alert, push or event: what it shows is a second count, and a gap goes to the log once.
+let otelReceiver = 'off';
+const otelStore = otelSettings.on ? createOtelStore({ path: join(HERE, 'data', 'otel.json') }) : null;
+if (otelStore) {
+  const loaded = await otelStore.load();
+  const otelHandler = createOtelReceiver({ store: otelStore, port: otelSettings.port, roster });
+  const otelServer = createServer(async (req, res) => {
+    setBaseHeaders(res);
+    try {
+      await otelHandler(req, res);
+    } catch (err) {
+      console.error(`otel: a post failed (${err?.code ?? err?.name ?? 'error'})`);
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff', Connection: 'close' });
+      res.end('{}');
+    }
+  });
+  // A slow sender can't hold a connection open: the whole request within 10 s.
+  otelServer.requestTimeout = 10e3;
+  otelServer.headersTimeout = 5e3;
+  otelServer.maxHeadersCount = 64;
+  // A handful of exporters at once is a busy day; idle keep-alive sockets go after 2 s (Ultron's L3).
+  otelServer.maxConnections = 32;
+  otelServer.keepAliveTimeout = 2e3;
+  otelServer.on('error', err => {
+    otelReceiver = 'failed';
+    console.error(`otel: the receiver could not listen on 127.0.0.1:${otelSettings.port} (${err?.code ?? 'error'}); usage by agent reads "not running"`);
+  });
+  otelServer.on('close', () => { otelReceiver = 'failed'; console.error('otel: the receiver stopped listening'); });
+  otelServer.listen(otelSettings.port, '127.0.0.1', () => {
+    otelReceiver = 'listening';
+    console.log(`otel: listening on 127.0.0.1:${otelSettings.port} for metrics only (POST /v1/metrics, JSON); store ${loaded}`);
+  });
+} else {
+  console.log(`otel: ${otelSettings.state === 'unset' ? 'off (no otel block in config)' : 'off'}`);
+}
+const otelCheckLog = createCheckLog();
+registry.register('otel', async () => {
+  if (otelStore) await otelStore.save();
+  const panel = buildOtelPanel({ settings: otelSettings, receiver: otelReceiver, snapshot: otelStore?.snapshot() ?? null, transcript: transcriptHours, roster, now: Date.now() });
+  otelCheckLog(panel.check);
+  return panel;
 }, 60 * 1000);
 
 // The board's size against its PUT cap (routes.mjs), so an alert warns at 75%

@@ -266,6 +266,18 @@ test('/api/dashboard carries the toPush panel, but never the toPush config', asy
   assert.ok(!JSON.stringify(payload).includes('/secret'));
 });
 
+// Usage by agent from OpenTelemetry (lib/otel.mjs): its panel goes to the page as built,
+// and the config block never does.
+test('/api/dashboard carries the otel panel, but never the otel config', async () => {
+  const d = deps();
+  d.config.otel = { enabled: true, port: 9555 };
+  d.cache.set('otel', { state: 'waiting', port: 9555, since: null, lastAt: null, agents: [], other: null, redacted: false, check: null });
+  const payload = JSON.parse((await call(createHandler(d), 'GET', '/api/dashboard')).body);
+  assert.equal(payload.otel.status, 'ok');
+  assert.equal(payload.otel.data.state, 'waiting');
+  assert.ok(!('otel' in payload.config.data));
+});
+
 // nosniff on every API answer (the 2026-10-21 security review): a browser must never
 // read a JSON answer, a board item's text included, as a page or a script.
 test('every API answer carries nosniff, the refusals and errors included', async () => {

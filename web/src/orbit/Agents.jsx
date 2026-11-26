@@ -3,10 +3,13 @@
 // (Live.jsx, unchanged inside); Today holds Today agent by agent and the agent work
 // map; Recent holds Latest runs. Each view is drawn as it was, from the `agentWork`
 // and `liveAgents` blocks in the sessions panel; the logic is in
-// src/lib/orbit/agents.js, live.js and home.js (the tabs).
+// src/lib/orbit/agents.js, live.js and home.js (the tabs). Tokens (Orbit Phase 6) is
+// each agent's tokens from OpenTelemetry beside the transcripts' count, from the
+// `otel` panel (src/lib/orbit/agent-usage.js).
 import { useEffect, useRef } from 'react';
 import { envelopeOf } from '../lib/format.js';
 import { mapView, todayView, latestRuns, MAP } from '../lib/orbit/agents.js';
+import { usageView, USAGE_WORDS } from '../lib/orbit/agent-usage.js';
 import { liveSummary } from '../lib/orbit/live.js';
 import { AGENT_TABS, agentTab, agentTabLabels, tabAfterKey } from '../lib/orbit/home.js';
 import { Avatar } from './Avatar.jsx';
@@ -199,6 +202,46 @@ function LatestRuns({ payload, now, roster }) {
   );
 }
 
+// ---- Tokens: usage by agent from OpenTelemetry ----
+
+function AgentTokens({ view }) {
+  if (view.note) return <Note>{view.note}</Note>;
+  return (
+    <>
+      <div className="o-tok" role="table" aria-label="New tokens by agent, from OpenTelemetry, with the check against the transcripts">
+        <div className="o-tok-row o-tok-head" role="row">
+          <span role="columnheader">Agent</span>
+          <span role="columnheader" className="o-mono">24 h</span>
+          <span role="columnheader" className="o-mono">7 d</span>
+        </div>
+        {view.rows.map(r => (
+          <div key={r.key} className={`o-tok-row${r.differs ? ' o-tok-differs' : ''}`} role="row">
+            <span className="o-tok-who" role="cell">
+              <Avatar agent={r.agent} size={24} />
+              <span className="o-tok-text">
+                <b>{r.name}</b>
+                {r.check && <span className="o-tok-check">{r.differs && <span className="o-tok-mark" aria-hidden="true">!</span>}{r.differs ? `differs: ${r.check}` : r.check}</span>}
+              </span>
+            </span>
+            <span className="o-mono o-tok-n" role="cell">{r.day}</span>
+            <span className="o-mono o-tok-n" role="cell">{r.week}</span>
+          </div>
+        ))}
+        {view.other && (
+          <div className="o-tok-row o-tok-other" role="row">
+            <span className="o-tok-who" role="cell"><span className="o-tok-text"><b>Other</b><span className="o-tok-check">sessions without an agent tag</span></span></span>
+            <span className="o-mono o-tok-n" role="cell">{view.other.day}</span>
+            <span className="o-mono o-tok-n" role="cell">{view.other.week}</span>
+          </div>
+        )}
+      </div>
+      {view.total && <Note>{view.total.text}{view.total.words ? `; ${view.total.words}.` : '.'}</Note>}
+      {view.checkNote && <Note>{view.checkNote}</Note>}
+      {view.redacted && <Note>{USAGE_WORDS.redacted}</Note>}
+    </>
+  );
+}
+
 // ---- the card ----
 
 // The tabs follow the WAI-ARIA pattern: one tab stop, the arrows move between tabs and
@@ -213,6 +256,7 @@ export function AgentsCard({ payload, now, roster, tab: picked, onTab }) {
   const live = env.data?.liveAgents ?? null;
   const day = todayView({ work, roster, crons: envelopeOf(payload?.crons).data, jobs: payload?.config?.data?.jobs ?? {}, now });
   const labels = agentTabLabels({ live, todayTotal: day ? day.total : null });
+  const tokens = tab === 'tokens' ? usageView({ env: payload?.otel, roster, now }) : null;
   const tabRefs = useRef({});
   const onKeyDown = e => {
     const next = tabAfterKey(tab, e.key);
@@ -225,7 +269,9 @@ export function AgentsCard({ payload, now, roster, tab: picked, onTab }) {
     ? (live ? `${liveSummary(live)} · each minute` : null)
     : tab === 'today'
       ? (day ? `${day.total} run${day.total === 1 ? '' : 's'} · dot size = tokens · now ${day.nowLabel}` : null)
-      : 'the 10 most recent · tokens per run';
+      : tab === 'tokens'
+        ? tokens?.sub ?? null
+        : 'the 10 most recent · tokens per run';
   return (
     <section aria-labelledby="o-agents" className="o-panel o-agents">
       <div className="o-panel-head o-panel-head-base">
@@ -252,6 +298,7 @@ export function AgentsCard({ payload, now, roster, tab: picked, onTab }) {
             </>
           )}
           {t.key === 'recent' && <LatestRuns payload={payload} now={now} roster={roster} />}
+          {t.key === 'tokens' && <AgentTokens view={tokens} />}
         </div>
       ))}
     </section>

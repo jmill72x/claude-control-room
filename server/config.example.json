@@ -8,6 +8,7 @@
   "events": { "sources": {}, "excludeKeys": [], "triagePerDay": 10 },
   "proactive": { "enabled": false },
   "recover": { "enabled": false },
+  "otel": { "enabled": false, "port": 8323 },
   "plan": {
     "price": "$0 / month",
     "renews": "2026-01-01",

@@ -26,7 +26,10 @@ export function homeSections(loops, headsUp = false) {
 export const AGENT_TABS = [
   { key: 'now', label: 'Now' },
   { key: 'today', label: 'Today' },
-  { key: 'recent', label: 'Recent' }
+  { key: 'recent', label: 'Recent' },
+  // Each agent's tokens from OpenTelemetry, cross-checked (agent-usage.js). Not called
+  // Usage: the Overview's Usage card is the limits.
+  { key: 'tokens', label: 'Tokens' }
 ];
 export const DEFAULT_AGENT_TAB = 'now';
 export const agentTab = v => (AGENT_TABS.some(t => t.key === v) ? v : DEFAULT_AGENT_TAB);
@@ -38,7 +41,7 @@ export function agentTabLabels({ live, todayTotal }) {
   const running = live && Array.isArray(live.runs)
     ? live.runs.length + (Number.isFinite(live.more) ? live.more : 0)
     : null;
-  const counts = { now: running, today: Number.isFinite(todayTotal) ? todayTotal : null, recent: null };
+  const counts = { now: running, today: Number.isFinite(todayTotal) ? todayTotal : null, recent: null, tokens: null };
   return AGENT_TABS.map(t => ({ ...t, count: counts[t.key], text: counts[t.key] === null ? t.label : `${t.label} · ${counts[t.key]}` }));
 }
 

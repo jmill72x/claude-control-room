@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAgentWork, taskLine, ROUTINE_WINDOW_MS } from '../lib/agent-work.mjs';
+import { buildAgentWork, taskLine, ROUTINE_WINDOW_MS, agentHours, HOURS_KEPT } from '../lib/agent-work.mjs';
 
 // The agent views (Orbit plan, Phase 3). An invented roster, invented jobs and
 // invented runs: never a real agent, job or brief.
@@ -142,4 +142,53 @@ test('a task line is one plain line: control and direction characters go, spaces
 test('a task line reaches the run cleaned', () => {
   const out = build([lead, sub('s-lead', { agentType: 'forge', description: 'Fix\u202ethe\n\nbuild' }, [rec(HOUR, 1)])]);
   assert.equal(out.runs[0].task, 'Fix the build');
+});
+
+// ---- agentHours: the transcripts' side of the OpenTelemetry cross-check (lib/otel.mjs) ----
+
+const hours = (transcripts, extra = {}) => agentHours({ transcripts, sessionNames: names, roster, now: NOW, ...extra });
+const hourOf = t => Math.floor(t / HOUR) * HOUR;
+
+test('agentHours counts each agent by the hour by exactly the agent views\' rules', () => {
+  const runs = [
+    lead,
+    sub('s-lead', { agentType: 'forge', description: 'Build' }, [rec(90 * MIN, 1000)]),
+    sub('s-lead', { agentType: 'general-purpose', description: 'Help' }, [rec(70 * MIN, 300)]),
+    sub('s-other', { agentType: 'general-purpose', description: 'Not ours' }, [rec(60 * MIN, 7000)]),
+    sub('s-lead', null, [rec(60 * MIN, 9)]),
+    top('quill', [rec(3 * HOUR, 40)]),
+    top(null, [rec(3 * HOUR, 11)], 'Someone else')
+  ];
+  const out = hours(runs);
+  const view = build(runs);
+  // Every agent's 7-day total here is the agent views' own.
+  for (const a of roster.agents) {
+    const sum = Object.values(out.byAgent[a.key]).reduce((x, y) => x + y, 0);
+    assert.equal(sum, view.agents[a.key].tokens7d, a.key);
+  }
+  assert.deepEqual(out.byAgent.forge, { [hourOf(NOW - 90 * MIN)]: 1000 });
+  // 13:00 holds the helper's 300 (13:50) and the lead's own 100 (13:00); 14:00 the lead's 50.
+  assert.deepEqual(out.byAgent.atlas, { [hourOf(NOW - 2 * HOUR)]: 400, [hourOf(NOW - 30 * MIN)]: 50 });
+  assert.deepEqual(out.byAgent.relay, {});
+  // `all` holds every Claude Code transcript, the ones the views leave out too.
+  const all = Object.values(out.all).reduce((x, y) => x + y, 0);
+  assert.equal(all, 150 + 1000 + 300 + 7000 + 9 + 40 + 11);
+});
+
+test('agentHours leaves Cowork out of `all`, and keeps only its window of hours', () => {
+  const cowork = { ...top(null, [rec(HOUR, 500)]), surface: 'Cowork' };
+  const old = top('quill', [rec(HOURS_KEPT * HOUR, 7), rec(10 * MIN, 5)]);
+  const future = top('quill', [rec(-10 * MIN, 3)]);
+  const out = hours([cowork, old, future]);
+  assert.deepEqual(out.all, { [hourOf(NOW - 10 * MIN)]: 5 });
+  assert.deepEqual(out.byAgent.quill, { [hourOf(NOW - 10 * MIN)]: 5 });
+  // The oldest hour kept is HOURS_KEPT - 1 before the current one.
+  const edge = top('quill', [rec(NOW - (hourOf(NOW) - (HOURS_KEPT - 1) * HOUR), 2)]);
+  assert.equal(hours([edge]).byAgent.quill[hourOf(NOW) - (HOURS_KEPT - 1) * HOUR], 2);
+});
+
+test('agentHours with no roster has no agents, and still counts `all`', () => {
+  const out = hours([top(null, [rec(HOUR, 8)])], { roster: { agents: [] } });
+  assert.deepEqual(out.byAgent, {});
+  assert.deepEqual(out.all, { [hourOf(NOW - HOUR)]: 8 });
 });

@@ -243,7 +243,8 @@ bug were built the same day, committed and pushed, and live after the restart (t
    §9):** the agent work map, Today agent by agent and Latest runs put runs to agents by a
    subagent's `agentType`, a `--agent` run's `agent-setting` line and the lead session's
    `agent-name`, never by working directory. Usage by agent through OpenTelemetry
-   (approved 2026-10-20) is Phase 6, a cross-check that Ultron vets first.
+   (approved 2026-10-20) is Phase 6, a cross-check: built and staged 2026-11-25 (§51),
+   off until Ultron's vet, the config key and Vision's env.
 4. **Watch the always-on services** (S–M, not built). `collectors/crons.mjs` keeps only
    plists with a schedule, so the always-on ones never appear. Checked 10-19:
    `control-room`, `cloudflared.mini` and `linkedin-review` are `KeepAlive` and show a PID
@@ -294,7 +295,7 @@ start"). The phased build plan is `docs/superpowers/plans/2026-10-20-orbit-redes
 - Phase 4: Waiting on you.
 - Phase 5: the flip (live 2026-11-10, below), then the first dashboard's deletion
   (built 2026-11-18, §14). The Orbit page is the only page.
-- Phase 6: the OpenTelemetry cross-check.
+- Phase 6: the OpenTelemetry cross-check (built and staged 2026-11-25, off by default, §51).
 
 Jeff approved the plan on 2026-10-20 (committed as `5c577e3`), and that evening answered
 its seven decisions: "Go with her picks", which is (a) on all seven. The plan supersedes
@@ -5286,3 +5287,156 @@ stylesheet.
 
 **Go-live.** C&P, then a web build. The page is the only change, so no restart is
 needed. A build is a live deploy, so build only after the C&P.
+
+## 51. Usage by agent from OpenTelemetry (board 1e46584d, Orbit Phase 6; staged 2026-11-25 on `jos/otel-agents`, off main b344337, off by default)
+
+The approved item (Jeff's yes, 10-20) in its board order: (1) the per-request counting
+fix, done 10-20 as f16b659 (§2); (2) Ultron vets the settings; (3) Vision sets the env;
+(4) Pepper builds the receiver and the Agents panel; (5) Jarvis tags the routines. Step
+4 is built here, ahead of 2 and 3 (Jarvis's overnight brief, 11-25), so it can sit
+staged: nothing changes until config turns it on.
+
+**What is built.** README, "Usage by agent from OpenTelemetry", is the reference.
+- `server/lib/otel.mjs`: the receiver, a listener of its own on `127.0.0.1` at
+  `otel.port` (default 8323), opened only with config's `otel.enabled` true. OTLP over
+  HTTP with JSON, POST `/v1/metrics` only (`/v1/logs` and `/v1/traces` are 404). It
+  refuses a `Host` that isn't loopback on its own port (421), any `Origin` (403), another
+  method (405), more than 120 posts a minute (429 + `Retry-After`; one budget for every
+  sender, charged before the remaining checks: Ultron's L2, accepted), a `Content-Encoding`
+  or non-JSON body (415), over 256 KB (413), and an export with more than 5,000 points,
+  more than 64 attributes on a point, or a value over 1,024 characters (400). 10 s for
+  the whole request, 32 connections at most, idle keep-alive closed after 2 s (L3). Refusals are logged per path and fixed reason, at most hourly after
+  the first.
+- What it keeps (`server/data/otel.json`, 0600, gitignored): per hour, per roster agent
+  or Other, new tokens, cache reads and background tokens apart. Only
+  `claude_code.token.usage` from `service.name` `claude-code`. No attribute's value is
+  stored, logged or sent to the page; cumulative series are kept as a hash and a value.
+  A cell's key must be a roster key's spelling or `~other`, in prototype-free objects
+  (L1). The time the 20,000-series cap last forgot series is kept, and an unknown series
+  that started before it is a baseline, so a forgotten series is never counted twice (L4).
+- Whose tokens: `agent.name` when it is a roster agent; else the session's tag
+  `control_room.agent` (from `OTEL_RESOURCE_ATTRIBUTES`); a built-in helper in the lead's
+  tagged session is the lead's; anything else is Other. Same rules as the transcripts:
+  `lib/agent-work.mjs` now has one `ownerOf` that both `buildAgentWork` and the new
+  `agentHours` use.
+- The check: last 24 complete hours, per roster agent and in all, foreground requests
+  only, against `agentHours` (Cowork out of the total). More than 20% apart with the
+  larger at least 50,000 tokens is "differs"; a line in the log when it starts and ends.
+  It feeds no alert, push or event.
+- The page: the Agents card's fourth tab, **Tokens** (24 h and 7 d per agent, the check
+  under each name, Other, the total line, the "custom" note). "No data yet" until the
+  first export; off, unset, failed and old-server states each say so.
+
+**Read from the 2.1.330 binary, not seen live** (strings, read-only, 11-25): the metric
+and attribute names, that a custom agent's `agent.name` is "custom" unless
+`OTEL_LOG_TOOL_DETAILS` is set (that flag also names skills, plugins and MCP servers and
+tools in the metrics, which the receiver drops), that a main session carries no
+`agent.name` (so the lead and `-p --agent` routines need the tag), and that points carry
+`user.email`, `user.id`, `organization.id`, `user.account_uuid` and `session.id`.
+
+**Ultron's vet (2026-11-25): GO with conditions** for C&P, the config switch and the
+restart. His four lows for this branch are in, restaged the same night: L1 (a store file
+can't name `__proto__`: cell keys filtered, prototype-free cells), L2 (the shared
+120-a-minute budget, charged before the body checks: accepted and documented in README),
+L3 (`maxConnections` 32, keep-alive 2 s), L4 (the cap's eviction time, so a forgotten
+series is a baseline when it returns). His L6 is in the step-5 wording below: a launcher
+removes any inherited `control_room.agent=` pair before adding its own.
+
+**What Ultron vetted (step 2).**
+1. The env below, above all `OTEL_LOG_TOOL_DETAILS=1` (needed for custom agents' names;
+   it unredacts skill/plugin/MCP names in what is exported, and with logs and traces
+   `none` the metrics to this receiver are the only thing that carries them).
+2. The receiver: a TCP port on loopback with no token. Any local process can post and
+   skew the counts; it can't reach an alert, a push, the board or the lead. Exporters
+   can't post to a Unix socket, so the socket model of the ingest doesn't fit.
+3. The config to add: `"otel": { "enabled": true }` (port stays 8323).
+4. What is stored (above) and the caps.
+
+**The env for Vision to set (step 3)**, in the mini's user settings `env`, so every
+Claude Code session there exports:
+
+```
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+OTEL_METRICS_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=none
+OTEL_TRACES_EXPORTER=none
+OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://127.0.0.1:8323/v1/metrics
+OTEL_METRIC_EXPORT_INTERVAL=60000
+OTEL_LOG_TOOL_DETAILS=1
+OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
+```
+
+Not to set: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, any compression,
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` (cumulative, the default, is what
+the receiver wants), `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT`,
+`OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_RAW_API_BODIES`, and `OTEL_RESOURCE_ATTRIBUTES`
+(a value in the settings' `env` would replace every launch's tag).
+
+**For Jarvis (step 5).** Whatever starts the lead's session adds
+`OTEL_RESOURCE_ATTRIBUTES=control_room.agent=<the lead's roster key>` to its environment,
+and the routine runner adds `control_room.agent=<agent key>` for each
+`claude -p --agent <agent>`. A child inherits its parent's environment (a routine started
+from the lead's session would carry the lead's tag), so every launcher first removes any `control_room.agent=` pair already in
+`OTEL_RESOURCE_ATTRIBUTES` (one it inherited from the process that started it), then
+appends its own, so a session never carries two tags (Ultron's
+L6). Until then the
+lead's own tokens and every routine's read as Other, and the check says those agents
+differ. Subagents need nothing: their `agent.name` names them.
+
+**Go-live, in order.**
+1. Ultron's vet (above); fixes, if any, on this branch.
+2. Jeff's C&P.
+3. Jarvis adds `"otel": { "enabled": true }` to `server/config.json` (backup first).
+4. A server restart (Jeff, or Vision: a protected scope). The log should say
+   `otel: listening on 127.0.0.1:8323 for metrics only (POST /v1/metrics, JSON); store none`.
+5. `npm run build` in `web/` (the Tokens tab; until then the live page has three tabs).
+6. Vision sets the env. Sessions started after it export; running ones don't.
+7. Jarvis's tags (step 5).
+8. After a day: read the Tokens tab and the log's `otel:` lines. A total that differs,
+   or an agent that differs with its tag in place, is the finding this was built for.
+
+Order 3-6 can't hurt anything: with the env set and the receiver off, an export is a
+refused connection on loopback and nothing else.
+
+**The other half, plan % from the status line's `rate_limits` (weighed, not built).**
+From the binary: the status line command gets `rate_limits.five_hour` and
+`rate_limits.seven_day`, each `{ used_percentage, resets_at }`, from the session's own
+latest request, in interactive sessions only. It has no model-scoped week bar and no
+drivers, so it can't replace the `/usage` poll; it could only freshen the session and
+week figures between polls, and only while an interactive session is running. Using it
+needs a `statusLine` command in the user settings (Jeff's) posting to a new ingest route
+(Ultron). My pick: don't build it now; the 5-minute poll is what the warnings are tuned
+to (§21, limit warnings). Board: a P3 idea, to revisit if a warning ever comes late.
+
+**Checks.**
+- New tests: `server/test/otel.test.mjs` (33 with Ultron's lows: config, reading exports, attribution,
+  the store, the check, the panel, the log, the receiver over a real socket and through a
+  mock for its own headers, the wiring in server.mjs), 3 for `agentHours` in
+  `agent-work.test.mjs` (its sums equal the agent views' 7-day totals), 1 in
+  `routes.test.mjs` (the panel goes to the page, the config block doesn't);
+  `web/test/orbit-agent-usage.test.js` (6) and the tab list in `orbit-home.test.js`.
+- Server suite 1887 of 1887 in local time and in `TZ=Asia/Tokyo` (1850 on main);
+  web suite 404 of 404 in both (398 on main). oxlint clean on the new files.
+- Mutation run (scratch `mutate.py`, 123 mutants, two no-op baselines passing):
+  all 121 caught, and after Ultron's lows the whole list again plus 11 for them (the key
+  filter, prototype-free cells in restore and ingest, Other's key, the eviction time set,
+  restored, checked and used at its edge, both server settings): all caught. The first pass left nine; each led to a sharper test (the attribute cap
+  at its exact edge, a roster name that isn't its key, a rename that fails after the temp
+  file is written, a retry after a failed save, "starting empty" said four times, a
+  29.5 s wait said as 30, Connection: close seen through a mock, the points cap at MAX + 1)
+  or, for one equivalent mutant, a simpler line (a missing start is a baseline).
+- Headless Chrome (`channel: 'chrome'`) on a scratch build, with the REAL receiver on a
+  scratch port fed invented exports over HTTP (cumulative, two exports from one session,
+  a helper, a "custom" agent, a background request, an untagged session): the panel's
+  figures came out as worked by hand; at 320, 360, 390, 430, 440, 820 and 1440 px in light
+  and dark, the four tabs fit on one row at 44 px, no sideways scroll, no row overflows,
+  the two differing rows are marked, no policy violations or console errors, End and the
+  arrows reach Tokens and wrap. The waiting, unset and failed states show their notes.
+
+**Not verified.** A real Claude Code export (no env is set, and starting a claude session
+to try is not mine to do): the attribute names, "custom", the JSON shape the Bun
+exporter sends (times as strings or numbers are both read), and whether a `claude -p`
+run's last export reaches the receiver before it exits. Safari and real devices (no
+WebKit here). The old-server note only by unit test (the scratch server is the new
+code, so it shows "Unavailable: no reading yet" before its first pass, as every panel does).

@@ -64,14 +64,64 @@ function routineFor(agent, start, jobs, dueByLabel) {
   return best?.name ?? null;
 }
 
-export function buildAgentWork({ transcripts, sessionNames, roster, crons, now = Date.now() }) {
+// The roster's rules, ready for ownerOf: null when the roster names no agent.
+function ownerRules(roster, sessionNames) {
   const agents = Array.isArray(roster?.agents) ? roster.agents : [];
   const lead = agents[0] ?? null;
-  if (!lead) return { lead: null, leadModel: null, leadLast: null, agents: {}, runs: [] };
-
-  const onRoster = new Set(agents.map(a => a.key));
+  if (!lead) return null;
   const leadNames = new Set([fold(lead.name), fold(lead.key)]);
-  const isLead = name => leadNames.has(fold(name));
+  return { lead, onRoster: new Set(agents.map(a => a.key)), isLead: name => leadNames.has(fold(name)), sessionNames };
+}
+
+// Whose tokens a transcript's are, by the rules at the top of this file: a run of
+// `agent` (a helper of the lead's when `helper`), the lead's own session (`own`), or
+// null for a transcript these views leave out. One function, so the agent views and
+// the OpenTelemetry cross-check (agentHours, lib/otel.mjs) can never count apart.
+function ownerOf(t, rules) {
+  if (t.subagent) {
+    if (!t.meta) return null;
+    if (rules.onRoster.has(t.meta.agentType)) return { agent: t.meta.agentType, helper: false, own: false };
+    if (rules.isLead(rules.sessionNames?.get?.(t.sessionId))) return { agent: rules.lead.key, helper: true, own: false };
+    return null;
+  }
+  if (rules.onRoster.has(t.agentSetting)) return { agent: t.agentSetting, helper: false, own: false };
+  if (rules.isLead(t.agentName)) return { agent: rules.lead.key, helper: false, own: true };
+  return null;
+}
+
+const HOUR = 3600 * 1000;
+// The cross-check's reach: a day's window, plus a week of hours the panel's 7-day
+// figures could ever ask for, plus one for the hour in progress.
+export const HOURS_KEPT = 8 * 24;
+
+// Each roster agent's new tokens by the hour (keys are the hours' starts, in ms), by
+// exactly the attribution the agent views use, and `all`: every Claude Code transcript's
+// (Cowork's left out, since the desktop app's agent sends no metrics here). For the
+// OpenTelemetry cross-check (lib/otel.mjs). Hours older than HOURS_KEPT are left out.
+export function agentHours({ transcripts, sessionNames, roster, now = Date.now() }) {
+  const rules = ownerRules(roster, sessionNames);
+  const byAgent = Object.fromEntries((rules ? roster.agents : []).map(a => [a.key, {}]));
+  const all = {};
+  const from = Math.floor(now / HOUR) * HOUR - (HOURS_KEPT - 1) * HOUR;
+  const add = (into, hour, n) => { into[hour] = (into[hour] ?? 0) + n; };
+  for (const t of Array.isArray(transcripts) ? transcripts : []) {
+    const records = Array.isArray(t?.records) ? t.records.filter(r => Number.isFinite(r?.ts) && Number.isFinite(r?.tokens) && r.ts >= from && r.ts <= now) : [];
+    if (records.length === 0) continue;
+    const owner = rules ? ownerOf(t, rules) : null;
+    for (const r of records) {
+      const hour = Math.floor(r.ts / HOUR) * HOUR;
+      if (t.surface !== 'Cowork') add(all, hour, r.tokens);
+      if (owner) add(byAgent[owner.agent], hour, r.tokens);
+    }
+  }
+  return { byAgent, all };
+}
+
+export function buildAgentWork({ transcripts, sessionNames, roster, crons, now = Date.now() }) {
+  const rules = ownerRules(roster, sessionNames);
+  if (!rules) return { lead: null, leadModel: null, leadLast: null, agents: {}, runs: [] };
+  const agents = roster.agents;
+  const lead = rules.lead;
   const dueByLabel = new Map();
   for (const c of Array.isArray(crons) ? crons : []) {
     if (typeof c?.label === 'string' && Array.isArray(c.dueAt)) dueByLabel.set(c.label, c.dueAt.filter(Number.isFinite));
@@ -93,23 +143,16 @@ export function buildAgentWork({ transcripts, sessionNames, roster, crons, now =
     const records = Array.isArray(t?.records) ? t.records.filter(r => Number.isFinite(r?.ts) && Number.isFinite(r?.tokens)) : [];
     if (records.length === 0) continue;
 
-    let agent = null, helper = false, task = null;
-    if (t.subagent) {
-      if (!t.meta) continue;
-      if (onRoster.has(t.meta.agentType)) agent = t.meta.agentType;
-      else if (isLead(sessionNames?.get?.(t.sessionId))) { agent = lead.key; helper = true; }
-      else continue;
-      task = taskLine(t.meta.description);
-    } else if (onRoster.has(t.agentSetting)) {
-      agent = t.agentSetting;
-    } else if (isLead(t.agentName)) {
+    const owner = ownerOf(t, rules);
+    if (!owner) continue;
+    if (owner.own) {
       count(lead.key, records);
       const latest = latestOf(records);
       if (latest && (leadLast === null || latest.ts > leadLast)) { leadLast = latest.ts; leadModel = familyOf(latest.model); }
       continue;
-    } else {
-      continue;
     }
+    const { agent, helper } = owner;
+    let task = t.subagent ? taskLine(t.meta.description) : null;
 
     count(agent, records);
     let start = Infinity, last = -Infinity, tokens = 0;

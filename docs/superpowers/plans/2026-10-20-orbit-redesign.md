@@ -341,6 +341,17 @@ its per-agent totals with the transcripts' totals and flags any gap. That check 
 caught 10-20's 3x over-count on the day it started. The item's other half, plan percentages
 from the status line's `rate_limits`, gets weighed against the `/usage` poll at that point.
 
+**Built 2026-11-25 (staged on `jos/otel-agents`, off by default), ahead of Ultron's vet and
+Vision's settings.** The receiver (`server/lib/otel.mjs`) listens on its own loopback port
+(8323 by default) only with config's `otel.enabled`; the Agents card gained a Tokens tab;
+the check compares the last 24 complete hours. Read from the 2.1.330 binary: token metrics
+carry `agent.name` for subagents, but a custom agent's reads "custom" unless
+`OTEL_LOG_TOOL_DETAILS` is set (it also unredacts skill, plugin and MCP names, which the
+receiver drops), and a main session carries none, hence the per-launch tag
+`control_room.agent`. The exact settings, the order to switch it on and what stayed
+unverified are in README ("Usage by agent from OpenTelemetry") and NEXT.md §51. The
+`rate_limits` half is weighed there and not built.
+
 ## Board API changes
 
 The list stays a bare JSON array. GET and PUT, the `ETag` and `If-Match` check, the 409 and

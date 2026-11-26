@@ -335,7 +335,8 @@ the document would otherwise go blank. Since the home merge (board f74ca819, bui
 2026-11-14 on `jos/home-merge`) its Overview has five sections where it had eleven
 (`web/src/lib/orbit/home.js`, tested by `web/test/orbit-home.test.js`): **Needs you**;
 **Agents**, one card with tabs Now (the live agents and their Stop buttons), Today (Today
-agent by agent over the agent work map) and Recent (Latest runs); **Usage**, the limits
+agent by agent over the agent work map), Recent (Latest runs) and Tokens (usage by agent
+from OpenTelemetry, off by default); **Usage**, the limits
 up front with Burn and the week's heat map behind a fold, beside **Today's schedule**,
 Today's routines over Next 24 hours with the loops' line at its foot; and **Loops**, only
 while a loop is open. Nothing folds by width any more (the phone's "More" disclosure is
@@ -451,7 +452,7 @@ Phases 1 to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   are chips. Under the rings, a fold (closed, it reads "Burn: 48K tokens in the last hour
   · hour by hour") opens Burn and This week, hour by hour inside the same card; the heat
   map sits on a light inset there, so its shades read as they did.
-- **The Agents card (the home merge):** three tabs in the WAI-ARIA pattern (one tab stop;
+- **The Agents card (the home merge):** four tabs (Tokens since 2026-11-25) in the WAI-ARIA pattern (one tab stop;
   the arrows move and select, wrapping; Home and End), each with a count when the page
   has one ("Now · 3" running, "Today · 6" runs; a count with no source is left off). Only
   the chosen tab's view is drawn, so Today's lanes open scrolled to now and Now asks once
@@ -506,6 +507,9 @@ Phases 1 to 4 of the Orbit plan and Phase 1b of the Jarvis OS plan give it:
   `docs/design/2026-11-13-war-room-stop.md` ("Built").
 - **Latest runs (Phase 3; the Recent tab since the home merge):** the 10 most recent runs, each with its time (and weekday
   when it wasn't today), the agent, its task and its tokens.
+- **Tokens (Orbit Phase 6, board 1e46584d; built 2026-11-25, off by default):** each
+  agent's tokens from Claude Code's OpenTelemetry metrics over 24 hours and 7 days, checked
+  against the transcripts' count; see "Usage by agent from OpenTelemetry".
 - **Next 24 hours (under Today's routines since the home merge):** the next run of each calendar job within the next 24 hours, and any
   limit reset, on a timeline. A job that runs every few minutes (launchd's
   `StartInterval`) has no fixed next run, so it never appears. Names come from config's
@@ -669,6 +673,7 @@ not being reachable) leaves every other panel intact.
 | `crons` | `~/Library/LaunchAgents/*.plist` + `launchctl list` | 60 s |
 | `plan` | `claude auth status --json` (tier only — see [Configuration](#configuration)) | 24 h |
 | `ingest` | inbound `POST` to `/api/ingest/{crons,projects,credits}` on the ingest socket, no timer | — |
+| `otel` | OTLP metrics posted to the OpenTelemetry receiver's own loopback port (off by default), summed against the transcripts' hours | 60 s |
 
 The server holds no API key — there is nothing to hold. It shells out to the `claude`
 CLI the user is already logged into, and reads local files. It binds to
@@ -3163,6 +3168,113 @@ symlinks included, and the route over a loopback port with the chat's device sto
 `web/test/orbit-feed.test.js`. The writer's tests are in the lead's repo
 (`tests/test_discord_post.py`).
 
+### Usage by agent from OpenTelemetry (Orbit Phase 6, board 1e46584d; built 2026-11-25, off by default)
+
+A second, independent count of each agent's tokens, from Claude Code's own OpenTelemetry
+metrics, set beside the transcripts' count of the same hours (`server/lib/otel.mjs`;
+tested by `server/test/otel.test.mjs`, and `agentHours` in `server/test/agent-work.test.mjs`).
+The transcripts stay the source of every other figure on the page; this one only checks
+them. A gap like the 3x over-count of 2026-10-20 would show here the day it began.
+
+**The receiver.** With config's `otel.enabled` true, the server opens a second listener,
+on `127.0.0.1` at `otel.port` (default 8323: not 4318, the OTLP default, so no other
+program's exporter lands in it by default). Tailscale Serve forwards only the dashboard's
+port, so the tailnet never reaches it. It takes OTLP over HTTP with JSON, metrics only,
+and refuses, in this order and before reading a body: a `Host` that isn't `127.0.0.1` or
+`localhost` on its own port (421, so a page re-pointed at loopback by DNS rebinding is
+refused), any request with `Origin` (403: exporters send none, a browser always does on a
+POST), any path but `/v1/metrics` (404, `/v1/logs` and `/v1/traces` included), any method
+but POST (405), more than 120 posts in any minute (429 with `Retry-After`), a
+`Content-Encoding` (415), anything but `application/json` (415), and a body over 256 KB
+(413, by `Content-Length` or as it streams). Then a body that isn't an export of metrics,
+has more than 5,000 data points, more than 64 attributes on a point, or an attribute value
+over 1,024 characters is refused whole (400). Each refusal is answered with
+`Connection: close`, and logged as `otel: refused …` with the path (one of the three OTLP
+paths, or "another path") and a fixed reason, never a header's value; the first of each
+kind at once, then at most one line an hour (`lib/refusal-counts.mjs`). The whole request
+must arrive within 10 s; at most 32 connections are open at once, and an idle keep-alive
+connection closes after 2 s. Nothing it receives feeds an alert, a push or an event.
+
+The 120 a minute is one budget for every sender, charged before the encoding, type and
+body checks, so a local program that floods the port (even with bad posts) holds back
+the real exporters for that minute. Accepted (Ultron's L2, 2026-11-25): only a process on
+this machine can reach the port, a cumulative exporter's next export carries what a
+refused one held, and the first 429 of a run is logged at once, then counted hourly.
+
+**What is kept.** Only `claude_code.token.usage` from a resource whose `service.name` is
+`claude-code`, as sums (cumulative or delta). For each hour, each roster agent's (or
+Other's) new tokens (input, output and cache creation, as the transcripts count them),
+cache reads apart, and background requests apart (`query_source` auxiliary or
+`plugin_model_*`: titles, summaries, a plugin's model calls, which no transcript holds).
+In `server/data/otel.json` (gitignored with `data/`), written through a temp file, 0600,
+at most once a minute, hours older than 8 days dropped. No attribute's value is stored,
+logged or sent to the page: not the session id, the account, the email address, the
+model, or any skill, plugin, MCP server or tool name. A cumulative series is remembered by
+a hash of its attributes and start time only, to take the difference between exports
+(at most 20,000; the ones seen longest ago go first, and the time that happened is kept:
+an unknown series that started before it may be a forgotten one, so it is a baseline and
+never counted twice). A cell's key must be a roster key's spelling or Other's, and cells
+have no prototype, so a store file can't name `__proto__`. A series that began before the
+store did (a session already running when the receiver first came up) is a baseline:
+only what it adds afterwards counts, since when its earlier tokens were spent is unknown.
+A restart of the server loses nothing a cumulative exporter sends: its next export carries
+the running total.
+
+**Whose tokens.** By the transcripts' own rules (`lib/agent-work.mjs`): a point whose
+`agent.name` is a roster agent (a subagent's request) is that agent's; a point with no
+`agent.name` belongs to its session's tag, `control_room.agent` (set with
+`OTEL_RESOURCE_ATTRIBUTES` when the lead's session or a routine starts); another
+`agent.name` (a built-in helper such as general-purpose) in the lead's tagged session is
+the lead's; anything else is Other. A custom agent's `agent.name` reads "custom" unless
+`OTEL_LOG_TOOL_DETAILS` is set; such tokens fall to the lead or to Other, and the tab says
+so for a day after the last one.
+
+**The check.** Each minute the `otel` panel sums the last 24 complete hours (fewer in the
+first day; nothing until a complete hour has passed since the store began) for each
+roster agent and in all, foreground requests only, against the transcripts' sums of the
+same hours (`agentHours`, Cowork left out of the total). Two counts differ when they are
+more than 20% apart and the larger is at least 50,000 tokens; smaller ones are "too little
+to check". A difference is logged once when it begins (`otel: the cross-check differs for
+<agent>: …`) and once when it ends.
+
+**The page.** The Agents card's fourth tab, **Tokens**: each roster agent's new tokens
+over 24 hours and 7 days, with the check under its name ("matches the transcripts", or
+"differs: transcripts say 3.6M" in the accent), then Other (sessions without an agent
+tag) and the total line. Before the first export it reads "No data yet"; with the
+receiver off, unset or unable to listen it says which; against a server from before this
+it says the figures arrive with the next restart.
+
+**The settings Claude Code needs** (for the mini's user settings `env`, so every session
+there exports; nothing in this repo sets them):
+
+| Variable | Value | Why |
+|---|---|---|
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | `1` | Turns the export on. |
+| `OTEL_METRICS_EXPORTER` | `otlp` | Metrics over OTLP. |
+| `OTEL_LOGS_EXPORTER` | `none` | No events (prompts, tool calls) leave the process. |
+| `OTEL_TRACES_EXPORTER` | `none` | No traces either. |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/json` | The receiver takes JSON only. |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `http://127.0.0.1:8323/v1/metrics` | The receiver; the metrics-only variable, so no other signal has an address. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Once a minute (the default, stated). |
+| `OTEL_LOG_TOOL_DETAILS` | `1` | Names custom agents in `agent.name` (else "custom"). It also names skills, plugins and MCP servers and tools, which the receiver drops; with logs `none`, nothing else carries them. |
+| `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` | `false` | The account id stays off the points. |
+
+Left unset on purpose: `OTEL_EXPORTER_OTLP_ENDPOINT` (the all-signals address),
+`OTEL_EXPORTER_OTLP_HEADERS` (no token: the port is loopback only), any compression,
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` (cumulative, the default, recovers a
+missed export), `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT`,
+`OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_RAW_API_BODIES`, and `OTEL_RESOURCE_ATTRIBUTES`:
+the session's tag is per launch (`control_room.agent=<roster key>`), set by whatever
+starts the lead's session or a routine, and a value in the settings' `env` would replace
+it in every session. A child process inherits its parent's environment, so every launcher first removes any `control_room.agent=` pair already in
+`OTEL_RESOURCE_ATTRIBUTES` (one it inherited from the process that started it), then
+appends its own, so a session never carries two tags. Points also carry `user.email`, `user.id`, `organization.id` and
+`session.id` whatever is set; the receiver drops them.
+
+What was read from the 2.1.330 binary and not yet seen live: the metric and attribute
+names above, the "custom" redaction, and the variables' names. Before relying on a figure,
+check one real export reached the store (the panel leaves "No data yet").
+
 ### Acknowledging a known miss
 
 A failed job or a down service can be **acknowledged**: silenced for a bounded time
@@ -3628,6 +3740,7 @@ and that must not reach every device on the tailnet.
 | `events` | object, optional | Events for the lead (see "Events"), on whenever the chat is: `events.sources` is the event socket's allowlist (`{ "<name>": { "title", "failure" } }`, empty by default, so every post is refused), `events.excludeKeys` lists alert keys never to make an event from, `events.triagePerDay` (0 to 200, default 10) the daily triage budget. A bad entry is a `config:` line and is left out. |
 | `proactive` | object, optional | The proactive check (see "The proactive check"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. `"idle": { "enabled": true, "quietHours": true }` turns the idle wake-up on (off without it); `quietHours: false` lets it go from 22:00 to 07:00 too. The rules' numbers are constants, not config. |
 | `recover` | object, optional | Restart Jarvis from the page (see "Restart Jarvis from the page"): `{ "enabled": true }` turns it on; absent is `unset`, `false` is off. Anything else is a `config:` line and off; another key is a `config:` line and ignored. Only with the chat on. What runs is fixed in code, never config. The file `~/.local/state/jarvis-os/recover-off` turns it off without a restart. |
+| `otel` | object, optional | Usage by agent from OpenTelemetry (see "Usage by agent from OpenTelemetry"): `{ "enabled": true }` opens the receiver on `127.0.0.1`; `port` (default `8323`, 1024 to 65535, not the dashboard's own) moves it. Absent is `unset`; `false` is off. A bad port, or `enabled` that isn't true or false, is a `config:` line and off; another key is a `config:` line and ignored. The start logs `otel: listening on 127.0.0.1:<port> …` or `otel: off …`. |
 | `ingest` | object, optional | `ingest.tcp`: `"legacy"` (the default) keeps `POST /api/ingest/needs-you` on the TCP port from this machine, logged and alerted, for hooks that still post there; `"off"` leaves the ingest on its Unix socket only (see "What the ingest endpoints require"). Any other value is a `config:` line and closes the TCP route. |
 | `hostCheck` | `"log"` \| `"enforce"`, default `"log"` | What happens to a request whose `Host` is not on that list: `log` writes one `host:` line per distinct value (the first 20) and serves it; `enforce` refuses it with 421. Run a day on `log`, read the lines, then switch. Any other value is logged as a `config:` problem and **enforces**, so a typo never leaves the check off. |
 | `plan.price` | string, optional | Plan price, shown as free text (e.g. `"$200 / month"`). Hand-entered — no API exposes it. Omit the field and the price line simply doesn't render; it is never invented. |
@@ -4064,6 +4177,10 @@ and git-read run from the paths in `config.json`, which are working trees: whate
 them runs on that schedule, uncommitted edits included.** At startup each, and the
 package it imports, must pass the program check (Configuration, To push), which refuses
 code anyone but the service's own user (or root, for the folders above) could change.
+
+What it listens on besides this port: the ingest's Unix socket, the chat's sockets when the
+chat is on, and, only with `otel.enabled`, the OpenTelemetry receiver on `127.0.0.1` at
+`otel.port` (metrics only; see "Usage by agent from OpenTelemetry").
 
 What it reads besides the transcripts: `~/.claude.json` (the cached usage response),
 the LaunchAgent plists, the avatar folder, the NAS watch's state file (a token) and the
