@@ -1794,8 +1794,8 @@ holds in a browser (their logic is unit-tested, the wiring not), and anything on
 whether the home-screen app fires `visibilitychange` on resume (it should), and Safari's
 use of the 192/512 icons (it uses the apple-touch-icon).
 
-**The ingest on its own Unix socket, staged on `jos/ingest-socket` (board ba1b8446, from main
-1e1da2d, 2026-11-12), not committed, not live.** Ultron's M1 on the loopback guard: it holds only
+**The ingest on its own Unix socket (board ba1b8446; merged as main 1d42cf0; the service log shows the socket up
+since 2026-11-12 15:35Z; built on `jos/ingest-socket` from main 1e1da2d).** Ultron's M1 on the loopback guard: it holds only
 while Serve proxies at the HTTP layer. Every `/api/ingest/*` route is now served on
 `~/.local/state/jarvis-os/ingest.sock` (0600 in the 0700 folder, bound under umask 077, checked
 before and after it listens, started whether or not the chat is on; `server/lib/ingest-socket.mjs`),
@@ -1864,11 +1864,34 @@ showed was dead is gone: `lose` runs only while the socket is on).
 **Tests:** `server/test/ingest-socket.test.mjs` (the socket, its tries, the notice, a source
 test that guards server.mjs's wiring), `ingest-local.test.mjs` (the TCP side),
 `swap-needs-you-hooks.test.mjs` (the script), `approvals.test.mjs` (the Deny-only cap), and the
-README hook entries run for real over a scratch socket under a scratch `$HOME`. Follow-up, once
-`"off"` has held: delete the legacy route and `lib/local-caller.mjs`. **Merge:** after
+README hook entries run for real over a scratch socket under a scratch `$HOME`. **Merge:** after
 `jos/ack-notice` (see its merge note): both edit server.mjs's createHandler call; keep this
 branch's `onBlock`, `onExact`, `onIngestTcp` and that branch's `onAckNotice`, then run the server
 suite (each branch's source test guards its own wiring).
+
+**Retiring the TCP route (board 4f457fe5): gate checked 2026-11-25, not passed.** The plan:
+once `ingest.tcp` has been `"off"` for 7 days, delete the legacy route and `lib/local-caller.mjs`.
+What the check found (read only): steps 4 and 5 above happened only halfway. The hooks are
+swapped (all six needs-you entries and the exact-command one in `~/.claude/settings.json` post
+to the socket; the swap script's backup is `settings.json.bak-20261112-110534`), and the service
+log's last TCP post is the hourly line of 2026-11-12 16:35Z (179 taken); every start since,
+through 2026-11-24 23:51Z, logs no TCP post. Nothing else calls the route: no TCP poster in the
+jarvis repo (`bin/jarvis-start`, `chat_post.py` and `routine.py` use the socket; the channel's e2e
+harness serves its own scratch ingest), in `~/Library/LaunchAgents` or in this repo outside the
+swap script and tests. But config has no `ingest` block, so `ingest.tcp` is still the default
+`"legacy"` (each start logs `ingest.tcp "legacy"`), and the 7 days have not started. **To pass:**
+Jarvis adds `"ingest": { "tcp": "off" }` to config.json and the service restarts; the start line
+then says `the TCP port takes no ingest posts`, and the gate passes 7 days after that restart.
+**What the removal must keep or move:** `PROXY_HEADERS` lives in `lib/local-caller.mjs` but the
+socket side uses it (`lib/local-alerts.mjs`'s `proxyHeaderOf`, and `local-alerts.test.mjs`), so
+it moves to its own module rather than going; `ingestOk` in server.mjs loses its `"legacy"`
+branch (it becomes the socket's `check()` alone, which is what `"off"` runs for the week);
+`createLegacyNotice`, `LEGACY_ALERT`, the ntfy title `ingestLegacy`, `LEGACY_TCP_ROUTES`,
+`readIngestConfig` and the `onIngestTcp` wiring go, and the TCP port refuses every ingest post;
+an `ingest` key left in config should then be ignored with one `config:` line, not closed or
+fatal, so Jeff's copy can drop it at leisure. Choice for that run: whether
+`deploy/swap-needs-you-hooks.py` and its test go too (a one-shot migration, done; my pick is
+yes, with the README's swap steps).
 
 **Chat Markdown and loopback-only ingest, staged on `jos/md-ingest` (from main a82420a,
 2026-11-11), not committed, not live.** Two board items (883b96d0, 1881027f). (1) **Markdown in
