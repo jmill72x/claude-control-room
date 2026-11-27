@@ -5949,7 +5949,7 @@ restart: the channel still holds the request (12 h) and would take a verdict, bu
 has no card to answer. Rebuilding it needs the channel's process identity kept across the
 restart (the L7 rule ends every card at a new channel process's hello), so it is its own item.
 
-## 56. A card answered somewhere else closes within seconds, never early (board 48308589, P2; staged 2026-11-26 on `jos/instant-close`, off main 086b107; Ultron's NO-GO fixed the same day: H1, M1 board 7d284b3a, L2 and L3 board 8d73e1dd)
+## 56. A card answered somewhere else closes within seconds, never early (board 48308589, P2; merged as main 6e03a63 (seen 2026-11-27, live state not checked), branch `jos/instant-close`; Ultron's NO-GO fixed the same day: H1, M1 board 7d284b3a, L2 and L3 board 8d73e1dd)
 
 Worktree `~/Projects/.worktrees/ccr-instant-close`, no upstream, not committed. Server only
 (no web change; the page already turns an `elsewhere` card into "Answered elsewhere" from the
@@ -6126,3 +6126,31 @@ narrowing would, safely); what `/clear` does to the session's name line.
 with no agent runs going and no card open. No web build, no config, no settings change.
 Check after: the start log has no `card-watch:` failure line; answer a card's prompt in the
 terminal and the page's card turns "Answered elsewhere" within about 10 s.
+
+## 57. The run sheet's login steps match the tested renewal (board a19dadb5, P2; drafted 2026-11-27, not published)
+
+**The steps are not in this repo.** "Bring Jarvis Back" is a private claude.ai page; this
+repo holds only its address (`RUNBOOK_URL` in `web/src/lib/orbit/runbook.js`, §19) and
+the links to it, so no page code or test here carries its steps. A fix to its words is a
+republish of that page to the same address, not a build or a restart.
+
+- **Premise checked.** Board a19dadb5 (11-20) said step 4 told Jeff to run plain
+  `claude auth login`. The page was rewritten 11-21: step 4 is now "If the Control Room
+  won't load, paste the one line", and the login is step 6, which names no commands and
+  points to `jarvis-is-down.md`, a file the iPhone can't open.
+- **Source of truth:** `RENEW` and `FIX` in the jarvis repo's `jarvis/login_watch.py`
+  (identical in the release worktree on 11-27). (1) Over SSH, run `security
+  unlock-keychain ~/Library/Keychains/login.keychain-db`. (2) Run `tmux -L jarvis
+  new-window -t jarvis: && tmux -L jarvis attach -t jarvis`. (3) Run `claude auth login`,
+  then `claude auth status`. (4) Detach with Ctrl-b d. (5) Outside the session, paste the
+  one line, `jarvis-recover` (board 37993b41), not a bare `jarvis-start --restart`, which
+  exits 36 over SSH. A renewal before expiry stops after step 4.
+- **Draft:** step 6 and a NOT OK bullet now point to a new "If the Claude login lapsed"
+  card that has those five steps with copy boxes. The draft's commands were checked
+  word for word against `login_watch.py`, and it was rendered at 390 px in light and dark
+  with no overflow. It waits on an OK to republish the page.
+- **Other wording that still differs (jarvis repo, not changed here):** `watch.py`
+  `login_words` says "at the mini's Terminal (`claude auth login`)" and then a bare
+  `jarvis-start`. `jarvis-recover`'s lapse verdict says "claude auth login (in a terminal
+  outside the jarvis session)". `jarvis-is-down.md`'s "The Claude login lapsed" has no
+  Keychain unlock step. `login_watch.py`'s comment still says the page's "step 4".

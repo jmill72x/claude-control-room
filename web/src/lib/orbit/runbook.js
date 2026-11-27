@@ -3,6 +3,8 @@
 // address is no secret. This is the one place the address lives: every link to it on
 // the page (the Overview's foot, the lead's health details, the alert strip, the
 // chat's banner and menu) reads it from here. Checked by web/test/orbit-runbook.test.js.
+// The run sheet's own steps (the login renewal among them) live on that page, not in
+// this repo; their source of truth is the jarvis repo's login watch (NEXT.md §57).
 
 export const RUNBOOK_URL = 'https://claude.ai/artifact/NSRZHmezuvqUUQmhfwmARm';
 export const RUNBOOK_LABEL = 'Bring Jarvis Back';
