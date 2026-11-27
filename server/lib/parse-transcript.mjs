@@ -98,6 +98,14 @@ export function createTranscriptParser(surface) {
   // agents panel and Restart Jarvis's warning still keep a stopped run until its window
   // lapses (counting one too many is their safe side).
   let stoppedAt = null;
+  // The newest response's tool uses that have no result yet, for which thread a
+  // permission card is (lib/answered-elsewhere.mjs; board 28644093): a thread stopped at
+  // a prompt has its tool use written and no result. A running tool looks the same, so
+  // this alone never says a prompt waits. By the tool use's id: { name, at } (the line's
+  // time). A new response clears them (Claude Code sends the next request only once every
+  // tool use has its result), and so does an interruption mark.
+  const openUses = new Map();
+  let openResponse = null;
 
   return {
     line(line) {
@@ -113,8 +121,10 @@ export function createTranscriptParser(surface) {
       if (d.type === 'assistant' && d.message && typeof d.message === 'object') {
         ended = endsRun(d.message);
         stoppedAt = ended && Number.isFinite(lineTs) ? lineTs : null;
-      } else if (d.type === 'user' && Number.isFinite(lineTs) && isInterruption(d.message)) {
-        stoppedAt = lineTs;
+        noteToolUses(d.message, lineTs);
+      } else if (d.type === 'user' && d.message && typeof d.message === 'object') {
+        if (Number.isFinite(lineTs) && isInterruption(d.message)) { stoppedAt = lineTs; openUses.clear(); }
+        else noteToolResults(d.message);
       }
 
       if (d.sessionId && !sessionId) sessionId = d.sessionId;
@@ -162,10 +172,30 @@ export function createTranscriptParser(surface) {
         if (tokens <= 0 && cacheRead <= 0) continue;
         records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
       }
-      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended, stoppedAt };
+      const openTools = [...openUses.values()].map(u => ({ ...u }));
+      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended, stoppedAt, openTools };
     }
   };
+
+  function noteToolUses(message, lineTs) {
+    const id = typeof message.id === 'string' && message.id !== '' ? message.id : null;
+    if (id !== null && id !== openResponse) { openUses.clear(); openResponse = id; }
+    if (!Number.isFinite(lineTs) || !Array.isArray(message.content)) return;
+    for (const c of message.content) {
+      if (c?.type !== 'tool_use' || typeof c.id !== 'string' || typeof c.name !== 'string' || c.name === '') continue;
+      openUses.delete(c.id);
+      openUses.set(c.id, { name: c.name.slice(0, OPEN_TOOL_NAME_MAX), at: lineTs });
+      while (openUses.size > OPEN_TOOLS_MAX) openUses.delete(openUses.keys().next().value);
+    }
+  }
+  function noteToolResults(message) {
+    if (!Array.isArray(message.content)) return;
+    for (const c of message.content) if (c?.type === 'tool_result' && typeof c.tool_use_id === 'string') openUses.delete(c.tool_use_id);
+  }
 }
+// At most this many open tool uses a thread (one response's parallel calls), each name cut here.
+export const OPEN_TOOLS_MAX = 20;
+export const OPEN_TOOL_NAME_MAX = 200;
 
 export function parseTranscript(text, surface) {
   const parser = createTranscriptParser(surface);

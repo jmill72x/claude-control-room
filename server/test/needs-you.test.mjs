@@ -749,5 +749,7 @@ test('the server hands each sessions pass\'s stopped threads to the store (board
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
   const pass = src.slice(src.indexOf("registry.register('sessions'"), src.indexOf("registry.register('board'"));
-  assert.match(pass, /needsYou\.endThreads\(endedThreads\(transcripts, now\), now\)/);
+  assert.match(pass, /const ended = endedThreads\(transcripts, now\);\n\s*const stopped = needsYou\.endThreads\(ended, now\);/);
+  // The same stops go to the page's cards (lib/answered-elsewhere.mjs; board 28644093).
+  assert.match(pass, /answeredElsewhere\?\.pass\(\{ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt \}\)/);
 });

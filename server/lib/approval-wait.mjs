@@ -53,15 +53,19 @@ const safeName = v => (typeof v === 'string' && SAFE_NAME.test(v) ? v : null);
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 // The newest request each thread wrote, from the sessions pass's transcripts:
-// Map<session id, { main, agents: Map<agentKey, time>, types: Map<agentKey, agent type> }>.
-// `main` is the session's own transcript's (-Infinity when it has no request yet), left
-// undefined when that transcript was not among them. A subagent's key is the hash of the
-// id in its file's name (agent-<id>.jsonl), as its hooks send it.
+// Map<session id, { main, agents: Map<agentKey, time>, types: Map<agentKey, agent type>,
+// mainOpen, agentsOpen: Map<agentKey, open tool uses> }>. `main` is the session's own
+// transcript's (-Infinity when it has no request yet), left undefined when that transcript
+// was not among them. A subagent's key is the hash of the id in its file's name
+// (agent-<id>.jsonl), as its hooks send it. The open tool uses ([{ name, at }], lib/
+// parse-transcript.mjs, openTools) are the newest response's that have no result yet: the
+// newest transcript's when a session has two own files.
 const AGENT_FILE = /(?:^|\/)agent-([^/]+)\.jsonl$/;
+const openOf = t => (Array.isArray(t.openTools) ? t.openTools.filter(u => isObject(u) && typeof u.name === 'string' && Number.isFinite(u.at)) : []);
 export function threadTimes(transcripts) {
   const out = new Map();
   const entry = sid => {
-    if (!out.has(sid)) out.set(sid, { main: undefined, agents: new Map(), types: new Map() });
+    if (!out.has(sid)) out.set(sid, { main: undefined, agents: new Map(), types: new Map(), mainOpen: undefined, agentsOpen: new Map() });
     return out.get(sid);
   };
   for (const t of Array.isArray(transcripts) ? transcripts : []) {
@@ -73,13 +77,75 @@ export function threadTimes(transcripts) {
       const id = typeof t.filePath === 'string' ? AGENT_FILE.exec(t.filePath)?.[1] : null;
       if (!id) continue;
       const key = agentKey(id);
+      if (!(e.agents.get(key) > last)) e.agentsOpen.set(key, openOf(t));
       e.agents.set(key, Math.max(e.agents.get(key) ?? -Infinity, last));
       if (typeof t.meta?.agentType === 'string') e.types.set(key, t.meta.agentType);
     } else {
+      if (!(e.main > last)) e.mainOpen = openOf(t);
       e.main = Math.max(e.main ?? -Infinity, last);
     }
   }
   return out;
+}
+
+// ---- which thread a permission card is ----
+
+// A thread's tool use is a card's when it was written from CARD_NEAR_MS before the card
+// was relayed to CARD_SKEW_MS after: Claude Code writes the tool use, then runs the
+// PreToolUse hooks and, in auto mode, the classifier, then shows the prompt.
+export const CARD_NEAR_MS = 2 * MIN;
+export const CARD_SKEW_MS = 5e3;
+
+// Which thread of `sessions` (the lead's session ids) a card for `tool` relayed at `at`
+// is: the thread whose newest response has an open tool use of that name in the window
+// above, the nearest to `at` winning, the session's own thread on a tie. Answers
+// { sessionId, agent (null: the session's own thread), name, toolAt } or null. Only a
+// card's thread: an open tool use alone never says a prompt waits (a running tool looks
+// the same).
+export function cardThread(threads, sessions, tool, at) {
+  if (typeof tool !== 'string' || tool === '' || !Number.isFinite(at) || !(threads instanceof Map)) return null;
+  let best = null;
+  const consider = (sessionId, agent, newest, open) => {
+    if (!Array.isArray(open)) return;
+    for (const u of open) {
+      if (u.name !== tool || u.at < at - CARD_NEAR_MS || u.at > at + CARD_SKEW_MS) continue;
+      // The thread wrote no request after its tool use (it is the newest response's).
+      if (Number.isFinite(newest) && newest > u.at) continue;
+      const d = Math.abs(at - u.at);
+      if (best === null || d < best.d) best = { sessionId, agent, name: u.name, toolAt: u.at, d };
+    }
+  };
+  for (const sid of sessions ?? []) {
+    const t = threads.get(sid);
+    if (!isObject(t)) continue;
+    consider(sid, null, t.main, t.mainOpen);
+    for (const [key, open] of t.agentsOpen instanceof Map ? t.agentsOpen : []) consider(sid, key, t.agents instanceof Map ? t.agents.get(key) : undefined, open);
+  }
+  if (best === null) return null;
+  const { d, ...out } = best;
+  void d;
+  return out;
+}
+
+// Whether the thread a card was matched to (cardThread's answer) has gone past it: no tool
+// use of that name is open in its newest response any more (each has its result: allowed
+// and run, or denied; one of two parallel calls of the same tool still open keeps it), or
+// the thread wrote a request after it, or it stopped (`stoppedAt`, lib/live-agents.mjs endedThreads' times for the
+// session: Map<agentKey, time>). Answers true, false (still at it), or null when this
+// pass did not read that thread.
+export function threadPast(threads, ref, stopped = null) {
+  if (!isObject(ref) || !(threads instanceof Map)) return null;
+  const t = threads.get(ref.sessionId);
+  if (!isObject(t)) return null;
+  const own = ref.agent === null;
+  const newest = own ? t.main : t.agents instanceof Map ? t.agents.get(ref.agent) : undefined;
+  if (!(Number.isFinite(newest) || newest === -Infinity)) return null;
+  if (newest > ref.toolAt) return true;
+  const stop = !own && stopped instanceof Map ? stopped.get(ref.agent) : undefined;
+  if (Number.isFinite(stop) && stop >= ref.toolAt) return true;
+  const open = own ? t.mainOpen : t.agentsOpen instanceof Map ? t.agentsOpen.get(ref.agent) : undefined;
+  if (!Array.isArray(open)) return null;
+  return !open.some(u => u.name === ref.name);
 }
 
 // A permission wait's tool and the subagent that asked, for the page and the words: the
@@ -136,6 +202,20 @@ export function reminderBody(waits, now) {
 }
 export const isReminderPush = body => typeof body === 'string' && REMINDER_SHAPE.test(body);
 
+// A card's schedule when this process first sees it. A card is normally seen in its first
+// minute: none sent, the first due at REMIND_FIRST_MS. One first seen later was open before
+// a restart (lib/needs-you.mjs, restore; board cf9b6496), and the last process may have sent
+// the reminders whose times have passed, which it didn't say: all but the latest of those
+// count as sent, and the latest is due now, so the restart sends one and the six stay six.
+// One past all six gets none (the answer watch's alerts carry on).
+export function firstSchedule(since, now) {
+  let passed = 0;
+  while (passed < REMIND_MAX && now >= since + REMIND_FIRST_MS + passed * REMIND_EVERY_MS) passed++;
+  if (passed === 0) return { count: 0, nextAt: since + REMIND_FIRST_MS };
+  if (passed >= REMIND_MAX && now >= since + REMIND_FIRST_MS + REMIND_MAX * REMIND_EVERY_MS) return { count: REMIND_MAX, nextAt: Infinity };
+  return { count: passed - 1, nextAt: now };
+}
+
 // The reminders: `push(body)` sends one to every paired device (lib/chat-push.mjs,
 // approvalReminder) and answers { tried, reached }. `step(waits, now)` runs each minute
 // with approvalWaits' list. `quiet(now)` is the events module's isQuiet (server.mjs passes
@@ -154,7 +234,7 @@ export function createApprovalReminders({ push, log = console.log, quiet = () =>
     const list = (Array.isArray(waits) ? waits : []).filter(w => isObject(w) && typeof w.key === 'string' && Number.isFinite(w.since));
     const live = new Set(list.map(idOf));
     for (const id of cards.keys()) if (!live.has(id)) cards.delete(id);
-    for (const w of list) if (!cards.has(idOf(w))) cards.set(idOf(w), { count: 0, nextAt: w.since + REMIND_FIRST_MS });
+    for (const w of list) if (!cards.has(idOf(w))) cards.set(idOf(w), firstSchedule(w.since, now));
     const due = list.filter(w => { const c = cards.get(idOf(w)); return c.count < REMIND_MAX && now >= c.nextAt; });
     if (due.length === 0) { quietSaid = false; return { status: 'none' }; }
     if (quiet(now)) {

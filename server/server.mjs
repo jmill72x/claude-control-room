@@ -295,10 +295,39 @@ let threadsNow = new Map();
 // The tool on the chat's newest open card, for a wait of the lead's whose hooks name no
 // tool (set once the chat is on; board e7427be1).
 let cardToolHint = null;
+// The lead's session moved on (lib/answered-elsewhere.mjs): the page's cards for the
+// prompts before that moment close, his own thread's at once and a subagent's once its
+// own thread is past it (each sessions pass, below). Made once the chat is on; a no-op
+// until then. Declared before the sessions pass, which uses it. Guarded by a source test
+// (test/approvals-parity.test.mjs): a merge must keep `onMoved` on both ingest handlers.
+let answeredElsewhere = null;
+const onMoved = value => answeredElsewhere?.note(value) ?? 0;
+// The permission waits across a restart (lib/needs-you.mjs, snapshotOf and restore; board
+// cf9b6496): data/needs-you.json (0600), written on each change and each sessions pass. The
+// last process's copy is read once here, before anything writes, and put back at the first
+// sessions pass, whose transcripts then judge each wait; until then nothing is written.
+const needsYouFile = createSentStore(join(HERE, 'data', 'needs-you.json'));
+const staleWaitsTemps = await needsYouFile.sweep();
+if (staleWaitsTemps > 0) console.log(`needs-you: removed ${staleWaitsTemps} temp file${staleWaitsTemps === 1 ? '' : 's'} an interrupted write left`);
+let priorWaits = await needsYouFile.read();
+let waitsSaving = false, waitsDirty = false, waitsSaveSaid = false;
+async function saveWaits() {
+  if (priorWaits !== null) return;
+  if (waitsSaving) { waitsDirty = true; return; }
+  waitsSaving = true;
+  try {
+    do { waitsDirty = false; await needsYouFile.write(needsYou.snapshot(Date.now())); } while (waitsDirty);
+    waitsSaveSaid = false;
+  } catch (err) {
+    if (!waitsSaveSaid) console.error(`needs-you: the waits could not be written for the next start (${err?.code ?? err?.name ?? 'error'})`);
+    waitsSaveSaid = true;
+  } finally { waitsSaving = false; }
+}
 const needsYou = createNeedsYouStore({
   whoFor: id => sessionAgents.get(id) ?? null,
   detailFor: (w, asks) => describeWait(w, asks, { typeOf: (sid, key) => threadsNow.get(sid)?.types.get(key) ?? null, rosterName }),
-  hintFor: (sid, now) => cardToolHint?.(sid, now) ?? null
+  hintFor: (sid, now) => cardToolHint?.(sid, now) ?? null,
+  onChange: () => { void saveWaits(); }
 });
 // The lead's approval cards now (lib/approval-wait.mjs): for the reminders, the answer
 // watch's file and the idle wake-up.
@@ -307,6 +336,7 @@ const approvalWaitsNow = now => approvalWaits(needsYou.view(now), LEAD_NAME);
 // cross-check (lib/otel.mjs). Kept here, not in the sessions panel, so the page never gets it.
 let transcriptHours = null;
 registry.register('sessions', async () => {
+  const readAt = Date.now();
   const { transcripts, coworkSessions, unavailableRoots, unreadablePaths, sessionNames } = await collectSessions({ cache: transcriptCache });
   const now = Date.now();
   sessionAgents.clear();
@@ -318,13 +348,26 @@ registry.register('sessions', async () => {
   // A stopped subagent sends no SubagentStop, so its asks would hold a permission wait
   // open (board 2c49fcfa): its transcript says it stopped (lib/needs-you.mjs, endThreads).
   transcriptHours = agentHours({ transcripts, sessionNames, roster, now });
-  const stopped = needsYou.endThreads(endedThreads(transcripts, now), now);
+  const ended = endedThreads(transcripts, now);
+  const stopped = needsYou.endThreads(ended, now);
   if (stopped.dropped > 0) console.log(`needs-you: ${stopped.dropped} ask${stopped.dropped === 1 ? '' : 's'} of stopped subagents dropped, ${stopped.ended} wait${stopped.ended === 1 ? '' : 's'} ended, ${stopped.open} open`);
   // A permission wait lives while its thread's transcript shows it held, past the
   // 30-minute lapse, and ends once the thread wrote a request after it (board e7427be1).
   threadsNow = threadTimes(transcripts);
+  // The first pass puts back the last process's permission waits (board cf9b6496); the
+  // confirm below judges them by these same transcripts.
+  if (priorWaits !== null) {
+    const back = needsYou.restore(priorWaits, STARTED_AT, now);
+    priorWaits = null;
+    if (back.restored > 0) console.log(`needs-you: ${back.restored} permission wait${back.restored === 1 ? '' : 's'} put back from before the restart (${back.asks} ask${back.asks === 1 ? '' : 's'}), checked against the transcripts now`);
+  }
   const confirmed = needsYou.confirm(threadsNow, now);
   if (confirmed.ended > 0 || confirmed.dropped > 0) console.log(`needs-you: the transcripts show ${confirmed.dropped} ask${confirmed.dropped === 1 ? '' : 's'} answered and ${confirmed.ended} permission wait${confirmed.ended === 1 ? '' : 's'} over (a request written after it), ${confirmed.open} open`);
+  void saveWaits();
+  // The page's cards whose own thread moved past them close; a card the lead's turn left
+  // waiting closes here once its thread is known (lib/answered-elsewhere.mjs; board 28644093).
+  const leadSessions = LEAD_NAME === null ? [] : [...sessionAgents].filter(([, name]) => name === LEAD_NAME).map(([sid]) => sid);
+  try { answeredElsewhere?.pass({ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt }); } catch (err) { console.error(`chat: the answered-elsewhere pass failed (${err?.code ?? err?.name ?? 'error'})`); }
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
@@ -454,12 +497,6 @@ let approvals = null;
 const onBlock = value => approvals?.noteBlock(value) ?? false;
 // A Bash command's exact text from the report-only hook (lib/exact-commands.mjs).
 const onExact = value => approvals?.noteExact(value) ?? 'off';
-// The lead's session moved on (lib/answered-elsewhere.mjs): the page's cards for the
-// prompts before that moment close. Made once the chat is on; a no-op until then.
-// Guarded by a source test (test/approvals-parity.test.mjs): a merge must keep
-// `onMoved` on both ingest handlers below.
-let answeredElsewhere = null;
-const onMoved = value => answeredElsewhere?.(value) ?? 0;
 // A routine's message for the chat (lib/routine-chat.mjs): the morning brief and the
 // weekly digest, posted to the ingest socket by the routine itself. Made once the chat
 // is on; until then the route answers 503. The kill file is beside the sockets.

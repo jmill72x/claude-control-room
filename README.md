@@ -1096,7 +1096,8 @@ event is checked against that time but never moves it (its thread runs beside th
 session's, so its newer posts say nothing about the order of the session's own prompt
 and turn), an ask is never stale, and an old post whose call answers the session's last
 ask still ends the wait (the times were compared on the ask). At most 20 waits
-are kept, each dropped on its clear or after 30 minutes, and a restart forgets them all.
+are kept, each dropped on its clear or after 30 minutes. A restart forgets them all but the
+permission waits (below, "Permission waits survive a restart").
 
 **A permission wait still held outlives the 30 minutes** (board e7427be1, 2026-11-26: the
 lead's own Bash prompt waited 18:31 to 20:02, and its wait lapsed at 19:01). Each minute
@@ -1110,6 +1111,31 @@ transcripts show 1 ask answered and 0 permission waits over (a request written a
 while a pass in the last 3 minutes saw it held, for 12 hours at most, and its asks and
 order time live with it. A wait whose thread's transcript is not read (a session outside
 the transcripts' folders, an unreadable file) lapses at 30 minutes as before.
+
+**Permission waits survive a restart of this server** (board cf9b6496, 2026-11-26). Before,
+a card opened before a restart was unknown until its session's next hook event, and a lead
+blocked on a prompt sends none: Needs you stayed blank, the reminder never went and the
+idle wake-up was not held. The chat's cards can't rebuild one (they are in memory too, the
+message log never says which were answered in the terminal or Discord, and no card names
+its thread), nor can the transcripts alone (a thread stopped at a prompt and one running a
+long tool both end in a tool use with no result). So the store writes what it knows of its
+permission waits to `server/data/needs-you.json` (0600, through a temp file and a rename, on
+each change and each sessions pass): `{ version: 1, at, waits: [{ sessionId, since, hint }],
+asks: { <session id>: [{ agent, tool, at }] } }`, the session id, the wait's start, the tool
+hint, and that session's asks (the thread's hash, the tool's name, when), never a tool's
+input. At start the file is read before anything can write it, and the first sessions pass
+puts back the waits of a file written at most 3 minutes before this start (a longer gap
+means hook events may have been lost while the server was down), each marked held, for a
+session with no wait of its own yet; the same pass's transcript check then judges each as
+it does every minute, so a prompt answered while the server was down ends at once and one
+still held lives on (log: `needs-you: 1 permission wait put back from before the restart (1
+ask), checked against the transcripts now`). Idle and question waits are not kept. This
+reads the hooks the same with the 2026-11-12 entries (no asks: a put-back wait is judged on
+the session's own thread from its start, and any tool use in the session still clears it)
+and with section 28's entries in NEXT.md (its ask comes back, so only its own thread's tool
+use clears it). Not covered: a wait opened and answered while the server was down, and a
+second thread's ask in a session whose wait is listed once (the file keeps the session's
+asks, but a wait whose oldest ask is answered still ends with the session's last ask).
 
 `/api/dashboard` sends them as `needsYou: [{ who, kind, since, key }]`: `who` is the
 roster name of the agent whose session it is (the lead's session by its `agent-name`, a
@@ -1353,7 +1379,10 @@ three pieces, each with its own router:
   their input preview after 24 hours. Attachments are files under `data/chat/files/<random
   id>` (0600), sniffed by their first bytes (png, jpeg, webp, heic, pdf; txt and md by
   declared type), at most 10 MB, pruned after 90 days. A restart forgets open permission
-  requests (the channel asks again) and nothing else.
+  requests and nothing else. The channel sends again only a request it has not yet sent
+  (`resendPendingPerms`, within 10 minutes); one it already relayed has no card after a
+  restart, so it is answered in the terminal or Discord. Its needs-you wait comes back
+  (see "Permission waits survive a restart"), so Needs you and the reminder still say it.
 - **The channel's socket** (`server/lib/chat-socket.mjs`): socket API v1 on
   `~/.local/state/jarvis-os/channel.sock` (`JARVIS_OS_SOCKET`), 0600 in a 0700 folder,
   as the spec's §1.5 lists it: `hello` (takes `{pid, version, startedAt, capabilities?}`, `startedAt` in
@@ -1886,7 +1915,7 @@ off. Tests: `server/test/chat.test.mjs`, `chat-listen.test.mjs` and `chat-alert-
 sockets and a loopback port. macOS caps a Unix socket path at 104 bytes; the default paths
 are well under it.
 
-### Approval cards left waiting (board e7427be1; staged 2026-11-26)
+### Approval cards left waiting (board e7427be1; live since 2026-11-26; across a restart, staged 2026-11-26)
 
 On 2026-11-26 the lead's own prompt for a Bash call (a restart of this service) opened at
 18:31 UTC and blocked his whole session until Restart Jarvis at 20:02: the card's one
@@ -1915,7 +1944,11 @@ his subagents'.
   (`approval-wait: a reminder went to 2 of 2 devices for Jarvis's approval card (Bash),
   open 10 min (reminder 1 of 6)`), and since this change so is each approval push that
   lands (`push: an approval push went to <device>`): on 11-26 nothing said whether the
-  card's push went. In memory only, like the waits: a restart forgets both.
+  card's push went. In memory only: a restart forgets the schedule, and a card that comes
+  back after it (above, "Permission waits survive a restart") is first seen past its first
+  time. Then every reminder time already passed but the latest counts as sent and the
+  latest goes at once ("reminder 2 of 6" for a card open 45 minutes), so a restart sends
+  one and the six stay six; a card past all six (190 minutes) gets none.
 - **The idle wake-up** (below, "The idle wake-up"): a card on the lead's own thread holds
   it, as `approval-wait`, one log line a spell (`proactive: the idle wake-up is held
   (approval-wait): Jarvis's approval card (Bash), open 15 min waits on the owner, and a
@@ -1936,8 +1969,8 @@ his subagents'.
   card (Bash)"; "Vision is waiting on an approval card (Edit, in Jarvis's session)") and
   says where to answer; the Agents card's Now tab, with no run live, reads "No agent is
   working: Jarvis is waiting on an approval card (Bash), for 42 min. Needs you has it."
-- **Not covered:** a restart of this service forgets every wait, so a card opened before it
-  is unknown until its session's next hook event; the hooks before board 9fb32c4d's entries
+- **Not covered:** a card opened while this service was down, or one whose wait's file was
+  more than 3 minutes old at the start (above); the hooks before board 9fb32c4d's entries
   name no tool or thread, so with them a wait's tool comes only from the chat's card and
   any tool call in the lead's session ends his wait, his subagents' included.
 
@@ -2110,16 +2143,34 @@ page offer Allow and Deny whenever the channel's relay does:
 **A card answered somewhere else.** Claude Code tells a channel when a request opens and
 never when it closes (CLI 2.1.322 has `permission_request` out and `permission` in, and
 nothing else), so the page can't be told that a prompt was answered in Claude Code or in
-Discord. The server closes the card on the nearest thing it does hear
-(`server/lib/answered-elsewhere.mjs`): a `UserPromptSubmit`, `Stop` or `SessionEnd` from
-the lead's session, through the needs-you hooks, closes every request the channel relayed
-before that hook ran. The card turns into "Answered elsewhere" and goes after a minute; no
-verdict is written and nothing is sent to the channel; a tap on it answers 409; the log
-says `chat: 1 permission card closed, answered somewhere else or no longer asked (the
-lead's session moved on: Stop): <id>`. `PostToolUse` is not used: the session's other
+Discord. The server closes the card on the nearest things it does hear
+(`server/lib/answered-elsewhere.mjs`): the lead's session moving on, through the needs-you
+hooks, and each thread's transcript, through the sessions pass. A `SessionEnd` from the
+lead's session closes every request the channel relayed before that hook ran. A
+`UserPromptSubmit` or `Stop` is his own thread moving on, so it closes only the cards of his
+own thread (board 28644093: on 2026-11-26 a subagent's 17:30Z card was closed at the lead's
+next prompt while the run still waited). Which thread a card is comes from the transcripts:
+the thread (his own, or one of his subagents' `agent-<id>.jsonl`) whose newest response has
+an open tool use of the card's tool (no result yet), written from 2 minutes before the card
+was relayed to 5 s after, the nearest winning and his own thread on a tie (`cardThread` in
+`lib/approval-wait.mjs`; the parser's `openTools`). A subagent's card stays open at the
+lead's turn (`chat: 1 permission card kept open at the lead's Stop: a subagent's, and its
+thread has not moved past it: <id>`). A card no pass has looked at yet (relayed since the
+transcripts were last read) has its close held to the next pass, which says whose it is; a
+card a pass found no thread for closes at the lead's turn as before; with no sessions pass
+for 3 minutes, every card closes at his turn as before. And each pass closes any card whose
+own thread is past it: no tool use of that name open in its newest response any more (each
+has its result, allowed and run or denied), a request after it, or the subagent stopped
+(`chat: 1 permission card closed, answered somewhere else or no longer asked (its own
+thread moved past it): <id>`). This reads only the hooks' event and session, so it works
+the same with the 2026-11-12 hook entries and with section 28's. The card turns into
+"Answered elsewhere" and goes after a minute; no verdict is written and nothing is sent to
+the channel; a tap on it answers 409; the lead's turn logs `chat: 1 permission card
+closed, answered somewhere else or no longer asked (the lead's session moved on: Stop):
+<id>`. `PostToolUse` is not used: the session's other
 tool calls and its helpers post it while a prompt still waits. So a card can stay open
-from the moment the prompt is answered elsewhere until the turn ends or the next prompt is
-taken. A tap in that gap is written as a verdict and delivered, and Claude Code drops a
+from the moment the prompt is answered elsewhere until the next sessions pass sees its
+thread past it (about a minute), the turn ends or the next prompt is taken. A tap in that gap is written as a verdict and delivered, and Claude Code drops a
 verdict for a request that is no longer open (seen 2026-11-12: a Deny tapped 21 s after
 the same prompt was allowed in Claude Code changed nothing); the card's own line says
 "Claude Code uses it if the prompt was still open". Discord's buttons can't be closed from

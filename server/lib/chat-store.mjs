@@ -417,18 +417,27 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   }
 
   const findPermission = id => { const uid = latest.get(id); return uid === undefined ? null : permissions.get(uid) ?? null; };
+  // What answered-elsewhere may close: an open request, or one that timed out here
+  // unanswered (it may still wait in Claude Code).
+  const closable = p => p.state === 'open' || (p.state === 'expired' && p.timedOut === true);
+  // Those requests, for lib/answered-elsewhere.mjs to say whose each is: { requestId, tool,
+  // relayedAt } copies (it closes them only through closePermissionsElsewhere).
+  const closablePermissions = () => { prunePermissions(); return [...permissions.values()].filter(closable).map(p => ({ requestId: p.requestId, tool: p.tool, relayedAt: p.relayedAt })); };
 
   // The lead's session moved on (lib/answered-elsewhere.mjs): every request the channel
   // relayed before `upTo` that is still open here, or timed out here unanswered, was
   // answered somewhere else (Claude Code's own prompt, Discord) or dropped with its
   // turn. Claude Code sends a channel no word of that, so this is the page's only
   // close for them. State `elsewhere`: no verdict is written, nothing goes to the
-  // channel, and a later tap answers 409. Answers the ids it closed.
-  function closePermissionsElsewhere({ upTo = now(), event = null } = {}) {
+  // channel, and a later tap answers 409. `ids` (a Set of request ids), when given, closes
+  // only those (lib/answered-elsewhere.mjs: the cards whose own thread moved on). Answers
+  // the ids it closed.
+  function closePermissionsElsewhere({ upTo = now(), event = null, ids = null } = {}) {
     prunePermissions();
     const closed = [];
     for (const p of permissions.values()) {
-      if (!(p.state === 'open' || (p.state === 'expired' && p.timedOut === true))) continue;
+      if (!closable(p)) continue;
+      if (ids !== null && !(ids instanceof Set && ids.has(p.requestId))) continue;
       // (An `upTo` that is no number compares false, so it closes nothing.)
       if (typeof upTo !== 'number' || !(p.relayedAt < upTo)) continue;
       p.state = 'elsewhere';
@@ -609,7 +618,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       }
       return first === null ? null : { first, last };
     },
-    openPermission, answerPermission, openPermissions, redrawPermission, publicPermission, newPermissionSession, closePermissionsElsewhere, cardPermissions,
+    openPermission, answerPermission, openPermissions, redrawPermission, publicPermission, newPermissionSession, closePermissionsElsewhere, closablePermissions, cardPermissions,
     setPermissionHold, noteChannelAlive,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },

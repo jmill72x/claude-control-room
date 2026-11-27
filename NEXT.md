@@ -5707,7 +5707,7 @@ it goes live with one Control Room restart (no web build, no config change).
 - **Go-live (Jeff, after C&P):** a Control Room restart, server only, with no agent runs
   going.
 
-## 54. Approval cards left waiting: a reminder push, and the words say the card (board e7427be1, P0 incident 2026-11-26; staged 2026-11-26 on `jos/approval-wait`, off main acdcef6)
+## 54. Approval cards left waiting: a reminder push, and the words say the card (board e7427be1, P0 incident 2026-11-26; merged as main 5ddb7a6, built and restarted 2026-11-26 23:55Z per Jarvis)
 
 Worktree `~/Projects/.worktrees/ccr-approval-wait`, no upstream, not committed. The lead's
 repo half is on its own branch, `jos/approval-wait` in `~/Projects/.worktrees/jarvis-approval-wait`
@@ -5781,6 +5781,8 @@ the lead's 17:38:41 UserPromptSubmit ("answered elsewhere") while the run still 
 - Six reminders, 10 + 30 n minutes: about three hours, after which the answer watch's own
   hourly reminders carry on.
 - In memory only, like the waits: a restart forgets the schedule along with the wait.
+  (Since §55 the waits come back after a restart, and the schedule is rebuilt from the
+  card's age.)
 - Liveness from the transcripts, not from the chat's card: the card ends at 10 min (before
   0.4.11) and never sees a terminal-only prompt; the transcript is what the thread did.
 
@@ -5809,9 +5811,9 @@ read the diff, then the same with `--apply`.
 
 **Follow-ups (board, asked in the report):** the page closes a subagent's card at the
 lead's next turn ("answered elsewhere", `lib/answered-elsewhere.mjs`) though the subagent
-still waits; a restart of this service forgets open waits (a card opened before it is
-unknown until its next hook event); the five-minute needs-you alert still goes only to ntfy
-and #pepper.
+still waits (board 28644093, fixed in §55); a restart of this service forgets open waits (a
+card opened before it is unknown until its next hook event; board cf9b6496, fixed in §55);
+the five-minute needs-you alert still goes only to ntfy and #pepper.
 
 ### 54b. Scope add (Jarvis, 2026-11-26): the Attention strip doesn't clear (boards 80bd2708, 3d59b66b)
 
@@ -5855,3 +5857,94 @@ before changing anything else.
 send their all-clears as `other`, so only a lead chat message clears their down alerts;
 3d59b66b (the mod pane's "acked" suffix) is the Claude Code mod, a different surface, not
 touched here.
+
+## 55. Approval waits survive a restart, and a subagent's card stays open through the lead's turn (boards cf9b6496 and 28644093, P2; staged 2026-11-26 on `jos/approval-restart`, off main 5ddb7a6)
+
+Worktree `~/Projects/.worktrees/ccr-approval-restart`, no upstream, not committed. Server
+only (no web change). README "Permission waits survive a restart of this server" (in "A
+session waiting on you") and "A card answered somewhere else" are the reference.
+
+**cf9b6496: a restart forgot open approval waits.** The brief asked to rebuild them from the
+chat's open cards and, where safe, the transcripts. Neither can on its own: the chat's cards
+are in memory too (the message log keeps the card's message but never says which were
+answered in the terminal or Discord, and no card names its thread), and the channel does
+not send a card again after a restart (0.4.11's `resendPendingPerms` sends only requests it
+never sent; README's "the channel asks again" was wrong and is corrected). The transcripts
+can't tell a thread stopped at a prompt from one running a long tool (both end in a tool use
+with no result: checked on the 11-26 lead transcript, whose blocked Bash at 18:31:22.040 has
+nothing after it but queue lines, and the same shape is what any running foreground tool
+leaves). A rebuild from card + transcript would put back, as waiting, every prompt answered
+in the terminal whose tool still runs, and after a reboot every card of a dead session. So:
+- **Built:** the needs-you store writes its permission waits and their sessions' asks to
+  `server/data/needs-you.json` (0600, temp + rename; `snapshotOf`), on each change
+  (`onChange`, only when the written part changes) and each sessions pass. server.mjs reads
+  the last process's file at start before anything can write it (writes wait until the
+  restore), and the first sessions pass puts back (`restore`, `readSnapshot`) the waits of a
+  file written at most 3 minutes before this start, each marked held, for a session with no
+  wait of its own yet, with its asks; the same pass's `confirmWaits` then judges each by its
+  transcript. The reminder's schedule (`firstSchedule`): a card first seen past its first
+  time counts every passed time but the latest as sent and sends the latest at once, so a
+  restart sends one and the six stay six; past 190 minutes, none.
+- **Both hook cases:** with the live 2026-11-12 entries there are no asks, so a put-back wait
+  is judged on the session's own thread from its start, and any tool use in the session
+  still clears it (as any live wait). Once §28's `--apply` runs, the asks come back with the
+  wait, so only that thread's own tool use (or a request in its transcript) ends it, and a
+  subagent's wait is judged on the subagent's file.
+- **Not covered:** a prompt opened while the server was down; a file more than 3 minutes old
+  (a reboot, a crash loop); idle and question waits; the page's own card (it stays gone
+  until the next prompt; Jeff answers in the terminal or Discord, and Needs you and the
+  reminder say so).
+
+**28644093: "answered elsewhere" closed a subagent's waiting card at the lead's next turn.**
+- **Built:** the transcript parser keeps each thread's open tool uses (`openTools`: the
+  newest response's tool uses with no result; a new response or an interruption mark clears
+  them), `threadTimes` carries them per thread, and `cardThread` names a card's thread: the
+  one (the lead's own, or a subagent's file) with an open tool use of the card's tool written
+  from 2 minutes before the relay to 5 s after, nearest first, his own on a tie.
+  `answered-elsewhere` now has `note` (hooks) and `pass` (each sessions pass): SessionEnd
+  closes all as before; UserPromptSubmit and Stop close the lead's own thread's cards and
+  the ones a pass found no thread for, keep a subagent's (logged), and hold the close of a
+  card no pass has judged yet (relayed after the last read began) to the next pass. Each
+  pass also closes a card whose own thread is past it (`threadPast`: no open tool use of that
+  name, a request after it, or the subagent stopped). With no pass for 3 minutes, his turn
+  closes every card as before. Chat store: `closablePermissions()` (copies) and an `ids`
+  filter on `closePermissionsElsewhere`.
+- **Both hook cases:** this reads only the hooks' event and session, so the 2026-11-12
+  entries and §28's behave the same.
+- **Checked against the real 11-26 transcripts (names and times only):** Vision's file has
+  its Bash tool use at 17:30:15.732 and nothing after it through 17:55, so the card relayed
+  at 17:30:15 matches it and the lead's 17:38:41 UserPromptSubmit now keeps it.
+
+**Choices to defend (mine).**
+- A snapshot file, not a rebuild from cards: the reasons above. One more data file, 0600,
+  holding session ids (UUIDs), thread hashes and tool names, never input.
+- 3 minutes of freshness: the file is written each minute while the server runs, so a
+  kickstart or a crash restart is well inside it; a longer gap may have lost hook events.
+- Put-back waits are marked held until the same pass judges them: one whose transcript is
+  not read lives the 3-minute held window and then lapses as any unread wait.
+- Card attribution only by transcripts, not by the needs-you asks (which name the thread
+  with §28's hooks): one mechanism for both hook cases; the cost is up to a minute's delay
+  for a card relayed just before the lead's turn ends.
+- Every pass closes a card whose thread is past it, the lead's own included: sooner than his
+  turn's end, and right by construction (the next request goes only once every result is
+  in). A parallel call of the same tool still open keeps the card.
+
+**Checked (2026-11-26):** server 2,012 of 2,012 (24 new, in `test/needs-you-restart.test.mjs`
+and `test/answered-elsewhere-thread.test.mjs`, plus updated parity and needs-you source
+tests), local, `TZ=Asia/Tokyo` and under umask 077; web 416 of 416 in both zones (no web
+change). 88 mutants over the parser, approval-wait, answered-elsewhere, chat store,
+needs-you and server.mjs wiring: 85 caught, the two no-op baselines pass, and one is
+equivalent (`Object.hasOwn` vs a plain read on a JSON-parsed object). The parser run on the
+11-26 lead transcript cut at 18:31:30Z gives `[Bash at 18:31:22.040]`, and on Vision's cut
+at 17:38:45Z `[Bash at 17:30:15.732]`.
+**Not verified:** a real restart with a card open (no restart in this run); the live hooks'
+timing against a put-back wait; the page side (no web change, so nothing to check there).
+
+**Go-live (Jeff, after C&P):** one Control Room restart, with no agent runs going and no card
+open (the first start finds no `needs-you.json`, so nothing comes back that once). From then
+on a restart puts waits back. Nothing changes when §28's `--apply` runs, except as said above.
+
+**Follow-up (board, asked in the report):** the page's own card does not come back after a
+restart: the channel still holds the request (12 h) and would take a verdict, but the store
+has no card to answer. Rebuilding it needs the channel's process identity kept across the
+restart (the L7 rule ends every card at a new channel process's hello), so it is its own item.

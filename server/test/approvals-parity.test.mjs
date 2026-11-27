@@ -356,7 +356,7 @@ test('answered elsewhere: the lead\'s UserPromptSubmit, Stop or SessionEnd close
   try {
     assert.deepEqual(MOVED_EVENTS, ['UserPromptSubmit', 'Stop', 'SessionEnd']);
     const logs = [];
-    const note = createAnsweredElsewhere({ store: s.store, isLeadSession: id => id === 'lead', now: () => s.clock.t, log: l => logs.push(l) });
+    const { note } = createAnsweredElsewhere({ store: s.store, isLeadSession: id => id === 'lead', now: () => s.clock.t, log: l => logs.push(l) });
     await s.open('abcde');
     s.clock.t += 3000;
     for (const event of ['PostToolUse', 'Notification', 'PermissionRequest', 'PermissionDenied', 'SubagentStop']) {
@@ -387,7 +387,7 @@ test('answered elsewhere: the lead\'s UserPromptSubmit, Stop or SessionEnd close
 test('answered elsewhere: a hook time ahead of this clock counts as now, one with no time counts as now, a lead check or a store that throws closes nothing', async () => {
   const s = await storeAt(T0);
   try {
-    const note = createAnsweredElsewhere({ store: s.store, isLeadSession: () => true, now: () => s.clock.t, log: () => {} });
+    const { note } = createAnsweredElsewhere({ store: s.store, isLeadSession: () => true, now: () => s.clock.t, log: () => {} });
     await s.open('abcde');
     s.clock.t += 500;
     await s.open('fghij', s.clock.t);
@@ -402,16 +402,25 @@ test('answered elsewhere: a hook time ahead of this clock counts as now, one wit
     s.clock.t += 1;
     // A time that is no whole number of milliseconds is no time: now.
     const asked = [];
-    const again = createAnsweredElsewhere({ store: { closePermissionsElsewhere: ({ upTo }) => { asked.push(upTo); return []; } }, isLeadSession: () => true, now: () => s.clock.t, log: () => {} });
-    for (const at of ['soon', 1.5, undefined, true, s.clock.t - 7]) assert.equal(again({ event: 'Stop', sessionId: 'lead', at }), 0);
+    const again = createAnsweredElsewhere({ store: { closePermissionsElsewhere: ({ upTo }) => { asked.push(upTo); return []; } }, isLeadSession: () => true, now: () => s.clock.t, log: () => {} }).note;
+    for (const at of ['soon', 1.5, undefined, true, s.clock.t - 7]) assert.equal(again({ event: 'SessionEnd', sessionId: 'lead', at }), 0);
     assert.deepEqual(asked, [s.clock.t, s.clock.t, s.clock.t, s.clock.t, s.clock.t - 7]);
-    const strict = createAnsweredElsewhere({ store: s.store, isLeadSession: () => 'yes', now: () => s.clock.t, log: () => {} });
+    // A Stop's time counts the same way (only cards relayed before it are its).
+    const stopAt = createAnsweredElsewhere({ store: { closablePermissions: () => [{ requestId: 'early', tool: 'Bash', relayedAt: s.clock.t - 8 }, { requestId: 'later', tool: 'Bash', relayedAt: s.clock.t - 7 }], closePermissionsElsewhere: ({ ids }) => { asked.push([...ids]); return []; } }, isLeadSession: () => true, now: () => s.clock.t, log: () => {} }).note;
+    asked.length = 0;
+    for (const at of ['soon', s.clock.t + 3600e3, s.clock.t - 7]) stopAt({ event: 'Stop', sessionId: 'lead', at });
+    assert.deepEqual(asked, [['early', 'later'], ['early', 'later'], ['early']]);
+    const strict = createAnsweredElsewhere({ store: s.store, isLeadSession: () => 'yes', now: () => s.clock.t, log: () => {} }).note;
     assert.equal(strict({ event: 'Stop', sessionId: 'lead', at: s.clock.t }), 0, 'only a plain true is the lead');
-    const throws = createAnsweredElsewhere({ store: s.store, isLeadSession: () => { throw new Error('boom'); }, now: () => s.clock.t, log: () => {} });
+    const throws = createAnsweredElsewhere({ store: s.store, isLeadSession: () => { throw new Error('boom'); }, now: () => s.clock.t, log: () => {} }).note;
     assert.equal(throws({ event: 'Stop', sessionId: 'lead', at: s.clock.t }), 0);
-    const broken = createAnsweredElsewhere({ store: { closePermissionsElsewhere: () => { throw new Error('boom'); } }, isLeadSession: () => true, log: () => {} });
-    assert.equal(broken({ event: 'Stop', sessionId: 'lead', at: 1 }), 0);
-    assert.equal(createAnsweredElsewhere({ store: s.store })({ event: 'Stop', sessionId: 'lead', at: s.clock.t }), 0, 'with no lead check given, nobody is the lead');
+    const broken = createAnsweredElsewhere({ store: { closePermissionsElsewhere: () => { throw new Error('boom'); }, closablePermissions: () => { throw new Error('boom'); } }, isLeadSession: () => true, log: () => {} });
+    assert.equal(broken.note({ event: 'Stop', sessionId: 'lead', at: 1 }), 0);
+    assert.equal(broken.note({ event: 'SessionEnd', sessionId: 'lead', at: 1 }), 0);
+    assert.equal(broken.pass({ threads: new Map(), sessions: ['lead'] }), 0);
+    const brokenClose = createAnsweredElsewhere({ store: { closePermissionsElsewhere: () => { throw new Error('boom'); }, closablePermissions: () => [{ requestId: 'abcde', tool: 'Bash', relayedAt: 0 }] }, isLeadSession: () => true, log: () => {} });
+    assert.equal(brokenClose.note({ event: 'Stop', sessionId: 'lead', at: 1 }), 0);
+    assert.equal(createAnsweredElsewhere({ store: s.store }).note({ event: 'Stop', sessionId: 'lead', at: s.clock.t }), 0, 'with no lead check given, nobody is the lead');
     assert.equal(s.store.permission('qrstu').state, 'open');
   } finally { await s.clean(); }
 });
@@ -502,7 +511,9 @@ test('every test file a comment in server.mjs names is there', async () => {
 
 test('server.mjs: both ingest handlers get onMoved, the close counts only the lead\'s session by name, and the gate gets config\'s rules and hidden values', async () => {
   const src = (await readFile(new URL('../server.mjs', import.meta.url), 'utf8')).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  assert.match(src, /\nlet answeredElsewhere = null;\nconst onMoved = value => answeredElsewhere\?\.\(value\) \?\? 0;\n/);
+  assert.match(src, /\nlet answeredElsewhere = null;\nconst onMoved = value => answeredElsewhere\?\.note\(value\) \?\? 0;\n/);
+  // Declared before the sessions pass, which calls its pass (no temporal dead zone).
+  assert.ok(src.indexOf('let answeredElsewhere = null;') < src.indexOf("registry.register('sessions'"));
   const handler = src.slice(src.indexOf('const api = createHandler({'));
   assert.match(handler.slice(0, handler.indexOf('\n});')), /\bonMoved\b/, 'the TCP handler (the legacy needs-you route)');
   assert.match(src, /createIngestHandler\(\{[^}]*\bonMoved\b[^}]*\}\)/, 'the ingest socket\'s handler');

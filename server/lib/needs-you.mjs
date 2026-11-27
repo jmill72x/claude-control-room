@@ -377,14 +377,97 @@ export function noteSeen(seen, value, now, keep = null) {
   return next;
 }
 
-// The store: in memory only. A restart forgets every wait and ask, and the next hook
-// event (or the hook's clear) sets it straight. `record` answers { open, stale }:
-// a stale event changes no wait, but its tool use still answers an ask, and when that
-// was the session's last ask the permission wait goes and the event is not stale.
-export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hintFor = null } = {}) {
+// ---- across a restart (board cf9b6496) ----
+//
+// A restart of this server forgot every wait: a card opened before it was unknown until its
+// session's next hook event, so with the lead blocked on a prompt (which sends none) Needs
+// you stayed blank, the reminder never went and the idle wake-up was not held. The chat's
+// own cards can't rebuild one: they live in memory too, the message log never says which
+// were answered in the terminal or Discord, and no card names its thread. Nor can the
+// transcripts alone: a thread stopped at a prompt and one running a long tool look the
+// same (a tool use, no result, nothing after it). So the store writes what it knows of the
+// permission waits (snapshotOf, data/needs-you.json, 0600; server.mjs writes it on each
+// change and each sessions pass), and the next process puts back the waits of one written
+// at most SNAPSHOT_FRESH_MS before it started (readSnapshot, restore): an older file means
+// the server was down long enough for hook events to be lost. The sessions pass's
+// confirmWaits then judges each put-back wait by its transcript in the same pass, as it
+// does every minute: a thread that wrote a request after its ask (no ask: after the wait
+// opened) is over; one still held lives on.
+//
+// Kept: each permission wait's session id, start and tool hint, and that session's asks
+// (the thread's hash, the tool's name, when). Idle and question waits are not kept: the
+// transcripts can't say one is still held, and an idle one is the lead's normal state.
+// What the hooks give is unchanged, so this works the same with the 2026-11-12 entries
+// (no asks, so a put-back wait is judged on the session's own thread from its start, and
+// any tool use in the session clears it, as before) and with NEXT.md §28's.
+export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_FRESH_MS = 3 * 60e3;
+// A snapshot may say a time this far after this process started (the old process's clock
+// is this machine's; a little slack for the write landing as this one starts).
+const SNAPSHOT_SKEW_MS = 5e3;
+const AGENT_KEY = /^[0-9a-f]{16}$/;
+const HINT = /^[A-Za-z ]{1,20}$/;
+
+// The permission waits and their sessions' asks, as data/needs-you.json holds them.
+export function snapshotOf(list, asks, now) {
+  const waits = activeWaits(list, now).filter(w => w.kind === 'permission');
+  const kept = {};
+  for (const w of waits) {
+    const mine = asks instanceof Map ? asks.get(w.sessionId) : undefined;
+    if (Array.isArray(mine) && mine.length > 0) kept[w.sessionId] = mine.map(a => ({ agent: a.agent ?? null, tool: a.tool ?? null, at: a.at }));
+  }
+  return {
+    version: SNAPSHOT_VERSION,
+    at: now,
+    waits: waits.map(w => ({ sessionId: w.sessionId, since: w.since, ...(typeof w.hint === 'string' ? { hint: w.hint } : {}) })),
+    asks: kept
+  };
+}
+
+// A snapshot checked whole: { waits, asks } to put back, or null when it is missing, of
+// another version, not written within SNAPSHOT_FRESH_MS before `startAt` (or written after
+// it), or not in its shape. Each field is checked as a hook's would be; a wait or an ask
+// that fails is left out, never the rest.
+export function readSnapshot(snap, startAt, now) {
+  if (!isObject(snap) || snap.version !== SNAPSHOT_VERSION || !Number.isSafeInteger(snap.at)) return null;
+  if (snap.at > startAt + SNAPSHOT_SKEW_MS || startAt - snap.at > SNAPSHOT_FRESH_MS) return null;
+  const waits = [];
+  const asks = new Map();
+  const seenIds = new Set();
+  for (const w of Array.isArray(snap.waits) ? snap.waits.slice(0, NEEDS_YOU_MAX) : []) {
+    if (!isObject(w) || typeof w.sessionId !== 'string' || !SESSION_ID.test(w.sessionId) || seenIds.has(w.sessionId)) continue;
+    if (!Number.isSafeInteger(w.since) || w.since > snap.at || now - w.since >= PERMISSION_MAX_MS) continue;
+    seenIds.add(w.sessionId);
+    waits.push({ sessionId: w.sessionId, since: w.since, ...(typeof w.hint === 'string' && HINT.test(w.hint) ? { hint: w.hint } : {}) });
+    const raw = isObject(snap.asks) && Object.hasOwn(snap.asks, w.sessionId) ? snap.asks[w.sessionId] : null;
+    const mine = (Array.isArray(raw) ? raw : []).filter(a => isObject(a)
+      && (a.agent === null || (typeof a.agent === 'string' && AGENT_KEY.test(a.agent)))
+      && (a.tool === null || (typeof a.tool === 'string' && MATCH_TOOL_NAME.test(a.tool)))
+      && Number.isSafeInteger(a.at) && a.at <= snap.at).slice(-ASKS_MAX);
+    if (mine.length > 0) asks.set(w.sessionId, mine.map(a => ({ agent: a.agent, tool: a.tool, at: a.at })));
+  }
+  return { waits, asks };
+}
+
+// The store. A restart forgets every wait and ask, but for the permission waits put back
+// from a fresh snapshot (restore, above); the next hook event (or the hook's clear) sets
+// the rest straight. `record` answers { open, stale }: a stale event changes no wait, but
+// its tool use still answers an ask, and when that was the session's last ask the
+// permission wait goes and the event is not stale. `onChange()` is called after any change
+// to what snapshotOf would write (server.mjs writes the file then).
+export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hintFor = null, onChange = null } = {}) {
   let list = [];
   let seen = new Map();
   let asks = new Map();
+  const keyOf = snap => { const { at, ...rest } = snap; void at; return JSON.stringify(rest); };
+  let lastKey = keyOf(snapshotOf([], new Map(), 0));
+  const changed = now => {
+    if (typeof onChange !== 'function') return;
+    const key = keyOf(snapshotOf(list, asks, now));
+    if (key === lastKey) return;
+    lastKey = key;
+    try { onChange(); } catch { /* the file is written again at the next pass */ }
+  };
   return {
     record: (value, now = Date.now()) => {
       const stale = isStaleEvent(seen, value);
@@ -401,6 +484,7 @@ export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hin
       }
       const had = activeWaits(list, now).length;
       list = recordNeedsYou(list, value, now, ask, stale);
+      changed(now);
       // Stale and still ending a wait (its tool use answered the last ask): not ignored.
       return { open: list.length, stale: stale && list.length === had };
     },
@@ -414,6 +498,7 @@ export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hin
       const active = activeWaits(list, now);
       const gone = new Set(out.emptied);
       list = active.filter(w => !(w.kind === 'permission' && gone.has(w.sessionId)));
+      changed(now);
       return { dropped: out.dropped, ended: active.length - list.length, open: list.length };
     },
     // Each sessions pass (board e7427be1): which permission waits their transcripts show
@@ -422,7 +507,37 @@ export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hin
       const out = confirmWaits(list, asks, threads, now);
       list = out.list;
       asks = out.asks;
+      changed(now);
       return { ended: out.ended, held: out.held, dropped: out.dropped, open: list.length };
+    },
+    // What data/needs-you.json holds now (snapshotOf).
+    snapshot: (now = Date.now()) => snapshotOf(list, asks, now),
+    // At start: the permission waits of the last process's snapshot (readSnapshot), each
+    // for a session with no wait of its own yet (a hook since this start knows better),
+    // marked held at `now` until the transcripts judge it (the sessions pass's confirm,
+    // run straight after). Its asks come back with it. Answers { restored, asks }.
+    restore: (snap, startAt, now = Date.now()) => {
+      const checked = readSnapshot(snap, startAt, now);
+      if (checked === null) return { restored: 0, asks: 0 };
+      const active = activeWaits(list, now);
+      const taken = new Set(active.map(w => w.sessionId));
+      let restored = 0, n = 0;
+      for (const w of checked.waits) {
+        if (taken.has(w.sessionId)) continue;
+        taken.add(w.sessionId);
+        active.push({ sessionId: w.sessionId, kind: 'permission', since: w.since, heldAt: now, ...(w.hint ? { hint: w.hint } : {}) });
+        restored++;
+        const mine = checked.asks.get(w.sessionId);
+        if (mine && !asks.has(w.sessionId)) {
+          asks.set(w.sessionId, mine.map(a => ({ ...a, receivedAt: now })));
+          n += mine.length;
+        }
+      }
+      active.sort((a, b) => a.since - b.since);
+      list = active.slice(Math.max(0, active.length - NEEDS_YOU_MAX));
+      while (asks.size > NEEDS_YOU_SEEN_MAX) asks.delete(asks.keys().next().value);
+      changed(now);
+      return { restored, asks: n };
     },
     view: (now = Date.now()) => needsYouView(list, whoFor, now, detailFor, asks),
     size: (now = Date.now()) => activeWaits(list, now).length
