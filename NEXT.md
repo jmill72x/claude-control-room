@@ -1218,10 +1218,10 @@ else" describe both parts; the header of `server/lib/approvals.mjs` has the rule
 - *Rollback:* remove `approvalsRules` and restart (the page's own rules again, `deny` or
   `exact` Bash as config says); at once, without a restart: the kill file, or
   `rm ~/.local/state/jarvis-os/approvals-allow` (Deny only at the channel).
-- *Known costs and gaps:* (1) a card answered elsewhere stays open until the turn ends or
-  the next prompt is taken; closing it at once needs the tool call's name and input from a
-  `PostToolUse` hook (a settings change, and the server would then read tool input) or the
-  lead's transcript. (2) Discord's buttons can't be closed from here and never match the
+- *Known costs and gaps:* (1) a card answered elsewhere stayed open until the turn ended or
+  the next prompt was taken; §55 closed it at the next sessions pass once its thread was
+  past it, and §56 (board 48308589) within seconds, from the lead's transcripts (no hook,
+  no settings change). (2) Discord's buttons can't be closed from here and never match the
   page's Deny-only exceptions; turning Discord's permission relay off means a patched copy
   of the official plugin (it declares the capability with no switch), which is Ultron's and
   Jarvis's. (3) The page could answer for 10 minutes only; lifted to as long as the
@@ -5858,10 +5858,9 @@ send their all-clears as `other`, so only a lead chat message clears their down 
 3d59b66b (the mod pane's "acked" suffix) is the Claude Code mod, a different surface, not
 touched here.
 
-## 55. Approval waits survive a restart, and a subagent's card stays open through the lead's turn (boards cf9b6496 and 28644093, P2; staged 2026-11-26 on `jos/approval-restart`, off main 5ddb7a6)
+## 55. Approval waits survive a restart, and a subagent's card stays open through the lead's turn (boards cf9b6496 and 28644093, P2; merged as main 086b107, 2026-11-27; live at the next Control Room restart)
 
-Worktree `~/Projects/.worktrees/ccr-approval-restart`, no upstream, not committed. Server
-only (no web change). README "Permission waits survive a restart of this server" (in "A
+Server only (no web change). README "Permission waits survive a restart of this server" (in "A
 session waiting on you") and "A card answered somewhere else" are the reference.
 
 **cf9b6496: a restart forgot open approval waits.** The brief asked to rebuild them from the
@@ -5900,7 +5899,8 @@ in the terminal whose tool still runs, and after a reboot every card of a dead s
   newest response's tool uses with no result; a new response or an interruption mark clears
   them), `threadTimes` carries them per thread, and `cardThread` names a card's thread: the
   one (the lead's own, or a subagent's file) with an open tool use of the card's tool written
-  from 2 minutes before the relay to 5 s after, nearest first, his own on a tie.
+  from 2 minutes before the relay to 5 s after, nearest first, his own on a tie. (§56
+  replaced it with `cardThreads`, every such thread: the nearest could be the wrong one.)
   `answered-elsewhere` now has `note` (hooks) and `pass` (each sessions pass): SessionEnd
   closes all as before; UserPromptSubmit and Stop close the lead's own thread's cards and
   the ones a pass found no thread for, keep a subagent's (logged), and hold the close of a
@@ -5948,3 +5948,181 @@ on a restart puts waits back. Nothing changes when §28's `--apply` runs, except
 restart: the channel still holds the request (12 h) and would take a verdict, but the store
 has no card to answer. Rebuilding it needs the channel's process identity kept across the
 restart (the L7 rule ends every card at a new channel process's hello), so it is its own item.
+
+## 56. A card answered somewhere else closes within seconds, never early (board 48308589, P2; staged 2026-11-26 on `jos/instant-close`, off main 086b107; Ultron's NO-GO fixed the same day: H1, M1 board 7d284b3a, L2 and L3 board 8d73e1dd)
+
+Worktree `~/Projects/.worktrees/ccr-instant-close`, no upstream, not committed. Server only
+(no web change; the page already turns an `elsewhere` card into "Answered elsewhere" from the
+stream). README "A card answered somewhere else" is the reference.
+
+**Route: the lead's transcripts, not a hook.** The transcript holds what's needed: a call's
+result (allowed and run, or denied), a new response in its thread, or an interruption mark.
+A PostToolUse hook would add a settings change and tool input to read, and would still
+fire only when the tool finished, the same moment the result line is written. So no
+`~/.claude/settings.json` change.
+
+**Built.**
+- `server/lib/card-watch.mjs`, started by server.mjs once the chat is on: every 2 s while a
+  card is open (nothing while none is), it reads only the bytes the lead's transcripts
+  gained. Each file is read on from where the last sessions pass's read of it ended (the
+  parser's new `endOffset`, with the calls open there: `openTools` now carry their ids,
+  plus `openResponse` and `openCut`), or from its start for a file the pass hasn't read
+  that is under 8 MiB (a new subagent). A line still being written is kept and read whole
+  next time. Only assistant lines, tool results and interruption marks are parsed
+  (`mayMatter`). `createThreadUses` follows calls exactly as the parser does (a
+  differential test over 400 random transcripts, from the start and from a cut), but keeps
+  the answered ones for the cards' windows.
+- A card is judged once the files were read from 2 s past the end of its window (relay
+  + 5 s), and closes (`answeredElsewhere.closeAnswered`, logged `(its thread's transcript
+  shows the call answered)`) when no call of its tool is open in any of the lead's threads
+  (written up to 5 s after the relay, however old) and at least one call of it written in
+  its window (2 min before the relay to 5 s after) was answered after the relay. None
+  seen: no word. (Rules as fixed for Ultron's H1, below.)
+- **Never early.** Held, and left to the sessions pass and the hooks: cards relayed before
+  the channel's current hello (store's new `permissionSessionAt`); sessions of the lead's
+  not written since that hello are not read (an older process's); a top-level transcript in
+  his project folder that the pass hasn't read, written since the hello, holds every card
+  (a new process of his, pass not caught up); so does any file of his that
+  can't be read on as it should (no seed and over 8 MiB, a line over 64 MiB until a pass is
+  past it, not a regular file, more than 32 MiB new in one tick over all files, over 500
+  subagent files, a folder that can't be listed, a parse that cut its open calls); a file
+  read before and gone, replaced or cut short since holds every card until no card is open.
+  Since the H1 fix each of these holds every card, not only those near its writes: such a
+  file could hold an open call of any age. Sessions of the lead's not written since the
+  hello are still not read: the calls their process left open when it ended stay open for
+  good.
+- **The same rule for the minute pass (a fix to 086b107).** `cardThread` (the nearest open
+  call wins) could close a subagent's card early: the lead's own auto-allowed Bash, written
+  nearer the card, finishes while the subagent's Bash still waits at its prompt.
+  `cardThreads` now answers every thread with an open call of the tool in the window; the
+  pass closes a card only when all are past it, and the lead's turn keeps it when any is a
+  subagent's.
+
+**Ultron's NO-GO (2026-11-26) and the fixes, same day.**
+- **H1 [high]: a late-relayed card closed early.** A prompt opens when the call before it
+  in the same response has run, not when its own call is written, so a card can come
+  minutes after its call (10 responses in 10 days had Bash results over 120 s apart, the
+  widest 449 s). The watch counted only calls written from 2 min before the relay and
+  skipped files not written since then, so another thread's finished Bash in the window
+  closed the card about 7 s after it opened while its call still waited (Ultron's repro:
+  two Bash at T0, the first answered at T0+300, card at T0+301, the lead's own Bash at
+  T0+250 finished: `closed: 1`). Fixed: (a) any call of the card's tool still open in any
+  watched thread holds it, however old (written up to relay + 5 s); the 2-min lower bound
+  stays only for counting answered calls; (b) every file of a current session is visited
+  each tick, a quiet one with one lstat (seeded from the pass, or read from its start when
+  small and unseeded), never skipped on its time; (c) an answered call counts only if the
+  line that answered it (result, next response, interruption mark) is timestamped after
+  the relay. And since an unreadable or lost file could now hold an open call of any age,
+  every hold holds every card (before, only cards near that file's last write).
+- **M1 [medium] (board 7d284b3a): the same gap in the minute pass (086b107).** `cardThreads`
+  skipped open calls older than 2 min, so a late-relayed card had no thread and closed at
+  the lead's next UserPromptSubmit or Stop. Fixed: in a lead session written since the
+  channel's hello (`pass({ written })`, from `leadFiles`' new `writtenAt`, the newest mtime
+  of any of the session's files, compared with `permissionSessionAt`), a thread whose
+  newest response has an open call of the tool of any age is a candidate. Not in older
+  sessions: a process that ended leaves its open calls open for good, and one would hold
+  every later card of that tool. The watch uses the same `writtenAt` to call a session
+  current, so a session whose own file is quiet but whose subagent wrote is read.
+- **L2 [low] (board 8d73e1dd):** an `agent-*.jsonl` (or his own transcript) that is a symlink
+  or a special file, from the start or later, holds every card while it is there (logged
+  once: `card-watch: a transcript of the lead's is not a regular file (a symlink or a
+  special file); open cards wait for the sessions pass`). A name listed and gone before
+  its lstat, never read, is no file and holds nothing.
+- **L3 [low] (board 8d73e1dd):** TICK_READ_MAX (32 MiB) is now a budget per tick over every
+  file; a file with new bytes past it is behind and holds the cards until the next tick.
+- **What a late card costs now:** its own call is older than its window, so unless another
+  call of its tool in the window is answered after it, the watch has no word and the
+  minute pass closes it once its thread is past it (up to about a minute). Ultron asked to
+  keep the lower bound for answered calls; counting an old call answered after the relay
+  too would close it in seconds, and is the option to take if he agrees it is as safe.
+- **`/clear` and `~/.claude/sessions/<pid>.json` (Ultron's note): checked, not built.** The
+  file exists on 2.1.330 with `pid`, `sessionId`, `startedAt`, `name` ("Jarvis",
+  `nameSource: user`), `status` and `updatedAt`. No session in the ~/Projects transcripts
+  was started by `/clear`, so whether `/clear` drops the `agent-name` line, and whether the
+  pid file's `sessionId` follows a `/clear`, are unverified. Following it needs the lead's
+  pid and a read each tick; not small and clearly safe without that check. The risk while
+  unbuilt: a `/clear`'d lead session not named the lead's is not watched once the pass has
+  read it, so its card could close on another lead thread's call answered after the relay;
+  with (a) and (c), that needs another thread's same-tool call answered in the window
+  while no lead thread has one open.
+
+**Choices to defend (mine).**
+- Every candidate call must be answered, not the nearest one: never early beats fast.
+  Narrowing by the card's input preview is possible but would read tool input; not built
+  (follow-up idea).
+- **The cost of Ultron's any-age rule, measured (the decision to weigh at his re-read).**
+  One same-tool call left open anywhere in a current lead session (a subagent's prompt
+  nobody answers for hours, a long foreground Bash) now holds every other card of that
+  tool in the session: in the watch, and in the minute pass, where it also makes the
+  lead's own card "a subagent's" and keeps it at his Stop. Replay of 2026-11-26
+  14:30-20:00Z (below): of 192 Bash cards answered a second or more after their relay, the
+  old rule closed 191 (half within 1.05 s of being judgeable, nine in ten within 1.9 s);
+  the new one closes 167 (1.08 s, 4.6 s) and leaves 24 open to the end of the window, each
+  because an older Bash call stayed open that long (the pass would hold them too); 5 more
+  waited 0 to 7 minutes on an older open call. Never early either way. A narrowing that keeps H1 fixed: an open call holds a
+  card only if its prompt could have opened in the card's window, its prompt time taken as
+  the latest of its own line and the answers of the calls before it in its response (any
+  of those still open: unknown, so it holds; for a seeded call, the seed file's mtime
+  stands in for the answers before it). It rests on the base design's own assumption (a
+  prompt opens within 2 minutes of what let it open) and on results being written as each
+  call finishes, which, if wrong, only makes it hold. Not built: it changes Ultron's rule,
+  so it is his to weigh (board idea requested).
+- Seeded from the pass's own read, not a tail window: exact open calls, no guessing where
+  a response began. A call answered before the seed is unknown to the watch, so such a
+  card is the minute pass's to close.
+- 2 s poll and 2 s settle: a close lands 7 to 9 s after the relay at the earliest, and
+  about 1 to 3 s after the answer once past that.
+- The lost-file hold lasts the whole episode and, since H1, holds every card: a transcript
+  doesn't vanish or shrink in normal use, so when one does, the watch says nothing.
+- Answered calls still count only from 2 minutes before the relay (Ultron's (a)), so a
+  card relayed long after its own call closes at the minute pass, not within seconds,
+  unless another call of its tool in its window was answered after it.
+- A non-regular file holds while it is there; a name listed and gone before its lstat
+  (never read) holds nothing, since nothing it said was ever known or can be now.
+
+**Checked (2026-11-26, after the NO-GO fixes).** Server 2,063 of 2,063, local,
+`TZ=Asia/Tokyo` and under umask 077 (46 tests in `test/card-watch.test.mjs`, 17 in
+`test/answered-elsewhere-thread.test.mjs`; new for the fixes: Ultron's repro, cards 3 and
+5 minutes late (seeded and read from the start, with another thread's Bash answered in the
+window, through the minute pass and the lead's prompt and Stop), a quiet thread holding,
+an answer before the relay not counting, a later call after the window not holding, a
+session current by its subagent's write, an older process's open calls not read, a FIFO
+and a symlink holding, his own file gone or made a symlink, the project folder unlistable,
+the byte budget per tick and spent exactly, `cardThreads` any-age in current sessions
+only, and the pass keeping a 5-minute-late card at the lead's Stop); web 416 of 416 (no web
+change). Ultron's repro and the other H1 tests fail on the pre-fix watch. 133 mutants over
+card-watch, answered-elsewhere, cardThreads, the parser, the store and server.mjs wiring:
+129 caught and one timed out (the one that keeps the timer alive, which counts as caught);
+the three no-op baselines pass. The first run left 3 survivors (an unlistable project
+folder, a gone main transcript, a budget spent exactly), each now with a test.
+**Replay, cards placed when their prompt really opened** (after the calls before it in
+its response were answered): 2026-11-17 13:30-16:40Z, a session with 14 prompts that
+opened 169 to 342 s after their call: none closed before its answer, under the old watch
+or the new one (no other thread's Bash finished in those windows, the H1 trigger, so the
+synthetic repro is the test of it); the 14 late cards are left to the pass. 2026-11-26
+14:30-20:00Z (84 files, 33,615 lines): none early under either; the cost figures are in
+the choice above; the new watch read 1.00 times the bytes written (1.27 before: a quiet
+file is no longer read again from its start). The first replay below, with a card 1 s
+after every call, holds for the old rule; with (c), a card for a call answered within a
+second of it (no card in life) gets no word, which is right.
+**Before the fixes:** The brief's cases each have a test: same tool on two
+threads, a subagent waiting while the lead moves on (new turns, his Stop, his own
+interruption), a denied call, an interrupted call (its own thread's mark only), a
+transcript appended mid-read (after the pass and after the watch), plus a fast answer, a
+lead restart, an unread new session, a parallel call in one thread, and cost (no file
+touched with no card; with one, only the new bytes). **Replay on real lines:** five hours
+of the 2026-11-26 lead session (main file and 83 subagent files, 33,615 lines) fed in time
+order into a scratch copy, with a card 1 s after each of its 768 calls: none closed before
+its own call's answer; half within 1.1 s of being judgeable, nine in ten within 2.7 s;
+Vision's 17:30:15 Bash card stays open (its call never got an answer in that window); the
+watch read 1.27 times the bytes the session wrote.
+**Not verified:** the live server (no restart in this run); a real prompt answered in the
+terminal with a card open on a device; Claude Code writing the tool use's line more than
+2 s after its card is relayed (the settle assumes it doesn't); whether a call's result is
+written before the next call's prompt opens (the rules don't depend on it; the proposed
+narrowing would, safely); what `/clear` does to the session's name line.
+
+**Go-live (Jeff, after C&P):** one Control Room restart (which also brings 086b107 live),
+with no agent runs going and no card open. No web build, no config, no settings change.
+Check after: the start log has no `card-watch:` failure line; answer a card's prompt in the
+terminal and the page's card turns "Answered elsewhere" within about 10 s.

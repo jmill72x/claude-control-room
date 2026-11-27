@@ -65,7 +65,7 @@ export function endsRun(message) {
 // or "... for tool use"): what a run's transcript gets when it is stopped from outside
 // (TaskStop, Esc), as a text block the harness writes, never a tool's result. Seen as a
 // stopped subagent's last line on 2026-11-14 and 11-18 (board 2c49fcfa).
-const INTERRUPTED = '[Request interrupted by user';
+export const INTERRUPTED = '[Request interrupted by user';
 export function isInterruption(message) {
   const content = message?.content;
   if (typeof content === 'string') return content.startsWith(INTERRUPTED);
@@ -103,9 +103,11 @@ export function createTranscriptParser(surface) {
   // a prompt has its tool use written and no result. A running tool looks the same, so
   // this alone never says a prompt waits. By the tool use's id: { name, at } (the line's
   // time). A new response clears them (Claude Code sends the next request only once every
-  // tool use has its result), and so does an interruption mark.
+  // tool use has its result), and so does an interruption mark. The ids, the newest
+  // response's id and whether the list was cut (more than OPEN_TOOLS_MAX open) also go out,
+  // so lib/card-watch.mjs can carry on from where this read ended (`endOffset` below).
   const openUses = new Map();
-  let openResponse = null;
+  let openResponse = null, openCut = false;
 
   return {
     line(line) {
@@ -123,7 +125,7 @@ export function createTranscriptParser(surface) {
         stoppedAt = ended && Number.isFinite(lineTs) ? lineTs : null;
         noteToolUses(d.message, lineTs);
       } else if (d.type === 'user' && d.message && typeof d.message === 'object') {
-        if (Number.isFinite(lineTs) && isInterruption(d.message)) { stoppedAt = lineTs; openUses.clear(); }
+        if (Number.isFinite(lineTs) && isInterruption(d.message)) { stoppedAt = lineTs; openUses.clear(); openCut = false; }
         else noteToolResults(d.message);
       }
 
@@ -172,20 +174,20 @@ export function createTranscriptParser(surface) {
         if (tokens <= 0 && cacheRead <= 0) continue;
         records.push({ ts, model, tokens, cacheReadTokens: cacheRead, requestKey: key });
       }
-      const openTools = [...openUses.values()].map(u => ({ ...u }));
-      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended, stoppedAt, openTools };
+      const openTools = [...openUses].map(([id, u]) => ({ id, ...u }));
+      return { sessionId, title, surface, cwd, gitBranch, agentSetting, agentName, records, lastLineTs, ended, stoppedAt, openTools, openResponse, openCut };
     }
   };
 
   function noteToolUses(message, lineTs) {
     const id = typeof message.id === 'string' && message.id !== '' ? message.id : null;
-    if (id !== null && id !== openResponse) { openUses.clear(); openResponse = id; }
+    if (id !== null && id !== openResponse) { openUses.clear(); openResponse = id; openCut = false; }
     if (!Number.isFinite(lineTs) || !Array.isArray(message.content)) return;
     for (const c of message.content) {
       if (c?.type !== 'tool_use' || typeof c.id !== 'string' || typeof c.name !== 'string' || c.name === '') continue;
       openUses.delete(c.id);
       openUses.set(c.id, { name: c.name.slice(0, OPEN_TOOL_NAME_MAX), at: lineTs });
-      while (openUses.size > OPEN_TOOLS_MAX) openUses.delete(openUses.keys().next().value);
+      while (openUses.size > OPEN_TOOLS_MAX) { openUses.delete(openUses.keys().next().value); openCut = true; }
     }
   }
   function noteToolResults(message) {
@@ -214,12 +216,18 @@ export const MAX_LINE_BYTES = bufferConstants.MAX_STRING_LENGTH;
 // whitespace). A line longer than maxLineBytes can't become a string either. It
 // is dropped and counted in `oversizedLines`, so the caller can report the file
 // as not fully read, and every other line of the file still counts.
+//
+// `endOffset` is the byte just after the last '\n' read: where a later read of only the
+// new bytes picks up (lib/card-watch.mjs). A last line with no '\n' after it is parsed
+// here and read again from there, which changes nothing in what that read keeps; one that
+// was still being written fails to parse here and is read whole from there.
 export async function parseTranscriptStream(chunks, surface, { maxLineBytes = MAX_LINE_BYTES } = {}) {
   const parser = createTranscriptParser(surface);
   let parts = [];
   let length = 0;
   let dropping = false;
   let oversizedLines = 0;
+  let base = 0, endOffset = 0;
   const endLine = () => {
     if (dropping) oversizedLines += 1;
     else if (length > 0) parser.line((parts.length === 1 ? parts[0] : Buffer.concat(parts, length)).toString('utf8'));
@@ -247,10 +255,12 @@ export async function parseTranscriptStream(chunks, surface, { maxLineBytes = MA
       if (newline === -1) break;
       endLine();
       start = newline + 1;
+      endOffset = base + start;
     }
+    base += buf.length;
   }
   endLine(); // the last line, which may have no newline after it
-  return { ...parser.result(), oversizedLines };
+  return { ...parser.result(), oversizedLines, endOffset };
 }
 
 // One transcript file, read in 1 MiB pieces. An open or read error rejects.

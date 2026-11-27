@@ -13,7 +13,8 @@ async function* pieces(bytes, size) {
   for (let i = 0; i < bytes.length; i += size) yield bytes.subarray(i, i + size);
 }
 const streamed = (bytes, size, surface = 'Code', options) => parseTranscriptStream(pieces(bytes, size), surface, options);
-const withoutCount = ({ oversizedLines, ...rest }) => rest;
+// A stream also says how many lines it dropped and where its last whole line ended.
+const withoutCount = ({ oversizedLines, endOffset, ...rest }) => rest;
 const sum = records => records.reduce((a, r) => a + r.tokens, 0);
 
 // Synthetic lines with invented ids, never a copy of a real transcript. The text
@@ -48,6 +49,7 @@ test('a transcript read as a stream gives what the whole string gives, however i
     for (const size of [1, 2, 3, 7, 64, 4096, bytes.length]) {
       const out = await streamed(bytes, size, surface);
       assert.equal(out.oversizedLines, 0);
+      assert.equal(out.endOffset, bytes.lastIndexOf(0x0a) + 1, `${name}: endOffset just after the last newline, in pieces of ${size}`);
       assert.deepEqual(withoutCount(out), expected, `${name} in pieces of ${size} bytes`);
     }
   }
@@ -125,4 +127,16 @@ test('a line too long to decode is dropped and counted, and the rest of the tran
 test('a line holding JSON null is skipped, not fatal', () => {
   const text = ['null', usageLine('A', '2026-10-20T10:00:00.000Z', { input_tokens: 2, output_tokens: 3 })].join('\n');
   assert.equal(sum(parseTranscript(text, 'Code').records), 5);
+});
+
+// Where a later read of only the new bytes picks up (lib/card-watch.mjs, board 48308589).
+test('endOffset: just after the last newline read, 0 with none, and a dropped long line still counts its bytes', async () => {
+  assert.equal((await streamed(Buffer.from('{"a":1}\n{"b":'), 3, 'Code')).endOffset, 8, 'a half-written last line is left for the next read');
+  assert.equal((await streamed(Buffer.from('no newline'), 4, 'Code')).endOffset, 0);
+  assert.equal((await streamed(Buffer.from(''), 4, 'Code')).endOffset, 0);
+  assert.equal((await streamed(Buffer.from('\n\n'), 1, 'Code')).endOffset, 2);
+  const long = Buffer.from(`${'x'.repeat(50)}\n{"c":2}\n`);
+  const out = await parseTranscriptStream([long.subarray(0, 20), long.subarray(20)], 'Code', { maxLineBytes: 10 });
+  assert.equal(out.oversizedLines, 1);
+  assert.equal(out.endOffset, long.length);
 });

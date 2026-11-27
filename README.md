@@ -2143,35 +2143,84 @@ page offer Allow and Deny whenever the channel's relay does:
 **A card answered somewhere else.** Claude Code tells a channel when a request opens and
 never when it closes (CLI 2.1.322 has `permission_request` out and `permission` in, and
 nothing else), so the page can't be told that a prompt was answered in Claude Code or in
-Discord. The server closes the card on the nearest things it does hear
-(`server/lib/answered-elsewhere.mjs`): the lead's session moving on, through the needs-you
-hooks, and each thread's transcript, through the sessions pass. A `SessionEnd` from the
-lead's session closes every request the channel relayed before that hook ran. A
-`UserPromptSubmit` or `Stop` is his own thread moving on, so it closes only the cards of his
-own thread (board 28644093: on 2026-11-26 a subagent's 17:30Z card was closed at the lead's
-next prompt while the run still waited). Which thread a card is comes from the transcripts:
-the thread (his own, or one of his subagents' `agent-<id>.jsonl`) whose newest response has
-an open tool use of the card's tool (no result yet), written from 2 minutes before the card
-was relayed to 5 s after, the nearest winning and his own thread on a tie (`cardThread` in
-`lib/approval-wait.mjs`; the parser's `openTools`). A subagent's card stays open at the
-lead's turn (`chat: 1 permission card kept open at the lead's Stop: a subagent's, and its
-thread has not moved past it: <id>`). A card no pass has looked at yet (relayed since the
-transcripts were last read) has its close held to the next pass, which says whose it is; a
-card a pass found no thread for closes at the lead's turn as before; with no sessions pass
-for 3 minutes, every card closes at his turn as before. And each pass closes any card whose
-own thread is past it: no tool use of that name open in its newest response any more (each
-has its result, allowed and run or denied), a request after it, or the subagent stopped
-(`chat: 1 permission card closed, answered somewhere else or no longer asked (its own
-thread moved past it): <id>`). This reads only the hooks' event and session, so it works
-the same with the 2026-11-12 hook entries and with section 28's. The card turns into
-"Answered elsewhere" and goes after a minute; no verdict is written and nothing is sent to
-the channel; a tap on it answers 409; the lead's turn logs `chat: 1 permission card
-closed, answered somewhere else or no longer asked (the lead's session moved on: Stop):
-<id>`. `PostToolUse` is not used: the session's other
-tool calls and its helpers post it while a prompt still waits. So a card can stay open
-from the moment the prompt is answered elsewhere until the next sessions pass sees its
-thread past it (about a minute), the turn ends or the next prompt is taken. A tap in that gap is written as a verdict and delivered, and Claude Code drops a
-verdict for a request that is no longer open (seen 2026-11-12: a Deny tapped 21 s after
+Discord. The server closes the card on what it can see: each thread's transcript, read
+every 2 s while a card is open (`server/lib/card-watch.mjs`, board 48308589) and each
+minute by the sessions pass, and the lead's session moving on, through the needs-you hooks
+(`server/lib/answered-elsewhere.mjs`).
+
+Which threads a card may be: every thread of the lead's (his own transcript, or a
+subagent's `agent-<id>.jsonl`) with an open call of the card's tool written up to 5 s
+after the card was relayed (`cardThreads` in `lib/approval-wait.mjs`; the parser's
+`openTools`). In a session written since the channel's current process said hello (the
+chat store's `permissionSessionAt`), such a call counts however old it is: a prompt opens
+when the call before it in the same response has run, not when its own call was written,
+so two Bash calls in one response, the first running 5 minutes, relay the second's card 5
+minutes after its call (board 48308589's H1 and board 7d284b3a). In an older process's
+session only a call written from 2 minutes before the card counts, since the calls it left
+open when it ended stay open in its files for good. All of them, not the nearest: two
+threads can each call one tool around one card (the lead's own Bash running while a
+subagent's Bash waits at its prompt), and a card matched to the wrong one would close when
+that one finished. A card is answered once every one of those calls is: its result is in
+(allowed and run, or denied), the thread wrote a new response after it, or an interruption
+mark (Esc at the prompt, or the run stopped).
+
+- **Within seconds (the card watch).** While any card is open, every 2 s the watch reads
+  only the bytes the lead's transcripts gained: each file from where the last sessions
+  pass's read of it ended (that read's `endOffset` and the calls open there), or from its
+  start for a small file the pass hasn't read (a new subagent); a line still being written
+  is kept and read whole next time; only assistant lines, tool results and interruption
+  marks are parsed; every file of a current session is visited each time, a quiet one with
+  one `lstat`. A card is judged once the transcripts were read from 2 s past the end of its
+  window (relay + 5 s), and closes at the first read that shows no call of its tool open in
+  any of the lead's threads (written up to 5 s after the relay, however old) and at least
+  one call of it written from 2 minutes before the relay answered after the relay (`chat: 1
+  permission card closed, answered somewhere else or no longer asked (its thread's
+  transcript shows the call answered): <id>`). A call answered before the card came can't
+  be its answer, so it doesn't count. It would rather say nothing: only the lead's
+  sessions written since the channel's current process said hello count (his own file now,
+  or any of the session's files at the last pass); a top-level transcript in his project
+  folder that the pass hasn't read and that was written since then (a new process of his)
+  holds every card; so does any of his files that can't be read on as it should (not read
+  by the pass and over 8 MiB, a line over 64 MiB, not a regular file, more than 500
+  subagent files, a folder that can't be listed, a parse that cut its open calls, more new
+  bytes than the 32 MiB one read takes over all files), since such a file could hold an
+  open call of any age; and one read before and gone, replaced or cut short since holds
+  every card for as long as cards are open. With no answered call of the card's tool seen
+  in its window, it says nothing; that is the case for a card relayed long after its call
+  (unless another call of its tool in its window was answered after it), which the minute
+  pass then closes. With no card open it reads nothing and forgets every file. On five
+  and a half hours of the 2026-11-26 lead session replayed line by line, with a card for
+  each call placed when its prompt could open, none closed before its own call's answer;
+  of the 192 cards answered a second or more after their relay, 167 closed (half within
+  1.1 s of being judgeable, nine in ten within 4.6 s) and 24 stayed open to the end of the
+  replay because an older call of the same tool stayed open in another thread; the minute
+  pass holds such a card too (the cost of holding on an open call of any age; NEXT.md
+  section 56). On a 2026-11-17 session, 14
+  prompts that opened 169 to 342 s after their call all stayed open until answered.
+- **Each minute (the sessions pass).** A card whose threads are all past it closes
+  (`(its own thread moved past it)` in the line above); a thread the pass did not read
+  keeps it.
+- **At the lead's turn (the hooks).** A `SessionEnd` from the lead's session closes every
+  request the channel relayed before that hook ran. A `UserPromptSubmit` or `Stop` is his
+  own thread moving on, so it closes the cards whose threads are all his own (board
+  28644093: on 2026-11-26 a subagent's 17:30Z card was closed at the lead's next prompt
+  while the run still waited) and the ones a pass found no thread for; a card one of whose
+  threads is a subagent's stays (`chat: 1 permission card kept open at the lead's Stop: a
+  subagent's, and its thread has not moved past it: <id>`); a card no pass has looked at
+  yet (relayed since the transcripts were last read) has its close held to the next pass;
+  with no sessions pass for 3 minutes, every card closes at his turn as before (`chat: 1
+  permission card closed, answered somewhere else or no longer asked (the lead's session
+  moved on: Stop): <id>`). This reads only the hooks' event and session, so it works the
+  same with the 2026-11-12 hook entries and with section 28's. `PostToolUse` is not used:
+  the session's other tool calls and its helpers post it while a prompt still waits.
+
+The card turns into "Answered elsewhere" and goes after a minute; no verdict is written and
+nothing is sent to the channel; a tap on it answers 409. What this can't do: close a card
+the moment the prompt is answered. A denial's result is written at once, but an allowed
+call's only when the tool finishes, so a card for a long command stays until it ends (or
+the thread moves on); and a card one of whose window's calls is another thread's waits for
+that one too. A tap in that gap is written as a verdict and delivered, and Claude Code drops
+a verdict for a request that is no longer open (seen 2026-11-12: a Deny tapped 21 s after
 the same prompt was allowed in Claude Code changed nothing); the card's own line says
 "Claude Code uses it if the prompt was still open". Discord's buttons can't be closed from
 here at all: they stay live until tapped.

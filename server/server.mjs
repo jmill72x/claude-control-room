@@ -34,6 +34,7 @@ import { getTopic, sendAlert, entryAlert, sendAckPepper, sendAckNtfy } from './n
 import { createChatEventHandler, CHAT_NTFY_TITLE, oneLine } from './lib/chat-events.mjs';
 import { NTFY } from './lib/ntfy-note.mjs';
 import { createAnsweredElsewhere } from './lib/answered-elsewhere.mjs';
+import { createCardWatch, seedOf, leadFiles } from './lib/card-watch.mjs';
 import { createAckNotices } from './lib/ack-notice-limit.mjs';
 import { createTodoStore } from './todos.mjs';
 import { createAckStore } from './acks.mjs';
@@ -302,6 +303,10 @@ let cardToolHint = null;
 // (test/approvals-parity.test.mjs): a merge must keep `onMoved` on both ingest handlers.
 let answeredElsewhere = null;
 const onMoved = value => answeredElsewhere?.note(value) ?? 0;
+// The lead's sessions and their own transcripts as the last sessions pass found them, for
+// the card watch (lib/card-watch.mjs; board 48308589), which reads on from where that pass's
+// read of each ended and closes a card within seconds of its call's answer.
+let leadFilesNow = [];
 // The permission waits across a restart (lib/needs-you.mjs, snapshotOf and restore; board
 // cf9b6496): data/needs-you.json (0600), written on each change and each sessions pass. The
 // last process's copy is read once here, before anything writes, and put back at the first
@@ -367,7 +372,10 @@ registry.register('sessions', async () => {
   // The page's cards whose own thread moved past them close; a card the lead's turn left
   // waiting closes here once its thread is known (lib/answered-elsewhere.mjs; board 28644093).
   const leadSessions = LEAD_NAME === null ? [] : [...sessionAgents].filter(([, name]) => name === LEAD_NAME).map(([sid]) => sid);
-  try { answeredElsewhere?.pass({ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt }); } catch (err) { console.error(`chat: the answered-elsewhere pass failed (${err?.code ?? err?.name ?? 'error'})`); }
+  // When each of them last wrote tells the pass which are this process's (an open call
+  // there of any age can be a card's; board 7d284b3a).
+  leadFilesNow = leadFiles(transcriptCache, leadSessions);
+  try { answeredElsewhere?.pass({ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt, written: new Map(leadFilesNow.map(s => [s.sessionId, s.writtenAt])) }); } catch (err) { console.error(`chat: the answered-elsewhere pass failed (${err?.code ?? err?.name ?? 'error'})`); }
   return {
     ...aggregate(transcripts, now),
     // Burn and the week's heat map on the Orbit page (lib/hourly.mjs).
@@ -699,6 +707,15 @@ if (chatSettings.on && socketsReady) {
     cards: chatStore
   });
   answeredElsewhere = createAnsweredElsewhere({ store: chatStore, isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName });
+  // Every 2 s while a card is open: the new bytes of the lead's transcripts, and a card
+  // closes once every call of its tool in its window has its answer there.
+  createCardWatch({
+    store: chatStore,
+    leads: () => leadFilesNow,
+    seedFor: path => seedOf(transcriptCache.get(path)),
+    known: path => transcriptCache.has(path),
+    closeAnswered: ids => answeredElsewhere.closeAnswered(ids)
+  }).start();
   approvals.killed();
   // `serverMode` is config and the kill file; `mode` also needs the channel's word, which comes with its hello.
   console.log(`chat: approvals ${approvals.configured}${approvals.serverMode() !== approvals.configured ? ' (the kill file holds them off)' : ''}; Bash ${approvalSettings.bash === 'exact' ? `by the hook's exact command (${approvalSettings.bashCommands.length} listed)` : 'Deny-only'}; ${approvalSettings.writeFolders.length} write folder${approvalSettings.writeFolders.length === 1 ? '' : 's'}, ${approvalSettings.writeProtected.length} protected place${approvalSettings.writeProtected.length === 1 ? '' : 's'} inside them`);

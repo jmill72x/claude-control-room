@@ -2,7 +2,7 @@
 // (board 28644093): on 2026-11-26 a subagent's card, relayed at 17:30:15Z, was closed at
 // the lead's 17:38:41 UserPromptSubmit while the run still waited. The pieces: which
 // tool uses of a thread have no result yet (lib/parse-transcript.mjs, openTools), which
-// thread a card is (lib/approval-wait.mjs, cardThread), whether that thread is past it
+// threads a card may be (lib/approval-wait.mjs, cardThreads), whether each is past it
 // (threadPast), and the close itself (lib/answered-elsewhere.mjs). Every id, session and
 // time here is invented; no line is a copy of a real transcript.
 import { test } from 'node:test';
@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseTranscript, OPEN_TOOLS_MAX, OPEN_TOOL_NAME_MAX } from '../lib/parse-transcript.mjs';
-import { threadTimes, cardThread, threadPast, CARD_NEAR_MS, CARD_SKEW_MS } from '../lib/approval-wait.mjs';
+import { threadTimes, cardThreads, threadPast, CARD_NEAR_MS, CARD_SKEW_MS } from '../lib/approval-wait.mjs';
 import { agentKey } from '../lib/needs-you.mjs';
 import { createAnsweredElsewhere, PASS_FRESH_MS } from '../lib/answered-elsewhere.mjs';
 import { createChatStore } from '../lib/chat-store.mjs';
@@ -33,13 +33,15 @@ const interrupted = ts => JSON.stringify({ type: 'user', timestamp: iso(ts), ses
 const parse = (...lines) => parseTranscript(lines.join('\n'), 'Code');
 
 test('openTools: the newest response\'s tool uses that have no result yet, each with its line\'s time', () => {
-  assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']])).openTools, [{ name: 'Bash', at: T0 }]);
+  assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']])).openTools, [{ id: 'u1', name: 'Bash', at: T0 }]);
+  assert.equal(parse(use(T0, 'm1', [['u1', 'Bash']])).openResponse, 'm1', 'the newest response\'s id goes out too');
+  assert.equal(parse(use(T0, 'm1', [['u1', 'Bash']])).openCut, false);
   assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']]), result(T0 + 5e3, 'u1')).openTools, [], 'its result came');
   // Parallel calls are lines of one response: one with a result, one still open.
   const two = parse(use(T0, 'm1', [['u1', 'Bash']]), use(T0 + 1e3, 'm1', [['u2', 'Read']]), result(T0 + 2e3, 'u2'));
-  assert.deepEqual(two.openTools, [{ name: 'Bash', at: T0 }]);
+  assert.deepEqual(two.openTools, [{ id: 'u1', name: 'Bash', at: T0 }]);
   // A new response clears the old one's: the next request goes only once every result is in.
-  assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']]), use(T0 + 9e3, 'm2', [['u3', 'Edit']])).openTools, [{ name: 'Edit', at: T0 + 9e3 }]);
+  assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']]), use(T0 + 9e3, 'm2', [['u3', 'Edit']])).openTools, [{ id: 'u3', name: 'Edit', at: T0 + 9e3 }]);
   assert.deepEqual(parse(use(T0, 'm1', [['u1', 'Bash']]), JSON.stringify({ type: 'assistant', timestamp: iso(T0 + 9e3), message: { id: 'm2', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }], usage: USAGE } })).openTools, [], 'a final answer is a new response');
   // A stopped run (the interruption mark) has none open.
   const stopped = parse(use(T0, 'm1', [['u1', 'Bash']]), interrupted(T0 + 3e3));
@@ -57,9 +59,15 @@ test('openTools: the newest response\'s tool uses that have no result yet, each 
 test('openTools: bounded, and a long name is cut', () => {
   assert.equal(OPEN_TOOLS_MAX, 20);
   const many = Array.from({ length: 25 }, (_, i) => [`u${i}`, `T${i}`]);
-  const out = parse(use(T0, 'm1', many)).openTools;
+  const cut = parse(use(T0, 'm1', many));
+  const out = cut.openTools;
   assert.equal(out.length, 20);
   assert.equal(out[0].name, 'T5', 'the oldest go first');
+  assert.equal(cut.openCut, true, 'and the parse says it cut them');
+  assert.equal(parse(use(T0, 'm1', many.slice(0, 20))).openCut, false, 'twenty is not cut');
+  // A new response, or an interruption mark, starts the list again: uncut.
+  assert.equal(parse(use(T0, 'm1', many), use(T0 + 1, 'm2', [['v1', 'Bash']])).openCut, false);
+  assert.equal(parse(use(T0, 'm1', many), interrupted(T0 + 1)).openCut, false);
   assert.equal(parse(use(T0, 'm1', [['u1', 'x'.repeat(300)]])).openTools[0].name.length, OPEN_TOOL_NAME_MAX);
   // A tool use written again under its id is one, not two.
   assert.equal(parse(use(T0, 'm1', [['u1', 'Bash']]), use(T0 + 1, 'm1', [['u1', 'Bash']])).openTools.length, 1);
@@ -83,33 +91,57 @@ test('threadTimes: each thread\'s open tool uses, the newest file\'s when a sess
   assert.deepEqual(threadTimes([sub, subOld]).get(LEAD).agentsOpen.get(KEY), [{ name: 'Edit', at: T0 + 2 }]);
 });
 
-test('cardThread: the thread whose newest response has an open tool use of the card\'s tool, written just before the card', () => {
+test('cardThreads: every thread whose newest response has an open tool use of the card\'s tool, written just before the card', () => {
   assert.equal(CARD_NEAR_MS, 2 * MIN);
   assert.equal(CARD_SKEW_MS, 5e3);
   const sub = view({ agentOpen: [{ name: 'Bash', at: T0 - 1e3 }] });
-  assert.deepEqual(cardThread(sub, [LEAD], 'Bash', T0), { sessionId: LEAD, agent: KEY, name: 'Bash', toolAt: T0 - 1e3 });
+  assert.deepEqual(cardThreads(sub, [LEAD], 'Bash', T0), [{ sessionId: LEAD, agent: KEY, name: 'Bash', toolAt: T0 - 1e3 }]);
   const own = view({ mainOpen: [{ name: 'Bash', at: T0 - 1e3 }] });
-  assert.deepEqual(cardThread(own, [LEAD], 'Bash', T0), { sessionId: LEAD, agent: null, name: 'Bash', toolAt: T0 - 1e3 });
+  assert.deepEqual(cardThreads(own, [LEAD], 'Bash', T0), [{ sessionId: LEAD, agent: null, name: 'Bash', toolAt: T0 - 1e3 }]);
   // The window: 2 minutes before the card to 5 s after, both ends in.
-  assert.ok(cardThread(view({ agentOpen: [{ name: 'Bash', at: T0 - CARD_NEAR_MS }], agent: T0 - CARD_NEAR_MS - 1 }), [LEAD], 'Bash', T0));
-  assert.equal(cardThread(view({ agentOpen: [{ name: 'Bash', at: T0 - CARD_NEAR_MS - 1 }], agent: T0 - CARD_NEAR_MS - 2 }), [LEAD], 'Bash', T0), null);
-  assert.ok(cardThread(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS }] }), [LEAD], 'Bash', T0));
-  assert.equal(cardThread(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS + 1 }] }), [LEAD], 'Bash', T0), null);
-  // The nearest wins; on a tie the session's own thread.
-  const both = view({ mainOpen: [{ name: 'Bash', at: T0 - 30e3 }], main: T0 - 31e3, agentOpen: [{ name: 'Bash', at: T0 - 2e3 }] });
-  assert.equal(cardThread(both, [LEAD], 'Bash', T0).agent, KEY);
-  const tie = view({ mainOpen: [{ name: 'Bash', at: T0 - 2e3 }], agentOpen: [{ name: 'Bash', at: T0 - 2e3 }] });
-  assert.equal(cardThread(tie, [LEAD], 'Bash', T0).agent, null);
+  assert.equal(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - CARD_NEAR_MS }], agent: T0 - CARD_NEAR_MS - 1 }), [LEAD], 'Bash', T0).length, 1);
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - CARD_NEAR_MS - 1 }], agent: T0 - CARD_NEAR_MS - 2 }), [LEAD], 'Bash', T0), []);
+  assert.equal(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS }] }), [LEAD], 'Bash', T0).length, 1);
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS + 1 }] }), [LEAD], 'Bash', T0), []);
+  // Board 48308589: two threads with a call of the tool around the card are both it, his
+  // own first, each with its use nearest the card.
+  const both = view({ mainOpen: [{ name: 'Bash', at: T0 - 30e3 }], main: T0 - 31e3, agentOpen: [{ name: 'Bash', at: T0 - 90e3 }, { name: 'Bash', at: T0 - 2e3 }], agent: T0 - 91e3 });
+  assert.deepEqual(cardThreads(both, [LEAD], 'Bash', T0), [
+    { sessionId: LEAD, agent: null, name: 'Bash', toolAt: T0 - 30e3 },
+    { sessionId: LEAD, agent: KEY, name: 'Bash', toolAt: T0 - 2e3 }
+  ]);
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 + 2e3 }, { name: 'Bash', at: T0 - 4e3 }] }), [LEAD], 'Bash', T0)[0].toolAt, T0 + 2e3, 'the nearest, after it or before');
+  assert.equal(cardThreads(both, [LEAD, LEAD], 'Bash', T0).length, 2, 'a session named twice is read once');
   // Another tool, another session, a thread that wrote a request after its tool use: not it.
-  assert.equal(cardThread(sub, [LEAD], 'Edit', T0), null);
-  assert.equal(cardThread(sub, [OTHER], 'Bash', T0), null);
-  assert.equal(cardThread(view({ agentOpen: [{ name: 'Bash', at: T0 - 1e3 }], agent: T0 - 500 }), [LEAD], 'Bash', T0), null);
-  // Nothing to go on: no answer.
-  for (const [threads, sessions, tool, at] of [[null, [LEAD], 'Bash', T0], [sub, null, 'Bash', T0], [sub, [LEAD], '', T0], [sub, [LEAD], null, T0], [sub, [LEAD], 'Bash', Number.NaN], [new Map([[LEAD, null]]), [LEAD], 'Bash', T0]]) {
-    assert.equal(cardThread(threads, sessions, tool, at), null);
+  assert.deepEqual(cardThreads(sub, [LEAD], 'Edit', T0), []);
+  assert.deepEqual(cardThreads(sub, [OTHER], 'Bash', T0), []);
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - 1e3 }], agent: T0 - 500 }), [LEAD], 'Bash', T0), []);
+  // Nothing to go on: none.
+  for (const [threads, sessions, tool, at] of [[null, [LEAD], 'Bash', T0], [sub, null, 'Bash', T0], [sub, 'nope', 'Bash', T0], [sub, [LEAD], '', T0], [sub, [LEAD], null, T0], [sub, [LEAD], 'Bash', Number.NaN], [new Map([[LEAD, null]]), [LEAD], 'Bash', T0]]) {
+    assert.deepEqual(cardThreads(threads, sessions, tool, at), []);
   }
   // A thread whose open list is not known is skipped, not a crash.
-  assert.equal(cardThread(new Map([[LEAD, { main: 1, agents: new Map(), mainOpen: undefined, agentsOpen: new Map() }]]), [LEAD], 'Bash', T0), null);
+  assert.deepEqual(cardThreads(new Map([[LEAD, { main: 1, agents: new Map(), mainOpen: undefined, agentsOpen: new Map() }]]), [LEAD], 'Bash', T0), []);
+});
+
+test('cardThreads in a current session: an open call of the card\'s tool counts however old it is (board 7d284b3a, Ultron\'s M1)', () => {
+  // Two Bash calls in one response; the first ran 5 minutes, so the second's prompt (and
+  // its card) came 5 minutes after its call was written.
+  const late = view({ agentOpen: [{ name: 'Bash', at: T0 - 5 * MIN }], agent: T0 - 5 * MIN - 1e3 });
+  const cur = new Set([LEAD]);
+  assert.deepEqual(cardThreads(late, [LEAD], 'Bash', T0), [], 'no session current: the window as before');
+  assert.deepEqual(cardThreads(late, [LEAD], 'Bash', T0, cur), [{ sessionId: LEAD, agent: KEY, name: 'Bash', toolAt: T0 - 5 * MIN }]);
+  assert.deepEqual(cardThreads(late, [LEAD], 'Bash', T0, new Set([OTHER])), [], 'another session current, not this one');
+  assert.deepEqual(cardThreads(late, [LEAD], 'Bash', T0, [LEAD]), [], 'not a Set: none current');
+  assert.equal(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - 12 * 3600e3 }], agent: T0 - 12 * 3600e3 - 1 }), [LEAD], 'Bash', T0, cur).length, 1, '12 hours old');
+  assert.equal(cardThreads(view({ mainOpen: [{ name: 'Bash', at: T0 - 9 * MIN }], main: T0 - 10 * MIN }), [LEAD], 'Bash', T0, cur)[0].agent, null, 'his own thread too');
+  // The other bounds stay: written after the card's window, another tool, a request after it.
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS + 1 }] }), [LEAD], 'Bash', T0, cur), []);
+  assert.equal(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 + CARD_SKEW_MS }] }), [LEAD], 'Bash', T0, cur).length, 1);
+  assert.deepEqual(cardThreads(late, [LEAD], 'Edit', T0, cur), []);
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - 5 * MIN }], agent: T0 - MIN }), [LEAD], 'Bash', T0, cur), []);
+  // Still each thread once, at its use nearest the card.
+  assert.deepEqual(cardThreads(view({ agentOpen: [{ name: 'Bash', at: T0 - 9 * MIN }, { name: 'Bash', at: T0 - 4 * MIN }], agent: T0 - 10 * MIN }), [LEAD], 'Bash', T0, cur), [{ sessionId: LEAD, agent: KEY, name: 'Bash', toolAt: T0 - 4 * MIN }]);
 });
 
 test('threadPast: the tool use has its result, the thread wrote a request after it, or it stopped; not read is no word', () => {
@@ -337,5 +369,93 @@ test('store: closablePermissions lists the open and timed-out requests as copies
     assert.equal(s.state('abcde'), 'open');
     assert.deepEqual(s.store.closePermissionsElsewhere({ upTo: s.clock.t, ids: ['abcde'] }), [], 'ids that are no Set close nothing');
     assert.deepEqual(s.store.closePermissionsElsewhere({ upTo: s.clock.t, ids: new Set() }), []);
+  } finally { await s.clean(); }
+});
+
+test('board 48308589: two threads call the card\'s tool around it; the pass and the lead\'s turn keep it until both are past it', async () => {
+  const s = await setup();
+  try {
+    // The subagent's Bash waits at its prompt (3 s before the card); the lead's own Bash,
+    // written 1 s before the card, runs without one. The nearest is the lead's: matched to
+    // it alone, the card closed when his finished while the subagent's still waited.
+    await s.open('twoth');
+    s.clock.t += 30e3;
+    assert.equal(pass(s, view({ main: T0 - 2e3, mainOpen: [{ name: 'Bash', at: T0 - 1e3 }], agent: T0 - 4e3, agentOpen: [{ name: 'Bash', at: T0 - 3e3 }] })), 0);
+    s.clock.t += MIN;
+    assert.equal(pass(s, view({ main: T0 - 2e3, mainOpen: [], agent: T0 - 4e3, agentOpen: [{ name: 'Bash', at: T0 - 3e3 }] })), 0, 'his is done, the subagent\'s still waits');
+    assert.equal(s.ae.note({ event: 'Stop', sessionId: LEAD, at: s.clock.t }), 0, 'his turn ends: still one of them is a subagent\'s');
+    assert.equal(s.state('twoth'), 'open');
+    s.clock.t += MIN;
+    const unread = view({ main: s.clock.t - 5e3, mainOpen: [] });
+    unread.get(LEAD).agents.delete(KEY);
+    unread.get(LEAD).agentsOpen.delete(KEY);
+    assert.equal(pass(s, unread), 0, 'the subagent\'s file not read this pass: no word on it');
+    s.clock.t += MIN;
+    assert.equal(pass(s, view({ main: s.clock.t - 5e3, mainOpen: [], agent: T0 - 4e3, agentOpen: [] })), 1, 'both past: answered');
+    assert.equal(s.state('twoth'), 'elsewhere');
+  } finally { await s.clean(); }
+});
+
+test('board 7d284b3a: a card relayed 5 minutes after its call (the call before it in the response ran that long) is kept at the lead\'s turn until its own call is answered', async () => {
+  const s = await setup();
+  try {
+    s.clock.t = T0 - 10 * MIN;
+    s.store.newPermissionSession();
+    const helloAt = s.clock.t;
+    // The subagent's two Bash calls at T0 - 301 s; the first answered at T0 - 1 s; the
+    // second's card at T0. The lead's own Bash at T0 - 50 s, finished.
+    const callAt = T0 - 301e3;
+    s.clock.t = T0;
+    await s.open('latec');
+    s.clock.t += 30e3;
+    const waiting = view({ main: T0 - 51e3, mainOpen: [], agent: callAt - 1e3, agentOpen: [{ name: 'Bash', at: callAt }] });
+    const written = new Map([[LEAD, T0 - 1e3]]);
+    assert.equal(pass(s, waiting, { written }), 0);
+    assert.equal(s.ae.note({ event: 'Stop', sessionId: LEAD, at: s.clock.t }), 0, 'a subagent\'s: kept');
+    assert.equal(s.state('latec'), 'open');
+    s.clock.t += MIN;
+    assert.equal(pass(s, waiting, { written }), 0);
+    assert.equal(s.ae.note({ event: 'UserPromptSubmit', sessionId: LEAD, at: s.clock.t }), 0);
+    assert.equal(s.state('latec'), 'open');
+    s.clock.t += MIN;
+    assert.equal(pass(s, view({ main: T0 - 51e3, mainOpen: [], agent: callAt - 1e3, agentOpen: [] }), { written }), 1, 'its call answered');
+    assert.equal(s.state('latec'), 'elsewhere');
+    // A session last written before the hello is an older process's: a call it left open,
+    // however recent, is not a card's at any age (only in the window, as before).
+    s.clock.t += MIN;
+    await s.open('oldpr');
+    s.clock.t += 30e3;
+    const stale = view({ main: helloAt - 5 * MIN, mainOpen: [], agent: helloAt - 3 * MIN, agentOpen: [{ name: 'Bash', at: helloAt - 3 * MIN }] });
+    assert.equal(pass(s, stale, { written: new Map([[LEAD, helloAt - 1]]) }), 0);
+    assert.equal(s.ae.note({ event: 'Stop', sessionId: LEAD, at: s.clock.t }), 1, 'no thread at it: closed at his turn, as before');
+    assert.equal(s.state('oldpr'), 'elsewhere');
+    // No hello yet, or no times: no session is current (the window as before).
+    const s2 = await setup();
+    try {
+      s2.clock.t = T0;
+      await s2.open('nohel');
+      s2.clock.t += 30e3;
+      assert.equal(pass(s2, waiting, { written }), 0);
+      assert.equal(s2.ae.note({ event: 'Stop', sessionId: LEAD, at: s2.clock.t }), 1);
+    } finally { await s2.clean(); }
+  } finally { await s.clean(); }
+});
+
+test('closeAnswered: the card watch\'s close, logged as its thread\'s transcript showing the call answered', async () => {
+  const s = await setup();
+  try {
+    await s.open('abcde');
+    await s.open('fghij');
+    s.clock.t += 10e3;
+    pass(s, view({ mainOpen: [{ name: 'Bash', at: T0 - 1e3 }] }));
+    assert.deepEqual(s.ae.size(), { refs: 2, deferred: 0 });
+    assert.equal(s.ae.closeAnswered(['abcde']), 0, 'only a Set');
+    assert.equal(s.ae.closeAnswered(new Set(['abcde'])), 1);
+    assert.equal(s.state('abcde'), 'elsewhere');
+    assert.equal(s.store.permission('abcde').closedBy, 'its own thread');
+    assert.equal(s.state('fghij'), 'open');
+    assert.match(s.logs.at(-1), /^chat: 1 permission card closed, answered somewhere else or no longer asked \(its thread's transcript shows the call answered\): abcde$/);
+    assert.deepEqual(s.ae.size(), { refs: 1, deferred: 0 }, 'its thread is let go');
+    assert.equal(s.ae.closeAnswered(new Set(['abcde'])), 0, 'closed once');
   } finally { await s.clean(); }
 });

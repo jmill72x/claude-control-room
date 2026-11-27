@@ -307,6 +307,10 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   // `crowded` (more than OPEN_PERMISSIONS_MAX were open).
 
   let permSession = 0;
+  // When the current channel session began (its process's first hello): every card open
+  // now was relayed by a process that started by then, so lib/card-watch.mjs reads only the
+  // lead's sessions whose transcript was written since. Null before any hello.
+  let permSessionAt = null;
   let permUid = 0;
   let permWindow = PERMISSION_TTL_MS; // for requests opened from now on
   let channelSeenAt = null;           // the channel's last hello or heartbeat
@@ -350,6 +354,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   // the old session can never match again, so they are let go.
   function newPermissionSession() {
     permSession++;
+    permSessionAt = now();
     seenIds.clear();
     for (const p of permissions.values()) if (p.state === 'open') endPermission(p, 'channel');
     return permSession;
@@ -622,6 +627,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     setPermissionHold, noteChannelAlive,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },
+    get permissionSessionAt() { return permSessionAt; },
     putAttachment, attachment, pruneAttachments, pruneOrphans, removeAttachment,
     attachmentPath: id => (isAttachmentId(id) ? join(filesDir, id) : null)
   };

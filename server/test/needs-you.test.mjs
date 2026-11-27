@@ -751,5 +751,5 @@ test('the server hands each sessions pass\'s stopped threads to the store (board
   const pass = src.slice(src.indexOf("registry.register('sessions'"), src.indexOf("registry.register('board'"));
   assert.match(pass, /const ended = endedThreads\(transcripts, now\);\n\s*const stopped = needsYou\.endThreads\(ended, now\);/);
   // The same stops go to the page's cards (lib/answered-elsewhere.mjs; board 28644093).
-  assert.match(pass, /answeredElsewhere\?\.pass\(\{ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt \}\)/);
+  assert.match(pass, /answeredElsewhere\?\.pass\(\{ threads: threadsNow, sessions: leadSessions, stopped: ended, readAt, written: /);
 });

@@ -96,38 +96,49 @@ export function threadTimes(transcripts) {
 export const CARD_NEAR_MS = 2 * MIN;
 export const CARD_SKEW_MS = 5e3;
 
-// Which thread of `sessions` (the lead's session ids) a card for `tool` relayed at `at`
-// is: the thread whose newest response has an open tool use of that name in the window
-// above, the nearest to `at` winning, the session's own thread on a tie. Answers
-// { sessionId, agent (null: the session's own thread), name, toolAt } or null. Only a
-// card's thread: an open tool use alone never says a prompt waits (a running tool looks
+// Which threads of `sessions` (the lead's session ids) a card for `tool` relayed at `at`
+// may be: every thread whose newest response has an open tool use of that name in the
+// window above, each once (its use nearest to `at`), the session's own thread first. In a
+// session of `current` (the ones written since the channel's current process said hello),
+// an open tool use of that name written up to CARD_SKEW_MS after `at` counts however old
+// it is (board 7d284b3a, Ultron's M1 on 48308589): a prompt opens when the call before it
+// in the same response has run, so two Bash calls in one response, the first taking 5
+// minutes, relay the second's card 5 minutes after its call. Only in a current session: a
+// session of an older process keeps the calls it left open when it ended open for good,
+// and one of those would hold every later card of that tool.
+// Answers [{ sessionId, agent (null: the session's own thread), name, toolAt }], empty when
+// none is. All of them, not the nearest (board 48308589): two threads can each hold an open
+// call of one tool around one card, the lead's own running and a subagent's waiting at its
+// prompt, and a card matched to the wrong one closed when that one finished while the
+// right one still waited. The card is answered only once every one of them is past it
+// (threadPast). An open tool use alone never says a prompt waits (a running tool looks
 // the same).
-export function cardThread(threads, sessions, tool, at) {
-  if (typeof tool !== 'string' || tool === '' || !Number.isFinite(at) || !(threads instanceof Map)) return null;
-  let best = null;
+export function cardThreads(threads, sessions, tool, at, current = null) {
+  if (typeof tool !== 'string' || tool === '' || !Number.isFinite(at) || !(threads instanceof Map)) return [];
+  const anyAge = current instanceof Set ? current : new Set();
+  const out = [];
   const consider = (sessionId, agent, newest, open) => {
     if (!Array.isArray(open)) return;
+    let best = null;
     for (const u of open) {
-      if (u.name !== tool || u.at < at - CARD_NEAR_MS || u.at > at + CARD_SKEW_MS) continue;
+      if (u.name !== tool || u.at > at + CARD_SKEW_MS) continue;
+      if (u.at < at - CARD_NEAR_MS && !anyAge.has(sessionId)) continue;
       // The thread wrote no request after its tool use (it is the newest response's).
       if (Number.isFinite(newest) && newest > u.at) continue;
-      const d = Math.abs(at - u.at);
-      if (best === null || d < best.d) best = { sessionId, agent, name: u.name, toolAt: u.at, d };
+      if (best === null || Math.abs(at - u.at) < Math.abs(at - best.at)) best = u;
     }
+    if (best !== null) out.push({ sessionId, agent, name: best.name, toolAt: best.at });
   };
-  for (const sid of sessions ?? []) {
+  for (const sid of new Set(Array.isArray(sessions) ? sessions : [])) {
     const t = threads.get(sid);
     if (!isObject(t)) continue;
     consider(sid, null, t.main, t.mainOpen);
     for (const [key, open] of t.agentsOpen instanceof Map ? t.agentsOpen : []) consider(sid, key, t.agents instanceof Map ? t.agents.get(key) : undefined, open);
   }
-  if (best === null) return null;
-  const { d, ...out } = best;
-  void d;
   return out;
 }
 
-// Whether the thread a card was matched to (cardThread's answer) has gone past it: no tool
+// Whether a thread a card may be (one of cardThreads' answers) has gone past it: no tool
 // use of that name is open in its newest response any more (each has its result: allowed
 // and run, or denied; one of two parallel calls of the same tool still open keeps it), or
 // the thread wrote a request after it, or it stopped (`stoppedAt`, lib/live-agents.mjs endedThreads' times for the
