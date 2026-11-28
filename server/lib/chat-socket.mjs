@@ -56,6 +56,7 @@ import { lateComposedAt, leadText } from './chat-late.mjs';
 import { fitCatchUp } from './chat-catchup.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { readFile } from 'node:fs/promises';
+import { startMatches } from './chat-verify.mjs';
 
 export const HEARTBEAT_FRESH_MS = 45e3;
 export const INBOUND_PING_MS = 15e3;
@@ -267,6 +268,8 @@ export function createSocketRouter({
         // process that said it; with verifyEveryHello, every hello without the token is
         // checked the same way (less the start time). Anything less is refused and alerted.
         const afterBye = !client && byeAt !== null;
+        // ps's start for the pid, when the verifier ran (undefined: it did not).
+        let psStart;
         if (!holder && (afterBye || verifyEveryHello)) {
           let verdict;
           if (afterBye && pid !== null && pid === byePid) verdict = { ok: false, reason: 'the pid that said bye' };
@@ -279,6 +282,7 @@ export function createSocketRouter({
             onEvent({ kind: 'client-replaced', pid, previous: null, staleFor: 0, unverified: reason });
             throw new HttpError(409, 'a hello must come from the released channel; this one could not be verified');
           }
+          psStart = Number.isFinite(verdict.startedAt) ? verdict.startedAt : null;
         }
         if (client && !holder) {
           const staleFor = at - client.lastHeartbeatAt;
@@ -302,7 +306,14 @@ export function createSocketRouter({
         // (its pid and start time; board ee0bd552), held until a sessions pass judges them.
         if (!holder) {
           if (typeof store.channelHello === 'function') {
-            const back = store.channelHello({ pid, startedAt: client.startedAt });
+            // The hello's start time is its own word: a restart's cards come back for it only
+            // when ps's start for the verified pid agrees (lib/chat-verify.mjs, startMatches;
+            // board 88c1d4ec, Ultron's L5). A hello the verifier did not check brings none.
+            // (A hello that names no start has the store's own words.)
+            const unproven = !Number.isSafeInteger(client.startedAt) ? null
+              : psStart === undefined ? 'the channel\'s start could not be checked (chat.channelServer is not set)'
+                : !startMatches(client.startedAt, psStart) ? 'the start time in the channel\'s hello is not its process\'s (ps)' : null;
+            const back = store.channelHello({ pid, startedAt: client.startedAt, unproven });
             if (back?.restored > 0) log(`chat: ${back.restored} permission card${back.restored === 1 ? '' : 's'} from before the restart held for the sessions pass (the same channel process said hello, pid ${pid})`);
             if (back?.dropped > 0) log(`chat: ${back.dropped} permission card${back.dropped === 1 ? '' : 's'} from before the restart not put back (${back.why ?? 'no reason given'})`);
           } else store.newPermissionSession?.();
@@ -564,8 +575,15 @@ export function createSocketRouter({
             { assess: q => approvals.assess(q) }
           );
         } catch (err) { throw new HttpError(400, err.message); }
-        approvals.noteOpenCount?.(store.openPermissions().length);
-        onEvent({ kind: 'permission-opened', requestId: p.requestId, tool: p.tool, state: p.state });
+        // A request from before a restart, posted again (lib/chat-store.mjs): the held card,
+        // still waiting for the sessions pass, or the card the pass already showed again;
+        // no new card either way, so no event.
+        if (p.state === 'held') log(`chat: the channel posted again a permission request held from before the restart (${p.requestId}); it waits for the sessions pass`);
+        else if (p.state === 'restored') log(`chat: the channel posted again a permission request from before the restart (${p.requestId}); its card is already shown again`);
+        else {
+          approvals.noteOpenCount?.(store.openPermissions().length);
+          onEvent({ kind: 'permission-opened', requestId: p.requestId, tool: p.tool, state: p.state });
+        }
         return json(res, 200, { requestId: p.requestId, state: p.state, openedAt: p.openedAt });
       }
       return json(res, 404, { error: 'not found' });

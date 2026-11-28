@@ -237,5 +237,14 @@ export function createAnsweredElsewhere({ store, isLeadSession = () => false, no
   // `ids` is a Set (the store closes nothing for anything else).
   const closeAnswered = ids => close(ids, 'its own thread', 'its thread\'s transcript shows the call answered');
 
-  return { note, pass, closeAnswered, size: () => ({ refs: refs.size, deferred: deferred.size }) };
+  // The threads a pass found for an open card (cardThreads' answer: [{ sessionId, agent }]
+  // copies), [] when it found none, or null before any pass judged it: for the reminder's
+  // words (server.mjs; board 88c1d4ec, Ultron's L4).
+  const threadsOf = requestId => {
+    const ref = refs.get(requestId);
+    if (ref === undefined) return null;
+    return ref === NONE ? [] : ref.map(r => ({ sessionId: r.sessionId, agent: r.agent }));
+  };
+
+  return { note, pass, closeAnswered, threadsOf, size: () => ({ refs: refs.size, deferred: deferred.size }) };
 }

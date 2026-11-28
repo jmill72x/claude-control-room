@@ -525,17 +525,22 @@ export function createChatStore({ dir, now = () => Date.now(), log = () => {} })
   // (its start and ids), and each request still inside its window is held back until a
   // sessions pass judges it (`restoringPermissions`, `settleRestored`). Answers
   // { session, restored, dropped, why } (why: the words for a file that didn't come back).
-  function channelHello({ pid = null, startedAt = null } = {}) {
+  // `unproven` (fixed words, or null): why the hello's start can't be trusted (lib/
+  // chat-socket.mjs: no ps check ran, or ps's start for the pid differs; Ultron's L5). Then
+  // nothing comes back, and nothing of this session is kept for the next start either.
+  function channelHello({ pid = null, startedAt = null, unproven = null } = {}) {
     const snap = pendingSnapshot;
     newPermissionSession();
-    const id = Number.isSafeInteger(pid) && pid > 1 && Number.isSafeInteger(startedAt) && startedAt > 0 ? { pid, startedAt } : null;
+    const said = Number.isSafeInteger(pid) && pid > 1 && Number.isSafeInteger(startedAt) && startedAt > 0;
+    const doubt = said && typeof unproven === 'string' && unproven !== '' ? unproven.slice(0, 120) : null;
+    const id = said && doubt === null ? { pid, startedAt } : null;
     channelId = id;
     const out = { session: permSession, restored: 0, dropped: 0, why: null };
     if (snap && snap.cards.length > 0) {
       const same = id !== null && snap.channel.pid === id.pid && snap.channel.startedAt === id.startedAt;
       if (!same) {
         out.dropped = snap.cards.length;
-        out.why = id === null ? 'the channel\'s hello did not say its pid and start' : 'a different channel process said hello';
+        out.why = doubt ?? (id === null ? 'the channel\'s hello did not say its pid and start' : 'a different channel process said hello');
       } else {
         const at = now();
         if (snap.channel.sessionAt <= at) permSessionAt = snap.channel.sessionAt;
@@ -618,9 +623,29 @@ export function createChatStore({ dir, now = () => Date.now(), log = () => {} })
     prunePermissions();
     const at = now();
     const key = `${permSession}:${requestId}`;
+    const t = capField(tool, TOOL_MAX), d = capField(description), ip = capField(inputPreview);
+    // The channel posting again a request held back from before a restart (board 88c1d4ec,
+    // Ultron's L7): the last server took it, wrote the file and stopped before it answered,
+    // so the channel's `sent` was never set and it posts the same body after its hello.
+    // That is the held card itself, not a repeat: it stays held for the sessions pass,
+    // which shows it or lets it go, so one card shows (a `repeat` entry here would make
+    // settleRestored drop the held one as `newer`, and the repeat can't be answered).
+    // Nothing new is written to the log. A different body under the same id is a repeat.
+    // (A held id is always one this session has seen: channelHello adds the file's ids.)
+    // The same once the pass has shown it again (Ultron's L1 on jos/card-lows): a repost of
+    // the open restored card in this session is that card (no entry, no message, no
+    // event), or the repeat would take `latest` and the card could not be answered.
+    const cutNow = Boolean(cut) || t.cut || d.cut || ip.cut;
+    const sameBody = q => q.tool === t.text && q.description === d.text && q.inputPreview === ip.text && q.cut === cutNow;
+    const held = restoring.get(requestId);
+    if (held && sameBody(held)) return { requestId, tool: held.tool, state: 'held', openedAt: held.openedAt };
+    const shown = findPermission(requestId);
+    // (An open card is always this session's: a new session ends every open card.)
+    if (shown && shown.restored === true && shown.state === 'open' && sameBody(shown)) {
+      return { requestId, tool: shown.tool, state: 'restored', openedAt: shown.openedAt };
+    }
     const repeat = seenIds.has(key);
     seenIds.add(key);
-    const t = capField(tool, TOOL_MAX), d = capField(description), ip = capField(inputPreview);
     // When the channel had it: never later than now, and a clock far ahead is ignored.
     const ra = Number.isSafeInteger(relayedAt) && relayedAt <= at + 5e3 ? Math.min(relayedAt, at) : at;
     const late = at - ra > LATE_AFTER_MS;
@@ -770,7 +795,11 @@ export function createChatStore({ dir, now = () => Date.now(), log = () => {} })
       openedAt: p.openedAt, relayedAt: p.relayedAt ?? p.openedAt, expiresAt: (p.relayedAt ?? p.openedAt) + p.windowMs,
       state: p.state, answeredBy: p.answeredBy, answeredAt: p.answeredAt, messageId: p.messageId,
       ...(p.state === 'elsewhere' ? { closedAt: p.closedAt ?? null } : {}),
-      ...(p.state === 'expired' ? { ended: p.ended ?? null } : {})
+      ...(p.state === 'expired' ? { ended: p.ended ?? null } : {}),
+      // A card put back after a restart of this server (settleRestored): the page marks it
+      // (board 88c1d4ec, Ultron's L6). A mark only: it changes neither what Allow needs nor
+      // the hash a verdict is checked against.
+      ...(p.restored === true ? { restored: true } : {})
     };
   };
 

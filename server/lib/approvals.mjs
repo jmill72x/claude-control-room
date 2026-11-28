@@ -553,6 +553,9 @@ const STAR_EXT = /^\*(\.[A-Za-z0-9_-]+)+$/;
 // `isLink(path)` whether its last part is a symbolic link.
 export const INGEST_OFF = 'the ingest socket is off, so a block by auto mode would go unseen (answer at the terminal or in Discord)';
 export const NO_EXACT = 'no exact copy of this command came from the hook (answer at the terminal or in Discord)';
+// The same for a card put back after a restart of this server (board 88c1d4ec, Ultron's L6):
+// the hook's copy came, but it was kept in memory only, so the restart lost it.
+export const EXACT_LOST = 'the exact copy of this command from the hook was lost when the Control Room restarted (answer at the terminal or in Discord)';
 export function denyOnlyReasons(req, {
   home = homedir(), realpath = safeRealpath, patterns = [], writeFolders = [], writeProtected = [], bash = 'deny', exact = null, exactProblem = null,
   bashCommands = [], repoRoot = OWN_REPO, isExecutable = fileCanRun, isLink = pathIsLink,
@@ -945,6 +948,7 @@ export function createApprovals({
       let exact = null;
       let exactProblem = null;
       if (bashMode === 'exact' && p?.tool === 'Bash') ({ exact, exactProblem } = matchExact(p, at));
+      if (p?.restored === true && exact === null && exactProblem === null) exactProblem = EXACT_LOST;
       const denyOnly = denyOnlyFor(p, exact, exactProblem);
       const why = lastBlock && at - lastBlock.at <= WHY_WINDOW_MS && lastBlock.tool === p.tool
         ? whyLine(lastBlock.tool, lastBlock.why)

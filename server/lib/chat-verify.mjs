@@ -111,8 +111,26 @@ export function isChannelCommand(command, server) {
   return exe.length > 0 && !/\s/.test(exe) && basename(exe) === 'node';
 }
 
-// verify(pid, { notBefore }) -> { ok: true } | { ok: false, reason }. With `notBefore`
-// (after a bye), the process must have started at or after it.
+// Whether the start a hello says (`said`, the channel's START_MS: Date.now() as its
+// server.mjs loads) is the start ps gives for its pid (`ps`, lstart: whole seconds, cut
+// down). The hello's comes after the exec by node's start-up (0.1-0.3 s measured on the
+// mini, 2026-11-27) and lstart drops up to a second, so the hello's may be up to
+// START_AFTER_MS after ps's; it may be START_BEFORE_MS before it, for a clock step between
+// the two readings. Anything else, or either missing, is no match (board 88c1d4ec,
+// Ultron's L5: a hello's start was taken on its word).
+export const START_BEFORE_MS = 1000;
+export const START_AFTER_MS = 2000;
+export function startMatches(said, ps) {
+  if (!Number.isSafeInteger(said) || said <= 0 || !Number.isFinite(ps)) return false;
+  const d = said - ps;
+  return d >= -START_BEFORE_MS && d < START_AFTER_MS;
+}
+
+// verify(pid, { notBefore }) -> { ok: true, startedAt } | { ok: false, reason }. With
+// `notBefore` (after a bye), the process must have started at or after it. `startedAt` is
+// ps's lstart for the pid in epoch ms (whole seconds, cut down), or null when ps gave none
+// that makes a real moment: lib/chat-socket.mjs checks the hello's own start against it
+// (board 88c1d4ec, Ultron's L5) before a restart's cards may come back for that process.
 export function createChannelVerifier({ channelServer, launchPath, ps = runPs, readLaunch = p => readLaunchPid(p) }) {
   return async function verify(pid, { notBefore = null } = {}) {
     if (!channelServer) return { ok: false, reason: 'chat.channelServer is not set' };
@@ -127,7 +145,7 @@ export function createChannelVerifier({ channelServer, launchPath, ps = runPs, r
     if (!launch?.pid) return { ok: false, reason: launch?.reason ?? 'launch.json holds no pid' };
     let at = self.ppid;
     for (let hop = 0; hop < MAX_HOPS && at > 1; hop++) {
-      if (at === launch.pid) return { ok: true };
+      if (at === launch.pid) return { ok: true, startedAt: Number.isFinite(self.startedAt) ? self.startedAt : null };
       const parent = table.get(at);
       if (!parent) break;
       at = parent.ppid;

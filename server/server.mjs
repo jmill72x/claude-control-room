@@ -51,7 +51,7 @@ import { createSocketRouter } from './lib/chat-socket.mjs';
 import { createChatRoutes, createAdminRouter, readChatConfig } from './lib/chat-routes.mjs';
 import { prepareSocketPath } from './lib/chat-listen.mjs';
 import { createEvents, readEventsConfig, isQuiet } from './lib/events.mjs';
-import { threadTimes, describeWait, approvalWaits, createApprovalReminders, fileView, toolLabel } from './lib/approval-wait.mjs';
+import { threadTimes, describeWait, approvalWaits, createApprovalReminders, fileView, toolLabel, hasCardFor } from './lib/approval-wait.mjs';
 import { createEventSocketRouter } from './lib/event-socket.mjs';
 import { createChannelVerifier, readChannelServer } from './lib/chat-verify.mjs';
 import { createPushService, loadVapid } from './lib/chat-push.mjs';
@@ -755,10 +755,13 @@ if (chatSettings.on && socketsReady) {
     const card = chatStore.openPermissions().filter(p => now - p.relayedAt <= 2 * 60e3 && p.relayedAt <= now + 5e3).sort((a, b) => b.relayedAt - a.relayedAt)[0];
     return card ? toolLabel(card.tool) : null;
   };
-  // The reminder sends the owner to the chat only while a card there can take the answer: an
-  // open card of the wait's tool (any open card for a wait with no tool known). The page's
-  // card ends before the wait does (its window, a restart it didn't come back from).
-  const approvalReminders = createApprovalReminders({ push: body => push.approvalReminder(body), quiet: at => isQuiet(at), hasCard: w => chatStore.openPermissions().some(p => w.tool === null || toolLabel(p.tool) === w.tool) });
+  // The reminder sends the owner to the chat only while a card there can take the answer
+  // (lib/approval-wait.mjs, cardTakesWait; board 88c1d4ec, Ultron's L4): an open card that
+  // offers Allow, that a sessions pass put in the wait's session, for the named ask's own
+  // tool and thread. The page's card ends before the wait does (its window, a restart it
+  // didn't come back from).
+  const hasCard = hasCardFor({ waitThread: key => needsYou.permissionThread(key, Date.now()), openCards: () => chatStore.openPermissions(), canAllow: p => approvals.view(p).canAllow, threadsOf: id => answeredElsewhere?.threadsOf(id) ?? null });
+  const approvalReminders = createApprovalReminders({ push: body => push.approvalReminder(body), quiet: at => isQuiet(at), hasCard });
   const approvalWaitsFile = createSentStore(join(HERE, 'data', 'approval-waits.json'));
   const staleWaitTemps = await approvalWaitsFile.sweep();
   if (staleWaitTemps > 0) console.log(`approval-wait: removed ${staleWaitTemps} temp file${staleWaitTemps === 1 ? '' : 's'} an interrupted write left`);

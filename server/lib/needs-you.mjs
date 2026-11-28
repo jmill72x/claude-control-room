@@ -540,6 +540,21 @@ export function createNeedsYouStore({ whoFor = () => null, detailFor = null, hin
       return { restored, asks: n };
     },
     view: (now = Date.now()) => needsYouView(list, whoFor, now, detailFor, asks),
+    // The permission wait the view's `key` names, for server.mjs's reminder words (board
+    // 88c1d4ec, Ultron's L4): { sessionId, asks: [{ agent, tool }] (its open asks, oldest
+    // first: the tool's own name and the thread's hash, null for the session's own), hint },
+    // or null. Kept in this process: the view never carries an id or a tool's name.
+    permissionThread: (key, now = Date.now()) => {
+      if (typeof key !== 'string') return null;
+      const w = activeWaits(list, now).find(x => x.kind === 'permission' && waitKey(x.sessionId) === key);
+      if (!w) return null;
+      const mine = asks.get(w.sessionId);
+      return {
+        sessionId: w.sessionId,
+        asks: (Array.isArray(mine) ? mine : []).filter(a => isObject(a)).map(a => ({ agent: typeof a.agent === 'string' ? a.agent : null, tool: typeof a.tool === 'string' ? a.tool : null })),
+        hint: typeof w.hint === 'string' ? w.hint : null
+      };
+    },
     size: (now = Date.now()) => activeWaits(list, now).length
   };
 }

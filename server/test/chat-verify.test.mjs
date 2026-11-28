@@ -104,9 +104,9 @@ test('launch.json: a regular 0600 file of this user\'s, opened without following
 
 test('the verifier: alive, the released channel, and under the launch; anything else is refused with a fixed reason', async () => {
   const v = (opts = {}) => createChannelVerifier({ channelServer: SERVER, launchPath: '/x', ps: async () => PS, readLaunch: async () => ({ pid: 500 }), ...opts });
-  assert.deepEqual(await v()(530), { ok: true });
+  assert.deepEqual(await v()(530), { ok: true, startedAt: CHANNEL_START }, "ps's start for the pid comes back with the pass (board 88c1d4ec, L5)");
   // After a bye: started no earlier than notBefore.
-  assert.deepEqual(await v()(530, { notBefore: CHANNEL_START }), { ok: true });
+  assert.deepEqual(await v()(530, { notBefore: CHANNEL_START }), { ok: true, startedAt: CHANNEL_START });
   assert.equal((await v()(530, { notBefore: CHANNEL_START + 1000 })).reason, 'the process started before the bye');
   assert.equal((await v({ ps: async () => PS.replace(lstart(CHANNEL_START) + ' /opt', 'Xyz Nov 11 09:14:03 2026 /opt') })(530, {})).reason, 'no such process', 'an unreadable line is no process');
   assert.equal((await v()(999)).reason, 'no such process');

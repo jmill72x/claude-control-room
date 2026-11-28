@@ -159,6 +159,40 @@ export function threadPast(threads, ref, stopped = null) {
   return !open.some(u => u.name === ref.name);
 }
 
+// Whether an open card in the chat can take the answer for a permission wait, so the
+// reminder may send the owner there (board 88c1d4ec, Ultron's L4; it was any open card of
+// the wait's tool label, Deny-only ones and other sessions' included, and "an MCP tool"
+// matched any MCP tool). `wait` is lib/needs-you.mjs's permissionThread: { sessionId, asks:
+// [{ agent, tool }], hint }; `card` is { tool, canAllow } (canAllow: lib/approvals.mjs's
+// view, as the page offers Allow); `threads` the threads a sessions pass found for the
+// card (lib/answered-elsewhere.mjs, threadsOf: [{ sessionId, agent }], or null before one
+// judged it). True only when Allow is offered there, a pass put the card in the wait's
+// session, and: with an ask, the oldest ask's (the one the push names) tool by its own
+// name and its thread; with none (hooks that name no tool), its hint's label, and with
+// neither ask nor hint, no card (Ultron's L2 on jos/card-lows: any Allow card in the
+// session counted; none is the safer of his two options, since such a wait names no tool
+// and no card was relayed in the two minutes before it, so no card there is known to be
+// its). Anything not known is no card: the words then name Discord and the terminal.
+export function cardTakesWait(wait, card, threads) {
+  if (!isObject(wait) || !isObject(card) || card.canAllow !== true || typeof card.tool !== 'string') return false;
+  if (typeof wait.sessionId !== 'string' || !Array.isArray(threads)) return false;
+  const here = threads.filter(t => isObject(t) && t.sessionId === wait.sessionId);
+  if (here.length === 0) return false;
+  const first = (Array.isArray(wait.asks) ? wait.asks : []).find(a => isObject(a));
+  if (first) return first.tool === card.tool && here.some(t => (t.agent ?? null) === (first.agent ?? null));
+  return typeof wait.hint === 'string' && toolLabel(card.tool) === wait.hint;
+}
+
+// The reminder's `hasCard` from the server's parts: `waitThread(key)` (needs-you's
+// permissionThread), `openCards()` (the chat's open cards), `canAllow(card)` (approvals'
+// view) and `threadsOf(requestId)` (answered-elsewhere's). A part that throws makes the
+// reminder count no card (createApprovalReminders).
+export const hasCardFor = ({ waitThread, openCards, canAllow, threadsOf }) => w => {
+  const wait = waitThread(w?.key);
+  if (!isObject(wait)) return false;
+  return (openCards() ?? []).some(p => isObject(p) && cardTakesWait(wait, { tool: p.tool, canAllow: canAllow(p) === true }, threadsOf(p.requestId) ?? null));
+};
+
 // A permission wait's tool and the subagent that asked, for the page and the words: the
 // oldest open ask's (lib/needs-you.mjs), else the chat card's hint the wait opened with.
 // `typeOf(sessionId, agentKey)` answers a subagent's type; `rosterName(word)` the
@@ -238,7 +272,7 @@ export function firstSchedule(since, now) {
 // module). In memory only: the waits themselves are (a restart forgets
 // them, lib/needs-you.mjs). A card is known by its key and start, so a new prompt in the
 // same session is a new card. `hasCard(w)` says whether the chat has an open card that can
-// take the answer for the wait the push names (server.mjs: an open card of its tool); one
+// take the answer for the wait the push names (server.mjs, with cardTakesWait); one
 // that throws counts as none, and so does none given: the words never send the owner to a card
 // that isn't there.
 export function createApprovalReminders({ push, log = console.log, quiet = () => false, hasCard = () => false } = {}) {

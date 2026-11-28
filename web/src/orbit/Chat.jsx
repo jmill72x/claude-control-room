@@ -17,7 +17,7 @@ import {
   threadRows, tickFor, TICK_MARKS, TICK_WORDS, bannerFor, effectiveStatus, permissionView, cardFields, exactRows, spacesMark, spacesLabel, markerSegments, hasMarker, shownInput, armedCopy, ALLOW_ARM_MS, sentLine, cardGone, DENY_ONLY_LEAD,
   quoted, quoteLine, fileSize, hhmm, MAX_TEXT,
   MAX_FILES, PDF_TYPE, ACCEPT, intake, transferFiles, dragHasFiles, defaultDeviceName, eventLine, quoteWho,
-  isPhotoType, fileWord, viaWords, routineWord, unsentWords, writtenWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine
+  isPhotoType, fileWord, viaWords, routineWord, unsentWords, writtenWords, keyLine, keyRows, keyGone, codeState, KEY_IDLE_DAYS, ageLine, expiredLine, restoredLine
 } from '../lib/orbit/chat.js';
 import { RunbookLink } from './Runbook.jsx';
 import { RecoverButton, RecoverMenuItem } from './Recover.jsx';
@@ -508,6 +508,8 @@ function PermissionCard({ p, chat, now }) {
       {/* Parity: two different exact copies of this command were reported, so the card
           shows the relayed preview and says so (a mark, never a gate). */}
       {p.exactNote && <p className="o-chat-card-hidden">{p.exactNote}</p>}
+      {/* Put back after a restart of the Control Room: marked, never gated. */}
+      {restoredLine(p) && <p className="o-chat-card-hidden">{restoredLine(p)}</p>}
       {hasMarker(p) && <p className="o-chat-card-hidden">{p.view === 'open' && p.canAllow
         ? 'Part of this request is hidden, masked or cut short: this card does not show all of it.'
         : 'Part of this request is hidden or cut short, so it can only be denied here.'}</p>}

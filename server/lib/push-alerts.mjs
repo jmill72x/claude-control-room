@@ -61,7 +61,7 @@ export function pushableFrom(alerts) {
   // services. Its name is config's, so it is not quoted, as for every service. ntfy gets
   // only "Jarvis down: details are in the Control Room." (no command and no way back to
   // follow: anyone who knows the topic can publish to it, Ultron's L1 of 11-20 and board
-  // 704e981b). #pepper, the page and the paired devices get the command.
+  // 704e981b). #pepper, the page and the paired devices get the command, last in the message.
   for (const a of keyed.filter(isLeadDown)) {
     out.push({ keys: [a.key], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyTitle: NTFY.leadDown });
   }

@@ -6155,9 +6155,9 @@ republish of that page to the same address, not a build or a restart.
   outside the jarvis session)". `jarvis-is-down.md`'s "The Claude login lapsed" has no
   Keychain unlock step. `login_watch.py`'s comment still says the page's "step 4".
 
-## 58. A waiting approval card comes back after a Control Room restart (board ee0bd552, P2; staged 2026-11-27 on `jos/card-restart`, off main 50b473a; Ultron GO with M1 as its condition, M1 + L1-L3 folded in the same day)
+## 58. A waiting approval card comes back after a Control Room restart (board ee0bd552, P2; merged as main edbee5a, 2026-11-27; Ultron GO with M1 as its condition, M1 + L1-L3 folded in the same day; his L4-L7 are §59)
 
-Worktree `~/Projects/.worktrees/ccr-card-restart`, no upstream, not committed. Server only
+Branch `jos/card-restart` (worktree `~/Projects/.worktrees/ccr-card-restart`). Server only
 (no web change: the page draws a card from the stream's `permission` event). README "A
 card waiting across a restart of this server" is the reference.
 
@@ -6265,7 +6265,9 @@ card waiting across a restart of this server" is the reference.
   shown.
 - **Answered on the page is judged by the chat log, not the file** (a verdict replying to the
   card's message), since the write after a tap may not land before a stop.
-- **No new push for a card that comes back.** Its reminder schedule already comes back with
+- **No push of its own for a card that comes back** (corrected 2026-11-28, §59: being drawn
+  again is the store's `permission` event, which `chat-push.mjs` takes as a new card, so the
+  usual approval push goes, 15 s apart per device). Its reminder schedule comes back with
   its needs-you wait (§55, `firstSchedule`).
 - **The reminder's check is by tool label, not by card,** because a wait can't be tied to a
   card for sure (§55); with two waits of one tool and one card, the words may name the chat
@@ -6322,3 +6324,99 @@ shown again (…)`.
 **Follow-ups (asked in the report):** the jarvis repo's answer watch still says "Answer the
 card in Jarvis OS chat, Discord or his window" whatever the chat holds (`answer_watch.py`
 `APPROVAL`); it could read a `card` flag if `approval-waits.json` carried one.
+
+## 59. Ultron's lows on the card that comes back, and where --if-down belongs (boards 88c1d4ec and 63ff44b0, P3; staged 2026-11-28 on `jos/card-lows`, off main edbee5a; Ultron GO with M1 as its condition, M1 + L1 + L2 folded in the same day)
+
+Worktree `~/Projects/.worktrees/ccr-card-lows`, no upstream, not committed. Server and page
+(one restart and one web build to go live). README "A card waiting across a restart of this
+server", "The reminder" and "The line in every Jarvis-down alert" hold the design.
+
+**Built.**
+- **L4, the reminder's "Jarvis OS chat".** `hasCard` counted any open card of the wait's tool
+  label: a Deny-only card, a card of another session, and any MCP tool for "an MCP tool".
+  Now `approval-wait.mjs` `cardTakesWait` (wired by `hasCardFor` in server.mjs): the card
+  offers Allow (approvals' `view().canAllow`, what the page draws), a sessions pass put it
+  in the wait's session (`answered-elsewhere.mjs` `threadsOf`: null before a pass, [] when it
+  found none), and it is for the wait's oldest open ask (the one the push names) by the
+  tool's own name and thread (`needs-you.mjs` `permissionThread`, which keeps ids and tool
+  names in the process; the view still carries neither). A wait with no ask (hooks that name
+  no tool) needs the session and its hint's label. Anything unknown is no card.
+- **L5, the hello's start.** The verifier now answers ps's `lstart` for the pid
+  (`{ ok: true, startedAt }`, already in the one ps table it reads, so no extra call), and
+  `chat-verify.mjs` `startMatches(said, ps)` accepts the hello's start from 1 s before to 2 s
+  after it: lstart is whole seconds cut down and the channel's `START_MS` comes after the
+  exec by node's start-up (0.1-0.3 s measured on the mini, 10 node starts, 11-27: offsets
+  0.1-1.3 s from lstart). The socket passes `unproven` to `channelHello`; such a hello brings
+  no card back and keeps none of its session for the next start. A hello no ps check ran on
+  (no `chat.channelServer`) counts as unproven too. A false mismatch costs only the restore
+  (the pre-§58 behaviour); the hello itself is never refused for it.
+- **L6, the mark.** `publicPermission` serves `restored: true` for a card `settleRestored`
+  put back; the page's card says "Came back after a Control Room restart: check the
+  terminal." (`restoredLine`, only while open). Not in the shown hash, no change to Allow.
+  A restored Bash card's Deny-only reason is `EXACT_LOST` ("the exact copy of this command
+  from the hook was lost when the Control Room restarted (answer at the terminal or in
+  Discord)") in place of `NO_EXACT`.
+- **L7, the re-post.** A request posted again under a held id with the same tool,
+  description, preview and cut is the held card (the old server stopped before answering,
+  so the channel's `sent` was never set): `openPermission` answers `state: 'held'`, makes no
+  entry, writes no message, and the socket logs it and sends no `permission-opened` event.
+  The pass then shows or lets go the one card. Another body is a `repeat`, as before.
+- **63ff44b0, --if-down: checked, not changed.** Every place this repo tells Jeff to start
+  Jarvis by hand keeps the plain line: the Restart Jarvis button (`recoverProgram`, a test
+  pins no flag), the Restart card's copy line and the Needs you cards (shown only while he
+  is down, beside the button), the chat's offline push (its channel can be down while he
+  hears Discord, which `--if-down` would leave alone), the start scripts' `jarvis-down` push
+  tail (it includes the deaf and gateway alerts, which the jarvis repo restarts on purpose)
+  and the lead-down alert. The first staging gave the lead-down alert `--if-down` with a note
+  after the command; Ultron's M1 (below) put it back. **The lead-down alert's `--if-down`
+  line comes with the run sheet item a79cfab5, after the jarvis release carries 10981bf**
+  (the released jarvis-recover, 7923d85, ignores arguments): the command last, nothing
+  after it.
+
+**Ultron's GO (2026-11-28) and its condition, folded in the same day.**
+- **M1:** the lead-down line ended "… jarvis-recover --if-down (if he is back by then, it
+  leaves him alone)"; pasted to the end, zsh fails ("unknown file attribute: i", exit 1)
+  and recover never runs, and the note promised what the released recover doesn't do. Back
+  to the plain `RECOVER_LINE`, the command last; `RECOVER_LINE_IF_DOWN` and
+  `RECOVER_IF_DOWN_COMMAND` dropped (unused). New test: every line the server sends with
+  the command (the line, the offline push, the lead-down alert, a `jarvis-down` push short
+  and cut) ends with it, once, nothing after, and none gives `--if-down` yet.
+- **L1:** a same-body repost after the pass had shown the card again became a `repeat` and
+  took `latest`, so the restored card could not be answered. Now a repost of an open
+  restored card is that card (`state: 'restored'`, no entry, message or event; the socket
+  logs `… its card is already shown again`). The "in this session" check is left out: an
+  open card is always this session's (a new session ends every open card), and a mutant
+  that drops it survived for that reason.
+- **L2:** a wait with no ask and no hint counted any Allow card in its session. Of Ultron's
+  two options (only a card on the session's own thread, or none), none: such a wait names
+  no tool and no card was relayed in the two minutes before it (else it would have a hint),
+  so no card there is known to be its. The words then say Discord or the terminal.
+- L3 (the to-push-collector 400 ms flake) and L4 (logging the start offset) go to the board.
+
+**Found, not changed.** A card drawn again after a restart sends the usual approval push
+(§58 said none; corrected there). It is one push for a card that can be answered again;
+suppressing it is a choice for Jeff (report).
+
+**Checked (2026-11-28, after M1, L1 and L2).** Server 2,111 of 2,111, local, `TZ=Asia/Tokyo`
+and under umask 077; web 418 of 418. M1-L2 mutants: 9 over the new code, 8 caught, the one
+survivor the redundant session check (removed). **First staging:** Server 2,107 of 2,107 (15 new in `test/card-lows.test.mjs`,
+pins updated in card-restart, approval-wait, chat-verify and jarvis-recover tests), local
+and under umask 077; `TZ=Asia/Tokyo` passed in 11 of 13 full runs, and two runs each had
+one failure that I could not catch again to name (the touched test files passed 15 of 15
+alone under Tokyo time, so it looks like a timing test elsewhere under load; not proven). Web 418 of 418 (2 new,
+`test/orbit-chat-restored.test.js`), lint clean, built to a scratch `--outDir` (the live
+`web/dist` untouched). Mutants: 46 over the new code, 42 caught first; the 4 survivors were
+two baselines, a check `held && seenIds.has(key)` made redundant (a held id is always seen;
+removed), and two tests missing (a ps start that is a string, a `canAllow` that is truthy
+but not true; added, both caught on the rerun).
+**Not verified:** a real restart with a card open, the start check against the live
+channel's own hello (the margin is from 10 local node starts), the page's mark on a device,
+and `--if-down` itself (the jarvis repo's, not released).
+
+**Go-live (after C&P):** one Control Room restart with no agent runs going, and a web build.
+
+**Run sheet (claude.ai page, not this repo; not changed):** its one line and the login
+renewal's last step stay plain (the jarvis docs call both a restart on purpose). Once the
+release has `--if-down`, "Read the last line" could add: "OK: Jarvis is already running and
+hears Discord, nothing done: an alert's line with --if-down found him back; if he still
+doesn't answer, paste the one line above."

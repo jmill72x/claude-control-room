@@ -209,7 +209,8 @@ test('server.mjs: the sessions pass confirms the waits, the check reads the card
   const sessionsPass = src.slice(src.indexOf("registry.register('sessions'"), src.indexOf("registry.register('sessions'") + 3000);
   assert.ok(sessionsPass.includes('threadsNow = threadTimes(transcripts);') && sessionsPass.includes('needsYou.confirm(threadsNow, now)'), 'confirm in the sessions pass');
   assert.match(src, /approvalWaits: \(\) => approvalWaitsNow\(Date\.now\(\)\)/, 'the proactive check gets the cards');
-  assert.match(src, /createApprovalReminders\(\{ push: body => push\.approvalReminder\(body\), quiet: at => isQuiet\(at\), hasCard: w => chatStore\.openPermissions\(\)\.some\(p => w\.tool === null \|\| toolLabel\(p\.tool\) === w\.tool\) \}\)/);
+  assert.match(src, /const hasCard = hasCardFor\(\{ waitThread: key => needsYou\.permissionThread\(key, Date\.now\(\)\), openCards: \(\) => chatStore\.openPermissions\(\), canAllow: p => approvals\.view\(p\)\.canAllow, threadsOf: id => answeredElsewhere\?\.threadsOf\(id\) \?\? null \}\);/);
+  assert.match(src, /createApprovalReminders\(\{ push: body => push\.approvalReminder\(body\), quiet: at => isQuiet\(at\), hasCard \}\)/);
   assert.match(src, /approvalReminders\.step\(waits, now\)/);
   assert.match(src, /approvalWaitsFile\.write\(fileView\(waits, now\)\)/);
   assert.match(src, /hintFor: \(sid, now\) => cardToolHint\?\.\(sid, now\)/);

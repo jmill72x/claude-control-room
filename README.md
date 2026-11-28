@@ -1350,7 +1350,12 @@ cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover
   minutes).", to `#pepper`, no longer one of the counted services), and the Needs you cards
   for both. Each says: "To bring him back: Restart Jarvis in the Control Room (Face ID), or
   paste in a terminal on the mini, outside the jarvis tmux session: cd ~/Projects &&
-  ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover".
+  ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover". The command is always the
+  last thing in what is sent, with nothing after it, so a paste of the line's end runs
+  exactly it (Ultron's M1 on `jos/card-lows`: a note after the command broke the paste in
+  zsh; `test/card-lows.test.mjs` checks each line). The lead-down alert's `--if-down` line
+  (board 63ff44b0) waits for the jarvis release with 10981bf, with the run sheet's item
+  (board a79cfab5).
 - **Never a command in ntfy** (Ultron's L1, 2026-11-20; board 704e981b, 2026-11-21). Anyone
   who knows the ntfy topic can publish to it, so a forged "Jarvis is down, paste this" would
   look exactly like the real one. The lead-down alert's ntfy push is only `Jarvis down:
@@ -1394,8 +1399,12 @@ same one meeting a restarted server, since both say hello without this server's 
 the store keeps the channel's identity with the cards. `permissions.json` (0600, temp file
 and rename) is `{ version: 1, at, channel: { pid, startedAt, sessionAt }, seen: [ids],
 cards: [{ requestId, tool, description, inputPreview, cut, relayedAt, openedAt, windowMs,
-messageId, why }] }`: the pid and the process's own start time from its hello (the pid checked by
-`chat-verify.mjs` when `chat.channelServer` is set), when its session began here, the ids it
+messageId, why }] }`: the pid and the process's own start time from its hello (both checked by
+`chat-verify.mjs`, which runs on such a hello when `chat.channelServer` is set: the pid is the
+released channel under the lead's launch, and the hello's start falls within 2 s after, or
+1 s before, ps's `lstart` for that pid, whole seconds cut down, `startMatches`; board
+88c1d4ec, Ultron's L5. A hello no ps check ran on, or whose start doesn't match, brings no
+card back and has nothing of its session kept), when its session began here, the ids it
 relayed, and each open card as relayed. It is written on each change once a hello has come,
 never before (a start that gets no hello keeps the last one's file), and not at all while
 there is no card to keep. Never the exact command (memory only), never a card whose
@@ -1415,13 +1424,23 @@ start the file is read with the chat log (temp files an interrupted write left a
 and a file that brings back no card is removed), and at the channel's first hello:
 - **another process** (pid or start differ, or the hello doesn't give both): nothing comes
   back (log: `chat: 1 permission card from before the restart not put back (a different
-  channel process said hello)`);
+  channel process said hello)`; for a start ps doesn't confirm, `(the start time in the
+  channel's hello is not its process's (ps))`, and with no ps check, `(the channel's start
+  could not be checked (chat.channelServer is not set))`);
 - **the same process:** its session goes on (its start time and the ids it relayed, so an id
   seen again is still a `repeat`), and each card still inside its window, sealed as above,
   and which no verdict in the chat log answers (a verdict replying to its message: the write
   after a tap may not have landed before the stop), is held back:
   not drawn, not answerable (log: `… held for the sessions pass (the same channel process
-  said hello, pid N)`).
+  said hello, pid N)`). If the last server took a relay, wrote the file and stopped before
+  it answered, the channel posts that request again after its hello (its `sent` was never
+  set): the same body under a held id is that held card, not a `repeat` (board 88c1d4ec,
+  Ultron's L7). It stays held, nothing new is written to the log and no event goes, so
+  one card shows once the pass judges it (log: `chat: the channel posted again a permission
+  request held from before the restart (id); it waits for the sessions pass`). A repost of
+  that card after the pass has shown it again is the same card too (no entry, no message,
+  no event; log `… its card is already shown again`; Ultron's L1 on `jos/card-lows`), so a
+  repeat never takes its id. Another body under that id is a `repeat`, as before.
 The first sessions pass that began reading after that hello judges each held card by the
 lead's transcripts (`answered-elsewhere.mjs`, `settleHeld`): drawn again on every page (the
 same message, relay time and window, the smaller of its own and the channel's current one,
@@ -1430,7 +1449,13 @@ the card's call open (`cardThreads`, as for any card) and is not past it; let go
 thread has it (answered in the terminal or Discord while the server was down, or nothing of
 the thread could be read) or every one is past it. One no pass judges within 3 minutes goes,
 and so does a held card at a bye, a new process, a silent channel, its window's end or the
-lead's SessionEnd. A card drawn again then closes as any card does. What it can't tell, as
+lead's SessionEnd. A card drawn again then closes as any card does. It is served with
+`restored: true` and the page marks it "Came back after a Control Room restart: check the
+terminal." (a mark only: what Allow needs and the hash a verdict carries are as for any
+card; board 88c1d4ec, Ultron's L6); a Bash card's Deny-only reason then says "the exact
+copy of this command from the hook was lost when the Control Room restarted", since the
+hook's copy was in memory. Being drawn again sends the approval push a new card sends
+(`chat-push.mjs` hears the same `permission` event). What it can't tell, as
 for any open card: a prompt allowed in the terminal whose tool is still running looks like
 one still waiting, so its card can come back, and a tap on it goes to Claude Code, which
 drops a verdict for a request that is no longer open.
@@ -1982,10 +2007,16 @@ his subagents'.
   (`lib/chat-push.mjs`, `approvalReminder`), urgent, looking or not: "Jarvis has waited 10
   min on an approval card. Answer it in Jarvis OS chat, Discord or the terminal." (the
   subagent's roster name in place of Jarvis for one of his, and "N more cards are waiting
-  too" when more do). The chat is named only while it has an open card of the named wait's
-  tool (any open card when the wait's tool isn't known): once the page's card has ended
-  (its window, or a restart it didn't come back from) the words are "Answer it in Discord or
-  the terminal." (board ee0bd552). Then every 30 minutes, six at most (10, 40, 70, 100, 130 and 160
+  too" when more do). The chat is named only while a card there can take the answer for
+  the named wait (`approval-wait.mjs`, `cardTakesWait`; board 88c1d4ec, Ultron's L4): an
+  open card that offers Allow (approvals' `canAllow`, as the page draws it), that a sessions
+  pass put in the wait's session (`answered-elsewhere.mjs`, `threadsOf`), and that is for
+  the wait's oldest open ask by the tool's own name and thread (needs-you's
+  `permissionThread`; for a wait whose hooks named no tool, its hint's label, and with no
+  hint either, no card: Ultron's L2 on `jos/card-lows`). Otherwise,
+  a Deny-only card, a card no pass has judged yet, or the page's card ended (its window,
+  or a restart it didn't come back from), the words are "Answer it in Discord or the
+  terminal." (board ee0bd552). Then every 30 minutes, six at most (10, 40, 70, 100, 130 and 160
   minutes), never two pushes within 10 minutes whatever the number of cards (one push
   covers every card due). Quiet hours are the events module's, 22:00-07:00 local: a
   reminder due then waits, said once in the log, and the first pass from 07:00 sends it if

@@ -165,6 +165,8 @@ test('the program is fixed: /bin/bash, the release worktree\'s jarvis-recover, f
   assert.equal(RECOVER_COMMAND, 'cd ~/Projects && ~/Projects/.worktrees/jarvis-release/bin/jarvis-recover');
   assert.ok(RECOVER_LINE.endsWith(`: ${RECOVER_COMMAND}`));
   assert.match(RECOVER_LINE, /outside the jarvis tmux session/);
+  // The button runs the plain line (board 63ff44b0: a restart on purpose), never --if-down.
+  assert.ok(!recoverProgram(HOME).args.some(a => a.includes('if-down')));
   assert.equal(PURPOSE, 'recover:jarvis');
 });
 
@@ -771,7 +773,10 @@ test('alerts: the lead\'s session down has its own message with the line; other 
   ]);
   const lead = out.find(e => e.keys.includes('service:session:Jarvis'));
   assert.deepEqual(lead, { keys: ['service:session:Jarvis'], title: 'Control Room', message: `${LEAD_DOWN_WORDS} ${RECOVER_LINE}`, ntfyTitle: 'Jarvis down' });
-  assert.ok(lead.message.includes(RECOVER_COMMAND));
+  // The command is the message's last thing (Ultron's M1 on jos/card-lows): no --if-down
+  // until the jarvis release carries it, and nothing after the command.
+  assert.ok(lead.message.endsWith(` ${RECOVER_COMMAND}`));
+  assert.ok(!lead.message.includes('--if-down'));
   // ntfy: its title alone, in fixed words: no command and no way back to follow (Ultron's
   // L1, then board 704e981b: anyone who knows the topic can publish).
   assert.equal(ntfyNote(lead.ntfyTitle), 'Jarvis down: details are in the Control Room.');

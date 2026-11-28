@@ -344,8 +344,9 @@ test('the ids the session saw before the restart stay seen: the same id relayed 
     s.start(A);
     assert.equal((await s.open('fghij')).state, 'repeat');
     assert.equal((await s.open('zzzzz')).state, 'open');
-    // A held card whose id came again in this session stays the newer one's.
-    assert.equal((await s.open('abcde')).state, 'repeat');
+    // A held card whose id came again in this session with another body stays the newer
+    // one's (the same body is the channel posting the held card again: card-lows.test.mjs).
+    assert.equal((await s.open('abcde', { description: 'something else' })).state, 'repeat');
     assert.deepEqual(s.store.settleRestored(new Map([['abcde', true]])), { opened: [], dropped: ['abcde'] });
     assert.equal(s.store.permission('abcde').state, 'repeat');
   } finally { await w.clean(); }
@@ -689,7 +690,9 @@ async function serverAt(w, n) {
   const store = createChatStore({ dir: w.dir, now, log: l => logs.push(l) });
   await store.load();
   const approvals = { mode: () => 'on', serverMode: () => 'on', assess: () => ({ denyOnly: [], why: null }), noteChannelRelay: v => v, noteChannelTest: () => false, noteOpenCount: () => {} };
-  const socket = createSocketRouter({ store, now, onEvent: () => {}, log: l => logs.push(l), pingMs: 60e3, approvals, verifyRestart: async () => ({ ok: true }), verifyEveryHello: true });
+  // The verifier answers ps's start for the pid (whole seconds, cut down), as chat-verify's does.
+  const starts = new Map([[A.pid, A.startedAt], [B.pid, B.startedAt]]);
+  const socket = createSocketRouter({ store, now, onEvent: () => {}, log: l => logs.push(l), pingMs: 60e3, approvals, verifyRestart: async pid => ({ ok: true, startedAt: Math.floor(starts.get(pid) / 1000) * 1000 }), verifyEveryHello: true });
   const socketPath = join(w.dir, `s${n}.sock`);
   const srv = createServer((q, r) => socket.handler(q, r));
   await new Promise(r => srv.listen(socketPath, r));
@@ -765,7 +768,7 @@ test('server.mjs: the store logs its write failures, the start says what is on f
   assert.match(src, /createChatStore\(\{ dir: chatDir, log: line => console\.error\(line\) \}\)/);
   assert.match(src, /loaded\.permissionsOnFile > 0/);
   assert.match(src, /createAnsweredElsewhere\(\{[^}]*assess: q => approvals\.assess\(q\) \}\)/);
-  assert.match(src, /hasCard: w => chatStore\.openPermissions\(\)\.some\(p => w\.tool === null \|\| toolLabel\(p\.tool\) === w\.tool\)/);
+  assert.match(src, /hasCard = hasCardFor\(\{ waitThread: key => needsYou\.permissionThread\(key, Date\.now\(\)\)/);
   const sock = await readFile(new URL('../lib/chat-socket.mjs', import.meta.url), 'utf8');
-  assert.match(sock, /if \(!holder\) \{\n\s+if \(typeof store\.channelHello === 'function'\) \{\n\s+const back = store\.channelHello\(\{ pid, startedAt: client\.startedAt \}\);/);
+  assert.match(sock, /const back = store\.channelHello\(\{ pid, startedAt: client\.startedAt, unproven \}\);/);
 });

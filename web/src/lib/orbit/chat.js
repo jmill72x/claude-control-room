@@ -261,6 +261,12 @@ export function permissionView(p, now = Date.now(), { approver = false, approval
   return { ...p, view: 'open', state, canAllow, denyOnly: reasons };
 }
 
+// A card the server put back after a restart of the Control Room (`restored`; board
+// 88c1d4ec, Ultron's L6): the line that marks it while it is open. A mark only: Allow and
+// the shown hash are as for any card (Jeff 2026-11-12: approvals match the Claude app).
+export const RESTORED_LINE = 'Came back after a Control Room restart: check the terminal.';
+export const restoredLine = v => (v?.restored === true && v?.view === 'open' ? RESTORED_LINE : null);
+
 // What a card shows of the preview: its fields as the server parsed them (what
 // runs or changes first), or the whole text under "input" when it isn't JSON.
 export function cardFields(p) {
