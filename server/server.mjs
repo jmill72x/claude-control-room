@@ -641,7 +641,7 @@ if (chatSettings.on && socketsReady) {
   const chatEvents = createChatEventHandler({
     send: async message => sendAlert({ topic: await getTopic(), title: 'Control Room', message, ntfyTitle: CHAT_NTFY_TITLE })
   });
-  const chatStore = createChatStore({ dir: chatDir });
+  const chatStore = createChatStore({ dir: chatDir, log: line => console.error(line) });
   const loaded = await chatStore.load();
   // The owner's chat messages start the idle wake-up's back-off again (board e10a01ed);
   // an event, a routine's post, the lead's own message, a verdict or a stop never does.
@@ -655,6 +655,9 @@ if (chatSettings.on && socketsReady) {
     if (m && m.from === 'jarvis' && m.kind === 'chat' && !isRoutineMessage(m)) localAlerts.resolveDown(m.at ?? Date.now(), 'the lead wrote in the chat');
   });
   console.log(`chat: ${loaded.messages} messages on file, seq ${loaded.seq}, epoch ${loaded.epoch}`);
+  // The cards the last process had open (lib/chat-store.mjs, channelHello; board ee0bd552):
+  // put back only if the same channel process says hello, then judged by the next pass.
+  if (loaded.permissionsOnFile > 0) console.log(`chat: ${loaded.permissionsOnFile} open permission card${loaded.permissionsOnFile === 1 ? '' : 's'} on file from the last start, held until the channel says hello`);
   await chatStore.pruneAttachments();
   // Uploads never sent before the last stop: no message carries them, so after an
   // hour they go (lib/chat-store.mjs, pruneOrphans).
@@ -706,7 +709,8 @@ if (chatSettings.on && socketsReady) {
     // marked card is redrawn (Ultron's M1 and L1, 11-13). Guarded by a source test.
     cards: chatStore
   });
-  answeredElsewhere = createAnsweredElsewhere({ store: chatStore, isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName });
+  // `assess`: a card put back after a restart gets the gate's reasons again (board ee0bd552).
+  answeredElsewhere = createAnsweredElsewhere({ store: chatStore, isLeadSession: id => leadName !== null && (sessionAgents.get(id) ?? null) === leadName, assess: q => approvals.assess(q) });
   // Every 2 s while a card is open: the new bytes of the lead's transcripts, and a card
   // closes once every call of its tool in its window has its answer there.
   createCardWatch({
@@ -751,7 +755,10 @@ if (chatSettings.on && socketsReady) {
     const card = chatStore.openPermissions().filter(p => now - p.relayedAt <= 2 * 60e3 && p.relayedAt <= now + 5e3).sort((a, b) => b.relayedAt - a.relayedAt)[0];
     return card ? toolLabel(card.tool) : null;
   };
-  const approvalReminders = createApprovalReminders({ push: body => push.approvalReminder(body), quiet: at => isQuiet(at) });
+  // The reminder sends the owner to the chat only while a card there can take the answer: an
+  // open card of the wait's tool (any open card for a wait with no tool known). The page's
+  // card ends before the wait does (its window, a restart it didn't come back from).
+  const approvalReminders = createApprovalReminders({ push: body => push.approvalReminder(body), quiet: at => isQuiet(at), hasCard: w => chatStore.openPermissions().some(p => w.tool === null || toolLabel(p.tool) === w.tool) });
   const approvalWaitsFile = createSentStore(join(HERE, 'data', 'approval-waits.json'));
   const staleWaitTemps = await approvalWaitsFile.sweep();
   if (staleWaitTemps > 0) console.log(`approval-wait: removed ${staleWaitTemps} temp file${staleWaitTemps === 1 ? '' : 's'} an interrupted write left`);

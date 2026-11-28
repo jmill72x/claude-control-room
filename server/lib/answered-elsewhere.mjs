@@ -50,6 +50,18 @@
 //
 // Only the lead's session by name counts (`isLeadSession`, the strict test the
 // exact-command reports use): another session's turn ending says nothing here.
+//
+// Cards from before a restart of this server (board ee0bd552): the chat store holds back
+// the ones the same channel process relayed (lib/chat-store.mjs, channelHello). The first
+// pass that began reading after that judges each by the same transcripts: shown again
+// when some thread of the lead's has the card's call open in the card's window (or, in a
+// current session, of any age) and has not moved past it; let go when no thread has it
+// (its call was answered at the terminal or in Discord while this server was down, or
+// the thread moved on) or every one is past it. A pass that began reading before the hello,
+// or names no lead session, leaves it held (the store lets it go after RESTORE_JUDGE_MS).
+// The test is the
+// one that keeps a card open here: an open call is needed for a prompt to wait, though a
+// long-running allowed call looks the same (see "What this can't do" above).
 import { cardThreads, threadPast } from './approval-wait.mjs';
 
 export const MOVED_EVENTS = Object.freeze(['UserPromptSubmit', 'Stop', 'SessionEnd']);
@@ -73,7 +85,8 @@ export const PASS_FRESH_MS = 3 * 60e3;
 // since the channel's hello, the store's `permissionSessionAt`, is current, and an open call
 // in it of any age can be a card's), and answers how many it closed.
 // `at` is when the hook ran (never trusted past this clock); without one, now.
-export function createAnsweredElsewhere({ store, isLeadSession = () => false, now = () => Date.now(), log = console.log } = {}) {
+// `assess(p)` is the approvals gate's, for a held-back card shown again.
+export function createAnsweredElsewhere({ store, isLeadSession = () => false, now = () => Date.now(), log = console.log, assess = undefined } = {}) {
   // requestId -> cardThreads' answer (a non-empty list), or NONE.
   const refs = new Map();
   // requestId -> { event }: a card the lead's own thread moved past before any pass said
@@ -135,17 +148,19 @@ export function createAnsweredElsewhere({ store, isLeadSession = () => false, no
     // A pass that can't say whose a card is (no transcripts, no session of the lead's
     // named) is no pass here.
     if (!(threads instanceof Map) || !Array.isArray(sessions) || sessions.length === 0) return 0;
-    let cards = [];
-    try { cards = store.closablePermissions() ?? []; } catch { return 0; }
-    lastPassAt = now();
+    const passAt = now();
     // Only a card relayed before the transcripts were read can be judged by them: its
     // tool use was on disk by then. A later one waits for the next pass.
-    const before = Number.isFinite(readAt) ? Math.min(readAt, lastPassAt) : lastPassAt;
+    const before = Number.isFinite(readAt) ? Math.min(readAt, passAt) : passAt;
+    let current = null;
+    settleHeld(threads, sessions, stopped, before, () => (current ??= currentSessions(written)));
+    let cards = [];
+    try { cards = store.closablePermissions() ?? []; } catch { return 0; }
+    lastPassAt = passAt;
     const live = new Set(cards.map(p => p.requestId));
     for (const id of refs.keys()) if (!live.has(id)) refs.delete(id);
     for (const id of deferred.keys()) if (!live.has(id)) deferred.delete(id);
     const past = new Set(), byEvent = new Map(), kept = [];
-    let current = null;
     for (const p of cards) {
       let ref = refs.get(p.requestId);
       if (ref === undefined) {
@@ -178,6 +193,33 @@ export function createAnsweredElsewhere({ store, isLeadSession = () => false, no
     let n = close(past, 'its own thread', 'its own thread moved past it');
     for (const [event, ids] of byEvent) n += close(ids, event, `the lead's session moved on: ${event}`);
     return n;
+  }
+
+  // The held-back cards from before a restart (the header): each one the store put back
+  // before `before` is shown again or let go, or left for the next pass.
+  function settleHeld(threads, sessions, stopped, before, current) {
+    let held = [];
+    try { held = typeof store.restoringPermissions === 'function' ? store.restoringPermissions() ?? [] : []; } catch { held = []; }
+    if (held.length === 0) return;
+    const decisions = new Map(), why = new Map();
+    for (const r of held) {
+      if (!(Number.isFinite(r?.restoredAt) && r.restoredAt <= before)) continue;
+      let ts = [];
+      try { ts = cardThreads(threads, sessions, r.tool, r.relayedAt, current()); } catch { ts = []; }
+      if (!Array.isArray(ts) || ts.length === 0) { decisions.set(r.requestId, false); why.set(r.requestId, 'none'); continue; }
+      // (A thread cardThreads found was read this pass, so each answer is true or false.)
+      const states = ts.map(t => { try { return threadPast(threads, t, stopped instanceof Map ? stopped.get(t.sessionId) : null); } catch { return null; } });
+      if (states.some(g => g === false)) decisions.set(r.requestId, true);
+      else { decisions.set(r.requestId, false); why.set(r.requestId, 'past'); }
+    }
+    if (decisions.size === 0) return;
+    let out = { opened: [], dropped: [] };
+    try { out = store.settleRestored(decisions, assess ? { assess } : {}) ?? out; } catch (err) { log(`chat: the cards from before the restart could not be put back (${err?.name ?? 'error'})`); return; }
+    // (The loop below then finds each shown card's threads as for any new card.)
+    if (out.opened.length > 0) log(`chat: ${out.opened.length} permission card${out.opened.length === 1 ? '' : 's'} from before the restart shown again (the lead's transcripts show the call still open): ${out.opened.join(', ')}`);
+    const gone = out.dropped;
+    const words = gone.every(id => why.get(id) === 'none') ? 'no thread of the lead\'s has its call open' : gone.every(id => why.get(id) === 'past') ? 'its thread moved past it' : 'no call still open, out of its window, answered here or crowded out';
+    if (gone.length > 0) log(`chat: ${gone.length} permission card${gone.length === 1 ? '' : 's'} from before the restart not shown again (${words}): ${gone.join(', ')}`);
   }
 
   // The lead's sessions written since the channel's current process said hello.

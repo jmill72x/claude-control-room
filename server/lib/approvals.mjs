@@ -738,6 +738,21 @@ export function denyOnlyReasons(req, {
 // The "why it's asking" line from a recent classifier block for the same tool: the
 // rule's name when the hook gave one in brackets, else the fixed words for the two
 // known kinds. The hook's other text is never kept.
+// The card's "why it is asking" line, from a block's tool and its words (blockReasonWords),
+// and the check that a line is one of these for `tool` (lib/chat-store.mjs reads it back
+// from permissions.json after a restart; board ee0bd552, Ultron's L1).
+const WHY_TAIL = ', so Claude Code is asking you';
+export const whyLine = (tool, words) => `Auto mode refused this ${tool} call${words ? ` (${words})` : ''}${WHY_TAIL}`;
+export function isWhyLine(why, tool) {
+  if (typeof why !== 'string' || typeof tool !== 'string') return false;
+  if (why === whyLine(tool, null)) return true;
+  const head = `Auto mode refused this ${tool} call (`, tail = `)${WHY_TAIL}`;
+  if (!why.startsWith(head) || !why.endsWith(tail) || why.length < head.length + tail.length) return false;
+  const words = why.slice(head.length, why.length - tail.length);
+  // blockReasonWords' answers: a bracketed name's letters, spaces, / and -, or one of its
+  // two fixed phrases, which are of the same letters.
+  return /^[A-Za-z][A-Za-z /-]{0,58}$/.test(words);
+}
 export function blockReasonWords(reason) {
   const r = String(reason ?? '');
   const m = /^\[([A-Za-z][A-Za-z /-]{0,58})\]$/.exec(r.trim());
@@ -932,7 +947,7 @@ export function createApprovals({
       if (bashMode === 'exact' && p?.tool === 'Bash') ({ exact, exactProblem } = matchExact(p, at));
       const denyOnly = denyOnlyFor(p, exact, exactProblem);
       const why = lastBlock && at - lastBlock.at <= WHY_WINDOW_MS && lastBlock.tool === p.tool
-        ? `Auto mode refused this ${lastBlock.tool} call${lastBlock.why ? ` (${lastBlock.why})` : ''}, so Claude Code is asking you`
+        ? whyLine(lastBlock.tool, lastBlock.why)
         : null;
       return { denyOnly, why, exact };
     },

@@ -198,17 +198,21 @@ export function waitWords(w, now) {
 // ---- the reminder ----
 
 export const REMINDER_TAIL = 'Answer it in Jarvis OS chat, Discord or the terminal.';
-const REMINDER_SHAPE = /^[A-Za-z][A-Za-z0-9 ._'-]{0,39} has waited \d{1,4} min on an approval card\.(?: \d{1,2} more cards? (?:is|are) waiting too\.)? Answer it in Jarvis OS chat, Discord or the terminal\.$/;
+// When no card in the chat can take the answer (its window ended, or a restart of this
+// server didn't bring it back; board ee0bd552), the words leave the chat out.
+export const REMINDER_TAIL_NO_CARD = 'Answer it in Discord or the terminal.';
+const REMINDER_SHAPE = /^[A-Za-z][A-Za-z0-9 ._'-]{0,39} has waited \d{1,4} min on an approval card\.(?: \d{1,2} more cards? (?:is|are) waiting too\.)? Answer it in (?:Jarvis OS chat, )?Discord or the terminal\.$/;
 // The push's words: the oldest due card's name (the subagent's, else the session's) and
-// whole minutes, how many more cards wait, and where to answer.
-export function reminderBody(waits, now) {
+// whole minutes, how many more cards wait, and where to answer: the chat only with
+// `card` true (a card there is open for it).
+export function reminderBody(waits, now, { card = false } = {}) {
   const list = (Array.isArray(waits) ? waits : []).filter(w => isObject(w) && Number.isFinite(w.since));
   if (list.length === 0) return null;
   const first = list[0];
   const name = safeName(first.run) ?? safeName(first.who) ?? 'Jarvis';
   const mins = Math.min(9999, minutesOf(now - first.since));
   const more = Math.min(99, list.length - 1);
-  const body = `${name} has waited ${mins} min on an approval card.${more > 0 ? ` ${more} more card${more === 1 ? ' is' : 's are'} waiting too.` : ''} ${REMINDER_TAIL}`;
+  const body = `${name} has waited ${mins} min on an approval card.${more > 0 ? ` ${more} more card${more === 1 ? ' is' : 's are'} waiting too.` : ''} ${card === true ? REMINDER_TAIL : REMINDER_TAIL_NO_CARD}`;
   return isReminderPush(body) ? body : null;
 }
 export const isReminderPush = body => typeof body === 'string' && REMINDER_SHAPE.test(body);
@@ -233,8 +237,11 @@ export function firstSchedule(since, now) {
 // it; not imported here, so lib/chat-push.mjs can read the shape without the events
 // module). In memory only: the waits themselves are (a restart forgets
 // them, lib/needs-you.mjs). A card is known by its key and start, so a new prompt in the
-// same session is a new card.
-export function createApprovalReminders({ push, log = console.log, quiet = () => false } = {}) {
+// same session is a new card. `hasCard(w)` says whether the chat has an open card that can
+// take the answer for the wait the push names (server.mjs: an open card of its tool); one
+// that throws counts as none, and so does none given: the words never send the owner to a card
+// that isn't there.
+export function createApprovalReminders({ push, log = console.log, quiet = () => false, hasCard = () => false } = {}) {
   const cards = new Map(); // `${key}:${since}` -> { count, nextAt }
   let lastPushAt = null;
   let quietSaid = false;
@@ -256,7 +263,9 @@ export function createApprovalReminders({ push, log = console.log, quiet = () =>
     quietSaid = false;
     if (lastPushAt !== null && now - lastPushAt < REMIND_GAP_MS) return { status: 'gap' };
     if (typeof push !== 'function' || sending) return { status: 'off' };
-    const body = reminderBody(due, now);
+    let card = false;
+    try { card = hasCard(due[0]) === true; } catch { card = false; }
+    const body = reminderBody(due, now, { card });
     if (!body) return { status: 'refused' };
     sending = true;
     let r;

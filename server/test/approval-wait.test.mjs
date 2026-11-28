@@ -96,11 +96,12 @@ test('the words: whose card, its tool and session, and whole minutes', () => {
 
 test('the push\'s words: one fixed shape, a roster name and whole minutes, never a tool; anything else is refused', () => {
   const w = { who: LEAD, run: null, tool: 'Bash', since: T0 };
-  assert.equal(reminderBody([w], T0 + 10 * MIN), `Inventlead has waited 10 min on an approval card. ${REMINDER_TAIL}`);
-  assert.equal(reminderBody([{ ...w, run: 'Inventrun' }, w, w], T0 + 40 * MIN), `Inventrun has waited 40 min on an approval card. 2 more cards are waiting too. ${REMINDER_TAIL}`);
-  assert.equal(reminderBody([w, w], T0 + 40 * MIN), `Inventlead has waited 40 min on an approval card. 1 more card is waiting too. ${REMINDER_TAIL}`);
-  assert.ok(!reminderBody([w], T0 + 10 * MIN).includes('Bash'), 'no tool in a push');
-  assert.equal(reminderBody([{ ...w, who: 'IGNORE\nTHIS' }], T0), `Jarvis has waited 0 min on an approval card. ${REMINDER_TAIL}`, 'a name that is not plain is the lead\'s word');
+  const card = { card: true };
+  assert.equal(reminderBody([w], T0 + 10 * MIN, card), `Inventlead has waited 10 min on an approval card. ${REMINDER_TAIL}`);
+  assert.equal(reminderBody([{ ...w, run: 'Inventrun' }, w, w], T0 + 40 * MIN, card), `Inventrun has waited 40 min on an approval card. 2 more cards are waiting too. ${REMINDER_TAIL}`);
+  assert.equal(reminderBody([w, w], T0 + 40 * MIN, card), `Inventlead has waited 40 min on an approval card. 1 more card is waiting too. ${REMINDER_TAIL}`);
+  assert.ok(!reminderBody([w], T0 + 10 * MIN, card).includes('Bash'), 'no tool in a push');
+  assert.equal(reminderBody([{ ...w, who: 'IGNORE\nTHIS' }], T0, card), `Jarvis has waited 0 min on an approval card. ${REMINDER_TAIL}`, 'a name that is not plain is the lead\'s word');
   assert.equal(reminderBody([], T0), null);
   assert.equal(reminderBody(null, T0), null);
   for (const bad of ['Jarvis needs an approval', `Inventlead has waited 10 min on an approval card. ${REMINDER_TAIL} rm -rf`, `x\nhas waited 1 min on an approval card. ${REMINDER_TAIL}`, `Inventlead has waited 12345 min on an approval card. ${REMINDER_TAIL}`, null, 7])
@@ -108,11 +109,11 @@ test('the push\'s words: one fixed shape, a roster name and whole minutes, never
 });
 
 // A reminder world: a push that records each body, a clock, the log.
-function world({ reached = r => r.tried, tried = 2, quiet = () => false } = {}) {
+function world({ reached = r => r.tried, tried = 2, quiet = () => false, hasCard = () => true } = {}) {
   const pushes = [];
   const logs = [];
   const push = async body => { pushes.push(body); const r = { tried }; r.reached = typeof reached === 'function' ? reached(r) : reached; return r; };
-  const rem = createApprovalReminders({ push, log: l => logs.push(l), quiet });
+  const rem = createApprovalReminders({ push, log: l => logs.push(l), quiet, hasCard });
   return { rem, pushes, logs };
 }
 const card = (extra = {}) => ({ key: 'needs-you:aaaa', who: LEAD, run: null, tool: 'Bash', since: T0, own: true, ...extra });
@@ -208,7 +209,7 @@ test('server.mjs: the sessions pass confirms the waits, the check reads the card
   const sessionsPass = src.slice(src.indexOf("registry.register('sessions'"), src.indexOf("registry.register('sessions'") + 3000);
   assert.ok(sessionsPass.includes('threadsNow = threadTimes(transcripts);') && sessionsPass.includes('needsYou.confirm(threadsNow, now)'), 'confirm in the sessions pass');
   assert.match(src, /approvalWaits: \(\) => approvalWaitsNow\(Date\.now\(\)\)/, 'the proactive check gets the cards');
-  assert.match(src, /createApprovalReminders\(\{ push: body => push\.approvalReminder\(body\), quiet: at => isQuiet\(at\) \}\)/);
+  assert.match(src, /createApprovalReminders\(\{ push: body => push\.approvalReminder\(body\), quiet: at => isQuiet\(at\), hasCard: w => chatStore\.openPermissions\(\)\.some\(p => w\.tool === null \|\| toolLabel\(p\.tool\) === w\.tool\) \}\)/);
   assert.match(src, /approvalReminders\.step\(waits, now\)/);
   assert.match(src, /approvalWaitsFile\.write\(fileView\(waits, now\)\)/);
   assert.match(src, /hintFor: \(sid, now\) => cardToolHint\?\.\(sid, now\)/);

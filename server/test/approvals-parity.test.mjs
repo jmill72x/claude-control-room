@@ -517,7 +517,7 @@ test('server.mjs: both ingest handlers get onMoved, the close counts only the le
   const handler = src.slice(src.indexOf('const api = createHandler({'));
   assert.match(handler.slice(0, handler.indexOf('\n});')), /\bonMoved\b/, 'the TCP handler (the legacy needs-you route)');
   assert.match(src, /createIngestHandler\(\{[^}]*\bonMoved\b[^}]*\}\)/, 'the ingest socket\'s handler');
-  assert.match(src, /answeredElsewhere = createAnsweredElsewhere\(\{ store: chatStore, isLeadSession: id => leadName !== null && \(sessionAgents\.get\(id\) \?\? null\) === leadName \}\);/);
+  assert.match(src, /answeredElsewhere = createAnsweredElsewhere\(\{ store: chatStore, isLeadSession: id => leadName !== null && \(sessionAgents\.get\(id\) \?\? null\) === leadName, assess: q => approvals\.assess\(q\) \}\);/);
   const gate = src.slice(src.indexOf('approvals = createApprovals({'));
   assert.match(gate.slice(0, gate.indexOf('\n  });')), /\brules: approvalSettings\.rules, hidden: approvalSettings\.hidden,/);
   // The open cards, so a kept exact-command report rechecks them (Ultron's M1, 11-13).

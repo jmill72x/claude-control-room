@@ -1378,11 +1378,62 @@ three pieces, each with its own router:
   forget them (up to 12 hours; 10 minutes for a channel that doesn't say) and losing
   their input preview after 24 hours. Attachments are files under `data/chat/files/<random
   id>` (0600), sniffed by their first bytes (png, jpeg, webp, heic, pdf; txt and md by
-  declared type), at most 10 MB, pruned after 90 days. A restart forgets open permission
-  requests and nothing else. The channel sends again only a request it has not yet sent
-  (`resendPendingPerms`, within 10 minutes); one it already relayed has no card after a
-  restart, so it is answered in the terminal or Discord. Its needs-you wait comes back
-  (see "Permission waits survive a restart"), so Needs you and the reminder still say it.
+  declared type), at most 10 MB, pruned after 90 days. The channel sends again only a
+  request it has not yet sent (`resendPendingPerms`, within 10 minutes), so the open
+  permission cards are written to `server/data/chat/permissions.json` and come back after a
+  restart when the same channel process says hello (below, "A card waiting across a restart
+  of this server"). One that doesn't come back is answered in the terminal or Discord; its
+  needs-you wait comes back (see "Permission waits survive a restart"), so Needs you and the
+  reminder still say it, and the reminder then leaves the chat out of its words.
+
+**A card waiting across a restart of this server** (board ee0bd552, 2026-11-27). The channel
+holds a relayed request, and takes a verdict for it, as long as its process lives (0.4.11:
+12 hours and 3 minutes; 0.4.10: 11 minutes), but the page's cards were memory only. The L7
+rule (a hello from a new channel process ends every card) can't tell a new process from the
+same one meeting a restarted server, since both say hello without this server's token, so
+the store keeps the channel's identity with the cards. `permissions.json` (0600, temp file
+and rename) is `{ version: 1, at, channel: { pid, startedAt, sessionAt }, seen: [ids],
+cards: [{ requestId, tool, description, inputPreview, cut, relayedAt, openedAt, windowMs,
+messageId, why }] }`: the pid and the process's own start time from its hello (the pid checked by
+`chat-verify.mjs` when `chat.channelServer` is set), when its session began here, the ids it
+relayed, and each open card as relayed. It is written on each change once a hello has come,
+never before (a start that gets no hello keeps the last one's file), and not at all while
+there is no card to keep. Never the exact command (memory only), never a card whose
+description or preview looks like it holds a credential (`secret-shape.mjs`), and a card
+leaves it when it closes: the preview is on disk only while its card is open, at most its
+window (the transcripts hold the same input). `why` is the card's "why it is asking" line,
+kept as it was and checked for its fixed shape (`isWhyLine`), never worked out again from a
+block the new process saw. The file is any of the owner's processes' to write, so the
+chat log is its check: each card's permission message (written when it opened) carries
+`relayed`, the hash of its tool, description and preview as relayed (`shownHash` without
+the exact command, the same kind of hash a verdict carries as `shown`), and a card comes back
+only if its message is the lead's, names the same tool, holds the same description (never
+the secret stand-in) and carries that hash for the file's fields; a card opened before the
+seal existed has none and never comes back. The chat log sits beside the file in
+`server/data/`, so this holds against a rewrite of the file alone, not of both. At the next
+start the file is read with the chat log (temp files an interrupted write left are swept,
+and a file that brings back no card is removed), and at the channel's first hello:
+- **another process** (pid or start differ, or the hello doesn't give both): nothing comes
+  back (log: `chat: 1 permission card from before the restart not put back (a different
+  channel process said hello)`);
+- **the same process:** its session goes on (its start time and the ids it relayed, so an id
+  seen again is still a `repeat`), and each card still inside its window, sealed as above,
+  and which no verdict in the chat log answers (a verdict replying to its message: the write
+  after a tap may not have landed before the stop), is held back:
+  not drawn, not answerable (log: `… held for the sessions pass (the same channel process
+  said hello, pid N)`).
+The first sessions pass that began reading after that hello judges each held card by the
+lead's transcripts (`answered-elsewhere.mjs`, `settleHeld`): drawn again on every page (the
+same message, relay time and window, the smaller of its own and the channel's current one,
+its own why line, the gate's Deny-only reasons worked out again, no exact command) when a thread of the lead's still has
+the card's call open (`cardThreads`, as for any card) and is not past it; let go when no
+thread has it (answered in the terminal or Discord while the server was down, or nothing of
+the thread could be read) or every one is past it. One no pass judges within 3 minutes goes,
+and so does a held card at a bye, a new process, a silent channel, its window's end or the
+lead's SessionEnd. A card drawn again then closes as any card does. What it can't tell, as
+for any open card: a prompt allowed in the terminal whose tool is still running looks like
+one still waiting, so its card can come back, and a tap on it goes to Claude Code, which
+drops a verdict for a request that is no longer open.
 - **The channel's socket** (`server/lib/chat-socket.mjs`): socket API v1 on
   `~/.local/state/jarvis-os/channel.sock` (`JARVIS_OS_SOCKET`), 0600 in a 0700 folder,
   as the spec's §1.5 lists it: `hello` (takes `{pid, version, startedAt, capabilities?}`, `startedAt` in
@@ -1931,7 +1982,10 @@ his subagents'.
   (`lib/chat-push.mjs`, `approvalReminder`), urgent, looking or not: "Jarvis has waited 10
   min on an approval card. Answer it in Jarvis OS chat, Discord or the terminal." (the
   subagent's roster name in place of Jarvis for one of his, and "N more cards are waiting
-  too" when more do). Then every 30 minutes, six at most (10, 40, 70, 100, 130 and 160
+  too" when more do). The chat is named only while it has an open card of the named wait's
+  tool (any open card when the wait's tool isn't known): once the page's card has ended
+  (its window, or a restart it didn't come back from) the words are "Answer it in Discord or
+  the terminal." (board ee0bd552). Then every 30 minutes, six at most (10, 40, 70, 100, 130 and 160
   minutes), never two pushes within 10 minutes whatever the number of cards (one push
   covers every card due). Quiet hours are the events module's, 22:00-07:00 local: a
   reminder due then waits, said once in the log, and the first pass from 07:00 sends it if
@@ -2044,7 +2098,8 @@ answer a permission request for <N> min (…)`. A request keeps the window in fo
 opened. A request more than 2 minutes old on arrival is `late`, shown with "answer at the
 terminal" and no buttons. Requests are keyed by the channel session and id: a hello from a
 new channel process, or the channel's bye, expires every open one (the holder's own
-re-hello keeps them), and so does a channel that has sent nothing (no heartbeat, no
+re-hello keeps them, and the same process meeting a restarted server gets them back, held
+until a sessions pass judges them), and so does a channel that has sent nothing (no heartbeat, no
 request, no hello) for 10 minutes; at most 50 are open at once (as the channel), the
 oldest open one expiring past that, and at most 500 are kept in all, the oldest closed ones
 dropped first. An expired request says why in `ended` (`timeout`, `channel`, `crowded`) and
@@ -2052,7 +2107,9 @@ the card words it. An id seen again in the same session opens a
 `repeat` entry nobody can answer here (Claude Code drops channel verdicts for a repeated
 id). The description is model text: one that looks like it holds a credential
 (`secret-shape.mjs`) is replaced on disk by a fixed line, and the card shows it from
-memory only. The preview stays in memory and is dropped after 24 hours. A Bash request
+memory only. The preview stays in memory and is dropped after 24 hours; it is also in
+`data/chat/permissions.json` while its card is open, so the card can come back after a
+restart ("A card waiting across a restart of this server"). A Bash request
 may also carry `exact`, the command's exact text from the exact-command hook (below):
 memory only, never logged or written to disk, and dropped when the request is answered or
 expires.

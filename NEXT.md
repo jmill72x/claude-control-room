@@ -6154,3 +6154,171 @@ republish of that page to the same address, not a build or a restart.
   `jarvis-start`. `jarvis-recover`'s lapse verdict says "claude auth login (in a terminal
   outside the jarvis session)". `jarvis-is-down.md`'s "The Claude login lapsed" has no
   Keychain unlock step. `login_watch.py`'s comment still says the page's "step 4".
+
+## 58. A waiting approval card comes back after a Control Room restart (board ee0bd552, P2; staged 2026-11-27 on `jos/card-restart`, off main 50b473a; Ultron GO with M1 as its condition, M1 + L1-L3 folded in the same day)
+
+Worktree `~/Projects/.worktrees/ccr-card-restart`, no upstream, not committed. Server only
+(no web change: the page draws a card from the stream's `permission` event). README "A
+card waiting across a restart of this server" is the reference.
+
+**Premises checked.**
+- **The L7 rule does fire here, but it is not what lost the card.** After a restart the
+  channel's calls carry the old server's token, which the new one never gave, so its
+  re-hello is not the holder's and `newPermissionSession` runs (the 2026-11-27 22:39:30.88Z
+  start: the channel's hello at 22:39:31.4). At that moment the new store has no cards to
+  end: they were memory only. So the fix keeps the channel's identity with the cards and
+  lets a hello from that same process continue its session; a new process still ends every
+  card, as L7 says.
+- **The live channel is 0.4.10, not 0.4.11.** The release worktree (detached at 7923d85,
+  the running `node …/jarvis-release/…/server.mjs`, pid started 2026-11-26 15:03 local) does
+  not contain 6b9643f (channel 0.4.11, merged on build/v1), and every start log line says
+  "the page can answer a permission request for 10 min (the channel does not say how long
+  it holds one)". So today the channel forgets a request after 11 minutes and the page's
+  window is 10: a card comes back only after a restart inside those 10 minutes. The 12 h
+  case in the brief starts with the 0.4.11 release.
+- **The reminder's words were wrong without any restart:** with the 10-minute window the
+  first reminder (at 10 minutes) always came after the card had ended.
+
+**Built.**
+- `lib/chat-store.mjs`: `data/chat/permissions.json` (0600, temp + rename), the channel's
+  pid and start time (from its hello), when its session began here, the ids it relayed, and
+  each open card as relayed (never the exact command; never a card whose description or
+  preview looks like a credential). Written on each change once a hello has come, never
+  before, and not while there is no card to keep. Read at load: a regular file under 16
+  MiB, version 1, each card in shape, inside its window, its message in the chat log (the
+  lead's, sealed: below) and no verdict replying to that message; temp files are swept and
+  a file that brings back no card is removed. `channelHello({ pid, startedAt })`: always a new
+  session (L7); at the first hello of a start, if the file was the same process's, its
+  session start and ids carry on and each card still in its window is held back
+  (`restoring`: not drawn, not answerable, not closable). `restoringPermissions`,
+  `settleRestored(decisions, { assess })` (drawn again inside the smaller of its own and the
+  channel's current window, the gate's reasons worked out again, the same message id; or
+  let go). A held card goes after 3 minutes unjudged (`RESTORE_JUDGE_MS`), with a silent
+  channel, a bye, a new process, its window's end or the lead's SessionEnd.
+- `lib/chat-socket.mjs`: a hello without this server's token calls `channelHello` with the
+  hello's pid and start (the pid checked by the verifier, live since `chat.channelServer` is
+  set), and logs `chat: N permission card(s) from before the restart held for the sessions
+  pass (…)` or `… not put back (a different channel process said hello)`.
+- `lib/answered-elsewhere.mjs` (`settleHeld`, at the start of each pass): a held card the
+  pass began reading after is drawn again when some thread of the lead's has the card's call
+  open (`cardThreads`, with the any-age rule in current sessions) and one of those threads
+  is not past it; let go when none has it (nothing read of the thread counts as none) or
+  all are past; left held only by a pass that began reading before the hello or names no
+  lead session. Logged either way with the ids.
+- `lib/approval-wait.mjs` + server.mjs: the reminder says "Answer it in Jarvis OS chat,
+  Discord or the terminal." only while the chat has an open card of the named wait's tool
+  (any open card for a wait with no tool), else "Answer it in Discord or the terminal." A
+  check that throws, or none given, counts as no card. `isReminderPush` takes both;
+  `sw.js` keys on " on an approval card.", so no web change.
+
+**Ultron's GO (2026-11-27) and its condition, folded in the same day.**
+- **M1 [medium]: a card that comes back took its tool, description and preview from the
+  file,** which any of the owner's processes can write (an agent could rewrite a held card's
+  preview, kill the server, and launchd's KeepAlive brings it back with the forged card).
+  Fixed with a seal in the chat log: each permission message now carries `meta.relayed`,
+  `shownHash(tool, description, inputPreview)` as relayed (the same kind of hash a verdict
+  already carries as `shown`; never the preview itself), and a card comes back only if its
+  message is the lead's and its seal matches the file's tool, description and preview. That
+  is Ultron's (b) and more: the hash covers the tool and the real description, so a separate
+  equality check was redundant (a mutant that drops it survives, so it is not there), and a
+  card given the secret stand-in never matches. A card opened before this change has no
+  seal and never comes back. **The limit:** the chat log is in `server/data/` too, so this
+  holds against a rewrite of the file alone; a process that rewrites both the file and the
+  card's line in the month's log can still forge a card. Closing that needs a place agents
+  can't write (question for Jeff and Ultron in the report).
+- **The preview against the lead's transcript: not done, not cheap and not safe.** Claude
+  Code's `input_preview` is not the call's input: 2.1.330's builder (read from the binary)
+  folds every run of whitespace to one space, swaps quote-like and some invisible
+  characters for "·" or a space, redacts secret-shaped text, elides the middle of a long
+  field ("⋯ N code points elided ⋯") and lists fields past a size budget by name only, in a
+  `{ key: value, … }` form. Checking a preview against the transcript means rebuilding that
+  per CLI version; an equality check would drop nearly every multi-line command, and a
+  looser one (prefix, folded text) lets a forged preview hide the tail of the real call.
+  Reading the call's input also needs the open call's id and file, which the parser does not
+  keep (the card watch's differential test pins its shape). A sound route, if the seal is
+  not enough: draw a card that comes back from the transcript's own input (one candidate
+  call only), not from any stored preview (board idea requested).
+- **L1:** the card's "why it is asking" line is written to the file and comes back as it
+  was, checked for its fixed shape (`isWhyLine`, with `whyLine` now the one builder in
+  `lib/approvals.mjs`), and is never worked out again from a block the new process saw.
+- **L2:** README said a verdict matched "by its message, or by its id since it was
+  relayed"; the code matches by message only. Corrected.
+- **L3:** at load, temp files (`permissions.json.tmp-*`) are swept and a file that brings
+  back no card is removed (a folder in its place is left, and holds none).
+- L4-L7 go to the board (Jarvis).
+
+**Choices to defend (mine).**
+- **The preview goes to disk while its card is open.** A card without its preview can't be
+  allowed (the page shows what it allows), and nothing else holds it after a restart: the
+  channel never resends a sent request. README said "the preview stays in memory"; it now
+  says it is also in `permissions.json` while its card is open. Same protection as the
+  transcripts, which hold the same input (0600 file, 0700 folder, gitignored `data/`), the
+  secret-shape rule as for the description, and it leaves the file when the card closes.
+- **Identity is the hello's pid and start time, not a ps check of its start.** The verifier
+  already proves the pid is the released channel under the lead's launch; a new process has
+  a new pid or a new `START_MS` (milliseconds). A process that forged both would have to be
+  a verified channel, and a verdict sent to a channel that is not the one Claude Code is
+  waiting on reaches no prompt.
+- **A put-back card is shown only on the transcript's word.** Without it, a card answered in
+  the terminal while the server was down would come back open until the lead's next turn
+  (a card with no thread found waits for his turn, §55). Fail closed: nothing read, nothing
+  shown.
+- **Answered on the page is judged by the chat log, not the file** (a verdict replying to the
+  card's message), since the write after a tap may not land before a stop.
+- **No new push for a card that comes back.** Its reminder schedule already comes back with
+  its needs-you wait (§55, `firstSchedule`).
+- **The reminder's check is by tool label, not by card,** because a wait can't be tied to a
+  card for sure (§55); with two waits of one tool and one card, the words may name the chat
+  for the wait whose card is gone. Better than before, when they always did.
+- **Nothing written while no card is open:** a file with no card brings nothing back, and an
+  un-awaited write in every hello made other test files' temp folders race their cleanup.
+
+**Checked (2026-11-27, after Ultron's M1 and L1-L3).** Server 2,092 of 2,092 (29 new), local,
+`TZ=Asia/Tokyo` and under umask 077; web 416 of 416 (no web change). New file
+`test/card-restart.test.mjs` (29 tests; with M1: a file card whose tool, description,
+preview (one space added), why line or message was changed is never shown, nor one given
+the secret stand-in, nor one whose message has no seal or is the owner's; with L1: the why
+line comes back as it was, not from a later block, and `isWhyLine`'s shapes; with L3: the
+sweep and the removal): the file's shape and mode, no exact command, no
+secret-shaped card; held after a restart with the session's start and ids, unseen and
+unanswerable, then shown with its message, window and a verdict replying to its message;
+another pid, another start, no start, a start that is not whole; only the first hello of a
+start; a verdict to the card's own message (and not one to an earlier request with the
+same id); the window at load, at the hello and at settle (the smaller window); let go
+unjudged, on a silent channel, at its window's end, a bye, the lead's SessionEnd (not his
+Stop with ids); nothing written before the first hello, even after a hook's close; seen
+ids stay repeats; two restarts before a pass; the open cap; 14 malformed files, the size
+cap, a folder, a FIFO; field caps; a write failure said once; the pass (his own card shown
+and closed at his Stop, a subagent's kept through his turn, no call open, another tool, a
+request after it, a stopped subagent, two threads with one past, a read before the hello,
+no lead session, nothing read, a late prompt only in a current session); end to end over two real sockets (a second
+server taking the channel's old token, then a new process); the reminder's words and
+`hasCard` (true, false, throwing, truthy, missing, asked of the named wait). Mutants, last run after the M1 round: 92 over chat-store, approvals, chat-socket,
+answered-elsewhere and approval-wait: 90 caught, one timed out (the not-a-regular-file check
+removed, so the FIFO read hangs: caught), and one survivor, an empty-tool check the seal
+made redundant, now removed; the two no-op baselines pass. In the M1 round, separate tool
+and description equality checks and a fixed-phrase list in `isWhyLine` also survived (the
+seal and the word pattern cover them) and were left out. The first runs left 13 survivors: redundant code, now removed (a held id
+added to the seen ids twice, a verdict matched by id beside the match by message, a second
+write queued at the hello, a "thread not read" branch cardThreads can't reach, refs seeded
+that the pass's own loop sets), and missing tests, now added (a write before the hello
+after a hook's close, a silent channel alone, a window's end alone, the write when a held
+card goes, the reminder asking of the named wait, a looser reminder shape, two threads
+with one past).
+**Not verified:** a real restart with a card open (no restart in this run); that a live
+channel 0.4.10 or 0.4.11 takes a verdict for a card put back (the channel code says it does:
+`deliverVerdict` needs only the id in `pendingPerms` and a fresh `answeredAt`); the page
+redrawing a card from a `permission` event after its stream reconnects (the same event a
+new card uses); the reminder's new words on a device.
+
+**Go-live (Jeff, after C&P):** one Control Room restart, with no agent runs going. The first
+start after it finds no `permissions.json`, so nothing comes back that once; from the
+restart after it on, a card the same channel process still holds comes back within about a
+minute (the first sessions pass after the hello). The 12-hour case needs the channel 0.4.11
+release in the jarvis repo (its release pin, not this branch). Check after a later restart
+with a card open: the log has `held for the sessions pass` and then `shown again` or `not
+shown again (…)`.
+
+**Follow-ups (asked in the report):** the jarvis repo's answer watch still says "Answer the
+card in Jarvis OS chat, Discord or his window" whatever the chat holds (`answer_watch.py`
+`APPROVAL`); it could read a `card` flag if `approval-waits.json` carried one.

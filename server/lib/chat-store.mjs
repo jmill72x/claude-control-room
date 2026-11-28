@@ -12,11 +12,14 @@
 // their state, expire as long after the channel relayed them as the channel says it
 // holds one (`setPermissionHold`, from its hello; 10 minutes when it doesn't say), and
 // lose their input preview after 24 h (the approvals rules: lib/approvals.mjs).
+// The open ones are also written to `permissions.json` (0600) with the channel process
+// that relayed them, so a restart of this server can put them back when that same
+// process says hello again (board ee0bd552; "permissions across a restart" below).
 // Attachments are files under `files/<random id>`, named only by that id.
 import { open, readFile, writeFile, mkdir, readdir, rename, stat, unlink, chmod } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { capField, parsePreview, shownHash, TOOL_MAX, LATE_AFTER_MS } from './approvals.mjs';
+import { capField, parsePreview, shownHash, isWhyLine, TOOL_MAX, LATE_AFTER_MS } from './approvals.mjs';
 import { secretShapes } from './secret-shape.mjs';
 import { isRoutineMessage, ROUTINE_ID_PREFIX } from './routine-chat.mjs';
 
@@ -59,6 +62,16 @@ export const CHANNEL_GONE_MS = 10 * 60e3;
 // after it timed out (as a card that can't be answered here).
 export const CARD_REPLAY_MS = 50 * 60e3;
 export const PREVIEW_TTL_MS = DAY;
+// The open requests on file for the next start (board ee0bd552): `permissions.json` in
+// the chat folder. A card put back waits, unseen and unanswerable, for a sessions pass
+// that read the transcripts after it (lib/answered-elsewhere.mjs, `pass`); one that no
+// pass has judged within this long is let go.
+export const PERMISSIONS_FILE = 'permissions.json';
+export const PERMISSIONS_FILE_VERSION = 1;
+export const PERMISSIONS_FILE_MAX_BYTES = 16 * 1024 * 1024;
+export const RESTORE_JUDGE_MS = 3 * 60e3;
+// What the chat log keeps in place of a description that looks like it holds a secret.
+export const SECRET_STAND_IN = 'Jarvis asked for a permission (its summary looked like it held a secret, so it is not kept)';
 export const UNANSWERED_WINDOW_MS = DAY;
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_TTL_MS = 90 * DAY;
@@ -129,7 +142,7 @@ export const publicMessage = m => ({
   editedAt: m.editedAt ?? null, state: m.state ?? null, meta: m.meta ?? null
 });
 
-export function createChatStore({ dir, now = () => Date.now() }) {
+export function createChatStore({ dir, now = () => Date.now(), log = () => {} }) {
   const messages = [];          // in seq order
   const byId = new Map();
   const byClientId = new Map();
@@ -191,7 +204,11 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       deliveredSeq = 0;
       await writeJson(cursorPath, { epoch, deliveredSeq, createdAt: new Date(now()).toISOString() });
     }
-    return { messages: messages.length, seq, epoch, deliveredSeq };
+    // The last process's open requests, held until the channel's first hello says whether
+    // the process that relayed them is still the one connected (channelHello). Nothing is
+    // written to the file before that hello, so a start that never gets one keeps it.
+    pendingSnapshot = await readPermissionSnapshot();
+    return { messages: messages.length, seq, epoch, deliveredSeq, permissionsOnFile: pendingSnapshot ? pendingSnapshot.cards.length : 0 };
   }
 
   // One message appended: validated here once, written with its seq, then announced.
@@ -317,11 +334,138 @@ export function createChatStore({ dir, now = () => Date.now() }) {
   const latest = new Map();   // requestId -> uid of its newest entry
   const seenIds = new Set();  // `${session}:${requestId}`, this session's only
 
+  // ---- permissions across a restart (board ee0bd552) ----
+  // The page's open cards lived in memory only, so a restart of this server lost every
+  // one while the channel still held the requests and would take a verdict for them. The
+  // L7 rule (a new channel process ends every card) can't tell a new process from the
+  // same one meeting a new server, so the channel's identity is kept with the cards:
+  // `permissions.json` holds the process that relayed them (its pid and its own start
+  // time, from its hello), when its session began here, the ids it relayed, and each open
+  // request as relayed (tool, description, preview, times, its message). Never the exact
+  // command, which stays in memory only; never a request whose description or preview
+  // looks like it holds a secret (secret-shape.mjs). Written on each change once a hello
+  // has come; the file holds only open requests, so a card that closes leaves it.
+  //
+  // At the next start the file is read, and at the channel's first hello (channelHello):
+  // - another process (pid or start differ, or not given): the L7 rule, nothing comes back;
+  // - the same process: its session goes on (its start time and ids here too), and each
+  //   request still inside its window, with its message on file and no verdict to it in
+  //   the chat log, is held back as `restoring`: not shown, not answerable.
+  // A sessions pass that began reading after that (lib/answered-elsewhere.mjs, `pass`)
+  // then decides each one: shown again only when a thread of the lead's still has the
+  // card's call open (cardThreads) and is not past it; a call answered at the terminal or
+  // in Discord while this server was down has its result there, and its card goes.
+  // Undecided for RESTORE_JUDGE_MS, a held one goes too, as it does with a bye, a new
+  // process, the end of its window or the lead's SessionEnd.
+  let channelId = null;         // { pid, startedAt } of the process whose session this is
+  let pendingSnapshot = null;   // the last process's file, until the first hello
+  const restoring = new Map();  // requestId -> a request held back until a pass judges it
+  let permSaveArmed = false;    // nothing is written before the first hello
+  let permSaveQueued = false;
+  let permSaveSaid = false;
+  let permSaveChain = Promise.resolve();
+  // Whether the file on disk may hold a card: a file with none brings nothing back, so
+  // while there is still none to write, nothing is written (true at load when a file is
+  // there at all, so a stale one is always overwritten).
+  let fileMayHoldCards = false;
+  const permsPath = join(dir, PERMISSIONS_FILE);
+  const looksSecret = p => secretShapes(p.description).length > 0 || secretShapes(p.inputPreview ?? '').length > 0;
+  const fileCard = p => ({ requestId: p.requestId, tool: p.tool, description: p.description, inputPreview: p.inputPreview, cut: Boolean(p.cut), relayedAt: p.relayedAt, openedAt: p.openedAt, windowMs: p.windowMs, messageId: p.messageId, why: typeof p.why === 'string' ? p.why : null });
+  function permissionSnapshot() {
+    const cards = [];
+    // (An open card is always this session's: a new one ends every open card. One whose
+    // message is still being written goes with a null message id, which a start refuses.)
+    for (const p of permissions.values()) if (p.state === 'open' && !looksSecret(p)) cards.push(fileCard(p));
+    for (const r of restoring.values()) if (!looksSecret(r)) cards.push(fileCard(r));
+    const seen = [...seenIds].map(k => k.slice(k.indexOf(':') + 1)).slice(-PERMISSIONS_KEPT_MAX);
+    return { version: PERMISSIONS_FILE_VERSION, at: now(), channel: channelId ? { pid: channelId.pid, startedAt: channelId.startedAt, sessionAt: permSessionAt } : null, seen, cards: channelId ? cards : [] };
+  }
+  // A write after every change, one at a time; the newest state is the one written.
+  function permChanged() {
+    if (!permSaveArmed || permSaveQueued) return;
+    permSaveQueued = true;
+    permSaveChain = permSaveChain.then(async () => {
+      permSaveQueued = false;
+      try {
+        const snap = permissionSnapshot();
+        if (snap.cards.length === 0 && !fileMayHoldCards) return;
+        await writeJson(permsPath, snap);
+        fileMayHoldCards = snap.cards.length > 0;
+        permSaveSaid = false;
+      } catch (err) {
+        if (!permSaveSaid) log(`chat: the open permission requests could not be written for the next start (${err?.code ?? err?.name ?? 'error'})`);
+        permSaveSaid = true;
+      }
+    });
+  }
+  // The file as the last process left it, or null: a regular file, small, version 1, a
+  // channel named, each card in shape, inside its window, its message on file and never
+  // answered from the page (a verdict to it in the log: the write after it may not have
+  // landed before the stop).
+  // The file as the last process left it, checked (`checkPermissionFile`); a file that
+  // brings back no card is removed, so nothing stale waits in it, and temp files an
+  // interrupted write left are swept (Ultron's L3).
+  async function readPermissionSnapshot() {
+    for (const name of await readdir(dir).catch(() => [])) {
+      if (name.startsWith(`${PERMISSIONS_FILE}.tmp-`)) await unlink(join(dir, name)).catch(() => {});
+    }
+    let info;
+    try { info = await stat(permsPath); } catch { return null; }
+    const snap = await checkPermissionFile(info);
+    // (A folder or other non-file in its place can't be unlinked, and holds no card.)
+    if (snap === null || snap.cards.length === 0) {
+      await unlink(permsPath).catch(() => {});
+      return null;
+    }
+    fileMayHoldCards = true;
+    return snap;
+  }
+  async function checkPermissionFile(info) {
+    let raw;
+    try {
+      if (!info.isFile() || info.size > PERMISSIONS_FILE_MAX_BYTES) return null;
+      raw = JSON.parse(await readFile(permsPath, 'utf8'));
+    } catch { return null; }
+    if (!isObject(raw) || raw.version !== PERMISSIONS_FILE_VERSION || !isObject(raw.channel)) return null;
+    const { pid, startedAt, sessionAt } = raw.channel;
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(startedAt) || !Number.isSafeInteger(sessionAt)) return null;
+    const at = now();
+    // A verdict answers a card by replying to its message (answerPermission writes it so).
+    const answeredIds = new Set(messages.filter(m => m.kind === 'verdict' && isMessageId(m.replyTo)).map(m => m.replyTo));
+    const cards = [];
+    const ids = new Set();
+    for (const c of Array.isArray(raw.cards) ? raw.cards : []) {
+      if (cards.length >= OPEN_PERMISSIONS_MAX) break;
+      if (!isObject(c) || !isRequestId(c.requestId) || ids.has(c.requestId)) continue;
+      if (typeof c.tool !== 'string' || typeof c.description !== 'string' || typeof c.inputPreview !== 'string') continue;
+      if (!Number.isSafeInteger(c.relayedAt) || !Number.isSafeInteger(c.openedAt) || c.relayedAt > at || c.openedAt > at) continue;
+      if (!Number.isSafeInteger(c.windowMs) || c.windowMs <= 0 || c.windowMs > PERMISSION_HOLD_MAX_MS || at - c.relayedAt >= c.windowMs) continue;
+      if (at - c.openedAt >= PREVIEW_TTL_MS) continue;
+      // The card's own message (the chat log's line for it, written when it opened, the
+      // lead's) must carry the hash of the card as relayed (Ultron's M1: the file is any
+      // of the owner's processes' to write, so a tool, description or preview rewritten
+      // there must never reach a card). The hash covers the tool and the real description,
+      // so a card given the secret stand-in never matches; a message from before the seal
+      // has none, so its card never comes back.
+      const m = isMessageId(c.messageId) ? byId.get(c.messageId) : null;
+      if (!m || m.kind !== 'permission' || m.from !== 'jarvis' || m.meta?.requestId !== c.requestId) continue;
+      if (typeof m.meta?.relayed !== 'string' || m.meta.relayed !== shownHash(c.tool, c.description, c.inputPreview)) continue;
+      if (c.why !== undefined && c.why !== null && !isWhyLine(c.why, c.tool)) continue;
+      if (answeredIds.has(c.messageId)) continue;
+      // (Its fields are the ones relayed, capped when the card opened: the seal says so.)
+      ids.add(c.requestId);
+      cards.push({ requestId: c.requestId, tool: c.tool, description: c.description, inputPreview: c.inputPreview, cut: c.cut === true, relayedAt: c.relayedAt, openedAt: c.openedAt, windowMs: c.windowMs, messageId: c.messageId, why: typeof c.why === 'string' ? c.why : null });
+    }
+    const seen = (Array.isArray(raw.seen) ? raw.seen : []).filter(isRequestId).slice(-PERMISSIONS_KEPT_MAX);
+    return { channel: { pid, startedAt, sessionAt }, seen, cards };
+  }
+
   const endPermission = (p, ended) => {
     p.state = 'expired';
     p.ended = ended;
     if (ended === 'timeout') p.timedOut = true;
     emit({ type: 'permission-closed', request: p });
+    permChanged();
   };
   const forget = (uid, p) => {
     permissions.delete(uid);
@@ -339,6 +483,13 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       if (at - p.openedAt >= PREVIEW_TTL_MS) p.inputPreview = null;
       if (at - p.openedAt >= 7 * DAY) forget(uid, p);
     }
+    // A held-back request goes at the end of its window, with a silent channel, or when no
+    // pass has judged it in time (fail closed: it never shows).
+    let letGo = false;
+    for (const [id, r] of restoring) {
+      if (at - r.relayedAt >= r.windowMs || gone || at - r.restoredAt >= RESTORE_JUDGE_MS) { restoring.delete(id); letGo = true; }
+    }
+    if (letGo) permChanged();
     // The count bound: the oldest that are no longer open go first (at most
     // OPEN_PERMISSIONS_MAX are open, so there is always one).
     if (permissions.size > PERMISSIONS_KEPT_MAX) {
@@ -356,8 +507,96 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     permSession++;
     permSessionAt = now();
     seenIds.clear();
+    channelId = null;
+    pendingSnapshot = null;
+    restoring.clear();
+    permSaveArmed = true;
     for (const p of permissions.values()) if (p.state === 'open') endPermission(p, 'channel');
+    permChanged();
     return permSession;
+  }
+
+  // A hello from a channel process that this server did not know (lib/chat-socket.mjs:
+  // no session token of this process's). `pid` and `startedAt` are what the hello says of
+  // the process (its pid, checked by lib/chat-verify.mjs when the server knows the
+  // channel's path, and the process's own start in ms). A new session always begins (L7:
+  // every open request here ends). At this server's first hello, the last process's file
+  // comes back only if it was written for this same process: then its session goes on
+  // (its start and ids), and each request still inside its window is held back until a
+  // sessions pass judges it (`restoringPermissions`, `settleRestored`). Answers
+  // { session, restored, dropped, why } (why: the words for a file that didn't come back).
+  function channelHello({ pid = null, startedAt = null } = {}) {
+    const snap = pendingSnapshot;
+    newPermissionSession();
+    const id = Number.isSafeInteger(pid) && pid > 1 && Number.isSafeInteger(startedAt) && startedAt > 0 ? { pid, startedAt } : null;
+    channelId = id;
+    const out = { session: permSession, restored: 0, dropped: 0, why: null };
+    if (snap && snap.cards.length > 0) {
+      const same = id !== null && snap.channel.pid === id.pid && snap.channel.startedAt === id.startedAt;
+      if (!same) {
+        out.dropped = snap.cards.length;
+        out.why = id === null ? 'the channel\'s hello did not say its pid and start' : 'a different channel process said hello';
+      } else {
+        const at = now();
+        if (snap.channel.sessionAt <= at) permSessionAt = snap.channel.sessionAt;
+        for (const s of snap.seen) seenIds.add(`${permSession}:${s}`);
+        // (`seen` holds every id the session relayed, the held ones too.)
+        for (const c of snap.cards) {
+          if (at - c.relayedAt >= c.windowMs) { out.dropped++; continue; }
+          restoring.set(c.requestId, { ...c, restoredAt: at });
+          out.restored++;
+        }
+        if (out.dropped > 0) out.why = 'their window had ended';
+      }
+    }
+    // (newPermissionSession above queued the write; it takes the state as it is now.)
+    return out;
+  }
+
+  // The held-back requests, as copies for lib/answered-elsewhere.mjs to judge:
+  // { requestId, tool, relayedAt, restoredAt }.
+  const restoringPermissions = () => { prunePermissions(); return [...restoring.values()].map(r => ({ requestId: r.requestId, tool: r.tool, relayedAt: r.relayedAt, restoredAt: r.restoredAt })); };
+
+  // A pass's word on held-back requests: `decisions` is a Map of request id to true (its
+  // call still waits in the lead's transcripts: shown again) or false (let go). A request
+  // shown again is open once more under this session, inside the smaller of its own window
+  // and the channel's current one, with the gate's reasons worked out again by `assess`
+  // (lib/approvals.mjs; the exact command is gone with the old process, so a Bash card
+  // shows the relayed preview). Answers { opened, dropped } (request ids).
+  function settleRestored(decisions, { assess = () => ({ denyOnly: [], why: null }) } = {}) {
+    prunePermissions();
+    const opened = [], dropped = [];
+    if (!(decisions instanceof Map)) return { opened, dropped };
+    const at = now();
+    for (const [rid, keep] of decisions) {
+      const r = restoring.get(rid);
+      if (!r) continue;
+      restoring.delete(rid);
+      const windowMs = Math.min(r.windowMs, permWindow);
+      const newer = findPermission(rid);
+      const openCount = [...permissions.values()].filter(q => q.state === 'open').length;
+      if (keep !== true || at - r.relayedAt >= windowMs || (newer && newer.openedAt >= r.openedAt) || openCount >= OPEN_PERMISSIONS_MAX) { dropped.push(rid); continue; }
+      const p = {
+        requestId: r.requestId, tool: r.tool, description: r.description, inputPreview: r.inputPreview, cut: r.cut,
+        openedAt: r.openedAt, relayedAt: r.relayedAt, session: permSession, windowMs, state: 'open',
+        answeredBy: null, answeredAt: null, messageId: r.messageId, denyOnly: [], why: r.why ?? null, exact: null, restored: true
+      };
+      // The gate's Deny-only reasons are worked out again; its "why it is asking" line is
+      // the one the card had (a block seen by this process is not this card's; L1).
+      try {
+        const a = assess(p) ?? {};
+        p.denyOnly = Array.isArray(a.denyOnly) ? a.denyOnly : [];
+        p.exact = typeof a.exact === 'string' ? a.exact : null;
+      } catch { p.denyOnly = ['it could not be checked']; p.exact = null; }
+      const uid = ++permUid;
+      permissions.set(uid, p);
+      latest.set(rid, uid);
+      seenIds.add(`${permSession}:${rid}`);
+      emit({ type: 'permission', request: p });
+      opened.push(rid);
+    }
+    permChanged();
+    return { opened, dropped };
   }
 
   // From the channel's hello: how long it holds a request (`permHoldMs`; anything but
@@ -414,10 +653,15 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     }
     // The description is model text: one that looks like it holds a secret never
     // reaches the disk (L12); the card still shows it from memory.
-    const onDisk = secretShapes(p.description).length ? 'Jarvis asked for a permission (its summary looked like it held a secret, so it is not kept)' : p.description;
-    const m = await append({ from: 'jarvis', kind: 'permission', text: onDisk, meta: { requestId, tool: p.tool } });
+    const onDisk = secretShapes(p.description).length ? SECRET_STAND_IN : p.description;
+    // `relayed`: the hash of the card as relayed (tool, description, preview: shownHash
+    // without the exact command), the chat log's seal for a card that comes back after a
+    // restart (permissions.json is checked against it; board ee0bd552, Ultron's M1). The
+    // same kind of hash a verdict already carries as `shown`.
+    const m = await append({ from: 'jarvis', kind: 'permission', text: onDisk, meta: { requestId, tool: p.tool, relayed: shownHash(p.tool, p.description, p.inputPreview) } });
     p.messageId = m.id;
     emit({ type: 'permission', request: p });
+    permChanged();
     return p;
   }
 
@@ -451,6 +695,10 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       closed.push(p.requestId);
       emit({ type: 'permission-closed', request: p });
     }
+    // Every card at once (the lead's SessionEnd, or his turn with no pass to say whose a
+    // card is): the held-back ones go too, unseen.
+    if (ids === null && typeof upTo === 'number') for (const [rid, r] of restoring) if (r.relayedAt < upTo) restoring.delete(rid);
+    permChanged();
     return closed;
   }
 
@@ -490,6 +738,7 @@ export function createChatStore({ dir, now = () => Date.now() }) {
     p.answeredAt = now();
     await append({ from: 'jeff', kind: 'verdict', text: behavior, replyTo: p.messageId, device: p.answeredBy, meta: { requestId, behavior, answeredAt: p.answeredAt, tool: p.tool, shown: hash, denyOnly: p.denyOnly.length > 0 } });
     emit({ type: 'permission-closed', request: p });
+    permChanged();
     return { ok: true, request: p };
   }
 
@@ -624,7 +873,9 @@ export function createChatStore({ dir, now = () => Date.now() }) {
       return first === null ? null : { first, last };
     },
     openPermission, answerPermission, openPermissions, redrawPermission, publicPermission, newPermissionSession, closePermissionsElsewhere, closablePermissions, cardPermissions,
-    setPermissionHold, noteChannelAlive,
+    setPermissionHold, noteChannelAlive, channelHello, restoringPermissions, settleRestored,
+    // The last write of permissions.json done (tests, and a clean stop).
+    flushPermissions: () => permSaveChain,
     permission: id => { prunePermissions(); return findPermission(id); },
     get permissionSession() { return permSession; },
     get permissionSessionAt() { return permSessionAt; },

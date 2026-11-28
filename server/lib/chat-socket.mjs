@@ -296,8 +296,17 @@ export function createSocketRouter({
         const { token } = client;
         endInbound(holder ? 'superseded' : 'replaced');
         // A new channel process: the requests the old one relayed can't be answered
-        // through this one (L7). The holder's own re-hello keeps them.
-        if (!holder) store.newPermissionSession?.();
+        // through this one (L7). The holder's own re-hello keeps them. A hello without
+        // this server's token may also be the same process meeting a restarted server:
+        // the store then puts back the cards the last server had open for that process
+        // (its pid and start time; board ee0bd552), held until a sessions pass judges them.
+        if (!holder) {
+          if (typeof store.channelHello === 'function') {
+            const back = store.channelHello({ pid, startedAt: client.startedAt });
+            if (back?.restored > 0) log(`chat: ${back.restored} permission card${back.restored === 1 ? '' : 's'} from before the restart held for the sessions pass (the same channel process said hello, pid ${pid})`);
+            if (back?.dropped > 0) log(`chat: ${back.dropped} permission card${back.dropped === 1 ? '' : 's'} from before the restart not put back (${back.why ?? 'no reason given'})`);
+          } else store.newPermissionSession?.();
+        }
         // How long the channel holds a relayed request before it forgets it (board
         // 94b380fd): the page answers for that long, less a minute, at most 12 hours;
         // a channel that doesn't say (0.4.10 and older) gets the old 10 minutes.

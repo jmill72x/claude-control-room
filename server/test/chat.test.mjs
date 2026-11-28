@@ -48,7 +48,7 @@ test('messages get seqs and persist whole; a reload continues the seq and keeps 
     const clock = { t: 1794380000000 };
     const store = createChatStore({ dir, now: () => clock.t });
     const first = await store.load();
-    assert.deepEqual(first, { messages: 0, seq: 0, epoch: store.epoch, deliveredSeq: 0 });
+    assert.deepEqual(first, { messages: 0, seq: 0, epoch: store.epoch, deliveredSeq: 0, permissionsOnFile: 0 });
     assert.match(store.epoch, /^[a-f0-9]{16}$/);
     const a = await store.append({ from: 'jeff', kind: 'chat', text: 'hello', device: 'phone', clientId: 'c1' });
     clock.t += 1000;
@@ -166,7 +166,7 @@ test('permissions: opened as a message, first answer wins, expiry at 10 minutes,
     assert.equal(p.state, 'open');
     assert.ok(isMessageId(p.messageId));
     assert.equal(store.get(p.messageId).kind, 'permission');
-    assert.deepEqual(store.get(p.messageId).meta, { requestId: 'ABCDE', tool: 'Bash' });
+    assert.deepEqual(store.get(p.messageId).meta, { requestId: 'ABCDE', tool: 'Bash', relayed: shownHash('Bash', 'run the tests', 'npm test') }, 'the seal: a hash of the card as relayed, never the preview (board ee0bd552)');
     await assert.rejects(store.openPermission({ requestId: 'bad id!' }), /requestId/);
     assert.equal(store.openPermissions().length, 1);
     assert.equal((await store.answerPermission('ABCDE', 'maybe', 'phone')).status, 400);
