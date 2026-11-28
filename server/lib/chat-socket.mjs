@@ -173,6 +173,14 @@ export function summaryLine(events) {
   return { type: 'event', seq: last.seq, id: last.id, at: last.at, source: sources.length === 1 ? sources[0] : 'mixed', event: 'summary', text, count: events.reduce((n, e) => n + (e.count ?? 1), 0), ids: events.map(e => e.id) };
 }
 
+// A gap in milliseconds as signed seconds with three decimals, from integers only
+// (-1250 -> "-1.250 s"), for a log line.
+export function signedSeconds(ms) {
+  const t = Math.trunc(ms);
+  const abs = Math.abs(t);
+  return `${t < 0 ? '-' : '+'}${Math.floor(abs / 1000)}.${String(abs % 1000).padStart(3, '0')} s`;
+}
+
 // `events` (lib/events.mjs) decides whether a stored event may go now; without it no
 // event is ever delivered.
 export function createSocketRouter({
@@ -313,9 +321,13 @@ export function createSocketRouter({
             const unproven = !Number.isSafeInteger(client.startedAt) ? null
               : psStart === undefined ? 'the channel\'s start could not be checked (chat.channelServer is not set)'
                 : !startMatches(client.startedAt, psStart) ? 'the start time in the channel\'s hello is not its process\'s (ps)' : null;
+            // For the log only: by how much the two starts differ (board 5ae1e2c6, Ultron's L4
+            // on jos/card-lows). The store keeps its fixed words.
+            const gap = unproven === null || psStart === undefined ? null
+              : psStart === null ? 'ps gave no start' : `the hello's start minus ps's: ${signedSeconds(client.startedAt - psStart)}`;
             const back = store.channelHello({ pid, startedAt: client.startedAt, unproven });
             if (back?.restored > 0) log(`chat: ${back.restored} permission card${back.restored === 1 ? '' : 's'} from before the restart held for the sessions pass (the same channel process said hello, pid ${pid})`);
-            if (back?.dropped > 0) log(`chat: ${back.dropped} permission card${back.dropped === 1 ? '' : 's'} from before the restart not put back (${back.why ?? 'no reason given'})`);
+            if (back?.dropped > 0) log(`chat: ${back.dropped} permission card${back.dropped === 1 ? '' : 's'} from before the restart not put back (${back.why ?? 'no reason given'}${gap !== null && back.why === unproven ? `; ${gap}` : ''})`);
           } else store.newPermissionSession?.();
         }
         // How long the channel holds a relayed request before it forgets it (board

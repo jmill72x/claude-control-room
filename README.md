@@ -1425,7 +1425,8 @@ and a file that brings back no card is removed), and at the channel's first hell
 - **another process** (pid or start differ, or the hello doesn't give both): nothing comes
   back (log: `chat: 1 permission card from before the restart not put back (a different
   channel process said hello)`; for a start ps doesn't confirm, `(the start time in the
-  channel's hello is not its process's (ps))`, and with no ps check, `(the channel's start
+  channel's hello is not its process's (ps); the hello's start minus ps's: +3.250 s)`, the
+  measured gap in seconds, or `; ps gave no start`), and with no ps check, `(the channel's start
   could not be checked (chat.channelServer is not set))`);
 - **the same process:** its session goes on (its start time and the ids it relayed, so an id
   seen again is still a `repeat`), and each card still inside its window, sealed as above,

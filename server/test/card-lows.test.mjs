@@ -10,7 +10,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createChatStore } from '../lib/chat-store.mjs';
-import { createSocketRouter, SESSION_HEADER } from '../lib/chat-socket.mjs';
+import { createSocketRouter, SESSION_HEADER, signedSeconds } from '../lib/chat-socket.mjs';
 import { startMatches, START_BEFORE_MS, START_AFTER_MS } from '../lib/chat-verify.mjs';
 import { cardTakesWait, hasCardFor, createApprovalReminders, REMINDER_TAIL, REMINDER_TAIL_NO_CARD } from '../lib/approval-wait.mjs';
 import { createAnsweredElsewhere } from '../lib/answered-elsewhere.mjs';
@@ -153,14 +153,22 @@ async function socketRestart(w, second) {
   return two;
 }
 
-test('L5 socket: ps\'s start for the pid within the margin brings the card back; another start, no ps start, or no ps check brings none, and the log says why', async () => {
+test('L4 (board 5ae1e2c6): a gap is said as signed seconds, exact to the millisecond', () => {
+  assert.equal(signedSeconds(2250), '+2.250 s');
+  assert.equal(signedSeconds(-4750), '-4.750 s');
+  assert.equal(signedSeconds(0), '+0.000 s');
+  assert.equal(signedSeconds(-5), '-0.005 s');
+  assert.equal(signedSeconds(61001), '+61.001 s');
+});
+
+test('L5 socket: ps\'s start for the pid within the margin brings the card back; another start, no ps start, or no ps check brings none, and the log says why, with the gap ps measured (L4)', async () => {
   for (const [name, second, line] of [
     ['ps agrees', {}, `chat: 1 permission card from before the restart held for the sessions pass (the same channel process said hello, pid ${A.pid})`],
     ['ps agrees, the hello 1.25 s after its whole second', { psStart: A.startedAt - 1000 }, `chat: 1 permission card from before the restart held for the sessions pass (the same channel process said hello, pid ${A.pid})`],
-    ['ps says a whole second too early (2.25 s)', { psStart: A.startedAt - 2000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps))'],
-    ['ps says a later start', { psStart: A.startedAt + 5000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps))'],
-    ['ps says an earlier start', { psStart: A.startedAt - 3000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps))'],
-    ['ps gives no start', { psStart: null }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps))'],
+    ['ps says a whole second too early (2.25 s)', { psStart: A.startedAt - 2000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps); the hello\'s start minus ps\'s: +2.250 s)'],
+    ['ps says a later start', { psStart: A.startedAt + 5000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps); the hello\'s start minus ps\'s: -4.750 s)'],
+    ['ps says an earlier start', { psStart: A.startedAt - 3000 }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps); the hello\'s start minus ps\'s: +3.250 s)'],
+    ['ps gives no start', { psStart: null }, 'chat: 1 permission card from before the restart not put back (the start time in the channel\'s hello is not its process\'s (ps); ps gave no start)'],
     ['no ps check', { verify: false }, 'chat: 1 permission card from before the restart not put back (the channel\'s start could not be checked (chat.channelServer is not set))']
   ]) {
     const w = await world();

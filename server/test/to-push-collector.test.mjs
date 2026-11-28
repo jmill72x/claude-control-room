@@ -23,10 +23,44 @@ const script = (dir, lines, name = 'git-read') => {
 const alive = pid => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
-const gone = async pid => {
-  for (let i = 0; i < 50 && alive(pid); i++) await new Promise(r => setTimeout(r, 20));
+const gone = async (pid, ms = 3000) => {
+  const until = Date.now() + ms;
+  while (alive(pid) && Date.now() < until) await new Promise(r => setTimeout(r, 20));
   return !alive(pid);
 };
+
+// The two time-limit tests (board 5ae1e2c6, Ultron's L3 on jos/card-lows). Their script
+// can be killed before it has started its child: /usr/bin/python3 goes through the xcrun
+// shim (xcrun_nocache, programEnv) and took 0.5-1.1 s to start with three suites running
+// at once, past a 400 ms limit. So the script says when it is ready (its child's pid, put
+// in place whole by a rename), and a run killed before that proves nothing about the
+// child: it is run again with a longer limit. Every run must stop at its own limit.
+const LIMITS_MS = [400, 2000, 8000];
+const LIMIT_SLACK_MS = 1600;
+const readyLines = ready => [
+  `with open(${JSON.stringify(ready + '.tmp')}, 'w') as f: f.write(str(child.pid))`,
+  `os.replace(${JSON.stringify(ready + '.tmp')}, ${JSON.stringify(ready)})`
+];
+async function atEachLimit(lines, check) {
+  for (const limit of LIMITS_MS) {
+    const dir = fresh();
+    const ready = join(dir, 'child.pid');
+    const path = script(dir, lines(ready));
+    const started = Date.now();
+    try {
+      await assert.rejects(runGitRead(path, '/home/example/projects/garden-app', { timeout: limit }), err => err.timedOut === true);
+      const took = Date.now() - started;
+      assert.ok(took < limit + LIMIT_SLACK_MS, `stopped at its limit (${limit} ms; took ${took} ms)`);
+      if (!existsSync(ready)) continue;
+      await check(Number(readFileSync(ready, 'utf8')));
+      return;
+    } finally {
+      // A child that outlived its run (the escaped one, or one a broken kill missed).
+      try { process.kill(Number(readFileSync(ready, 'utf8')), 'SIGKILL'); } catch { /* none, or already gone */ }
+    }
+  }
+  assert.fail(`the script never started its child inside ${LIMITS_MS.at(-1)} ms`);
+}
 
 // ---- one run ----
 
@@ -62,43 +96,32 @@ test("git-read gets only HOME, PATH, TMPDIR, USER, LOGNAME, LANG and LC_* from t
 });
 
 test('a run that hangs is killed at its time limit, git and all: SIGKILL to its whole process group', async () => {
-  const dir = fresh();
-  const pidFile = join(dir, 'child.pid');
-  // The script starts a child of its own (as git-read starts git) and waits,
-  // both ignoring SIGTERM, so only SIGKILL ends them.
-  const path = script(dir, [
-    'import signal, subprocess',
+  assert.equal(GIT_READ_TIMEOUT_MS, 10000);
+  // The script starts a child of its own (as git-read starts git) and waits, both
+  // ignoring SIGTERM, so only SIGKILL ends them.
+  await atEachLimit(ready => [
+    'import os, signal, subprocess',
     'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
     "child = subprocess.Popen(['/bin/sleep', '30'])",
-    `open(${JSON.stringify(pidFile)}, 'w').write(str(child.pid))`,
+    ...readyLines(ready),
     'child.wait()'
-  ]);
-  assert.equal(GIT_READ_TIMEOUT_MS, 10000);
-  const started = Date.now();
-  await assert.rejects(runGitRead(path, '/home/example/projects/garden-app', { timeout: 400 }), err => err.timedOut === true);
-  assert.ok(Date.now() - started < 2000, 'stopped at its limit');
-  for (let i = 0; i < 50 && !existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 20));
-  const pid = Number(readFileSync(pidFile, 'utf8'));
-  assert.ok(await gone(pid), "the script's own child was killed too");
+  ], async pid => {
+    assert.ok(Number.isSafeInteger(pid) && pid > 1, 'a whole pid');
+    assert.ok(await gone(pid), "the script's own child was killed too");
+  });
 });
 
 test('the time limit holds even when something outside the group keeps the output open', async () => {
-  const dir = fresh();
-  const pidFile = join(dir, 'escaped.pid');
-  // A grandchild in a session of its own holds stdout open after the script exits 0.
-  const path = script(dir, [
-    'import subprocess',
-    "held = subprocess.Popen(['/bin/sleep', '3'], start_new_session=True)",
-    `open(${JSON.stringify(pidFile)}, 'w').write(str(held.pid))`
-  ]);
-  const started = Date.now();
-  try {
-    await assert.rejects(runGitRead(path, '/home/example/projects/garden-app', { timeout: 400 }), err => err.timedOut === true);
-    assert.ok(Date.now() - started < 1500, 'settled at the limit, not when the output closed');
-  } finally {
-    for (let i = 0; i < 50 && !existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 20));
-    try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
-  }
+  // A grandchild in a session of its own holds stdout open after the script exits 0; it
+  // sleeps far past the longest limit, so a run that waited for the output to close would
+  // take that long.
+  await atEachLimit(ready => [
+    'import os, subprocess',
+    "child = subprocess.Popen(['/bin/sleep', '30'], start_new_session=True)",
+    ...readyLines(ready)
+  ], async pid => {
+    assert.ok(alive(pid), 'the grandchild was still holding the output when the run was settled');
+  });
 });
 
 test('more output than an answer can be is refused, and the run is stopped', async () => {

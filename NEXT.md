@@ -6325,7 +6325,7 @@ shown again (…)`.
 card in Jarvis OS chat, Discord or his window" whatever the chat holds (`answer_watch.py`
 `APPROVAL`); it could read a `card` flag if `approval-waits.json` carried one.
 
-## 59. Ultron's lows on the card that comes back, and where --if-down belongs (boards 88c1d4ec and 63ff44b0, P3; staged 2026-11-28 on `jos/card-lows`, off main edbee5a; Ultron GO with M1 as its condition, M1 + L1 + L2 folded in the same day)
+## 59. Ultron's lows on the card that comes back, and where --if-down belongs (boards 88c1d4ec and 63ff44b0, P3; merged as main ed7981c, 2026-11-28, live per Jarvis; Ultron GO with M1 as its condition, M1 + L1 + L2 folded in the same day; his L3 and L4 are §60)
 
 Worktree `~/Projects/.worktrees/ccr-card-lows`, no upstream, not committed. Server and page
 (one restart and one web build to go live). README "A card waiting across a restart of this
@@ -6391,7 +6391,7 @@ server", "The reminder" and "The line in every Jarvis-down alert" hold the desig
   two options (only a card on the session's own thread, or none), none: such a wait names
   no tool and no card was relayed in the two minutes before it (else it would have a hint),
   so no card there is known to be its. The words then say Discord or the terminal.
-- L3 (the to-push-collector 400 ms flake) and L4 (logging the start offset) go to the board.
+- L3 (the to-push-collector 400 ms flake) and L4 (logging the start offset): board 5ae1e2c6, §60.
 
 **Found, not changed.** A card drawn again after a restart sends the usual approval push
 (§58 said none; corrected there). It is one push for a card that can be answered again;
@@ -6420,3 +6420,62 @@ renewal's last step stay plain (the jarvis docs call both a restart on purpose).
 release has `--if-down`, "Read the last line" could add: "OK: Jarvis is already running and
 hears Discord, nothing done: an alert's line with --if-down found him back; if he still
 doesn't answer, paste the one line above."
+
+## 60. Two timing tests made load-proof, and the start gap in the log (board 5ae1e2c6, P3; Ultron's L3 and L4 on `jos/card-lows`; staged 2026-11-28 on `jos/flake`, off main ed7981c)
+
+Worktree `~/Projects/.worktrees/ccr-flake`, not committed. Server only. Tests only, except
+for one log line.
+
+**L3, the kill test.** "a run that hangs is killed at its time limit, git and all" gave its
+Python script 400 ms. `/usr/bin/python3` goes through the xcrun shim, and with
+`xcrun_nocache=1` (what `programEnv` sets) it took 0.5-1.1 s to start while three suites ran
+(0.03 s with no shim no-cache and no load). The script was killed before it started its child
+and wrote `child.pid`, so the read failed with ENOENT: in 12 of 12 loaded suites, not now and
+then. Now `atEachLimit` in `test/to-push-collector.test.mjs`: the script reports ready (its
+child's pid, put in place whole by a rename), and a run killed before that is run again with a
+longer limit (400, 2000, 8000 ms). Every run must still reject as timed out within its limit
+plus 1.6 s. The child check runs on the first ready run, and nothing in `runGitRead` changed.
+The sibling test ("the time limit holds even when something outside the group keeps the
+output open") uses the same helper. Before, an early kill left it passing on nothing, and its
+1.1 s margin could flake too. Its escaped grandchild now sleeps 30 s, so a run that waited for
+the output to close would fail.
+
+**The chat test: a second timing test, fixed the same way.** "a permission request from the
+channel reaches the page as an event…" read the page's stream and the socket's inbound stream
+for a fixed 300 ms. Its own requests (the open, the taps, the approver switch) have to land
+inside that window. With no load the verdict came about 95 ms in. With three suites running,
+it took 109-340 ms, and the 340 ms run failed. It passed in all 12 full loaded suites, so it
+only shows up with heavier load. `stream()` in `test/chat.test.mjs` now takes `until` (a test
+of the whole lines or events so far). When that holds, the stream ends after a 200 ms `grace`,
+which keeps the "nothing more follows" checks, and `ms` becomes a 10 s deadline. Only this
+test uses it. The file's other fixed windows (`ms: 80` to `300`) are unchanged. They are the
+first place to look if a chat test flakes.
+
+**L4, the start gap.** When a hello's start doesn't match ps's lstart, the "not put back" line
+now also says by how much: `(the start time in the channel's hello is not its process's (ps);
+the hello's start minus ps's: +3.250 s)`, or `; ps gave no start`. The gap is in seconds, to
+the millisecond, from integers (`chat-socket.mjs` `signedSeconds`). Only the log line changed.
+The store keeps its fixed words (`why`), and no decision moved. README "A card waiting across
+a restart of this server" has the line.
+
+**Checked (2026-11-28).**
+- Before the fix, three suites at once, 3 rounds: 9 of 9 suites failed on the kill test alone
+  (2,110 of 2,111). Three more loaded suites failed on it too.
+- After the fix, three suites at once, 4 rounds: 12 of 12 suites passed 2,112 of 2,112. Under
+  that load both time-limit tests fell back to the 2000 ms limit (2.5-3.0 s each). With no
+  load they pass on the first, 400 ms limit.
+- A fifth round, three suites plus `test/chat.test.mjs` alone 8 times beside them: 3 of 3
+  suites and 8 of 8 chat runs passed. The slowest run of the permission test took 959 ms,
+  past the old 300 ms window.
+- Normal run 2,112 of 2,112, and `TZ=Asia/Tokyo` 2,112 of 2,112.
+- Mutants over a scratch copy: 11 caught, 0 missed, with 3 baselines passing. For the kill
+  tests, SIGTERM to the group, killing the script only, settling only when the output closes,
+  and the limit ignored. For the chat test, no closed event on an answer, no verdict down the
+  socket, and no verdict message. For L4, no gap in the line, the sign flipped, a gap with no
+  ps check, and the sign of a small negative.
+
+**Not verified:** the new log line against the live channel (it shows only on a real restart
+whose hello start ps doesn't confirm).
+
+**Go-live (after C&P):** only L4 runs in the service, so it needs one Control Room restart
+with no agent runs going. It can wait for the next planned restart. Nothing needs a web build.

@@ -407,18 +407,30 @@ const call = ({ socketPath, port, method = 'GET', path, headers = {}, body }) =>
 });
 
 // A streaming GET: collect what arrives for `ms`, then hang up.
-const stream = ({ socketPath, port, path, headers = {}, ms = 300 }) => new Promise((resolve, reject) => {
+// A stream read for `ms`. With `until` (a test of the text so far), it ends `grace` ms
+// after that holds, and `ms` is only a deadline: a fixed window raced the test's own
+// requests, which took longer than 300 ms with three suites running at once (board
+// 5ae1e2c6). The grace keeps a check that nothing more follows.
+const stream = ({ socketPath, port, path, headers = {}, ms = 300, until = null, grace = 200 }) => new Promise((resolve, reject) => {
   const req = request({ ...(socketPath ? { socketPath } : { host: '127.0.0.1', port }), method: 'GET', path, headers }, res => {
     let text = '';
+    let timer = null;
+    let met = false;
     res.setEncoding('utf8');
-    res.on('data', c => { text += c; });
-    const done = () => resolve({ status: res.statusCode, headers: res.headers, text });
+    const done = () => { clearTimeout(timer); req.destroy(); resolve({ status: res.statusCode, headers: res.headers, text }); };
+    res.on('data', c => {
+      text += c;
+      if (until && !met && until(text)) { met = true; clearTimeout(timer); timer = setTimeout(done, grace); }
+    });
     res.on('end', done);
-    setTimeout(() => { req.destroy(); done(); }, ms);
+    timer = setTimeout(done, ms);
   });
   req.on('error', reject);
   req.end();
 });
+// Only whole lines and whole events: a half-arrived one is not parsed.
+const wholeLines = text => text.slice(0, text.lastIndexOf('\n') + 1);
+const wholeEvents = text => { const end = text.lastIndexOf('\n\n'); return end < 0 ? '' : text.slice(0, end + 2); };
 const ndjson = text => text.split('\n').filter(Boolean).map(l => JSON.parse(l));
 const sse = text => text.split('\n\n').filter(b => b.trim()).map(block => {
   const ev = { comment: null };
@@ -771,8 +783,9 @@ test('SSE: a status event first, replay after Last-Event-ID with ids, live messa
 });
 
 test('a permission request from the channel reaches the page as an event; the verdict from a device is single use, logged with the device, and goes down the socket', async () => {
-  const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 300 });
-  const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 300 });
+  // Each stream ends once the verdict is on it (and a grace after), within 10 s.
+  const live = stream({ port: env.port, path: '/api/chat/stream', headers: { cookie: env.phone }, ms: 10e3, until: t => sse(wholeEvents(t)).some(e => e.event === 'permission-closed') && sse(wholeEvents(t)).some(e => e.event === 'message' && e.data?.kind === 'verdict') });
+  const inbound = unixStream({ path: `/v1/inbound?after=${env.store.seq}`, ms: 10e3, until: t => ndjson(wholeLines(t)).some(l => l.type === 'verdict') });
   await new Promise(r => setTimeout(r, 40));
   const preview = '{"file_path":"/home/owner/Projects/app/README.md"}';
   const opened = await unix({ method: 'POST', path: '/v1/permission-request', body: { requestId: 'ABCDE', tool: 'Read', description: 'list the files', inputPreview: preview, relayedAt: env.clock.t } });
